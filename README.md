@@ -20,26 +20,7 @@
 
 ## Installation
 
-### Case 1
-
-1. Download and untar the github package "eqtools"
-2. cd eqtools
-3. pip install .
-
-### Case 2
-
-1. Download and untar the github package "eqtools"
-2. cd eqtools
-3. Install eqtools by python setup.py
-
-```
-# Create a build file 
-python setup.py build 
-# Generate a release package
-python setup.py sdist 
-# Go into the dist directory to unzip the package, then go into the unzip file, and do
-python setup.py install --user
-```
+- See Readme ***Install.md***
 
 ## Coseismic
 
