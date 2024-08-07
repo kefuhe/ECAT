@@ -1,6 +1,6 @@
 <p align="center">
 
-<img src="image/logo.png" alt="Logo">
+<img src="image/logo.jpg" alt="Logo">
 
 </p>
 
@@ -48,12 +48,9 @@
 
 ![1709000559665](image/README/1709000559665.png)
 
-
-
 <p align="center">
   <img src="image/README/1723047070456.png" alt="描述" />
 </p>
-
 
 ### Building fault with isocurve determined by depth-focused aftershocks
 
