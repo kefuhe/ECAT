@@ -62,11 +62,13 @@
 
 [1] He, K., Y. Wen, C. Xu, and Y. Zhao (2021), Fault Geometry and Slip Distribution of the 2021 Mw 7.4 Maduo, China, Earthquake Inferred from InSAR Measurements and Relocated Aftershocks, Seismol. Res. Lett., 93(1), 8-20.
 
-[2] [jolivetr/csi: Classic Slip Inversion (github.com)](https://github.com/jolivetr/csi)
+[2] He K, Xu C, Wen Y (2022), Coseismic and early post-seismic deformations due to the 2019 earthquake sequence in Ridgecrest, California. Geophysical Journal International, 230(2): 957-975.
 
-[3] [Gmsh 4.11.1](https://gmsh.info/doc/texinfo/gmsh.html)
+[3] [jolivetr/csi: Classic Slip Inversion (github.com)](https://github.com/jolivetr/csi)
 
-[4] ...
+[4] [Gmsh 4.11.1](https://gmsh.info/doc/texinfo/gmsh.html)
+
+[5] ...
 
 ## Postseismic
 
