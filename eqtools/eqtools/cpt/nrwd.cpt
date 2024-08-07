@@ -1,0 +1,28 @@
+# nrwc.cpt
+# 
+# From 
+# http://commons.wikimedia.org/wiki/File:North_Rhine-Westphalia_Topography_01.svg
+# By wikipedia de user TUBS
+# http://de.wikipedia.org/wiki/Benutzer:TUBS
+#
+# Creative Commons Attribution-Share Alike 3.0 Unported
+# http://creativecommons.org/licenses/by-sa/3.0/deed.en
+#
+# converted to cpt by J.J. Green 2012
+#
+# $Id: nrwd.cpt,v 1.1 2012/07/04 10:57:50 jjg Exp $
+#
+# COLOR_MODEL = RGB
+-300   5   6   3  -200   5   6   3
+-200  55  55  36  -100  55  55  36
+-100  24  62  41  0     24  62  41
+0     52 105  69  100   52 105  69
+100   62 138  89  200   62 138  89
+200  108 163  99  300  108 163  99
+300  165 186 111  400  165 186 111
+400  231 213 122  500  231 213 122
+500  199 167  92  600  199 167  92
+600  176 120  58  700  176 120  58
+B   0   0   0
+F 255 255 255
+N 255   0   0
