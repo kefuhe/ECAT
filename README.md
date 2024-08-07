@@ -4,7 +4,7 @@
 
 </p>
 
-# eqtools
+# ECAT (Earthquake Cycle Analyse Toolkits)
 
 ---
 
