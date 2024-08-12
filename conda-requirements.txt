@@ -52,6 +52,7 @@ fonttools=4.25.0=pyhd3eb1b0_0
 freetype=2.12.1=h4a9f257_0
 fribidi=1.0.10=h36c2ea0_0
 gdk-pixbuf=2.42.10=h5eee18b_0
+gdal=3.6.2=py310h0daa840_5
 geos=3.8.0=he6710b0_0
 giflib=5.2.1=h5eee18b_3
 glib=2.69.1=he621ea3_2
