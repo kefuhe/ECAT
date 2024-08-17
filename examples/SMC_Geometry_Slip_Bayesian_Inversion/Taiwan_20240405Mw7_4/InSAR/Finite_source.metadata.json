@@ -1,0 +1,115 @@
+{
+    "inversion_id": "MOD_INGV_202404022358_01",
+    "event_time_start": "2024-04-02T23:58:10.128000Z",
+    "event_time_end": "2024-04-02T23:58:10.128000Z",
+    "production_level": "reviewed",
+    "product_format": "shapefile",
+    "model_source": "distributed rectangular shear dislocation",
+    "model_reference": "https://doi.org/10.1785/BSSA0750041135",
+    "bounding_box": [
+        23.734373000000001,
+        121.46037000000000,
+        24.274933000000001,
+        121.85843000000000
+    ],
+    "depth_min": 4665.3999000000003,
+    "depth_max": 41988.582000000002,
+    "elastic_properties": [
+        {
+            "layer_upper_depth": 0,
+            "layer_bottom_depth": null,
+            "layer_lame_mu": 30000000000,
+            "layer_lame_lambda": 30000000000
+        }
+    ],
+    "centroid_longitude": 121.70135000000001,
+    "centroid_latitude": 24.022791000000002,
+    "centroid_depth": 30809.148000000001,
+    "source_strike": 28.086720000000000,
+    "source_dip": 68.919998000000007,
+    "source_rake": 80.000000000000000,
+    "maximum_slip": 4.1599997999999996,
+    "source_magnitude": 7.3608060000000002,
+    "source_geodetic_moment": 1.2336952500000000e+20,
+    "moment_unit": "Nm",
+    "number_of_datasets": 4,
+    "inverted_datasets": [
+        "AL2_08FEB2024_04APR2024_D_linear.shp",
+        "AL2_27FEB2024_09APR2024_A_linear.shp",
+        "SE1_27MAR2024_08APR2024_A_linear.shp",
+        "SE1_29MAR2024_10APR2024_D_linear.shp"
+    ],
+    "number_of_segments": 1,
+    "number_of_features": 18,
+    "segments": [
+        {
+            "name": "Finite_source",
+            "number_of_features": 18,
+            "centroid_longitude": 121.70135000000001,
+            "centroid_latitude": 24.022791000000002,
+            "centroid_depth": 30809.148000000001,
+            "source_strike": 27.540001000000000,
+            "source_dip": 68.919998000000007,
+            "source_rake": 80.000000000000000,
+            "apriori_constrained_parameters": "rake",
+            "slip_constraints": "Distributed and positive slip with fixed rake",
+            "source_magnitude": 7.3608060000000002,
+            "source_geodetic_moment": 1.2336952500000000e+20,
+            "moment_unit": "Nm",
+            "maximum_slip": 4.1599997999999996,
+            "maximum_slip_depth": 32657.791000000001
+        }
+    ],
+    "attributes": [
+        {
+            "name": "Segment",
+            "value_unit": "",
+            "description": "Name of the source segment"
+        },
+        {
+            "name": "Length_m",
+            "value_unit": "m",
+            "description": "Length of the source element"
+        },
+        {
+            "name": "Width_m",
+            "value_unit": "m",
+            "description": "Width of the source element"
+        },
+        {
+            "name": "Top_d_m",
+            "value_unit": "m",
+            "description": "Vertical depth of the source element upper edge"
+        },
+        {
+            "name": "Dip_d",
+            "value_unit": "d",
+            "description": "Dipping angle of the source element (0 horizontal, 90 vertical)"
+        },
+        {
+            "name": "Strike_d",
+            "value_unit": "d",
+            "description": "Strike angle of the source element (angle from North, with the element dipping at right) "
+        },
+        {
+            "name": "CoordE_m",
+            "value_unit": "m",
+            "description": "Geographic Longitude coordinate of the source element center"
+        },
+        {
+            "name": "CoordN_m",
+            "value_unit": "m",
+            "description": "Geographic Latitude coordinate of the source element center"
+        },
+        {
+            "name": "Rake_d",
+            "value_unit": "d",
+            "description": "Rake angle of the slip (0 left-lateral, 90 inverse, -90 normal, +-180 right lateral)"
+        },
+        {
+            "name": "Slip_m",
+            "value_unit": "m",
+            "description": "Dislocation of the source element"
+        }
+    ]
+}

@@ -1,0 +1,95 @@
+{
+    "inversion_id": "MOD_INGV_202404022358_01",
+    "product_format": "Shapefile",
+    "file_modification_time": "2024-04-24T11:43:45Z",
+    "feature_type": "Point",
+    "number_of_features": 15100,
+    "bounding_box": [
+        23.240959,
+        121.15421,
+        24.319321,
+        121.76465
+    ],
+    "value_unit": "m",
+    "measurement_type": "InSAR",
+    "displacement_data_origin": "INGV GeoSAR Lab with sarscape (sarmap)",
+    "date_of_measurement_start": "2024-02-27T16:04:28Z",
+    "date_of_measurement_end": "2024-04-09T16:04:27Z",
+    "sensor": "AL2",
+    "orbit_direction": "ASCENDING",
+    "relative_orbit": -1,
+    "observed_rms": 0.13224649,
+    "residual_rms": 0.018791683,
+    "attributes": [
+        {
+            "name": "East",
+            "value_unit": "dd",
+            "description": "Geographic Longitude of sampled point"
+        },
+        {
+            "name": "North",
+            "value_unit": "dd",
+            "description": "Geographic Latitude of sampled point"
+        },
+        {
+            "name": "Elev",
+            "value_unit": "m",
+            "description": "Elevation of the point a.s.l."
+        },
+        {
+            "name": "Observed",
+            "value_unit": "m",
+            "description": "Observed displacement in LoS, positive toward the satellite"
+        },
+        {
+            "name": "Coef_east",
+            "value_unit": "",
+            "description": "Cosine director between the LoS and the longitude axis"
+        },
+        {
+            "name": "Coef_north",
+            "value_unit": "",
+            "description": "Cosine director between the LoS and the latitude axis"
+        },
+        {
+            "name": "Coef_up",
+            "value_unit": "",
+            "description": "Cosine director between the LoS and the vertical axis"
+        },
+        {
+            "name": "Modeled",
+            "value_unit": "m",
+            "description": "Predicted displacement according to the model"
+        },
+        {
+            "name": "Orbital",
+            "value_unit": "m",
+            "description": "Orbital contribution assessed for the specific dataset"
+        },
+        {
+            "name": "Residuals",
+            "value_unit": "m",
+            "description": "Difference between observed and modeled"
+        },
+        {
+            "name": "Sigma",
+            "value_unit": "m",
+            "description": "1-sigma uncertainty of observed data"
+        },
+        {
+            "name": "Modeled_ea",
+            "value_unit": "m",
+            "description": "East component of predicted displacement"
+        },
+        {
+            "name": "Modeled_no",
+            "value_unit": "m",
+            "description": "North component of predicted displacement"
+        },
+        {
+            "name": "Modeled_up",
+            "value_unit": "m",
+            "description": "Vertical component of predicted displacement"
+        }
+    ]
+}

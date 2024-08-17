@@ -1,0 +1,59 @@
+{
+    "inversion_id": "MOD_INGV_202404022358_01",
+    "inversion_provider": "INGV",
+    "product_link": "https://transit.rm.ingv.it/files/sar/V1/Catalog/202404022358_01/INVERSE/FP1/MOD_INGV_202404022358_01.zip",
+    "product_size": null,
+    "product_license": "https://creativecommons.org/licenses/by/4.0/",
+    "product_format": "shapefile",
+    "product_doi": null,
+    "catalog_doi": null,
+    "processing_time": "2024-04-24T11:43:45Z",
+    "production_level": "reviewed",
+    "inversion_reference": "https://doi.org/10.1016/j.jag.2023.103445",
+    "inversion_software": "modelit (INGV modeling software)",
+    "event_type": "earthquake",
+    "event_keywords": "insar, earthquakes, modeling, inversion, coseismic",
+    "event_name": "Taiwan [Sea]",
+    "event_time_start": "2024-04-02T23:58:10.128000Z",
+    "event_time_end": "2024-04-02T23:58:10.128000Z",
+    "observation_time_start": "2024-02-08T03:34:42Z",
+    "observation_time_end": "2024-04-10T21:52:31Z",
+    "event_lon": 121.84900,
+    "event_lat": 23.674200,
+    "event_depth": 14.844000,
+    "event_magnitude": 7.3000002,
+    "earthquake_occurring_time": "2024-04-02T23:58:10.128000Z",
+    "event_catalog": "INGV",
+    "event_catalog_id": "38091471",
+    "event_catalog_link": "https://terremoti.ingv.it/event/38091471",
+    "number_of_sources": 1,
+    "source_bounding_box": [
+        23.734373,
+        121.46037,
+        24.274933,
+        121.85843
+    ],
+    "source_depth_min": 4665.3999,
+    "source_depth_max": 41988.582,
+    "source_list": [
+        "Finite_source.shp"
+    ],
+    "source_preview_url": "https://transit.rm.ingv.it/files/sar/V1/Catalog/202404022358_01/INVERSE/FP1/GRAPHICS/SlipDistribution.jpg",
+    "source_geojson_url": "https://transit.rm.ingv.it/files/sar/V1/Catalog/202404022358_01/INVERSE/FP1/SOURCES/Finite_source.json",
+    "number_of_datasets": 4,
+    "dataset_bounding_box": [
+        23.240959,
+        121.15421,
+        24.319321,
+        121.76465
+    ],
+    "dataset_list": [
+        "AL2_08FEB2024_04APR2024_D_linear.shp",
+        "AL2_27FEB2024_09APR2024_A_linear.shp",
+        "SE1_27MAR2024_08APR2024_A_linear.shp",
+        "SE1_29MAR2024_10APR2024_D_linear.shp"
+    ],
+    "dataset_provider": "EPOSAR service run by CNRIREA, INGV GeoSAR Lab with sarscape (sarmap)",
+    "additional_remarks": null,
+    "metadata_version": "1.0"
+}
