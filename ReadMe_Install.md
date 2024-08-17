@@ -1,4 +1,3 @@
-
 ### 最终安装步骤
 
 #### 安装外部依赖
@@ -23,11 +22,11 @@ sudo ./l_mpi_oneapi_p_2021.11.0.49494_offline.sh
 
 3. 配置环境
 
-   ```bash
-   # 如果~/.bahsrc中没有oneapi相关环境加载参数
-   # Intel MPI ifort
-   source ~/intel/oneapi/setvars.sh intel64
-   ```
+```bash
+# 如果~/.bahsrc中没有oneapi相关环境加载参数
+# Intel MPI ifort
+source ~/intel/oneapi/setvars.sh intel64
+```
 
 #### 安装自有包及必要其他必要依赖
 
