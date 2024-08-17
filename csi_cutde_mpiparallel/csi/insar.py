@@ -689,11 +689,11 @@ class insar(SourceInv):
         self.Azimuth = azimuth
 
         # Convert angles
-        alpha = -1.0*azimuth*np.pi/180.
+        alpha = azimuth*np.pi/180.
         phi = incidence*np.pi/180.
 
-        # Compute LOS
-        Se = np.sin(alpha) * np.sin(phi)
+        # Compute LOS with alpha + 90
+        Se = -1.0 * np.sin(alpha) * np.sin(phi)
         Sn = np.cos(alpha) * np.sin(phi)
         Su = np.cos(phi)
 
@@ -755,11 +755,11 @@ class insar(SourceInv):
         self.Incidence = incidence
         self.Heading = heading
 
-        # Convert angles
+        # Convert heading angle with North as 0 degree and clockwise as positive to right-hand los direction
         alpha = (heading+90.)*np.pi/180.
         phi = incidence *np.pi/180.
 
-        # Compute LOS
+        # Compute LOS where negative is to convert right-hand los to left-hand los
         Se = -1.0 * np.sin(alpha) * np.sin(phi)
         Sn = -1.0 * np.cos(alpha) * np.sin(phi)
         Su = np.cos(phi)
