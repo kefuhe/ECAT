@@ -527,17 +527,17 @@ class TriangularTents(TriangularPatches):
 
             # Select the string for the color
             if add_slip is not None:
-                if add_slip is 'strikeslip':
+                if add_slip == 'strikeslip':
                     if stdh5 is not None:
                         slp = np.std(samples[:,tIndex])
                     else:
                         slp = self.slip[tIndex,0]*scale
-                elif add_slip is 'dipslip':
+                elif add_slip == 'dipslip':
                     if stdh5 is not None:
                         slp = np.std(samples[:,tIndex+nPatches])
                     else:
                         slp = self.slip[tIndex,1]*scale
-                elif add_slip is 'total':
+                elif add_slip == 'total':
                     if stdh5 is not None:
                         slp = np.std(samples[:,tIndex]**2 + samples[:,tIndex+nPatches]**2)
                     else:
@@ -584,13 +584,13 @@ class TriangularTents(TriangularPatches):
         if values is not None:
             # string type
             if type(values) is str:
-                if values is 'depth':
+                if values == 'depth':
                     values = np.array([self.getTentInfo(t)[2] for t in self.tent])
-                elif values is 'strike':
+                elif values == 'strike':
                     values = np.array([self.getTentInfo(t)[3] for t in self.tent])
-                elif values is 'dip':
+                elif values == 'dip':
                     values = np.array([self.getTentInfo(t)[4] for t in self.tent])
-                elif values is 'index':
+                elif values == 'index':
                     values = np.array([np.float(self.getTentindex(t)) for t in self.tent])
                 self.slip[:,0] = values
             # Numpy array 
@@ -626,7 +626,7 @@ class TriangularTents(TriangularPatches):
         '''
 
         # Assert 
-        assert distance is 'center', 'No other method implemented than center'
+        assert distance == 'center', 'No other method implemented than center'
 
         # Check
         if self.N_slip is None:
@@ -1447,7 +1447,7 @@ class TriangularTents(TriangularPatches):
         # Get Vertices
         vertices = self.Vertices
 
-        if method is 'scipy':
+        if method == 'scipy':
             
             # create the interpolator
             try:
@@ -1462,7 +1462,7 @@ class TriangularTents(TriangularPatches):
             # Interpolate
             Slip = self.slipInter(X, Y, Z)
         
-        elif method is 'manual':
+        elif method == 'manual':
 
             # Compute the slip value at each subpoint
             for iPatch in range(len(self.patch)):
