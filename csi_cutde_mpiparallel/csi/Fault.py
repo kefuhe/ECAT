@@ -1703,6 +1703,7 @@ class Fault(SourceInv):
         # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
         # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
+        Gds *= -1.0 # cutde uses a different sign convention for dip slip, let reverse is positive
 
         if verbose:
             print(' ')
@@ -1755,6 +1756,7 @@ class Fault(SourceInv):
         # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
         # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
+        Gds *= -1.0 # cutde uses a different sign convention for dip slip, let reverse is positive
 
         if verbose:
             print(' ')

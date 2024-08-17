@@ -59,7 +59,7 @@ class stressfield(SourceInv):
         self.lat = None
         self.x = None
         self.y = None
-        self.depth = None
+        self.depth = None # Depth is positive downward, always is positive
         self.Stress = None
         self.trace = None
 
@@ -136,6 +136,9 @@ class stressfield(SourceInv):
 
         Returns:
             * None
+        
+            * written by kfhe, at 10/24/2021
+            * modified by kfhe, at 08/16/2024
         '''
 
         # Verbose?
@@ -159,6 +162,9 @@ class stressfield(SourceInv):
 
         # Build the arrays for okada
         for ii in range(len(fault.patch)):
+            if verbose:
+                sys.stdout.write('\r Patch {} / {}'.format(ii, len(fault.patch)))
+                sys.stdout.flush()
             xc[ii], yc[ii], zc[ii], width[ii], length[ii], strike[ii], dip[ii] = fault.getpatchgeometry(fault.patch[ii], center=True)
             strikeslip[ii], dipslip[ii], tensileslip[ii] = fault.slip[ii,:]
 
@@ -180,11 +186,11 @@ class stressfield(SourceInv):
         if not stressonpatches:
             xs = self.x
             ys = self.y
-            zs = -1.0*self.depth            # Okada wants the z position, we have the depth, so x-1.
+            zs = -1.0*self.depth            # Okada wants the z of the observed stations in ENU coordinates, so we have to invert it.
         else:
             xs = xc
             ys = yc
-            zs = -1.0*zc                    # Okada wants the z position, we have the depth, so x-1.
+            zs = -1.0*zc                    # Okada wants the z of the observed stations in ENU coordinates, so we have to invert it.
 
         # If force dip
         if force_dip is not None:
@@ -192,20 +198,22 @@ class stressfield(SourceInv):
 
         # Get the Stress
         self.stresstype = 'total'
-        if len(fault.patch[0])==4:
-            self.Stress, flag, flag2 = okada.stress(xs, ys, zs, 
-                                                    xc, yc, zc, 
+        if fault.patchType == 'rectangle':
+            self.Stress, flag, flag2 = okada.stress(xs, ys, zs, # Observations in ENU coordinates system with z is positive upward
+                                                    xc, yc, zc, # Source in END coordinates system with zc is positive downward
                                                     width, length, 
                                                     strike, dip,
                                                     strikeslip, dipslip, tensileslip, 
                                                     mu, nu, 
                                                     full=True)
-        elif len(fault.patch[0])==3:
+        elif fault.patchType == 'triangle':
             from cutde.halfspace import strain_free, strain_to_stress
             obs_pts = np.vstack((xs, ys, zs)).T
+            obs_pts = np.ascontiguousarray(obs_pts)
             tris = fault.Vertices[fault.Faces].copy()
             tris[:, :, -1] *= -1.0
-            slips = np.vstack((strikeslip, dipslip, tensileslip)).T
+            slips = np.vstack((strikeslip, -dipslip, tensileslip)).T # Check whether the dipslip needs to be negative that the normal slip is positive
+            slips = np.ascontiguousarray(slips)
             strain = strain_free(obs_pts, tris, slips, nu)
             # (s_xx, s_yy, s_zz, s_xy, s_xz, s_yz)
             stress = strain_to_stress(strain, mu, nu)
@@ -399,37 +407,54 @@ class stressfield(SourceInv):
         # All done
         return
 
-    def Stress2Coulomb(self, rake, strike=None, dip=None, cof=0.6):
+    def Stress2Coulomb(self, rake, strike=None, dip=None, cof=0.6, return_unit='MPa'):
         '''
         Computes the Coulomb Failure Stress
-        Input args:
-            * rake     : The rake angle [Radian] of the coulomb failure stress
-            * cof      : The coefficient of friction miu [0, 1.0)
-        
-        Output   :
-            * coulomb  : The values of coulomb failure stress due to the fault
-        
-        Added by kfhe, at 10/24/2021
+
+        Parameters:
+            rake (float)        : The rake angle [Radian] of the coulomb failure stress
+            strike (float)      : The strike angle [Radian] of the fault (optional)
+            dip (float)         : The dip angle [Radian] of the fault (optional)
+            cof (float)         : The coefficient of friction miu [0, 1.0)
+            return_unit (str)   : The unit of the returned Coulomb stress ('MPa', 'kPa', or 'Pa')
+
+        Returns:
+            coulomb (np.array)  : The values of Coulomb failure stress due to the fault in the specified unit
+
+        Raises:
+            ValueError: If an invalid return_unit is provided.
+
+        Notes:
+            - Added by kfhe, at 10/24/2021
+            - Modified by kfhe, at 08/16/2024
         '''
         assert hasattr(self, 'Stress'), 'Must compute the Stress from fault at first'
-        # self.Fault2Stress(trifault, factor=0.001, stressonpatches=False)
-        if hasattr(self, 'TauStrike'):
-            pass
-        else:
+        
+        if not hasattr(self, 'TauStrike'):
             self.getTractions(strike, dip)
-        b = np.cos(rake)*self.n2 + np.sin(rake)*self.n3
+        
+        b = np.cos(rake) * self.n2 + np.sin(rake) * self.n3
         Np = self.Stress.shape[2]
-        coulomb = (np.array([np.dot(b[:,i], self.T[i]) for i in range(Np)]) + cof*self.Sigma)
-        # Unit: MPa
-        coulomb_mpa = coulomb/1e6
-
-        return coulomb_mpa
+        coulomb = np.array([np.dot(b[:, i], self.T[i]) for i in range(Np)]) + cof * self.Sigma
+        
+        # Transfer the input unit of the Coulomb stress to lower case
+        return_unit = return_unit.lower()
+        
+        # Transfer the Coulomb stress to the specified unit
+        if return_unit == 'mpa':
+            coulomb /= 1e6
+        elif return_unit == 'kpa':
+            coulomb /= 1e3
+        elif return_unit != 'pa':
+            raise ValueError("Invalid return_unit. Choose from 'MPa', 'kPa', or 'Pa'.")
+        
+        return coulomb
     
     def computeStressTraction(self, source=None, receiver=None, strike=None, dip=None, 
                               factor=0.001, mu=30e9, nu=0.25, slipdirection='sd', 
                               force_dip=None, stressonpatches=False):
         '''
-        Computes the stress tractions on a plane with a given strike and dip.
+        Computes the stress tractions on a plane with a given strike and dip. Only for TriangularFault using cutde.
 
         Args:
             * strike            : Strike (radians). 
@@ -437,8 +462,14 @@ class stressfield(SourceInv):
 
         If these are floats, all the tensors will be projected on that plane. Otherwise, they need to be the size ofthe number of tensors.
 
+        Positive Normal Traction means extension. Positive Shear Traction means left-lateral. Postive Dip Traction means Reverse-thrusting.
+
         Returns:
             * n1, n2, n3, T, Sigma, TauStrike, TauDip
+        
+        Notes: 
+            * written by kfhe, at 10/24/2021
+            * modified by kfhe, at 08/16/2024
         '''
 
         from cutde.halfspace import strain_matrix, strain_to_stress
@@ -452,8 +483,9 @@ class stressfield(SourceInv):
             obs_pts = np.vstack((xyzc[:, 0], xyzc[:, 1], -1.0*xyzc[:, 2])).T
             obs_pts = np.ascontiguousarray(obs_pts)
 
+        # fault vertices are in ENU coordinates system with z is positive upward is needed in cutde
         tris = source.Vertices[source.Faces].copy()
-        tris[:, :, -1] *= -1.0
+        tris[:, :, -1] *= -1.0 # so we need to invert the z coordinate to make it positive upward
 
         # Compute the stress tensor Matrix (N_obs, 6, N_tri, 3)
         strain_mat = strain_matrix(obs_pts, tris, nu)*factor
@@ -474,6 +506,10 @@ class stressfield(SourceInv):
         stress_tensor[:, 0, 1, :, :] = stress_tensor[:, 1, 0, :, :] = stress_mat[:, 3, :, :]  # s_xy
         stress_tensor[:, 0, 2, :, :] = stress_tensor[:, 2, 0, :, :] = stress_mat[:, 4, :, :]  # s_xz
         stress_tensor[:, 1, 2, :, :] = stress_tensor[:, 2, 1, :, :] = stress_mat[:, 5, :, :]  # s_yz
+
+        # normal slip is positive in cutde, but the normal slip is negative in Okada and csi
+        # so we need to change the sign of th dip slip to make the reverse slip positive
+        stress_tensor[:, :, :, :, 1] *= -1.0 # 1 for the dip slip
 
         # Create the normal vectors
         if strike is not None and dip is not None:
@@ -591,7 +627,7 @@ class stressfield(SourceInv):
 
         If these are floats, all the tensors will be projected on that plane. Otherwise, they need to be the size ofthe number of tensors.
 
-        Positive Normal Traction means extension. Positive Shear Traction means left-lateral.
+        Positive Normal Traction means extension. Positive Shear Traction means left-lateral. Postive Dip Traction means Reverse-thrusting.
 
         '''
 
@@ -777,7 +813,7 @@ class stressfield(SourceInv):
         prof = fig.add_subplot(122)
         
         # Get the data we want to plot
-        if data is 'trace':
+        if data == 'trace':
             dplot = self.trace
         else:
             print('Keyword Unknown, please implement it....')
@@ -865,7 +901,7 @@ class stressfield(SourceInv):
         '''
 
         # Get the data we want to plot
-        if data is 'trace':
+        if data == 'trace':
             dplot = self.trace
         else:
             print('Keyword Unknown, please implement...')
@@ -876,7 +912,7 @@ class stressfield(SourceInv):
         ax = fig.add_subplot(111)
 
         # Set the axes
-        if ref is 'utm':
+        if ref == 'utm':
             ax.set_xlabel('Easting (km)')
             ax.set_ylabel('Northing (km)')
         else:
@@ -908,7 +944,7 @@ class stressfield(SourceInv):
         scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=cmap)
 
         # plot the wanted data
-        if ref is 'utm':
+        if ref == 'utm':
             ax.scatter(x, y, s=20, c=dplot.flatten(), cmap=cmap, vmin=-1.0*MM, vmax=MM, linewidths=0.)
         else:
             ax.scatter(lon, lat, s=20, c=dplot.flatten(), cmap=cmap, vmin=-1.0*MM, vmax=MM, linewidths=0.)
@@ -918,7 +954,7 @@ class stressfield(SourceInv):
             if faults.__class__ is not list:
                 faults = [faults]
             for fault in faults:
-                if ref is 'utm':
+                if ref == 'utm':
                     ax.plot(fault.xf, fault.yf, '-b', label=fault.name)
                 else:
                     ax.plot(fault.lon, fault.lat, '-b', label=fault.name)
@@ -928,7 +964,7 @@ class stressfield(SourceInv):
             if gps.__class__ is not list:
                 gps = [gps]
             for g in gps:
-                if ref is 'utm':
+                if ref == 'utm':
                         ax.quiver(g.x, g.y, g.vel_enu[:,0], g.vel_enu[:,1], label=g.name)
                 else:
                         ax.quiver(g.lon, g.lat, g.vel_enu[:,0], g.vel_enu[:,1], label=g.name)
@@ -1023,21 +1059,21 @@ class stressfield(SourceInv):
         '''
 
         # Get the data we want to plot
-        if data is 'veast':
+        if data == 'veast':
             dplot = self.vel_east.value
             units = 'mm/yr'
-        elif data is 'vnorth':
+        elif data == 'vnorth':
             dplot = self.vel_north.value
             units = 'mm/yr'
-        elif data is 'dilatation':
+        elif data == 'dilatation':
             if not hasattr(self, 'dilatation'):
                 self.computeDilatationRate()
             dplot = self.dilatation.reshape((self.length, self.width))
             units = ' '
-        elif data is 'projection':
+        elif data == 'projection':
             dplot = self.velproj[comp]['Projected Velocity']
             units = ' '
-        elif data is 'strainrateprojection':
+        elif data == 'strainrateprojection':
             dplot = self.Dproj[comp]['Projected Strain Rate'].reshape((self.length, self.width))
             units = ' '
         else:
