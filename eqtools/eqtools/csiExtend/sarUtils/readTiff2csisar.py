@@ -1,5 +1,6 @@
 # insar导入需要在gdal前面可能存在cartopy，shapely库冲突放在其后
 from osgeo import gdal
+from osgeo import osr
 import numpy as np
 from pyproj import Proj
 import matplotlib.pyplot as plt
@@ -7,16 +8,53 @@ import os
 from glob import glob
 
 from csi.insar import insar
+from .readBase2csisar import ReadBase2csisar, Hyp3TiffConfig, GammaTiffConfig
 
 
-class TiffsarReader(insar):
-    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.'):
+class TiffsarReader(ReadBase2csisar):
+    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.', config=None):
         super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0)
         self.directory_name = directory_name
+        self.config = config if config else Hyp3TiffConfig()
 
     def extract_raw_grd(self, directory_name=None, prefix=None, phsname=None,
-                        azifile=None, incfile=None, zero2nan=True, wavelength=0.056):
-                # extract sar raw images 
+                        azifile=None, incfile=None, zero2nan=True, wavelength=None,
+                        azi_reference=None, azi_unit=None, azi_direction=None,
+                        inc_reference=None, inc_unit=None, mode=None, is_lonlat=None):
+        """
+        Extract SAR raw images and process azimuth and incidence angles.
+
+        Parameters:
+        directory_name (str, optional): The directory name where the raw images are stored. Defaults to None.
+        prefix (str, optional): The prefix for the output files. Defaults to None.
+        phsname (str, optional): The name of the phase file. Defaults to None.
+        rscname (str, optional): The name of the resource file. Defaults to None.
+        azifile (str, optional): The name of the azimuth file. Defaults to None.
+        incfile (str, optional): The name of the incidence file. Defaults to None.
+        zero2nan (bool, optional): Whether to convert zero values to NaN. Defaults to config value.
+        wavelength (float, optional): The wavelength of the SAR signal. Defaults to config value.
+        azi_reference (str, optional): The reference direction for azimuth. Defaults to config value.
+        azi_unit (str, optional): The unit of the azimuth angle. Defaults to config value.
+        azi_direction (str, optional): The rotation direction for azimuth. Defaults to config value.
+        inc_reference (str, optional): The reference direction for incidence. Defaults to config value.
+        inc_unit (str, optional): The unit of the incidence angle. Defaults to config value.
+        mode (str, optional): The mode of processing. Defaults to config value.
+        is_lonlat (bool, optional): Whether the data is in longitude and latitude. Defaults to config value.
+
+        Returns:
+        None
+        """
+        # Use config values if parameters are not provided
+        wavelength = wavelength if wavelength is not None else self.config.wavelength
+        azi_reference = azi_reference if azi_reference is not None else self.config.azi_reference
+        azi_unit = azi_unit if azi_unit is not None else self.config.azi_unit
+        azi_direction = azi_direction if azi_direction is not None else self.config.azi_direction
+        inc_reference = inc_reference if inc_reference is not None else self.config.inc_reference
+        inc_unit = inc_unit if inc_unit is not None else self.config.inc_unit
+        mode = mode if mode is not None else self.config.mode
+        is_lonlat = is_lonlat if is_lonlat is not None else self.config.is_lonlat
+
+        # extract sar raw images 
         if directory_name is not None:
             self.directory_name = directory_name
         else:
@@ -30,7 +68,21 @@ class TiffsarReader(insar):
             azi_file = os.path.join(directory_name, azifile)
             inc_file = os.path.join(directory_name, incfile)
         
-        vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat = self._read_sar_data(phase_file, azi_file, inc_file)
+        vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat, im_geotrans, im_proj = self._read_sar_data(phase_file, azi_file, inc_file)
+
+        self.raw_azi_input = azi
+        self.raw_inc_input = inc
+        # Process azimuth and incidence angles
+        azi = self._process_azimuth(azi, azi_reference, azi_unit, azi_direction, mode=mode)
+        inc = self._process_incidence(inc, inc_reference, inc_unit)
+
+        # Transfer coordinate system from UTM to latitude and longitude
+        if not is_lonlat:
+            im_height, im_width = mesh_lon.shape
+            mesh_lat, mesh_lon = utm_to_latlon(mesh_lon.flatten(), mesh_lat.flatten(), im_proj)
+            mesh_lat = mesh_lat.reshape(im_height, im_width)
+            mesh_lon = mesh_lon.reshape(im_height, im_width)
+        
         if zero2nan:
             vel[vel == 0] = np.nan
 
@@ -38,11 +90,13 @@ class TiffsarReader(insar):
         self.wavelength = wavelength
         self.raw_vel = vel
         self.raw_azimuth = azi
-        self.raw_indience = inc
+        self.raw_incidence = inc
         self.raw_lon = x_lon
         self.raw_lat = x_lat
-        self.mesh_lon = mesh_lon
-        self.mesh_lat = mesh_lat
+        self.raw_mesh_lon = mesh_lon
+        self.raw_mesh_lat = mesh_lat
+        self.im_geotrans = im_geotrans
+        self.im_proj = im_proj
 
     def _construct_file_paths(self, directory_name, prefix):
         phase_file = glob(os.path.join(directory_name, f'{prefix}*.tif'))[0]
@@ -51,45 +105,49 @@ class TiffsarReader(insar):
         return phase_file, azi_file, inc_file
 
     def _read_sar_data(self, phase_file, azi_file, inc_file):
-        vel, _, _, im_width, im_height = read_tiff(phase_file)
-        # 方位角信息
+        vel, im_geotrans, im_proj, im_width, im_height = read_tiff(phase_file)
+        # Azimuth information
         azi, _, _, _, _ = read_tiff(azi_file)
-        # 入射角信息
+        # Incidence information
         inc, _, _, _, _ = read_tiff(inc_file)
-        azi += 90  # Adjust azimuth for specific use case
-        # 读取元数据
+
+        # Read Metadata information
         x_lon, _, x_lat, _, mesh_lon, mesh_lat = read_tiff_info(phase_file, im_width, im_height)
-        return vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat
+
+        return vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat, im_geotrans, im_proj
 
     def read_from_tiff(self, downsample=1, apply_wavelength_conversion=False, 
                        zero2nan=True, wavelength=None):
         vel = self.raw_vel
         azi = self.raw_azimuth
-        inc = self.raw_indience
-        mesh_lon = self.mesh_lon
-        mesh_lat = self.mesh_lat
+        inc = self.raw_incidence
+        mesh_lon = self.raw_mesh_lon
+        mesh_lat = self.raw_mesh_lat
         # Read SAR data from binary files using inherited method
         self.read_from_binary(vel, lon=mesh_lon.flatten(), lat=mesh_lat.flatten(), 
                              azimuth=azi.flatten(), incidence=inc.flatten(), downsample=downsample)
         
         # Apply wavelength conversion to velocity if enabled
         if apply_wavelength_conversion:
-            self.wavelegnth_conversion(wavelength)
+            self.vel = self.unw_phase_to_los(self.vel, wavelength)
+            self.raw_vel = self.unw_phase_to_los(self.raw_vel, wavelength)
 
         # Convert zeros to NaN in velocity data if enabled
         if zero2nan:
             self.vel[self.vel == 0] = np.nan
-    
-    def wavelegnth_conversion(self, wavelength=None):
-        if wavelength is None:
-            wavelength = self.wavelength
-        else:
-            self.wavelength = wavelength
-        self.vel *= wavelength / (-4 * np.pi)
-    
-    def to_xarray_dataarray(self):
-        import xarray as xr
-        return xr.DataArray(self.vel, coords={'lat': self.lat, 'lon': self.lon}, dims=['lat', 'lon'])
+
+
+class Hyp3TiffReader(TiffsarReader):
+    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.', config=None):
+        super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0)
+        self.directory_name = directory_name
+        self.config = config if config else Hyp3TiffConfig()
+
+class GammaTiffReader(TiffsarReader):
+    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.', config=None):
+        super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0)
+        self.directory_name = directory_name
+        self.config = config if config else GammaTiffConfig()
 
 
 def read_tiff(unwfile):
@@ -163,37 +221,52 @@ def write_tiff(filename, im_proj, im_geotrans, im_data=None):
         (im_height, im_width) = im_data.shape
 
 
+def utm_to_latlon(easting, northing, proj_info):
+    """
+    Convert UTM coordinates to latitude and longitude.
+
+    Parameters:
+    easting (numpy.ndarray): The easting values (X coordinates).
+    northing (numpy.ndarray): The northing values (Y coordinates).
+    proj_info (str): The projection information string.
+
+    Returns:
+    tuple: Two numpy arrays containing the latitudes and longitudes.
+    """
+    # Ensure easting and northing are numpy arrays
+    easting = np.asarray(easting)
+    northing = np.asarray(northing)
+
+    # Check if easting and northing arrays have the same size
+    if easting.shape != northing.shape:
+        raise ValueError("Easting and northing arrays must have the same size")
+
+    # Create a spatial reference object for the UTM projection
+    utm_srs = osr.SpatialReference()
+    utm_srs.ImportFromWkt(proj_info)
+
+    # Create a spatial reference object for the WGS84 geographic coordinate system
+    wgs84_srs = osr.SpatialReference()
+    wgs84_srs.ImportFromEPSG(4326)  # EPSG code for WGS84
+
+    # Create a coordinate transformation object
+    transform = osr.CoordinateTransformation(utm_srs, wgs84_srs)
+
+    # Initialize arrays for latitudes and longitudes
+    latitudes = np.zeros_like(easting)
+    longitudes = np.zeros_like(northing)
+
+    # Perform the transformation for each point
+    for i in range(len(easting)):
+        # TODO: Check Use of TransformPoint() method
+        lat, lon, _ = transform.TransformPoint(easting[i], northing[i])
+        latitudes[i] = lat
+        longitudes[i] = lon
+
+    return latitudes, longitudes
+
+
 if __name__ == '__main__':
-    unwfile = 'sarfile.tif'
-    im_data, im_geotrans, im_proj, im_width, im_height = read_tiff(unwfile)
-    x_lon, y_step, x_lat, y_step, mesh_lon, mesh_lat = read_tiff_info(unwfile)
-    
-    # %%
-    # 数据存储信息
-    im_data, im_geotrans, im_proj, im_width, im_height = read_tiff(phase_file)
-    # im_data = im_data*0.056/(-4*np.pi) # 存储为相位则需要这一项，如果存储为直接形变则不用
-    los = im_data
-    # 读取元数据
-    x_lon, y_step, x_lat, y_step, mesh_lon, mesh_lat = read_tiff_info(phase_file, im_width, im_height)
-    x_lowerright = np.nanmin(x_lon)
-    x_upperleft = np.nanmax(x_lon)
-    y_lowerright = np.nanmin(x_lat)
-    y_upperleft = np.nanmax(x_lat)
-
-    coordrange = [x_lowerright, x_upperleft, y_lowerright, y_upperleft]
-    # %%
-    plt.imshow(los, interpolation='none', # cmap=cmap, norm=norm,
-             origin='upper', extent=[np.nanmin(x_lon), np.nanmax(x_lon), np.nanmin(x_lat), np.nanmax(x_lat)], aspect='auto', vmax=1, vmin=-1)
-
-    # %% [markdown]
-    # 读取方位角和入射角文件信息
-
-    # %%
-    # 方位角信息
-    azi, _, _, _, _ = read_tiff(azi_file)
-    # 入射角信息
-    inc, _, _, _, _ = read_tiff(inc_file)
-
-    from csi import insar
-    sar = insar('{}_coseismic'.format(outName), lon0=98.25, lat0=34.5)
-    sar.read_from_binary(sardata, lon, lat, los=los, downsample=1)
+    pass
+    # plt.imshow(los, interpolation='none', # cmap=cmap, norm=norm,
+    #          origin='upper', extent=[np.nanmin(x_lon), np.nanmax(x_lon), np.nanmin(x_lat), np.nanmax(x_lat)], aspect='auto', vmax=1, vmin=-1)
