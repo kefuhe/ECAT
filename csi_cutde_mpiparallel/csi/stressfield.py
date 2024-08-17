@@ -228,6 +228,7 @@ class stressfield(SourceInv):
             Stress[2,0,:] = stress[:,4]  # Sxz
             Stress[1,2,:] = stress[:,5]  # Syz
             Stress[2,1,:] = stress[:,5]  # Syz
+            # self.Strain = strain
             self.Stress = Stress
             flag = np.array([True]*obs_pts.shape[0], dtype=np.bool_)
             flag2 = True
@@ -407,7 +408,7 @@ class stressfield(SourceInv):
         # All done
         return
 
-    def Stress2Coulomb(self, rake, strike=None, dip=None, cof=0.6, return_unit='MPa'):
+    def computeCoulombStress(self, rake, strike=None, dip=None, cof=0.6, return_unit='MPa'):
         '''
         Computes the Coulomb Failure Stress
 
@@ -449,10 +450,50 @@ class stressfield(SourceInv):
             raise ValueError("Invalid return_unit. Choose from 'MPa', 'kPa', or 'Pa'.")
         
         return coulomb
+
+    def computeCoulombStressFromTriangularSource(self, rake, cof=0.6, return_unit='MPa'):
+        '''
+        Computes the Coulomb Failure Stress from a triangular dislocation source.
+
+        Parameters:
+            rake (float)             : The rake angle [Radian] of the coulomb failure stress.
+            cof (float)              : The coefficient of friction miu [0, 1.0).
+            return_unit (str)        : The unit of the returned Coulomb stress ('MPa', 'kPa', or 'Pa').
+
+        Returns:
+            coulomb (np.array)       : The values of Coulomb failure stress due to the fault in the specified unit.
+
+        Raises:
+            ValueError: If an invalid return_unit is provided.
+
+        Notes:
+            - Added by kfhe, at 10/24/2021
+            - Modified by kfhe, at 08/16/2024
+        '''
+        # Compute the stress tractions using the triangular dislocation source
+        assert hasattr(self, 'TauStrike'), 'Must compute the stress tractions from fault at first, using computeTriangularStressTraction()'
+
+        # Compute the Coulomb Failure Stress
+        b = np.cos(rake) * self.n2 + np.sin(rake) * self.n3
+        Np = self.Sigma.shape[0]
+        coulomb = np.array([np.dot(b[:, i], self.T[i]) for i in range(Np)]) + cof * self.Sigma
+
+        # Transfer the input unit of the Coulomb stress to lower case
+        return_unit = return_unit.lower()
+
+        # Transfer the Coulomb stress to the specified unit
+        if return_unit == 'mpa':
+            coulomb /= 1e6
+        elif return_unit == 'kpa':
+            coulomb /= 1e3
+        elif return_unit != 'pa':
+            raise ValueError("Invalid return_unit. Choose from 'MPa', 'kPa', or 'Pa'.")
+
+        return coulomb
     
-    def computeStressTraction(self, source=None, receiver=None, strike=None, dip=None, 
-                              factor=0.001, mu=30e9, nu=0.25, slipdirection='sd', 
-                              force_dip=None, stressonpatches=False):
+    def computeTriangularStressTraction(self, source=None, receiver=None, strike=None, dip=None, 
+                                        factor=0.001, mu=30e9, nu=0.25, slipdirection='sd', 
+                                        force_dip=None, stressonpatches=False):
         '''
         Computes the stress tractions on a plane with a given strike and dip. Only for TriangularFault using cutde.
 
@@ -471,52 +512,62 @@ class stressfield(SourceInv):
             * written by kfhe, at 10/24/2021
             * modified by kfhe, at 08/16/2024
         '''
-
         from cutde.halfspace import strain_matrix, strain_to_stress
+
+        assert source.patchType == 'triangle', 'Only for TriangularFault using cutde!'
+
         if receiver is None:
-            obs_pts = np.vstack((self.x, self.y, -1.0*self.depth)).T
-            # transfer obs_pts from F-order to C-order
-            obs_pts = np.ascontiguousarray(obs_pts)
-            assert strike is not None and dip is not None, 'Must provide strike and dip when receiver is None!'
+            if stressonpatches:
+                assert source is not None, 'Must provide source when receiver is None and stressonpatches is True!'
+                xyzc = np.mean(source.Vertices[source.Faces, :], axis=1)
+                obs_pts = np.vstack((xyzc[:, 0], xyzc[:, 1], -1.0*xyzc[:, 2])).T
+            else:
+                obs_pts = np.vstack((self.x, self.y, -1.0*self.depth)).T
+                assert strike is not None and dip is not None, 'Must provide strike and dip when receiver is None and stressonpatches is False!'
         else:
             xyzc = np.mean(receiver.Vertices[receiver.Faces, :], axis=1)
             obs_pts = np.vstack((xyzc[:, 0], xyzc[:, 1], -1.0*xyzc[:, 2])).T
-            obs_pts = np.ascontiguousarray(obs_pts)
+        # transfer obs_pts from F-order to C-order
+        obs_pts = np.ascontiguousarray(obs_pts)
 
         # fault vertices are in ENU coordinates system with z is positive upward is needed in cutde
         tris = source.Vertices[source.Faces].copy()
         tris[:, :, -1] *= -1.0 # so we need to invert the z coordinate to make it positive upward
 
         # Compute the stress tensor Matrix (N_obs, 6, N_tri, 3)
-        strain_mat = strain_matrix(obs_pts, tris, nu)*factor
+        strain_mat = strain_matrix(obs_pts, tris, nu)
+        N_obs = obs_pts.shape[0]
+        N_tri = tris.shape[0]
+
         strain_mat_reshaped = strain_mat.transpose(0, 2, 3, 1)
         # Compute the stress tensor (N_obs, 6, N_tri, 3)
         stress_mat_reshaped = strain_to_stress(strain_mat_reshaped.reshape((-1, 6)), mu, nu)
-        # 最后，我们需要将 stress_mat_reshaped 恢复到原始的四维形状
-        # 首先恢复为 (N_obs, N_tri, 3, 6)，然后再次使用 transpose 恢复为 (N_obs, 6, N_tri, 3)
+        # Reshape the stress tensor to (N_obs, N_tri, 3, 6) and transpose the last two axes to get the stress tensor
+        # 6 for the six components of the stress tensor: s_xx, s_yy, s_zz, s_xy, s_xz, s_yz
         # 6: s_xx, s_yy, s_zz, s_xy, s_xz, s_yz
         stress_mat = stress_mat_reshaped.reshape(strain_mat_reshaped.shape).transpose(0, 3, 1, 2)
-        # 初始化一个新的数组用于存储转换后的应力张量, (N_obs, 3, 3, N_tri, 3)
+        # Initialize the stress tensor (N_obs, 3, 3, N_tri, 3)
         stress_tensor = np.zeros((stress_mat.shape[0], 3, 3, stress_mat.shape[2], stress_mat.shape[3]))
-        # 填充对角线元素
+        # Fill the diagonal elements
         stress_tensor[:, 0, 0, :, :] = stress_mat[:, 0, :, :]  # s_xx
         stress_tensor[:, 1, 1, :, :] = stress_mat[:, 1, :, :]  # s_yy
         stress_tensor[:, 2, 2, :, :] = stress_mat[:, 2, :, :]  # s_zz
-        # 填充非对角线元素
+        # Fill the off-diagonal elements
         stress_tensor[:, 0, 1, :, :] = stress_tensor[:, 1, 0, :, :] = stress_mat[:, 3, :, :]  # s_xy
         stress_tensor[:, 0, 2, :, :] = stress_tensor[:, 2, 0, :, :] = stress_mat[:, 4, :, :]  # s_xz
         stress_tensor[:, 1, 2, :, :] = stress_tensor[:, 2, 1, :, :] = stress_mat[:, 5, :, :]  # s_yz
 
-        # normal slip is positive in cutde, but the normal slip is negative in Okada and csi
-        # so we need to change the sign of th dip slip to make the reverse slip positive
-        stress_tensor[:, :, :, :, 1] *= -1.0 # 1 for the dip slip
-
         # Create the normal vectors
         if strike is not None and dip is not None:
-            strike_rad = np.radians(strike)
-            dip_rad = np.radians(dip)
+            strike_rad = np.ones((N_obs,))*strike
+            dip_rad = np.ones((N_obs,))*dip
         else:
             strike_rad, dip_rad = receiver.getStrikes(), receiver.getDips()
+
+        # If force dip
+        if force_dip is not None:
+            dip_rad[:] = np.ones((N_obs,))*force_dip
+
         # n2: strike direction, postive is sinistral, n3: dip direction, postive is reverse;
         # shape: (3, N_obs)
         n1, n2, n3 = self.strikedip2normal(strike_rad, dip_rad)
@@ -527,11 +578,34 @@ class stressfield(SourceInv):
         # Compute the Shear Stress and Normal Stress, shape: (N_obs, N_tri, 3)
         Sigma = np.einsum('ijlm,ij->ilm', T, n1.T)
 
-        # 修正计算沿n2方向的剪应力 TauStrike 的代码
+        # Modify the calculation of the shear stress TauStrike along the strike direction
         TauStrike = np.einsum('ijlm, ij->ilm', T, n2.T)
 
-        # 修正计算沿n3方向的剪应力 TauDip 的代码
+        # Modify the calculation of the shear stress TauDip along the dip direction
         TauDip = np.einsum('ijlm, ij->ilm', T, n3.T)
+
+        # Slip direction
+        strikeslip = np.zeros((N_tri,))
+        dipslip = np.zeros((N_tri,))
+        tensileslip = np.zeros((N_tri,))
+        if 's' in slipdirection: strikeslip = source.slip[:,0]*factor
+        # normal slip is positive in cutde, but the normal slip is negative in Okada and csi
+        # so we need to change the sign of th dip slip to make the reverse slip positive
+        if 'd' in slipdirection: dipslip = -source.slip[:,1]*factor
+        if 't' in slipdirection: tensileslip = source.slip[:,2]*factor
+        slip = np.vstack((strikeslip, dipslip, tensileslip)).T
+        T = np.einsum('iklm, lm-> ik', T, slip)
+        Sigma = np.einsum('ijk, jk-> i', Sigma, slip)
+        TauStrike = np.einsum('ijk, jk-> i', TauStrike, slip)
+        TauDip = np.einsum('ijk, jk-> i', TauDip, slip)
+
+        self.n1 = n1
+        self.n2 = n2
+        self.n3 = n3
+        self.T = T
+        self.Sigma = Sigma
+        self.TauStrike = TauStrike
+        self.TauDip = TauDip
         
         return n1, n2, n3, T, Sigma, TauStrike, TauDip
 
