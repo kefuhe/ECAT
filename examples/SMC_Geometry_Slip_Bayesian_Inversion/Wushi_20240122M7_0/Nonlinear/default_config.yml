@@ -1,0 +1,43 @@
+bounds:
+  defaults:
+    lon: [Uniform, 78.56, 2.0]
+    lat: [Uniform, 41.19, 2.0]
+    depth: [Uniform, 5, 20.0]
+    dip: [Uniform, 45, 44.9]
+    width: [Uniform, 0.1, 29.9]
+    length: [Uniform, 5.1, 44.9]
+    strike: [Uniform, 180, 360]
+    magnitude: [Uniform, 0.0, 10.0]
+    rake: [Uniform, -30.0, 60.0]
+  fault_1:
+    rake: [Uniform, -30, 60.0]
+    strike: [Uniform, 0.0, 270.0]
+fixed_params:
+  # fault_0:
+    # lon: 102.205
+    # depth: 3.1578
+  fault_1:
+    lon: -117.541
+    lat: 35.6431
+    depth: 0.0
+    strike: 227.0
+initial:
+  defaults:
+    lon: 178.56
+    lat: 41.19
+    depth: 5
+    dip: 45
+    width: 10
+    length: 25
+    strike: 235
+    magnitude: 7
+    rake: 42
+sigmas:
+  update: true
+  ndatas: 2
+  bounds:
+    defaults: [Uniform, -3.0, 6.0]
+    sigma_0: [Uniform, -3.0, 6.0]
+  values: [0.0, 0.0] # null
+  log_scaled: true
+dataFaults: [null,null]
