@@ -1,0 +1,19 @@
+*** Calculate SLC/MLI image corners in geodetic latitude and longitude (deg.) ***
+*** Copyright 2018, Gamma Remote Sensing, v1.9 8-Oct-2018 clw/awi/cm ***
+latitude (deg.):      38.54046737  longitude (deg.):     102.79227558
+latitude (deg.):      38.93953356  longitude (deg.):      99.89286997
+latitude (deg.):      36.58724716  longitude (deg.):     102.31403073
+latitude (deg.):      36.98791174  longitude (deg.):      99.49311302
+
+center latitude (deg.):    37.78919727  center longitude (deg.):   101.00702556
+min. latitude (deg.):      36.58724716  max. latitude (deg.):       38.93953356
+min. longitude (deg.):     99.49311302  max. longitude (deg.):     102.79227558
+delta latitude (deg.):      2.35228639  delta longitude (deg.):      3.29916256
+
+upper left corner latitude,  longitude (deg.): 38.98  99.45
+lower right corner latitude, longitude (deg.): 36.55  102.83
+
+user time (s):         0.000
+system time (s):       0.000
+elapsed time (s):      0.000
+
