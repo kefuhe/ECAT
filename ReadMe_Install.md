@@ -1,6 +1,6 @@
-### 最终安装步骤
+### Installation Steps
 
-#### 安装外部依赖
+#### Install external dependencies
 
 ```bash
 conda create --name myecat --channel conda-forge --file conda-requirements.txt
@@ -10,16 +10,16 @@ conda install scikit-learn-intelex
 pip install -r pip-requirements.txt
 ```
 
-#### 安装自有包及必要其他必要依赖
+#### Install our own packages and other necessary dependencies
 
-1. eqtools和csi安装
+1. Install ***eqtools*** and ***csi***
 
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
 
-2. [okada4py](https://github.com/jolivetr/okada4py)安装
+2. Install [okada4py](https://github.com/jolivetr/okada4py)
 
 ```bash
 cd path_to_okada4py
@@ -28,22 +28,20 @@ python setup.py build
 python setup.py install --user --prefix=
 ```
 
-#### 安装oneapi并加载环境
+#### Install oneapi and config environment
 
-1. 下载[oneapi安装包](https://www.intel.com/content/www/us/en/developer/tools/oneapi/mpi-library-download.html?operatingsystem=linux&mpi-linux=offline)
-2. 安装及配置环境
+1. Download [oneapi安装包](https://www.intel.com/content/www/us/en/developer/tools/oneapi/mpi-library-download.html?operatingsystem=linux&mpi-linux=offline)
+2. Install ***oneapi***
 
 ```bash
 chmod +x l_mpi_oneapi_p_2021.11.0.49494_offline.sh
 sudo ./l_mpi_oneapi_p_2021.11.0.49494_offline.sh
 ```
 
-3. 配置环境
+3. Config environment
 
 ```bash
 # 如果~/.bahsrc中没有oneapi相关环境加载参数
 # Intel MPI ifort
 source ~/intel/oneapi/setvars.sh intel64
 ```
-
-
