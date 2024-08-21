@@ -1,6 +1,7 @@
 nchains: 100 # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50 # Length of each chain for BayesianMultiFaultsInversion
 nfaults: 1 # Number of faults
+lon_lat_0: [86.83, 33.16] # UTM coordinates of the origin
 # Set slip sampling mode to 'mag_rake' or 'ss_ds'
 slip_sampling_mode: 'mag_rake'
 clipping_options: # Clipping options
@@ -23,7 +24,6 @@ bounds:
     strike: [Uniform, 0.0, 270.0]
 # Set geodata
 geodata:
-  data: null
   verticals: true # Set the verticals for each geodata, so boolean or list of booleans
   polys:
     enabled: true
@@ -37,3 +37,10 @@ geodata:
       sigma_0: [Uniform, -3.0, 6.0]
     values: [0.0, 0.0] # null
     log_scaled: true
+data_sources: # Data sources for GPS and InSAR data
+  gps:
+    directory: '../gps' # Directory containing GPS data files
+    file_pattern: 'cogps*' # File pattern to match GPS data files
+  insar:
+    directory: '../insar/downsample' # Directory containing InSAR data files
+    file_pattern: '*.rsp' # File pattern to match InSAR data filess

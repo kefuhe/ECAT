@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+# from myexplorefault_smc import MyExploreFault as explorefault
 from eqtools.csiExtend.exploremultifaults_smc import explorefault
 from csi.gps import gps
 from csi.insar import insar
@@ -17,24 +18,9 @@ if __name__ == '__main__':
     rank = comm.Get_rank()
     size = comm.Get_size()
     # -----------------------------------Read Data---------------------------------------------#
-    # Read the data
-    lon0 = 122
-    lat0 = 24
-
-    # 
     verbose = False
-
-    # Read GNSS Data
-    gpsfile = os.path.join('..', r'GPS', 'us7000m9g4_forweb_NGL.txt')
-    mygps = gps('gps', lon0=lon0, lat0=lat0, verbose=verbose)
-    mygps.read_from_enu(gpsfile, header=2, factor=1)
-    mygps.vel_enu[:, 2] = np.nan
-    mygps.buildCd(direction='en')
-    err_mean = mygps.err_enu[:, :2].mean()
-
-    geodata = [mygps]
     #------------------------------Set ExploreFault Object-------------------------------------#
-    expfault = explorefault('invrc', lat0=lat0, lon0=lon0, config_file='default_config.yml', geodata=geodata, verbose=verbose)
+    expfault = explorefault('invrc', config_file='default_config.yml', geodata=None, verbose=verbose)
     nchains = expfault.nchains
     chain_length = expfault.chain_length
     expfault.setPriors(bounds=None, initialSample=None, datas=None) # datas for Sar reference
@@ -45,4 +31,3 @@ if __name__ == '__main__':
     # ---------------------------------Plot Results---------------------------------------------#
     expfault.extract_and_plot_bayesian_results(rank=rank, filename='samples_mag_rake_multifaults.h5',
                                                plot_faults=True, plot_sigmas=True, plot_data=True)
-

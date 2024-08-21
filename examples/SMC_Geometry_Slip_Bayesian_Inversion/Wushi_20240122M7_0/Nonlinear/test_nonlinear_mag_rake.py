@@ -60,5 +60,5 @@ if __name__ == '__main__':
     #               save_every=2, save_at_interval=False, covariance_epsilon = 1e-9, amh_a=1.0/9.0, amh_b=8.0/9.0)
 
     # ---------------------------------Plot Results---------------------------------------------#
-    expfault.extract_and_plot_bayesian_results(rank=0, filename='samples_mag_rake_multifaults.h5',
+    expfault.extract_and_plot_bayesian_results(rank=rank, filename='samples_mag_rake_multifaults.h5',
                                                plot_faults=True, plot_sigmas=True, plot_data=True)

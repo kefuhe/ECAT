@@ -27,10 +27,13 @@ from scipy.stats import norm, uniform
 # Personals
 from csi import SourceInv
 from csi import planarfault
+from csi import gps, insar
 from .SMC_MPI import SMC_samples_parallel_mpi
 from numba import njit
 from collections import namedtuple
 import yaml
+import glob
+import os
 
 @njit
 def logpdf_multivariate_normal(x, mean, inv_cov, logdet):
@@ -67,6 +70,8 @@ class explorefaultConfig:
         self.geodata = {}
         self.fixed_params = {}
         self.nfaults = 1
+        self.lon0 = None
+        self.lat0 = None
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
         self.dataFaults = None
         self.slip_sampling_mode = 'mag_rake'
@@ -86,6 +91,10 @@ class explorefaultConfig:
         self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
         self.clipping_options = config.get('clipping_options', {})
         self.geodata = config.get('geodata', {})
+        lon_lat_0 = config.get('lon_lat_0', None)
+        if lon_lat_0:
+            self.lon0, self.lat0 = lon_lat_0
+        self.data_sources = config.get('data_sources', {})
 
         self._update_geodata(geodata)
         self._validate_verticals()
@@ -96,7 +105,10 @@ class explorefaultConfig:
     def _update_geodata(self, geodata):
         if 'data' not in self.geodata or self.geodata['data'] is None:
             self.geodata['data'] = geodata if geodata else []
-        assert self.geodata['data'], 'No geodata provided, need to provide at least one data set'
+        if not self.geodata['data']:
+            assert self.lon0 is not None and self.lat0 is not None, "lon0 and lat0 must be set to read geodata files with no geodata provided"
+            self.geodata['data'] = []
+            self.load_all_data()
 
     def _validate_verticals(self):
         verticals = self.geodata.get('verticals', None)
@@ -194,6 +206,38 @@ class explorefaultConfig:
         else:
             raise ValueError("dataFaults must be a list or None")
 
+    def load_gps_data(self):
+        gps_config = self.data_sources['gps']
+        gps_files = glob.glob(os.path.join(gps_config['directory'], gps_config['file_pattern']))
+        gps_files.sort() # Keep the order of the files
+        for gps_file in gps_files:
+            assert self.lon0 is not None and self.lat0 is not None, "lon0 and lat0 must be set to read GPS data"
+            gps_name = os.path.basename(gps_file)
+            gps_data = gps(name=gps_name, utmzone=None, ellps='WGS84', lon0=self.lon0, lat0=self.lat0, verbose=True)
+            gps_data.read_from_enu(gps_file, factor=1., minerr=1., header=1, checkNaNs=True)
+            self.geodata['data'].append(gps_data)
+
+    def load_insar_data(self):
+        insar_config = self.data_sources['insar']
+        insar_files = glob.glob(os.path.join(insar_config['directory'], insar_config['file_pattern']))
+        insar_files.sort()  # Keep the order of the files
+        for insar_file in insar_files:
+            assert self.lon0 is not None and self.lat0 is not None, "lon0 and lat0 must be set to read InSAR data"
+            insar_file_prefix = os.path.splitext(insar_file)[0]
+            insar_name = os.path.basename(insar_file_prefix)
+            insar_data = insar(insar_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
+            insar_data.read_from_varres(insar_file_prefix, cov=True)
+            self.geodata['data'].append(insar_data)
+
+    def load_all_data(self):
+        if not self.geodata['data']:
+            self.load_gps_data()
+            self.load_insar_data()
+            if not self.geodata['data']:
+                raise ValueError("Failed to load any geodata files.")
+        else:
+            print("Geodata already provided in configuration.")
+
     @property
     def sigmas(self):
         return self.geodata['sigmas']
@@ -255,6 +299,14 @@ class explorefault(SourceInv):
         self.verbose = verbose
 
         # Base class init
+        if lon0 is None or lat0 is None:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+                lon_lat_0 = config.get('lon_lat_0', None)
+                if lon_lat_0:
+                    lon0, lat0 = lon_lat_0
+        assert lon0 is not None and lat0 is not None, "lon0 and lat0 must be set from either the config file or the arguments"
+
         super(explorefault, self).__init__(name, utmzone=utmzone, 
                                             ellps=ellps, 
                                             lon0=lon0, lat0=lat0)
