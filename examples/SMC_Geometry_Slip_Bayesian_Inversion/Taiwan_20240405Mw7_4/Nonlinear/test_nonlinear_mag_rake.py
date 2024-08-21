@@ -43,20 +43,6 @@ if __name__ == '__main__':
     #               save_every=2, save_at_interval=False, covariance_epsilon = 1e-9, amh_a=1.0/9.0, amh_b=8.0/9.0)
 
     # ---------------------------------Plot Results---------------------------------------------#
-    if rank == 0:
-        expfault.load_samples_from_h5(filename='samples_mag_rake_multifaults.h5')
-        expfault.print_mcmc_parameter_positions()
-        # Plot Faults
-        for ifault, faultname in enumerate(expfault.faultnames):
-            expfault.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                    scatter=False, filename=f'kde_matrix_F{ifault}.png')
-        # expfault.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
-        #                          scatter=False, filename='kde_matrix_sigmas.png')
-        faults = expfault.returnModels()
-
-        # Plot GPS
-        for data in [mygps]:
-            # Build the synthetics
-            data.buildsynth(faults, vertical=False)
-        mygps.plot(drawCoastlines=True, data=['data', 'synth'], scale=0.2, legendscale=0.05, color=['k', 'r'])
+    expfault.extract_and_plot_bayesian_results(rank=0, filename='samples_mag_rake_multifaults.h5',
+                                               plot_faults=True, plot_sigmas=True, plot_data=True)
 

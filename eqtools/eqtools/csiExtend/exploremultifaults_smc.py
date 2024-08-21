@@ -84,32 +84,57 @@ class explorefaultConfig:
         self.nfaults = config.get('nfaults', 1)
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
         self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
+        self.clipping_options = config.get('clipping_options', {})
         self.geodata = config.get('geodata', {})
-        
-        # Only update geodata['data'] if it's not already set or is None
-        if 'data' not in self.geodata or self.geodata['data'] is None:
-            self.geodata['data'] = geodata if geodata else {}
-        
-        # Check geodata['verticals']
-            verticals = self.geodata.get('verticals', None)
-            if verticals is None:
-                verticals = True
-            data_length = len(self.geodata['data'])
-            # print('verticals:', verticals)
-            if isinstance(verticals, list):
-                if len(verticals) != data_length:
-                    raise ValueError(f"Length of 'verticals' list ({len(verticals)}) does not match length of 'data' ({data_length})")
-            elif isinstance(verticals, bool):
-                self.geodata['verticals'] = [verticals] * data_length
-            else:
-                raise ValueError("'verticals' must be either a list or a boolean")
 
-        # To call the setters
+        self._update_geodata(geodata)
+        self._validate_verticals()
+        self._set_geodata_attributes()
+        self.update_polys_estimate_and_boundaries()
+        self._select_data_sets()
+
+    def _update_geodata(self, geodata):
+        if 'data' not in self.geodata or self.geodata['data'] is None:
+            self.geodata['data'] = geodata if geodata else []
+        assert self.geodata['data'], 'No geodata provided, need to provide at least one data set'
+
+    def _validate_verticals(self):
+        verticals = self.geodata.get('verticals', None)
+        if verticals is None:
+            verticals = True
+        data_length = len(self.geodata['data'])
+        if isinstance(verticals, list):
+            if len(verticals) != data_length:
+                raise ValueError(f"Length of 'verticals' list ({len(verticals)}) does not match length of 'data' ({data_length})")
+        elif isinstance(verticals, bool):
+            self.geodata['verticals'] = [verticals] * data_length
+        else:
+            raise ValueError("'verticals' must be either a list or a boolean")
+
+    def _set_geodata_attributes(self):
+        '''
+        To trigger the property setters for sigmas and dataFaults
+        '''
         self.sigmas = self.geodata.get('sigmas', {})
         self.dataFaults = self.geodata.get('faults', None)
 
-        # Update polys estimate and boundaries
-        self.update_polys_estimate_and_boundaries()
+    def _select_data_sets(self):
+        data_verticals_dict = {d.name: v for d, v in zip(self.geodata['data'], self.geodata['verticals'])}
+        if self.clipping_options.get('enabled', False):
+            if self.clipping_options.get('method', 'lon_lat_range') == 'lon_lat_range':
+                lon_lat_range = self.clipping_options.get('lon_lat_range', None)
+                if lon_lat_range is None:
+                    raise ValueError("Clipping method 'lon_lat_range' requires 'lon_lat_range' to be set")
+                for data in self.geodata['data']:
+                    if data.dtype == 'insar':
+                        data.select_pixels(*lon_lat_range)
+                    elif data.dtype == 'gps':
+                        data.select_stations(*lon_lat_range)
+                        if not data_verticals_dict[data.name]:
+                            data.vel_enu[:, -1] = np.nan
+                            data.buildCd(direction='en')
+                        else:
+                            data.buildCd(direction='enu')
 
     def update_polys_estimate_and_boundaries(self, datas=None):
         if self.geodata.get('polys', {}).get('enabled', False):
@@ -1015,6 +1040,85 @@ class explorefault(SourceInv):
         az.plot_pair(idata, marginals=True)
     
         plt.show()
+
+    def extract_and_plot_bayesian_results(self, rank=0, filename='samples_mag_rake_multifaults.h5', 
+                                        plot_faults=True, plot_sigmas=True, plot_data=True,
+                                        antisymmetric=True, res_use_data_norm=True, cmap='jet'):
+        """
+        Extract and plot the Bayesian results.
+
+        args:
+        rank: process rank (default is 0)
+        filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
+        plot_faults: whether to plot faults (default is True)
+        plot_sigmas: whether to plot sigmas (default is True)
+        plot_data: whether to plot data (default is True)
+        antisymmetric: whether to set the colormap to be antisymmetric (default is True)
+        res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
+        cmap: colormap to use (default is 'jet')
+        """
+        if rank == 0:
+            self.load_samples_from_h5(filename=filename)
+            self.print_mcmc_parameter_positions()
+            
+            # Plot Faults
+            if plot_faults:
+                for ifault, faultname in enumerate(self.faultnames):
+                    self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
+                                        scatter=False, filename=f'kde_matrix_F{ifault}.png')
+            
+            # Plot Sigmas
+            if plot_sigmas:
+                self.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
+                                    scatter=False, filename='kde_matrix_sigmas.png')
+            
+            # save the model results
+            faults = self.returnModels(model='mean')
+            self.save_model_to_file('model_results_mean.json', model='mean')
+
+            if plot_data:
+                cogps_vertical_list = []
+                cosar_list = []
+                for data, vertical in zip(self.datas, self.verticals):
+                    if data.dtype == 'gps':
+                        cogps_vertical_list.append([data, vertical])
+                    elif data.dtype == 'insar':
+                        cosar_list.append(data)
+                
+                # Plot GPS data
+                for fault in faults:
+                    fault.color = 'b' # Set the color to blue
+                for cogps, vertical in cogps_vertical_list:
+                    cogps.buildsynth(faults, vertical=vertical)
+                    box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
+                    cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=0.2, legendscale=0.05, color=['k', 'r'],
+                            seacolor='lightblue', box=box, titleyoffset=1.02)
+                    cogps.fig.savefig(f'gps_{cogps.name}', ftype='png', dpi=600, 
+                                    bbox_inches='tight', mapaxis=None, saveFig=['map'])
+                
+                # Plot SAR data
+                for fault in faults:
+                    fault.color = 'k'
+                for cosar in cosar_list:
+                    cosar.buildsynth(faults, vertical=True)
+                    datamin, datamax = cosar.vel.min(), cosar.vel.max()
+                    absmax = max(abs(datamin), abs(datamax))
+                    data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
+                    for data in ['data', 'synth', 'res']:
+                        if data == 'res':
+                            cosar.res = cosar.vel - cosar.synth
+                            absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
+                            res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
+                            res_norm = data_norm if res_use_data_norm else res_norm
+                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=res_norm, cmap=cmap,
+                                cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
+                        else:
+                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=data_norm, cmap=cmap,
+                                    cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
+                        cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
+                                        bbox_inches='tight', mapaxis=None)
+            
+            print(self.model_dict)
 
     def save2h5(self, filename, datasets=None):
         '''

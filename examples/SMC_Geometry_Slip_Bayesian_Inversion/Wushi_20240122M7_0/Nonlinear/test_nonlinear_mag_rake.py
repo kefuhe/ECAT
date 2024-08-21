@@ -43,13 +43,9 @@ if __name__ == '__main__':
 
     coDscsar = insar('S1_T034D_ifg', lon0=lon0, lat0=lat0, verbose=verbose)
     coDscsar.read_from_varres(varres_t034d, cov=True)
-    #coDscsar.err *= 1
-    #coDscsar.buildDiagCd()
 
     coAscsar = insar('S1_T056A_ifg', lon0=lon0, lat0=lat0, verbose=verbose)
     coAscsar.read_from_varres(varres_t056a, cov=True)
-    #coAscsar.err *= 1
-    #coAscsar.buildDiagCd()
 
     insardata = [coAscsar, coDscsar]
     geodata = insardata
@@ -64,47 +60,5 @@ if __name__ == '__main__':
     #               save_every=2, save_at_interval=False, covariance_epsilon = 1e-9, amh_a=1.0/9.0, amh_b=8.0/9.0)
 
     # ---------------------------------Plot Results---------------------------------------------#
-    if rank == 0:
-        expfault.load_samples_from_h5(filename='samples_mag_rake_multifaults.h5')
-        expfault.print_mcmc_parameter_positions()
-        for ifault, faultname in enumerate(expfault.faultnames):
-            expfault.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                    scatter=False, filename=f'kde_matrix_F{ifault}.png')
-        expfault.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
-                                  scatter=False, filename='kde_matrix_sigmas.png')
-        faults = expfault.returnModels(model='mean')
-        # save the model results
-        expfault.save_model_to_file('model_results_mean.json', model='mean')
-        
-        # Plot GPS data
-        for fault in faults:
-            fault.color = 'b'
-        #for cogps in [cogps7_1]:
-            #cogps.buildsynth(faults, vertical=True)
-            #cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=0.2, legendscale=0.05, color=['k', 'r'],
-                    #seacolor='lightblue', box=[-119.5, -116, 34.3, 37], titleyoffset=1.02)
-            #cogps.fig.savefig(f'gps_{cogps.name}', ftype='png', dpi=600, 
-                              #bbox_inches='tight', mapaxis=None, saveFig=['map'])
-        #for cogps in [cogps6_4]:
-            #cogps.buildsynth(faults, vertical=True)
-            #cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=0.2, legendscale=0.05, color=['k', 'r'],
-                    #seacolor='lightblue', titleyoffset=1.02)
-            # cogps.fig.figCarte.savefig(f'gps_{cogps.name}_map.png', dpi=600, bbox_inches='tight')
-            #cogps.fig.savefig(f'gps_{cogps.name}', ftype='png', dpi=600, 
-                             #bbox_inches='tight', mapaxis=None, saveFig=['map'])
-        # Plot SAR data
-        for fault in faults:
-            fault.color = 'k'
-        for cosar in [coAscsar, coDscsar]:
-            cosar.buildsynth(faults, vertical=True)
-            if 'reference' in expfault.param_keys:
-                cosar.synth += expfault.model[cosar.refnumber]
-            norm = [cosar.vel.min(), cosar.vel.max()]
-            for data in ['data', 'synth', 'res']:
-                cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7),
-                           cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02, norm=norm) # faults=faults
-                cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
-                                  bbox_inches='tight', mapaxis=None)
-                # cosar.fig.figCarte.savefig(f'sar_{cosar.name}_{data}_map.png', dpi=600, bbox_inches='tight')
-        print(expfault.model_dict)
-
+    expfault.extract_and_plot_bayesian_results(rank=0, filename='samples_mag_rake_multifaults.h5',
+                                               plot_faults=True, plot_sigmas=True, plot_data=True)

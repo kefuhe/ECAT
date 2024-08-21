@@ -3,6 +3,10 @@ chain_length: 50 # Length of each chain for BayesianMultiFaultsInversion
 nfaults: 1 # Number of faults
 # Set slip sampling mode to 'mag_rake' or 'ss_ds'
 slip_sampling_mode: 'mag_rake'
+clipping_options: # Clipping options
+  enabled: true # Whether to perform clipping
+  method: 'lon_lat_range' # Clipping method
+  lon_lat_range: [86.0, 87.7, 32.5, 33.75] # [lon_min, lon_max, lat_min, lat_max]
 bounds:
   defaults:
     lon: [Uniform, 86.83, 2.0]
