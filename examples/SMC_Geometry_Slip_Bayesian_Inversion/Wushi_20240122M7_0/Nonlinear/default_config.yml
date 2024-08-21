@@ -1,3 +1,8 @@
+nchains: 100 # Number of chains for BayesianMultiFaultsInversion
+chain_length: 50 # Length of each chain for BayesianMultiFaultsInversion
+nfaults: 1 # Number of faults
+# Set slip sampling mode to 'mag_rake' or 'ss_ds'
+slip_sampling_mode: 'mag_rake'
 bounds:
   defaults:
     lon: [Uniform, 78.56, 2.0]
@@ -6,38 +11,25 @@ bounds:
     dip: [Uniform, 45, 44.9]
     width: [Uniform, 0.1, 29.9]
     length: [Uniform, 5.1, 44.9]
-    strike: [Uniform, 180, 360]
+    strike: [Uniform, 180, 180]
     magnitude: [Uniform, 0.0, 10.0]
-    rake: [Uniform, -30.0, 60.0]
+    rake: [Uniform, -90.0, 180.0]
   fault_1:
     rake: [Uniform, -30, 60.0]
     strike: [Uniform, 0.0, 270.0]
-fixed_params:
-  # fault_0:
-    # lon: 102.205
-    # depth: 3.1578
-  fault_1:
-    lon: -117.541
-    lat: 35.6431
-    depth: 0.0
-    strike: 227.0
-initial:
-  defaults:
-    lon: 178.56
-    lat: 41.19
-    depth: 5
-    dip: 45
-    width: 10
-    length: 25
-    strike: 235
-    magnitude: 7
-    rake: 42
-sigmas:
-  update: true
-  ndatas: 2
-  bounds:
-    defaults: [Uniform, -3.0, 6.0]
-    sigma_0: [Uniform, -3.0, 6.0]
-  values: [0.0, 0.0] # null
-  log_scaled: true
-dataFaults: [null,null]
+# Set geodata
+geodata:
+  data: null
+  verticals: [true, true]
+  polys:
+    enabled: true
+    boundaries:
+      defaults: [Uniform, -200.0, 400.0]
+  faults: null # set the fault names for each geodata
+  sigmas: # Set the std of the geodata
+    update: true
+    bounds:
+      defaults: [Uniform, -3.0, 6.0]
+      sigma_0: [Uniform, -3.0, 6.0]
+    values: [0.0, 0.0] # null
+    log_scaled: true
