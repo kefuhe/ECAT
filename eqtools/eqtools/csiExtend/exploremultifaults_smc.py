@@ -15,6 +15,7 @@ and change pymc to SMP-MPI for parallel sampling, which is more efficient for la
 
 # Externals
 from mpi4py import MPI
+import json
 try:
     import h5py
 except:
@@ -55,6 +56,149 @@ NT1 = namedtuple('NT1', 'N Neff target LB UB')
 # tuple object for the samples
 NT2 = namedtuple('NT2', 'allsamples postval beta stage covsmpl resmpl')
 
+
+class explorefaultConfig:
+    def __init__(self, config_file=None, geodata=None):
+        self.nchains = 100 # Number of chains for BayesianMultiFaultsInversion
+        self.chain_length = 50 # Length of each chain for BayesianMultiFaultsInversion
+        self.geodata = {} # Dictionary of geodetic data
+        self.bounds = {}
+        self.initial = {}
+        self.geodata = {}
+        self.fixed_params = {}
+        self.nfaults = 1
+        self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
+        self.dataFaults = None
+        self.slip_sampling_mode = 'mag_rake'
+
+        if config_file:
+            self.load_config(config_file, geodata=geodata)
+
+    def load_config(self, config_file, geodata=None):
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        self.bounds = config.get('bounds', {})
+        self.initial = config.get('initial', {})
+        self.fixed_params = config.get('fixed_params', {})
+        self.nfaults = config.get('nfaults', 1)
+        self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
+        self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
+        self.geodata = config.get('geodata', {})
+        
+        # Only update geodata['data'] if it's not already set or is None
+        if 'data' not in self.geodata or self.geodata['data'] is None:
+            self.geodata['data'] = geodata if geodata else {}
+        
+        # Check geodata['verticals']
+            verticals = self.geodata.get('verticals', None)
+            if verticals is None:
+                verticals = True
+            data_length = len(self.geodata['data'])
+            # print('verticals:', verticals)
+            if isinstance(verticals, list):
+                if len(verticals) != data_length:
+                    raise ValueError(f"Length of 'verticals' list ({len(verticals)}) does not match length of 'data' ({data_length})")
+            elif isinstance(verticals, bool):
+                self.geodata['verticals'] = [verticals] * data_length
+            else:
+                raise ValueError("'verticals' must be either a list or a boolean")
+
+        # To call the setters
+        self.sigmas = self.geodata.get('sigmas', {})
+        self.dataFaults = self.geodata.get('faults', None)
+
+        # Update polys estimate and boundaries
+        self.update_polys_estimate_and_boundaries()
+
+    def update_polys_estimate_and_boundaries(self, datas=None):
+        if self.geodata.get('polys', {}).get('enabled', False):
+            if datas is not None:
+                if type(datas) is not list:
+                    datas = [datas]
+                self.geodata['polys']['estimate'] = [d.name for d in datas]
+            else:
+                datas = self.geodata.get('polys', {}).get('estimate', [])
+
+            insar_data = [d for d in self.geodata.get('data', []) if d.dtype == 'insar']
+            default_bounds = self.geodata['polys']['boundaries'].get('defaults', None)
+            
+            if not datas:
+                datas = [d.name for d in insar_data]
+                self.geodata['polys']['estimate'] = datas
+            
+            for data in insar_data:
+                if data.name in datas:
+                    boundary_key = data.name
+                    if boundary_key not in self.geodata['polys']['boundaries']:
+                        if default_bounds:
+                            self.geodata['polys']['boundaries'][boundary_key] = default_bounds
+                        else:
+                            raise ValueError(f"Bounds for {boundary_key} must be set as there is no default")
+                else:
+                    raise ValueError(f"Data name {data.name} is not in the estimate list")
+
+    @property
+    def dataFaults(self):
+        return self.geodata['faults']
+    
+    @dataFaults.setter
+    def dataFaults(self, value):
+        if value is None:
+            self.geodata['faults'] = [self.faultnames] * len(self.geodata.get('data', []))
+        elif isinstance(value, list):
+            # Flatten the list of lists to a single list if sublist is a list
+            flattened_dataFaults = [item for sublist in value for item in (sublist if isinstance(sublist, list) else [sublist])]
+            
+            # Check flattened_dataFaults is subset of self.faultnames
+            if not set(flattened_dataFaults).issubset(set(self.faultnames + [None])):
+                raise ValueError("The dataFaults must be a subset of the faultnames in self.multifaults")
+            
+            # Ensure the list is at most two levels deep
+            for sublist in value:
+                if isinstance(sublist, list):
+                    if any(isinstance(item, list) for item in sublist):
+                        raise ValueError("The dataFaults list must be at most two levels deep")
+                    if all(item is None for item in sublist) or all(item is not None for item in sublist):
+                        continue
+                    else:
+                        raise ValueError("The second level lists must either contain only None or no None")
+            
+            # Replace None with faultnames in geodata['faults']
+            self.geodata['faults'] = [[item if item is not None else self.faultnames for item in sublist] if isinstance(sublist, list) else (sublist if sublist is not None else self.faultnames) for sublist in value]
+        else:
+            raise ValueError("dataFaults must be a list or None")
+
+    @property
+    def sigmas(self):
+        return self.geodata['sigmas']
+    
+    @sigmas.setter
+    def sigmas(self, value):
+        self.geodata['sigmas'] = value
+        self.geodata['sigmas']['ndatas'] = self.ndatas
+        self.geodata['sigmas']['names'] = ['sigma_{}'.format(i) for i in range(self.ndatas)]
+
+        sigma_names = self.geodata['sigmas']['names']
+        bounds = self.geodata['sigmas']['bounds']
+    
+        # Check if 'defaults' is in bounds
+        if 'defaults' not in bounds:
+            # Check if all sigmas are in bounds
+            if not set(sigma_names).issubset(bounds.keys()):
+                raise ValueError("The bounds dictionary must have keys for all sigmas or a 'defaults' key")
+        else:
+            # Fill in the missing sigmas with the defaults
+            defaults = bounds['defaults']
+            for name in sigma_names:
+                if name not in bounds:
+                    bounds[name] = defaults
+    
+    @property
+    def ndatas(self):
+        return len(self.geodata.get('data', []))
+
+
 # Class explorefault
 class explorefault(SourceInv):
     '''
@@ -74,9 +218,9 @@ class explorefault(SourceInv):
         * None
     '''
 
-    def __init__(self, name, mode='ss_ds', num_faults=1, utmzone=None, 
+    def __init__(self, name, mode=None, num_faults=None, utmzone=None, 
                     ellps='WGS84', lon0=None, lat0=None, 
-                    verbose=True, fixed_params=None, config_file=None):
+                    verbose=True, fixed_params=None, config_file='default_config.yml', geodata=None):
 
         # Initialize the fault
         if verbose:
@@ -90,43 +234,37 @@ class explorefault(SourceInv):
                                             ellps=ellps, 
                                             lon0=lon0, lat0=lat0)
 
+        # Load and set the configuration
+        self.load_and_set_config(config_file, fixed_params, geodata=geodata)
+
+        # Initialize the fault objects
+        self.nfaults = num_faults if num_faults else self.nfaults
+        self.faults = {f'fault_{i}': planarfault('mcmc fault {}'.format(i), utmzone=self.utmzone, 
+                                                lon0=self.lon0, 
+                                                lat0=self.lat0,
+                                                ellps=self.ellps, 
+                                                verbose=False) for i in range(self.nfaults)}
+        self.faultnames = [f'fault_{i}' for i in range(len(self.faults))]
+
         # Keys to look for
-        self.mode = mode
-        if mode == 'ss_ds':
+        self.mode = mode if mode else self.slip_sampling_mode
+        if self.mode == 'ss_ds':
             self.keys = ['lon', 'lat', 'depth', 'dip', 
                             'width', 'length', 'strike', 
                             'strikeslip', 'dipslip']
-        elif mode == 'mag_rake':
+        elif self.mode == 'mag_rake':
             self.keys = ['lon', 'lat', 'depth', 'dip', 
                             'width', 'length', 'strike', 
                             'magnitude', 'rake']
         else:
             raise ValueError("Invalid mode. Expected 'ss_ds' or 'mag_rake'.")
 
-        # Initialize the fault objects
-        self.faults = {f'fault_{i}': planarfault('mcmc fault {}'.format(i), utmzone=self.utmzone, 
-                                                lon0=self.lon0, 
-                                                lat0=self.lat0,
-                                                ellps=self.ellps, 
-                                                verbose=False) for i in range(num_faults)}
-        self.faultnames = [f'fault_{i}' for i in range(len(self.faults))]
-
-        # Load the configuration file
-        if config_file is not None:
-            self.load_config(config_file)
-        
-        # Set fixed parameters
-        if hasattr(self, 'fixed_params') and self.fixed_params:
-            self.fixed_params.update(fixed_params if fixed_params is not None else {})
-        else:
-            self.fixed_params = fixed_params if fixed_params is not None else {}
-
         # Initialize the index for each fault's parameters
         self.param_index = {}
         self.param_keys = {}
         self.total_params = 0
         index = 0
-        for i in range(num_faults):
+        for i in range(self.nfaults):
             fault_name = f'fault_{i}'
             self.param_index[fault_name] = []
             self.param_keys[fault_name] = []
@@ -139,6 +277,26 @@ class explorefault(SourceInv):
 
         # All done
         return
+    
+    def load_and_set_config(self, config_file, fixed_params, geodata=None):
+        # Load the configuration file
+        self.config = explorefaultConfig(config_file, geodata=geodata)
+        
+        # Set fixed parameters
+        self.fixed_params = self.config.fixed_params if self.config.fixed_params else {}
+        if fixed_params:
+            self.fixed_params.update(fixed_params)
+        
+        # Set other configuration parameters
+        self.nchains = self.config.nchains
+        self.chain_length = self.config.chain_length
+        self.bounds = self.config.bounds
+        self.geodata = self.config.geodata
+        self.sigmas = self.config.sigmas
+        self.dataFaults = self.config.dataFaults
+        self.ndatas = self.config.ndatas
+        self.nfaults = self.config.nfaults
+        self.slip_sampling_mode = self.config.slip_sampling_mode
     
     def build_fault_params(self, samples, fault_name):
         '''
@@ -161,17 +319,6 @@ class explorefault(SourceInv):
         fixed_params = {k: v for k, v in fixed_params.items() if k in self.keys}
     
         return {**random_params, **fixed_params}
-
-    def load_config(self, config_file):
-        with open(config_file, 'r') as f:
-            config = yaml.safe_load(f)
-
-        self.bounds = config.get('bounds', {})
-        self.initial = config.get('initial', {})
-        self.sigmas = config.get('sigmas', {})
-        self.fixed_params = config.get('fixed_params', {})
-        self.ndatas = self.sigmas.get('ndatas', 0)
-        self.dataFaults = config.get('dataFaults', None)
     
     def setPriors(self, bounds=None, datas=None, initialSample=None, sigmas=None):
         '''
@@ -261,28 +408,31 @@ class explorefault(SourceInv):
                 pm_func = function(*args)
 
                 # Initial Sample
-                initialSample.setdefault(key, pm_func.rvs())  # draw a sample for the initial sample
+                ikey = f"{fault_name}_{key}"
+                initialSample.setdefault(ikey, pm_func.rvs())  # draw a sample for the initial sample
 
                 # Save it
                 if bound[0]!='Degenerate':
                     self.Priors.append(pm_func)
-                    initSampleVec.append(initialSample[key])
+                    initSampleVec.append(initialSample[ikey])
 
         # Create a prior for the data set reference term
         # Works only for InSAR data yet
-        if datas is not None:
-
-            # Check 
-            if type(datas) is not list:
-                datas = [datas]
+        self.config.update_polys_estimate_and_boundaries(datas)
+        if self.config.geodata.get('polys', {}).get('enabled', False):
+            datas = self.config.geodata['polys']['estimate']
+            self.dataReferences = datas
+            datas = [d for d in self.config.geodata.get('data', []) if d.name in datas]
+            self.param_keys['reference'] = []
+            self.param_index['reference'] = []
                 
             # Iterate over the data
             for data in datas:
                 
                 # Get it
-                assert data.name in bounds, \
+                assert data.name in self.config.geodata['polys']['boundaries'], \
                     'No bounds provided for prior for data {}'.format(data.name)
-                bound = bounds[data.name]
+                bound = self.config.geodata['polys']['boundaries'][data.name]
                 key = '{}'.format(data.name)
 
                 # Get the function type
@@ -308,6 +458,8 @@ class explorefault(SourceInv):
                     self.Priors.append(pm_func)
                     initSampleVec.append(initialSample[key])
                     self.keys.append(key)
+                    self.param_keys['reference'].append(key)
+                    self.param_index['reference'].append(len(self.Priors)-1)
                 data.refnumber = len(self.Priors)-1
         
         # Set Sigmas priors
@@ -321,9 +473,14 @@ class explorefault(SourceInv):
                 self.sigmas = {}
         
         if self.sigmas['update']:
+            self.param_keys['sigmas'] = []
+            self.param_index['sigmas'] = []
             ndatas = self.sigmas['ndatas']
             self.sigmas_index = [len(self.Priors)+i for i in range(ndatas)]
             self.sigmas_keys = ['sigma_{}'.format(i) for i in range(ndatas)]
+            for i in range(ndatas):
+                self.param_keys['sigmas'].append(i)
+                self.param_index['sigmas'].append(len(self.Priors)+i)
             bound = self.sigmas['bounds']
             for i in range(ndatas):
                 ibound = bound['defaults'] if self.sigmas_keys[i] not in bound else bound[self.sigmas_keys[i]]
@@ -338,7 +495,10 @@ class explorefault(SourceInv):
                 args = ibound[1:]
                 pm_func = function(*args)
                 self.Priors.append(pm_func)
-                initSampleVec.append(pm_func.rvs())
+                ikey = f'sigma_{i}'
+                initialSample.setdefault(ikey, pm_func.rvs())  # draw a sample for the initial sample
+                initSampleVec.append(initialSample[ikey])
+                # initSampleVec.append(pm_func.rvs())
         else:
             self.sigmas_values = self.sigmas['values']
 
@@ -349,7 +509,7 @@ class explorefault(SourceInv):
         # All done
         return
 
-    def setLikelihood(self, datas, vertical=True):
+    def setLikelihood(self, datas=None, verticals=None):
         '''
         Builds the data likelihood object from the list of geodetic data in datas.
     
@@ -357,7 +517,7 @@ class explorefault(SourceInv):
             * datas         : csi geodetic data object (gps or insar) or list of csi geodetic objects. TODO: Add other types of data (opticorr)
     
         Kwargs:
-            * vertical      : Use the verticals for GPS?
+            * verticals      : A list of booleans indicating whether to use the vertical component of the data.
     
         Returns:
             * None
@@ -365,16 +525,14 @@ class explorefault(SourceInv):
     
         # Build the prediction method
         # Initialize the object
-        if type(datas) is not list:
-            self.datas = [datas]
-        else:
-            self.datas = datas
+        self.datas = datas if datas else self.geodata['data']
+        self.verticals = verticals if verticals else self.geodata.get('verticals', [True]*len(self.datas))
     
         # List of likelihoods
         self.Likelihoods = []
     
         # Create a likelihood function for each of the data set
-        for data in self.datas:
+        for data, vertical in zip(self.datas, self.verticals):
     
             # Get the data type
             if data.dtype=='gps':
@@ -504,7 +662,7 @@ class explorefault(SourceInv):
                 return log_prior + log_likelihood
         return target
     
-    def walk(self, nchains=200, chain_length=50, comm=None, filename='samples.h5',
+    def walk(self, nchains=None, chain_length=None, comm=None, filename='samples.h5',
              save_every=1, save_at_interval=True, save_at_final=True,
              covariance_epsilon = 1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
              updatepatches=None, dataFaults=None):
@@ -524,8 +682,10 @@ class explorefault(SourceInv):
         Returns:
             * None
         '''
-        if self.dataFaults is None:
-            self.dataFaults = dataFaults
+        nchains = nchains if nchains else self.nchains
+        chain_length = chain_length if chain_length else self.chain_length
+
+        self.dataFaults = dataFaults or self.dataFaults
         # Create a target function
         target = self.make_target(updatepatches=updatepatches, dataFaults=self.dataFaults)
     
@@ -562,7 +722,7 @@ class explorefault(SourceInv):
         Returns a list of faults corresponding to the desired model.
     
         Kwargs:
-            * model             : Can be 'mean', 'median', 'rand', 'MAP', an integer or a dictionary with the appropriate keys
+            * model             : Can be 'mean', 'median', 'std', 'MAP', an integer or a dictionary with the appropriate keys
     
         Returns:
             * list of fault instances
@@ -628,16 +788,63 @@ class explorefault(SourceInv):
                 fault = self.faults[fault_name]
                 fault.buildGFs(ilike[0], slipdir='sd', verbose=False, method='empty', vertical=ilike[-1])
         
+        # Extract the reference values
+        if 'reference' in self.param_keys:
+            specs['reference'] = np.array(samples[self.param_index['reference']])
+
         # Extract the sigmas
         if self.sigmas['update']:
             specs['sigmas'] = np.array(samples[self.sigmas_index])
 
         # Save the desired model 
-        self.model_dict = specs
+        if not hasattr(self, 'model_dict'):
+            self.model_dict = {}
+        self.model_dict[model] = specs
         self.model = samples
 
         # All done
         return faults
+    
+    def save_model_to_file(self, filename, model='mean', recalculate=False):
+        """
+        Output the model parameters to a file.
+
+        Args:
+            * filename  : The name of the file to write the model parameters to
+
+        Kwargs:
+            * model     : 'mean', 'median', 'std', 'MAP'
+            * recalculate: True/False
+        
+        Returns:
+            * None
+        """
+        if recalculate or model not in self.model_dict:
+            self.returnModels(model=model)
+
+        with open(filename, 'w', encoding='utf-8') as file:
+            # 写入 Fault 参数
+            for fault_name, fault_params in self.model_dict[model].items():
+                if fault_name.startswith('fault_'):
+                    file.write(f"Fault: {fault_name}\n")
+                    for param, value in fault_params.items():
+                        file.write(f"  {param}: {value}\n")
+                    file.write("\n")
+            
+            # 写入 Reference 参数
+            if 'reference' in self.model_dict[model]:
+                file.write("Reference:\n")
+                for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict[model]['reference']):
+                    file.write(f"  {ref_name}: {ref_value}\n")
+                file.write("\n")
+            
+            # 写入 Sigmas 参数
+            if 'sigmas' in self.model_dict[model]:
+                file.write("Sigmas:\n")
+                for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
+                    isigma_name = data.name
+                    file.write(f"  {isigma_name}: {sigma_value}\n")
+                file.write("\n")
     
     def plot(self, model='mean', show=True, scale=2., legendscale=0.5, vertical=True):
         '''
@@ -669,7 +876,7 @@ class explorefault(SourceInv):
 
         # Build predictions
         for fault in self.faults:
-            for data in self.datas:
+            for data, vertical in zip(self.datas, self.verticals):
 
                 # Build the green's functions
                 fault.buildGFs(data, slipdir='sd', verbose=False, vertical=vertical)
@@ -680,7 +887,7 @@ class explorefault(SourceInv):
             # Check ref
         for data in self.datas:
             if '{}'.format(data.name) in self.keys:
-                data.synth += self.model['{}'.format(data.name)]
+                data.synth += self.model[data.refnumber] # ['{}'.format(data.name)]
 
             # Plot the data and synthetics
             if data.dtype == 'insar':
@@ -877,9 +1084,14 @@ class explorefault(SourceInv):
             print(f"Fault: {ifault}")
             for ikey, key in enumerate(self.param_keys[ifault]):
                 print(f"  {key}: {self.param_index[ifault][ikey]}")
-        if self.sigmas['update']:
-            print("Sigmas:")
-            for ikey, key in enumerate(self.sigmas_keys):
-                print(f"  {key}: {self.sigmas_index[ikey]}")
+        if 'reference' in self.param_keys:
+            print('Reference:')
+            for ikey, key in enumerate(self.param_keys['reference']):
+                print(f"  {key}: {self.param_index['reference'][ikey]}")
+        if 'sigmas' in self.param_keys:
+            print('Sigmas:')
+            for ikey, key in enumerate(self.param_keys['sigmas']):
+                iname = 'data_{}'.format(ikey) if self.datas is None else self.datas[ikey].name
+                print(f"  {iname}: {self.param_index['sigmas'][ikey]}")
 
 #EOF

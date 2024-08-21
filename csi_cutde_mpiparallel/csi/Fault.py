@@ -962,8 +962,10 @@ class Fault(SourceInv):
             G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence, pscmpinp=pscmpinp, psgrndir=psgrndir)
         elif method in ('cutde', 'CUTDE'):
             G = self.cutdeGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
-        elif method in ('empty'):
+        elif method in ('empty',):
             G = self.emptyGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
+        else:
+            raise Exception('Method {} not implemented'.format(method))
 
         # Separate the Green's functions for each type of data set
         data.setGFsInFault(self, G, vertical=vertical)
