@@ -30,7 +30,7 @@ python setup.py install --user --prefix=
 
 #### Install oneapi and config environment
 
-1. Download [oneapi安装包](https://www.intel.com/content/www/us/en/developer/tools/oneapi/mpi-library-download.html?operatingsystem=linux&mpi-linux=offline)
+1. Download [oneapi package](https://www.intel.com/content/www/us/en/developer/tools/oneapi/mpi-library-download.html?operatingsystem=linux&mpi-linux=offline)
 2. Install ***oneapi***
 
 ```bash
