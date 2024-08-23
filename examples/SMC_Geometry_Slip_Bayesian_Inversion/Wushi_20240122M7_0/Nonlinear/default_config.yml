@@ -3,6 +3,11 @@ chain_length: 50 # Length of each chain for BayesianMultiFaultsInversion
 nfaults: 1 # Number of faults
 # Set slip sampling mode to 'mag_rake' or 'ss_ds'
 slip_sampling_mode: 'mag_rake'
+clipping_options:
+  enabled: false
+  methods:
+    - method: 'lon_lat_range'
+      lon_lat_range: [86.0, 87.7, 32.5, 33.75] # For 'lon_lat_range' method, in degrees
 bounds:
   defaults:
     lon: [Uniform, 78.56, 2.0]
@@ -33,3 +38,10 @@ geodata:
       sigma_0: [Uniform, -3.0, 6.0]
     values: [0.0, 0.0] # null
     log_scaled: true
+data_sources: # Data sources for GPS and InSAR data
+  gps:
+    directory: '../gps' # Directory containing GPS data files
+    file_pattern: 'cogps*' # File pattern to match GPS data files
+  insar:
+    directory: '../insar/downsample' # Directory containing InSAR data files
+    file_pattern: '*.rsp' # File pattern to match InSAR data filess

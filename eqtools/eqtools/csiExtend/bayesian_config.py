@@ -21,7 +21,8 @@ class BaseBayesianConfig:
         self.geodata = {}
         self.lon0 = None
         self.lat0 = None
-        self.faultnames = None # List of fault names
+        self.faultnames = [] # List of fault names
+        self.faults_list = [] # List of fault objects
         self.clipping_options = {} # Dictionary to store the clipping options
         self.data_sources = {} # Dictionary to store the data sources
 
@@ -32,6 +33,17 @@ class BaseBayesianConfig:
     @sigmas.setter
     def sigmas(self, value):
         self.geodata['sigmas'] = value
+        # Check 'update' is in sigmas and is a boolean
+        if 'update' not in self.geodata['sigmas']:
+            self.geodata['sigmas']['update'] = True
+        elif not isinstance(self.geodata['sigmas']['update'], bool):
+            raise ValueError("The 'update' parameter in sigmas must be a boolean")
+        
+        # Check 'log_scaled' is in sigmas and is a boolean
+        if 'log_scaled' not in self.geodata['sigmas']:
+            self.geodata['sigmas']['log_scaled'] = True
+        elif not isinstance(self.geodata['sigmas']['log_scaled'], bool):
+            raise ValueError("The 'log_scaled' parameter in sigmas must be a boolean")
 
     @property
     def dataFaults(self):
@@ -64,33 +76,35 @@ class BaseBayesianConfig:
         else:
             raise ValueError("dataFaults must be a list or None")
 
-    def load_gps_data(self):
-        gps_config = self.data_sources['gps']
-        gps_files = glob.glob(os.path.join(gps_config['directory'], gps_config['file_pattern']))
-        gps_files.sort() # Keep the order of the files
-        for gps_file in gps_files:
-            assert self.lon0 is not None and self.lat0 is not None, "lon0 and lat0 must be set to read GPS data"
-            gps_name = os.path.basename(gps_file)
-            gps_data = gps(name=gps_name, utmzone=None, ellps='WGS84', lon0=self.lon0, lat0=self.lat0, verbose=True)
-            gps_data.read_from_enu(gps_file, factor=1., minerr=1., header=1, checkNaNs=True)
-            self.geodata['data'].append(gps_data)
+    def load_data(self, data_type):
+        data_config = self.data_sources[data_type]
+        data_files = []
 
-    def load_insar_data(self):
-        insar_config = self.data_sources['insar']
-        insar_files = glob.glob(os.path.join(insar_config['directory'], insar_config['file_pattern']))
-        insar_files.sort()  # Keep the order of the files
-        for insar_file in insar_files:
-            assert self.lon0 is not None and self.lat0 is not None, "lon0 and lat0 must be set to read InSAR data"
-            insar_file_prefix = os.path.splitext(insar_file)[0]
-            insar_name = os.path.basename(insar_file_prefix)
-            insar_data = insar(insar_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
-            insar_data.read_from_varres(insar_file_prefix, cov=True)
-            self.geodata['data'].append(insar_data)
+        # Check if specific files are provided
+        if 'files' in data_config:
+            data_files.extend(data_config['files'])
+        else:
+            # Use file pattern to match files
+            data_files.extend(glob.glob(os.path.join(data_config['directory'], data_config['file_pattern'])))
+
+        for data_file in data_files:
+            assert self.lon0 is not None and self.lat0 is not None, f"lon0 and lat0 must be set to read {data_type} data"
+            data_name = os.path.basename(data_file)
+            if data_type == 'gps':
+                data_instance = gps(name=data_name, utmzone=None, ellps='WGS84', lon0=self.lon0, lat0=self.lat0, verbose=True)
+                data_instance.read_from_enu(data_file, factor=1., minerr=1., header=1, checkNaNs=True)
+            elif data_type == 'insar':
+                data_file_prefix = os.path.splitext(data_file)[0]
+                data_instance = insar(data_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
+                data_instance.read_from_varres(data_file_prefix, cov=True)
+            else:
+                raise ValueError(f"Unsupported data type: {data_type}")
+            self.geodata['data'].append(data_instance)
 
     def load_all_data(self):
-        if not self.geodata['data']:
-            self.load_gps_data()
-            self.load_insar_data()
+        if not self.geodata.get('data', []):
+            for data_type in self.data_sources:
+                self.load_data(data_type)
             if not self.geodata['data']:
                 raise ValueError("Failed to load any geodata files.")
         else:
@@ -137,20 +151,36 @@ class BaseBayesianConfig:
     def _select_data_sets(self):
         data_verticals_dict = {d.name: v for d, v in zip(self.geodata['data'], self.geodata['verticals'])}
         if self.clipping_options.get('enabled', False):
-            if self.clipping_options.get('method', 'lon_lat_range') == 'lon_lat_range':
-                lon_lat_range = self.clipping_options.get('lon_lat_range', None)
-                if lon_lat_range is None:
-                    raise ValueError("Clipping method 'lon_lat_range' requires 'lon_lat_range' to be set")
-                for data in self.geodata['data']:
-                    if data.dtype == 'insar':
-                        data.select_pixels(*lon_lat_range)
-                    elif data.dtype == 'gps':
-                        data.select_stations(*lon_lat_range)
-                        if not data_verticals_dict[data.name]:
-                            data.vel_enu[:, -1] = np.nan
-                            data.buildCd(direction='en')
-                        else:
-                            data.buildCd(direction='enu')
+            methods = self.clipping_options.get('methods', [])
+            for method_config in methods:
+                method = method_config.get('method', None)
+                if method == 'lon_lat_range':
+                    lon_lat_range = method_config.get('lon_lat_range', None)
+                    if lon_lat_range is None:
+                        raise ValueError("Clipping method 'lon_lat_range' requires 'lon_lat_range' to be set")
+                    for data in self.geodata['data']:
+                        if data.dtype == 'insar':
+                            data.select_pixels(*lon_lat_range)
+                        elif data.dtype == 'gps':
+                            data.select_stations(*lon_lat_range)
+                            if not data_verticals_dict[data.name]:
+                                data.vel_enu[:, -1] = np.nan
+                                data.buildCd(direction='en')
+                            else:
+                                data.buildCd(direction='enu')
+                elif method == 'distance_to_fault':
+                    distance_to_fault = method_config.get('distance_to_fault', None)
+                    faults = self.faults_list
+                    if distance_to_fault is None or not faults:
+                        raise ValueError("Clipping method 'distance_to_fault' requires 'distance_to_fault' and non-empty 'faults_list' to be set")
+                    for data in self.geodata['data']:
+                        if data.dtype == 'insar':
+                            data.reject_pixels_fault(distance_to_fault, faults)
+                        elif data.dtype == 'gps':
+                            # No clipping for GPS data
+                            continue
+                else:
+                    raise ValueError(f"Unsupported clipping method: {method}")
 
 
 class explorefaultConfig(BaseBayesianConfig):

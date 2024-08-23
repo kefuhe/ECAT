@@ -4,6 +4,11 @@ nfaults: 1 # Number of faults
 lon_lat_0: null # UTM coordinates of the origin
 # Set slip sampling mode to 'mag_rake' or 'ss_ds'
 slip_sampling_mode: 'mag_rake'
+clipping_options:
+  enabled: false
+  methods:
+    - method: 'lon_lat_range'
+      lon_lat_range: [86.0, 87.7, 32.5, 33.75] # For 'lon_lat_range' method
 bounds:
   defaults:
     lon: ['Uniform', 119, 5.0]
