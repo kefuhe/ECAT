@@ -2194,7 +2194,7 @@ class Fault(SourceInv):
                     orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
                 elif data.dtype in ('insar', 'opticorr'):
                     # orb = data.getPolyEstimator(self.poly[data.name],computeNormFact=computeNormFact)
-                    orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
+                    orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
                 elif data.dtype == 'tsunami':
                     orb = data.getRampEstimator(self.poly[data.name])
 

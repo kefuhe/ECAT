@@ -946,6 +946,8 @@ class explorefault(SourceInv):
                     fault.color = 'k'
                 for cosar in cosar_list:
                     cosar.buildsynth(faults, vertical=True)
+                    if '{}'.format(cosar.name) in self.keys:
+                        cosar.synth += self.model[data.refnumber]
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))
                     data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]

@@ -741,7 +741,7 @@ class opticorr(SourceInv):
         # All done
         return
 
-    def getTransformEstimator(self, trans, computeNormFact=True):
+    def getTransformEstimator(self, trans, computeNormFact=True, verbose=True):
         '''
         Returns the Estimator for the transformation to estimate in the InSAR data.
 
@@ -761,14 +761,14 @@ class opticorr(SourceInv):
 
         # Several cases
         if type(trans) is int:
-            T = self.getPolyEstimator(trans, computeNormFact=computeNormFact)
+            T = self.getPolyEstimator(trans, computeNormFact=computeNormFact, verbose=verbose)
         else:
             assert False, 'No {} transformation available'.format(trans)
 
         # All done
         return T
 
-    def getPolyEstimator(self, ptype, computeNormFact=True):
+    def getPolyEstimator(self, ptype, computeNormFact=True, verbose=True):
         '''
         Returns the Estimator for the polynomial form to estimate in the optical correlation data.
 
@@ -806,7 +806,7 @@ class opticorr(SourceInv):
 
 		# Compute normalizing factors
         if computeNormFact:
-            self.computeTransformNormalizingFactor()
+            self.computeTransformNormalizingFactor(verbose=verbose)
         else:
             assert hasattr(self, 'TransformNormalizingFactor'), 'You must set TransformNormalizingFactor first'
 

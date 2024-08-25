@@ -515,6 +515,15 @@ class RectangularPatches(Fault):
 
         # All done
         return area
+    
+    def compute_patch_areas(self):
+        '''
+        Compute the area of all patches and store them in {area}
+
+        added by Kefeng he at 2024/08/23
+        '''
+        self.area = np.array([self.patchArea(p) for p in self.equivpatch])
+        return self.area
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -3096,7 +3105,8 @@ class RectangularPatches(Fault):
              equiv=False, show=True, axesscaling=True, 
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
-             drawCoastlines=True, expand=0.2, figsize=(None, None)):
+             drawCoastlines=True, expand=0.2, figsize=(None, None),
+             cmap='jet', edgecolor='slip', ftype='png', dpi=300, bbox_inches=None, savefig=False, suffix=''):
         '''
         Plot the available elements of the fault.
         
@@ -3133,12 +3143,22 @@ class RectangularPatches(Fault):
         # Draw the fault
         fig.faultpatches(self, slip=slip, norm=norm, colorbar=True, 
                          cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
-                         plot_on_2d=plot_on_2d)
+                         plot_on_2d=plot_on_2d, cmap=cmap, edgecolor=edgecolor)
 
         # Plot the trace of there is one
         if self.lon is not None:
             fig.faulttrace(self)
 
+        # Savefigs?
+        if savefig:
+            prefix = self.name.replace(' ','_')
+            suffix = f'_{suffix}' if suffix != '' else ''
+            saveFig = ['fault']
+            if plot_on_2d:
+                saveFig.append('map')
+            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
+
+        self.slipfig = fig
         # show
         if show:
             showFig = ['fault']
@@ -3828,7 +3848,7 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def buildLaplacian(self, verbose=False, method=None, irregular=False, bounds=None):
+    def buildLaplacian(self, verbose=False, method=None, irregular=False, bounds=None, topscale=None, bottomscale=None):
         '''
         Build normalized Laplacian smoothing array.
         This routine is not designed for unevenly paved faults.
@@ -3838,6 +3858,12 @@ class RectangularPatches(Fault):
             * verbose       : speak to me
             * method        : Useless argument only here for compatibility reason
             * irregular     : Can be used if the parametrisation is not regular along dip (N patches above or below one patch). If True, the Laplacian takes into account that there is not only one patch above (or below)
+            * bounds        : A tuple with 4 strings corresponding to the boundary conditions requested by
+                                the user on the edges fo the fault model. The ordering is top,bototm,left and right edges.
+                                Possible values for each element of the tuple are 'free' for a free boundary condition
+                                and 'locked' for a locked one.
+            * topscale      : Only for consistency with the TriangularPatches class, No effect here.
+            * bottomscale   : Only for consistency with the TriangularPatches class, No effect here.
         '''
         import sys
         if method in ('csi', 'CSI', 'Csi', None):

@@ -1030,7 +1030,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         from numpy import deg2rad, sin, cos, tan
 
-        if not all([clon, clat, cdepth, strike, dip, length]):
+        if any(param is None for param in [clon, clat, cdepth, strike, dip, length]):
             raise ValueError("Please provide all the required parameters.")
         
         # Convert the strike and dip angles to radians
@@ -1041,14 +1041,17 @@ class AdaptiveTriangularPatches(TriangularPatches):
         if top is None:
             assert hasattr(self, 'top') and self.top is not None, "Please provide the top depth of the fault patch."
             top = self.top
-        # depth or self.depth, at least one of them should be provided
-        if depth is None:
-            assert hasattr(self, 'depth') and self.depth is not None, "Please provide the depth of the fault patch."
-            depth = self.depth
 
+        # width or depth/self.depth, at least one of them should be provided； if they are both provided, depth/self.depth will be used
         if width is None:
-            assert depth is not None, "Please provide the depth of the fault patch."
+            assert depth is not None or (hasattr(self, 'depth') and self.depth is not None), "Please provide the width or depth of the fault patch."
+            depth = depth if depth is not None else self.depth
             width = (depth - top) / sin(dip_rad)
+        else:
+            if depth is None:
+                depth = self.depth if hasattr(self, 'depth') and self.depth is not None else width * sin(dip_rad) + top
+
+        self.depth = depth
         
         # Calculate the top two end points of the fault patch
         cx, cy = self.ll2xy(clon, clat)
@@ -1545,6 +1548,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         return areas
 
     def compute_triangle_areas(self):
+        self.area = calculate_triangle_areas(self.Vertices, self.Faces)
+        return self.area
+    
+    def compute_patch_areas(self):
         self.area = calculate_triangle_areas(self.Vertices, self.Faces)
         return self.area
 

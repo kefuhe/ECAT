@@ -1314,7 +1314,7 @@ class insar(SourceInv):
         return
 
 
-    def computeTransformNormalizingFactor(self):
+    def computeTransformNormalizingFactor(self, verbose=True):
         '''
         Compute orbit normalizing factors and store them in insar object.
 
@@ -1328,7 +1328,8 @@ class insar(SourceInv):
         normY = np.abs(self.y - y0).max()
         base_max = np.max([normX, normY])
         #print(self.x,self.y)
-        print('normalizing factors are ', x0,y0,normX,normY)
+        if verbose:
+            print('normalizing factors are ', x0,y0,normX,normY)
         self.TransformNormalizingFactor = {}
         self.TransformNormalizingFactor['x'] = normX
         self.TransformNormalizingFactor['y'] = normY
@@ -1413,7 +1414,7 @@ class insar(SourceInv):
         # All done
         return Hout
 
-    def getPolyEstimator(self, ptype, computeNormFact=True):
+    def getPolyEstimator(self, ptype, computeNormFact=True, verbose=True):
         '''
         Returns the Estimator for the polynomial form to estimate in the InSAR data.
 
@@ -1441,7 +1442,7 @@ class insar(SourceInv):
         if ptype >= 3:
             # Compute normalizing factors
             if computeNormFact:
-                self.computeTransformNormalizingFactor()
+                self.computeTransformNormalizingFactor(verbose=verbose)
             else:
                 assert hasattr(self, 'TransformNormalizingFactor'), 'You must set TransformNormalizingFactor first'
 
@@ -1807,7 +1808,7 @@ class insar(SourceInv):
     # ---------------------------------------------------------------------- 
 
     # ---------------------------------------------------------------------- 
-    def getTransformEstimator(self, transformation, computeNormFact=True, computeIntStrainNormFact=True):
+    def getTransformEstimator(self, transformation, computeNormFact=True, computeIntStrainNormFact=True, verbose=True):
         '''
         Returns the estimator for the transform.
 
@@ -1838,7 +1839,7 @@ class insar(SourceInv):
             elif itransformation == 'eulerrotation':
                 tmporb = self.getEulerMatrix()
             elif type(itransformation) is int:
-                tmporb = self.getPolyEstimator(itransformation, computeNormFact=computeNormFact)
+                tmporb = self.getPolyEstimator(itransformation, computeNormFact=computeNormFact, verbose=verbose)
             # Unknown case
             else:
                 print('No Transformation asked for object {}'.format(self.name))
@@ -1982,7 +1983,7 @@ class insar(SourceInv):
                 print('Computing transformation of type {} on data set {}'.format(itransformation, self.name))
 
             # Get the estimator
-            orb = self.getTransformEstimator(itransformation, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
+            orb = self.getTransformEstimator(itransformation, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
 
             # Check
             if orb is None:

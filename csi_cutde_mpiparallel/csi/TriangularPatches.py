@@ -2998,7 +2998,7 @@ class TriangularPatches(Fault):
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='', 
              drawCoastlines=True, expand=0.2, savefig=False, scalebar=None, figsize=(None, None),
-             cmap='jet', edgecolor='slip', ftype='eps', dpi=600, bbox_inches=None):
+             cmap='jet', edgecolor='slip', ftype='eps', dpi=600, bbox_inches=None, suffix=''):
         '''
         Plot the available elements of the fault.
         
@@ -3046,10 +3046,11 @@ class TriangularPatches(Fault):
         # Savefigs?
         if savefig:
             prefix = self.name.replace(' ','_')
+            suffix = f'_{suffix}' if suffix != '' else ''
             saveFig = ['fault']
             if plot_on_2d:
                 saveFig.append('map')
-            fig.savefig(prefix+'_{}'.format(slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
+            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
 
         self.slipfig = fig
         # show

@@ -341,7 +341,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self._initialize_faults_and_assemble_data()
         if multifaults is None:
             self._initialize_faults_and_assemble_data()
-            multifaults = MyMultiFaultsInversion('myfault', self.faults_list)
+            multifaults = MyMultiFaultsInversion('myfault', self.faults_list, verbose=verbose)
             multifaults.assembleGFs() # assemble the Green's functions because the data is already assembled
             self.multifaults = multifaults
     
@@ -461,7 +461,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         poly_assembled = False  # flag to check if the polynomial is assembled
         for ifault in faults_list:
             # assemble data
-            ifault.assembled(geodata)
+            ifault.assembled(geodata, verbose=False)
             # assemble GreensFns
             if not poly_assembled:
                 ifault.assembleGFs(geodata, polys=polys, slipdir='sd', verbose=False, custom=False)
