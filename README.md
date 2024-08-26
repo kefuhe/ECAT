@@ -22,7 +22,7 @@
 
 - See Readme ***Install.md***
 
-## Coseismic
+## Coseismic （Uploaded）
 
 ### Building fault with variance dip angle determined by relocated aftershocks
 
@@ -74,7 +74,7 @@
 
 [5] ...
 
-## Postseismic
+## Postseismic （Pending)
 
 - pscmp_visco_postseismic.py
   - Simple calculating codes about ***Combined model of viscoelastic relaxation and stress-driven afterslip***
@@ -91,7 +91,7 @@
 
 [3] He Ke., Y. Wen, C. Xu, W. Xiong, J. Zang (2023), In preparation.
 
-## Interseismic
+## Interseismic (Pending)
 
 - pscmp_visco_interseismic.py
   - Calculating velocity related to ***earthquake cycle***
