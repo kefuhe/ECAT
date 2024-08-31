@@ -34,7 +34,8 @@ class GCMTClient(FDSNClient):
             'list': 5
         }
 
-    def download_earthquake_catalog(self, start_time, end_time, min_magnitude, max_magnitude, output_file, min_depth=0, max_depth=1000, min_latitude=-90, max_latitude=90, min_longitude=-180, max_longitude=180):
+    def get_events(self, start_time, end_time, min_magnitude, max_magnitude, output_file, min_depth=0, max_depth=1000, 
+                   min_latitude=-90, max_latitude=90, min_longitude=-180, max_longitude=180):
         """
         Download earthquake catalog from GCMT and save it as a CSV file.
 

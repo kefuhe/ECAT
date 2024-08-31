@@ -9,7 +9,7 @@ class FDSNClient(ABC):
         self.base_url = base_url
 
     def get_params(self, start_time, end_time, min_magnitude, max_magnitude, min_latitude=None, max_latitude=None, 
-                   min_longitude=None, max_longitude=None, min_depth=None, max_depth=None, include_focal_mechanism=False):
+                   min_longitude=None, max_longitude=None, min_depth=None, max_depth=None):
         params = {
             "format": "text",
             "starttime": start_time,
@@ -29,8 +29,6 @@ class FDSNClient(ABC):
             params["mindepth"] = min_depth
         if max_depth is not None:
             params["maxdepth"] = max_depth
-        if include_focal_mechanism:
-            params["producttype"] = "focal-mechanism"
         return params
 
     def send_request(self, params):
@@ -53,10 +51,10 @@ class FDSNClient(ABC):
             logger.error(f"Unsupported content type: {content_type}")
             return None
 
-    def download_earthquake_catalog(self, start_time, end_time, min_magnitude, max_magnitude, output_file, 
-                                    min_latitude=None, max_latitude=None, min_longitude=None, max_longitude=None, min_depth=None, max_depth=None, include_focal_mechanism=False):
+    def get_events(self, start_time, end_time, min_magnitude, max_magnitude, output_file, 
+                                    min_latitude=None, max_latitude=None, min_longitude=None, max_longitude=None, min_depth=None, max_depth=None):
         params = self.get_params(start_time, end_time, min_magnitude, max_magnitude, min_latitude, 
-                                 max_latitude, min_longitude, max_longitude, min_depth, max_depth, include_focal_mechanism)
+                                 max_latitude, min_longitude, max_longitude, min_depth, max_depth)
 
         # Send request
         data = self.send_request(params)

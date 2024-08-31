@@ -10,7 +10,7 @@ class IRISClient(FDSNClient):
         super().__init__("http://service.iris.edu/fdsnws/event/1/query")
 
     def get_params(self, start_time, end_time, min_magnitude, max_magnitude, min_latitude=None, max_latitude=None, 
-                   min_longitude=None, max_longitude=None, min_depth=None, max_depth=None, include_focal_mechanism=False):
+                   min_longitude=None, max_longitude=None, min_depth=None, max_depth=None):
         params = {
             "format": "text",
             "starttime": start_time,
