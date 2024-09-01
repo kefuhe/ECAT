@@ -110,6 +110,8 @@ class GCMTClient(FDSNClient):
                     "magnitude": data['magnitude'],
                     "magType": data.get("magType", 'unknown'), 
                     "place": data['region'],
+                    "nodal_plane1": data.get("nodal_plane1"),
+                    "nodal_plane2": data.get("nodal_plane2"),
                     "focal_mechanism": {
                         "mrr": data['mrr'],
                         "mtt": data['mtt'],
@@ -118,9 +120,7 @@ class GCMTClient(FDSNClient):
                         "mrp": data['mrp'],
                         "mtp": data['mtp'],
                         "exponent": data['exponent']
-                    },
-                    "fault_plane1": data.get("fault_plane1"),
-                    "fault_plane2": data.get("fault_plane2")
+                    }
                 }
                 events.append(earthquake)
             except KeyError as e:
@@ -179,12 +179,12 @@ class GCMTClient(FDSNClient):
                     fault_plane = {
                         "strike": int(m.group(1)),
                         "dip": int(m.group(2)),
-                        "slip": int(m.group(3))
+                        "rake": int(m.group(3))
                     }
-                    if 'fault_plane1' not in data_obj:
-                        data_obj['fault_plane1'] = fault_plane
+                    if 'nodal_plane1' not in data_obj:
+                        data_obj['nodal_plane1'] = fault_plane
                     else:
-                        data_obj['fault_plane2'] = fault_plane
+                        data_obj['nodal_plane2'] = fault_plane
                         state = 0
 
         if data_obj:

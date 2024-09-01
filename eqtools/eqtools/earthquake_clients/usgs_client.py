@@ -62,7 +62,8 @@ class USGSClient(FDSNClient):
             geometry = feature.get("geometry", {})
             coordinates = geometry.get("coordinates", [None, None, None])
             focal_mechanism = None
-            nodal_planes = None
+            nodal_plane1 = None
+            nodal_plane2 = None
 
             if self.include_focal_mechanism and "products" in properties and "focal-mechanism" in properties["products"]:
                 focal_mechanism = properties["products"]["focal-mechanism"][0]["properties"]
@@ -76,7 +77,8 @@ class USGSClient(FDSNClient):
                 "magType": properties.get("magType", 'unknown'),  # Add magnitude type
                 "place": properties.get("place"),
                 "focal_mechanism": focal_mechanism,
-                "nodal_planes": nodal_planes
+                "nodal_plane1": nodal_plane1,
+                "nodal_plane2": nodal_plane2
             }
             return earthquake, properties.get("detail")
 
@@ -105,17 +107,15 @@ class USGSClient(FDSNClient):
                 if detail_data and "moment-tensor" in detail_data.get("properties", {}).get("products", {}):
                     moment_tensor = detail_data["properties"]["products"]["moment-tensor"][0]["properties"]
                     logger.debug(f"moment_tensor: {moment_tensor.keys()}")
-                    earthquake["nodal_planes"] = {
-                        "nodal_plane_1": {
-                            "strike": moment_tensor.get("nodal-plane-1-strike"),
-                            "dip": moment_tensor.get("nodal-plane-1-dip"),
-                            "rake": moment_tensor.get("nodal-plane-1-rake")
-                        },
-                        "nodal_plane_2": {
-                            "strike": moment_tensor.get("nodal-plane-2-strike"),
-                            "dip": moment_tensor.get("nodal-plane-2-dip"),
-                            "rake": moment_tensor.get("nodal-plane-2-rake")
-                        }
+                    earthquake["nodal_plane1"] = {
+                        "strike": moment_tensor.get("nodal-plane-1-strike"),
+                        "dip": moment_tensor.get("nodal-plane-1-dip"),
+                        "rake": moment_tensor.get("nodal-plane-1-rake")
+                    }
+                    earthquake["nodal_plane2"] = {
+                        "strike": moment_tensor.get("nodal-plane-2-strike"),
+                        "dip": moment_tensor.get("nodal-plane-2-dip"),
+                        "rake": moment_tensor.get("nodal-plane-2-rake")
                     }
         
         # Sort earthquakes by time in descending order (latest first)
