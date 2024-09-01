@@ -8,28 +8,10 @@ class FDSNClient(ABC):
     def __init__(self, base_url):
         self.base_url = base_url
 
+    @abstractmethod
     def get_params(self, start_time, end_time, min_magnitude, max_magnitude, min_latitude=None, max_latitude=None, 
                    min_longitude=None, max_longitude=None, min_depth=None, max_depth=None):
-        params = {
-            "format": "text",
-            "starttime": start_time,
-            "endtime": end_time,
-            "minmagnitude": min_magnitude,
-            "maxmagnitude": max_magnitude,
-        }
-        if min_latitude is not None:
-            params["minlatitude"] = min_latitude
-        if max_latitude is not None:
-            params["maxlatitude"] = max_latitude
-        if min_longitude is not None:
-            params["minlongitude"] = min_longitude
-        if max_longitude is not None:
-            params["maxlongitude"] = max_longitude
-        if min_depth is not None:
-            params["mindepth"] = min_depth
-        if max_depth is not None:
-            params["maxdepth"] = max_depth
-        return params
+        pass
 
     def send_request(self, params):
         response = requests.get(self.base_url, params=params)
@@ -53,23 +35,31 @@ class FDSNClient(ABC):
 
     def get_events(self, start_time, end_time, min_magnitude, max_magnitude, output_file, 
                                     min_latitude=None, max_latitude=None, min_longitude=None, max_longitude=None, min_depth=None, max_depth=None):
-        params = self.get_params(start_time, end_time, min_magnitude, max_magnitude, min_latitude, 
-                                 max_latitude, min_longitude, max_longitude, min_depth, max_depth)
+        try:
+            params = self.get_params(start_time, end_time, min_magnitude, max_magnitude, min_latitude, 
+                                    max_latitude, min_longitude, max_longitude, min_depth, max_depth)
 
-        # Send request
-        data = self.send_request(params)
-        if data is None:
-            return
+            # Send request
+            data = self.send_request(params)
+            if data is None:
+                logger.error('No data received from the FDSN web server')
+                return
 
-        # Extract earthquake information
-        earthquakes = self.extract_earthquake_data(data)
+            # Extract earthquake information
+            earthquakes = self.extract_earthquake_data(data)
+            if not earthquakes:
+                logger.warning('No earthquakes found in the data')
+                return
 
-        # Convert to DataFrame
-        df = pd.DataFrame(earthquakes)
+            # Convert to DataFrame
+            df = pd.DataFrame(earthquakes)
+            logger.debug(f'Preview of earthquake data:\n{df.head()}')
 
-        # Save as CSV file
-        df.to_csv(output_file, index=False)
-        logger.info(f"Earthquake catalog saved to {output_file}")
+            # Save as CSV file
+            df.to_csv(output_file, index=False)
+            logger.info(f"Earthquake catalog saved to {output_file}")
+        except Exception as e:
+            logger.error(f"An error occurred while fetching earthquake data: {e}")
 
     @abstractmethod
     def extract_earthquake_data(self, data):

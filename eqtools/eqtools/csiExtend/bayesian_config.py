@@ -89,7 +89,7 @@ class BaseBayesianConfig:
 
         for data_file in data_files:
             assert self.lon0 is not None and self.lat0 is not None, f"lon0 and lat0 must be set to read {data_type} data"
-            data_name = os.path.basename(data_file)
+            data_name = os.path.basename(os.path.splitext(data_file)[0])
             if data_type == 'gps':
                 data_instance = gps(name=data_name, utmzone=None, ellps='WGS84', lon0=self.lon0, lat0=self.lat0, verbose=True)
                 data_instance.read_from_enu(data_file, factor=1., minerr=1., header=1, checkNaNs=True)

@@ -54,7 +54,8 @@ class GCMTClient(FDSNClient):
         """
         all_earthquakes = []
         base_url = self.base_url
-        params = self.get_params(start_time, end_time, min_magnitude, max_magnitude, min_depth, max_depth, min_latitude, max_latitude, min_longitude, max_longitude)
+        params = self.get_params(start_time, end_time, min_magnitude, max_magnitude, min_depth, max_depth, 
+                                 min_latitude, max_latitude, min_longitude, max_longitude)
 
         while True:
             # Send GET request
