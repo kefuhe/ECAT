@@ -1,6 +1,15 @@
 ### Installation Steps
 
-#### Install external dependencies
+#### We recommend installing Anaconda
+
+We recommend using Anaconda to manage your Python environment. Please follow the steps below to install Anaconda and set up the `myecat` environment:
+
+**Download and install Anaconda**:
+
+- Visit the [Anaconda website](https://www.anaconda.com/products/distribution) and download the installer for your operating system.
+- Follow the installation guide to complete the Anaconda installation.
+
+#### Create and activate the `myecat` environment
 
 ```bash
 conda create --name myecat --channel conda-forge --file conda-requirements.txt
@@ -34,6 +43,13 @@ After installing `okada4py` in the `myecat` environment (activated using `conda 
 - **Windows**: The package should be located in a directory similar to `python310\Lib\site-packages\okada4py`.
 
 **Note**: When using the `--prefix` option, make sure there is no content after it, including spaces.
+
+3. If you encounter the issue of not finding the `okada4py` package during installation, you can solve it by following these steps:
+
+   1. Clone the project to `~/anaconda3/envs/cutde/lib/python3.10/site-packages`, so you would have a folder named `okada4py`.
+   2. Run `python setup.py build` and `python setup.py install`, so you could get `okada4py-12.0.2-py3.12-linux-x86_64.egg` in "`~/.local/lib/python3.10/site-packages/`".
+   3. Copy all files in `okada4py-12.0.2-py3.12-linux-x86_64.egg` to the folder `okada4py`.
+   4. Run `test.py`, and you can get two figures and no error toasted.
 
 #### Install oneapi and config environment
 
