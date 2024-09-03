@@ -28,10 +28,12 @@ python setup.py build
 python setup.py install --user --prefix=
 ```
 
-After installing `okada4py`, the package should be located in the following directories depending on the operating system:
+After installing `okada4py` in the `myecat` environment (activated using `conda activate myecat`), the package should be located in the following directories depending on the operating system:
 
 - **Linux**: The package should be located in a directory similar to `./.local/lib/python3.10/site-packages/okada4py`.
 - **Windows**: The package should be located in a directory similar to `python310\Lib\site-packages\okada4py`.
+
+**Note**: When using the `--prefix` option, make sure there is no content after it, including spaces.
 
 #### Install oneapi and config environment
 
