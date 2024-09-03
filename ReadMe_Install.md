@@ -48,7 +48,7 @@ sudo ./l_mpi_oneapi_p_2021.11.0.49494_offline.sh
 3. Config environment
 
 ```bash
-# 如果~/.bahsrc中没有oneapi相关环境加载参数
+# If there are no oneAPI-related environment loading parameters in `~/.bashrc`, please add them manually.
 # Intel MPI ifort
 source ~/intel/oneapi/setvars.sh intel64
 ```
