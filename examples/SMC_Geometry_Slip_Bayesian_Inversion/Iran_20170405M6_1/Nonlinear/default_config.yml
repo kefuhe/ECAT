@@ -1,0 +1,48 @@
+# vim: set filetype=cfg:
+nchains: 100 # Number of chains for BayesianMultiFaultsInversion
+chain_length: 50 # Length of each chain for BayesianMultiFaultsInversion
+nfaults: 1 # Number of faults
+lon_lat_0: [60.44, 35.78] # UTM coordinates of the origin
+# Set slip sampling mode to 'mag_rake' or 'ss_ds'
+slip_sampling_mode: 'mag_rake'
+clipping_options:
+  enabled: false
+  methods:
+    - method: 'lon_lat_range'
+      lon_lat_range: [86.0, 87.7, 32.5, 33.75] # For 'lon_lat_range' method
+bounds:
+  defaults:
+    lon: [Uniform, 59.94, 1.0]
+    lat: [Uniform, 35.28, 1.0]
+    depth: [Uniform, 1, 20.0]
+    dip: [Uniform, -10.059999999999999, 60]
+    width: [Uniform, 0.1, 29.9]
+    length: [Uniform, 0.1, 20.9]
+    strike: [Uniform, 266.04, 100]
+    magnitude: [Uniform, 0.0, 10.0]
+    rake: [Uniform, 89.62, 60.0]
+  fault_1:
+    rake: [Uniform, -30, 60.0]
+    strike: [Uniform, 0.0, 270.0]
+# Set geodata
+geodata:
+  verticals: true # Set the verticals for each geodata, so boolean or list of booleans
+  polys:
+    enabled: true
+    boundaries:
+      defaults: [Uniform, -200.0, 400.0]
+  faults: null # set the fault names for each geodata
+  sigmas: # Set the std of the geodata
+    update: true
+    bounds:
+      defaults: [Uniform, -3.0, 6.0]
+      sigma_0: [Uniform, -3.0, 6.0]
+    values: [0.0, 0.0] # null
+    log_scaled: true
+data_sources: # Data sources for GPS and InSAR data
+  gps:
+    directory: '../gps' # Directory containing GPS data files
+    file_pattern: 'cogps*' # File pattern to match GPS data files
+  insar:
+    directory: '../InSAR/downsample' # Directory containing InSAR data files
+    file_pattern: '*.rsp' # File pattern to match InSAR data filess
