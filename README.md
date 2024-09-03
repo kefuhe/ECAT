@@ -1,7 +1,5 @@
 ![Version](https://img.shields.io/badge/version-1.1.5-blue)
 
-`<p align="center">`
-
 <img src="image/logo.jpg" alt="Logo">
 
 </p>
