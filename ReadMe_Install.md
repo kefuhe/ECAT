@@ -12,14 +12,14 @@ pip install -r pip-requirements.txt
 
 #### Install our own packages and other necessary dependencies
 
-1. Install ***eqtools*** and ***csi***
+1. Install ***eqtools*** and **csi** in **myecat**
 
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
 
-2. Install [okada4py](https://github.com/jolivetr/okada4py)
+2. Install [okada4py](https://github.com/jolivetr/okada4py) in ***myecat***
 
 ```bash
 cd path_to_okada4py
@@ -27,6 +27,13 @@ export CC=gcc
 python setup.py build
 python setup.py install --user --prefix=
 ```
+
+After installing `okada4py` in the `myecat` environment (activated using `conda activate myecat`), the package should be located in the following directories depending on the operating system:
+
+- **Linux**: The package should be located in a directory similar to `./.local/lib/python3.10/site-packages/okada4py`.
+- **Windows**: The package should be located in a directory similar to `python310\Lib\site-packages\okada4py`.
+
+**Note**: When using the `--prefix` option, make sure there is no content after it, including spaces.
 
 #### Install oneapi and config environment
 
