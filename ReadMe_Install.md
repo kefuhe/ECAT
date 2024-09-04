@@ -36,6 +36,7 @@ pip install build
 
 # Build and install; Only support install in python 3.7 and above with this way
 python -m build
+# The exact name of the .whl file will depend on your package version and Python version
 pip install dist/okada4py-12.0.2-py3-none-any.whl
 ```
 
