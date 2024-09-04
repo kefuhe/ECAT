@@ -9,6 +9,8 @@ We recommend using Anaconda to manage your Python environment. Please follow the
 - Visit the [Anaconda website](https://www.anaconda.com/products/distribution) and download the installer for your operating system.
 - Follow the installation guide to complete the Anaconda installation.
 
+**Note**: If you have already installed Anaconda on your system, you can ignore the instructions above.
+
 #### Create and activate the `myecat` environment
 
 ```bash
