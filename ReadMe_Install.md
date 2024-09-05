@@ -32,7 +32,7 @@ chmod +x install.sh
 
 2. Install modified [okada4py](https://github.com/kefuhe/okada4py) in ***myecat* (See readme.md of [okada4py](https://github.com/kefuhe/okada4py) for details)**
 
-```
+```bash
 # If there is not build in your environment
 pip install build
 
