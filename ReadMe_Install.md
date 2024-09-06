@@ -33,9 +33,6 @@ chmod +x install.sh
 2. Install modified [okada4py](https://github.com/kefuhe/okada4py) in ***myecat* (See readme.md of [okada4py](https://github.com/kefuhe/okada4py) for details)**
 
 ```bash
-# If there is not build in your environment
-pip install build
-
 # Build and install; Only support install in python 3.7 and above with this way
 python -m build
 # The exact name of the .whl file will depend on your package version and Python version
