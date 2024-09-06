@@ -17,7 +17,7 @@ import copy
 import sys
 import os
 from scipy.interpolate import interp1d
-from scipy.integrate import cumtrapz
+from scipy.integrate import cumulative_trapezoid as cumtrapz
 
 # Personals
 from .SourceInv import SourceInv
