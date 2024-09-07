@@ -36,13 +36,7 @@ pip install -r pip-requirements-linux-64.txt
 * For Windows: `conda-requirements-win-64.txt` and `pip-requirements-win-64.txt`
 * For Linux: `conda-requirements-linux-64.txt` and `pip-requirements-linux-64.txt`
 
-Explanation: Be fault, conda will download packages from the `defaults` channel. If a package is not found in the `defaults` channel, conda will attempt to download it from the `conda-forge` channel. Note that the default Anaconda installation may not include the
-
-```
-conda-forge
-```
-
- channel. You can add it using the following command:
+Explanation: Be fault, conda will download packages from the `defaults` channel. If a package is not found in the `defaults` channel, conda will attempt to download it from the `conda-forge` channel. Note that the default Anaconda installation may not include the `conda-forge` channel. You can add it using the following command:
 
 ```bash
 conda config --add channels conda-forge
