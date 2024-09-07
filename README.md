@@ -74,7 +74,7 @@
 
 [5] ...
 
-## Citation
+### Citation
 
 If you use this package in your research, please cite it as follows:
 
