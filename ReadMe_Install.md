@@ -47,11 +47,11 @@ conda config --add channels conda-forge
 1. Install ***eqtools*** and **csi** in **myecat**
 
 ```bash
-#For Windows
+#For Linux
 chmod +x install.sh
 ./install.sh
 
-# For Linux
+# For Windows
 .\install.bat
 ```
 
@@ -84,3 +84,7 @@ sudo ./l_mpi_oneapi_p_2021.11.0.49494_offline.sh
 # Intel MPI ifort
 source ~/intel/oneapi/setvars.sh intel64
 ```
+
+### Testing
+
+The installation has been tested on `Windows 11` and `Ubuntu 20.04.6`. Support for other platforms is not guaranteed.
