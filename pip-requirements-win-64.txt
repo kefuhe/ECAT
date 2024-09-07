@@ -2,6 +2,7 @@
 # $ pip install -r <this file>
 bidict==0.22.1
 blinker==1.8.1
+build==1.2.2
 cython==0.29.37
 dash==2.17.0
 dash-core-components==2.0.0
