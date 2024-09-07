@@ -14,11 +14,21 @@ We recommend using Anaconda to manage your Python environment. Please follow the
 #### Create and activate the `myecat` environment
 
 ```bash
-conda create --name myecat --channel conda-forge --file conda-requirements.txt
+# For Windows
+conda create --name myecat --channel conda-forge --file conda-requirements-win-64.txt
+# For Linux
+conda create --name myecat --channel conda-forge --file conda-requirements-linux-64.txt
+
 # Activate Environment
 conda activate myecat
+
+# Install additional dependencies
 conda install scikit-learn-intelex
-pip install -r pip-requirements.txt
+
+# For Windows
+pip install -r pip-requirements-win-64.txt
+# For Linux
+pip install -r pip-requirements-linux-64.txt
 ```
 
 #### Install our own packages and other necessary dependencies
