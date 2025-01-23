@@ -169,6 +169,19 @@ def find_left_and_right_boundary_triangles(sideedge_triangle_index: np.ndarray, 
     left_boundary_triangles = sideedge_triangle_index[np.where(is_left_boundary)[0]].tolist()
     right_boundary_triangles = sideedge_triangle_index[np.where(is_right_boundary)[0]].tolist()
 
+    # If the left or right boundary triangles are empty, choose the upper triangles as the left boundary and the lower triangles as the right boundary
+    if len(left_boundary_triangles) == 0 or len(right_boundary_triangles) == 0:
+        ind_upper = np.argwhere(rotation_angles > 0).flatten()
+        ind_lower = np.argwhere(rotation_angles < 0).flatten()
+        ind_upper_triangles = sideedge_triangle_index[ind_upper]
+        ind_lower_triangles = sideedge_triangle_index[ind_lower]
+        if np.mean(vertex_coordinates[vertex_indices[ind_upper_triangles], 1]) > np.mean(vertex_coordinates[vertex_indices[ind_lower_triangles], 1]):
+            left_boundary_triangles = ind_upper_triangles.tolist()
+            right_boundary_triangles = ind_lower_triangles.tolist()
+        else:
+            left_boundary_triangles = ind_lower_triangles.tolist()
+            right_boundary_triangles = ind_upper_triangles.tolist()
+
     return left_boundary_triangles, right_boundary_triangles
 
 
@@ -311,8 +324,14 @@ def find_left_or_right_edgeline_points(sideedge_triangle_index: np.ndarray, vert
     edgeline_points = vertex_coordinates[edgeline_points_indexes, :][pnt_sort_flag, :]
     edgeline_points_indexes = edgeline_points_indexes[pnt_sort_flag]
 
-    # tri_strike_flags = tri_strike_flags[np.argsort(centroid_zs)]
-    # print(tri_strikes)
+    # Check if the number of points is less than the number of triangles added by one
+    if len(edgeline_points) < len(sideedge_triangle_index) + 1:
+        all_point_indexes = np.unique(vertex_indices[sideedge_triangle_index].flatten())
+        edgeline_points_indexes = np.array([i for i in all_point_indexes if i not in edgeline_points_indexes])
+        edgeline_points = vertex_coordinates[edgeline_points_indexes]
+        order = np.argsort(edgeline_points[:, 2])
+        edgeline_points_indexes = edgeline_points_indexes[order]
+        edgeline_points = edgeline_points[order]
     return edgeline_points_indexes, edgeline_points # , rotation_angles, tri_strike_flags
 
 

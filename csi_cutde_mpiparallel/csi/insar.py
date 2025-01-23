@@ -68,6 +68,38 @@ class insar(SourceInv):
 
         # All done
         return
+    
+    def generateVelFrom3DDisp(self, lon, lat, enudisp, los=None, factor=1.0):
+        '''
+        Generate the velocity field from the 3D displacement field.
+        
+        Args:
+            * lon       : Longitude
+            * lat       : Latitude
+            * enudisp   : 3D displacement field (3 columns array)
+
+        Kwargs:
+            * los       : LOS unit vector (3 columns array)
+            * factor    : Factor to multiply the LOS velocity.
+
+        Returns:
+            * None
+        '''
+        assert enudisp.shape[1]==3, 'Need a 3 column array for the 3D displacement field'
+        assert lon.shape[0]==enudisp.shape[0], 'Need the same number of points in lon and enudisp'
+        assert lat.shape[0]==enudisp.shape[0], 'Need the same number of points in lat and enudisp'
+        self.lon, self.lat = lon, lat
+        self.x, self.y = self.ll2xy(lon, lat)
+        if los is not None:
+            if los.ndim == 1:
+                los = los.reshape((1,3))
+            self.los = np.ones((lon.shape[0],3)) * los
+        self.vel = np.sum(enudisp*self.los, axis=1)
+        self.vel *= factor
+        self.factor = factor
+
+        # All done
+        return
 
     def mergeInsar(self, sar):
         '''
@@ -356,34 +388,35 @@ class insar(SourceInv):
         # All done
         return
 
-    def read_from_varres(self,filename, factor=1.0, step=0.0, header=2, cov=False):
+    def read_from_varres(self, filename, factor=1.0, step=0.0, header=2, cov=False, triangular=False):
         '''
         Read the InSAR LOS rates from the VarRes output.
-
+    
         Args:
             * filename      : Name of the input file. Two files are opened filename.txt and filename.rsp.
-
+    
         Kwargs:
             * factor        : Factor to multiply the LOS velocity.
             * step          : Add a value to the velocity.
             * header        : Size of the header.
             * cov           : Read an additional covariance file (binary float32, Nd*Nd elements).
-
+            * triangular    : If True, read triangular downsampling scheme. Default is False.
+    
         Returns:
             * None
         '''
-
+    
         if self.verbose:
             print ("Read from file {} into data set {}".format(filename, self.name))
-
+    
         # Open the file
         fin = open(filename+'.txt','r')
         fsp = open(filename+'.rsp','r')
-
+    
         # Read it all
         A = fin.readlines()
         B = fsp.readlines()
-
+    
         # Initialize the business
         self.vel = []
         self.lon = []
@@ -391,7 +424,7 @@ class insar(SourceInv):
         self.err = []
         self.los = []
         self.corner = []
-
+    
         # Loop over the A, there is a header line header
         for i in range(header, len(A)):
             tmp = A[i].split()
@@ -401,8 +434,11 @@ class insar(SourceInv):
             self.err.append(np.float32(tmp[6]))
             self.los.append([np.float32(tmp[8]), np.float32(tmp[9]), np.float32(tmp[10])])
             tmp = B[i].split()
-            self.corner.append([np.float32(tmp[6]), np.float32(tmp[7]), np.float32(tmp[8]), np.float32(tmp[9])])
-
+            if triangular:
+                self.corner.append([np.float32(tmp[2]), np.float32(tmp[3]), np.float32(tmp[4]), np.float32(tmp[5]), np.float32(tmp[6]), np.float32(tmp[7])])
+            else:
+                self.corner.append([np.float32(tmp[6]), np.float32(tmp[7]), np.float32(tmp[8]), np.float32(tmp[9])])
+    
         # Make arrays
         self.vel = (np.array(self.vel)+step)*factor
         self.lon = np.array(self.lon)
@@ -410,34 +446,45 @@ class insar(SourceInv):
         self.err = np.array(self.err)*np.abs(factor)
         self.los = np.array(self.los)
         self.corner = np.array(self.corner)
-
+    
         # Close file
         fin.close()
         fsp.close()
-
+    
         # set lon to (0, 360.)
         #self._checkLongitude()
-
+    
         # Compute lon lat to utm
         self.x, self.y = self.ll2xy(self.lon,self.lat)
-
+    
         # Compute corner to xy
         self.xycorner = np.zeros(self.corner.shape)
-        x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
-        self.xycorner[:,0] = x
-        self.xycorner[:,1] = y
-        x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
-        self.xycorner[:,2] = x
-        self.xycorner[:,3] = y
-
+        if triangular:
+            x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
+            self.xycorner[:,0] = x
+            self.xycorner[:,1] = y
+            x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
+            self.xycorner[:,2] = x
+            self.xycorner[:,3] = y
+            x, y = self.ll2xy(self.corner[:,4], self.corner[:,5])
+            self.xycorner[:,4] = x
+            self.xycorner[:,5] = y
+        else:
+            x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
+            self.xycorner[:,0] = x
+            self.xycorner[:,1] = y
+            x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
+            self.xycorner[:,2] = x
+            self.xycorner[:,3] = y
+    
         # Read the covariance
         if cov:
             nd = self.vel.size
             self.Cd = np.fromfile(filename+'.cov', dtype=np.float32).reshape((nd, nd))*factor*factor
-
+    
         # Store the factor
         self.factor = factor
-
+    
         # All done
         return
 
@@ -1188,6 +1235,29 @@ class insar(SourceInv):
         # Do it
         self.keepPixels(u)
 
+        # All done
+        return
+    
+    def remove_significant_outliers(self, threshold):
+        '''
+        Remove the significant outliers based on a threshold value.
+    
+        Args:
+            * threshold     : Threshold value to determine significant outliers.
+    
+        Returns:
+            * None
+        '''
+    
+        # Select significant outliers based on the threshold
+        outliers = np.flatnonzero(np.abs(self.vel) > threshold)
+    
+        # Invert the selection to keep only non-outliers
+        non_outliers = np.setdiff1d(np.arange(len(self.vel)), outliers)
+    
+        # Do it
+        self.keepPixels(non_outliers)
+    
         # All done
         return
 
@@ -3210,7 +3280,8 @@ class insar(SourceInv):
              drawCoastlines=True, expand=0.2, edgewidth=1, figsize=None, markersize=1.,
              plotType='scatter', cmap='jet', alpha=1., box=None, titleyoffset=1.1,
              landcolor='lightgrey', seacolor=None, shadedtopo=None, title=True, los=None,
-             colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel=''):
+             colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
+             remove_direction_labels=False):
         '''
         Plot the data set, together with a fault, if asked.
 
@@ -3224,9 +3295,10 @@ class insar(SourceInv):
             * drawCoastlines    : bool. default is True
             * expand            : default expand around the limits covered by the data
             * edgewidth         : width of the edges of the decimation process patches
-            * plotType          : 'decim', 'scatter' or 'flat'
+            * plotType          : 'decimate', 'scatter' or 'flat'
             * figsize           : tuple of figure sizes
             * box               : Lon/lat box [lonmin, lonmax, latmin, latmax]
+            * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
 
         Returns:
             * None
@@ -3254,7 +3326,7 @@ class insar(SourceInv):
             figsize=(None, None)
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, 
                                      latmin=latmin, latmax=latmax, 
-                                     figsize=figsize)
+                                     figsize=figsize, remove_direction_labels=remove_direction_labels)
 
         # Shaded topo
         if shadedtopo is not None:
@@ -3418,7 +3490,7 @@ class insar(SourceInv):
             z = self.synth
         elif data == 'poly':
             z = self.orbit
-        elif data == 'resid':
+        elif data in ('res', 'resid', 'residuals'):
             z = self.vel - self.synth
 
         # Write these to a file
@@ -3429,24 +3501,25 @@ class insar(SourceInv):
 
         return
 
-    def writeDecim2file(self, filename, data='data', outDir='./'):
+    def writeDecim2file(self, filename, data='data', outDir='./', triangular=None):
         '''
         Writes the decimation scheme to a file plottable by GMT psxy command.
-
+    
         Args:
             * filename  : Name of the output file (ascii file)
-
+    
         Kwargs:
             * data      : Add the value with a -Z option for each rectangle. Can be 'data', 'synth', 'res', 'transformation'
             * outDir    : output directory
-
+            * triangular: If True, write triangular downsampling scheme. Default is None, which will auto-detect based on corner shape.
+    
         Returns:
             * None
         '''
-
+    
         # Open the file
         fout = open(os.path.join(outDir, filename), 'w')
-
+    
         # Which data do we add as colors
         if data in ('data', 'd', 'dat', 'Data'):
             values = self.vel
@@ -3456,25 +3529,37 @@ class insar(SourceInv):
             values = self.vel - self.synth
         elif data in ('transformation', 'trans', 't'):
             values = self.transformation
-
+    
+        # Auto-detect triangular if not specified
+        if triangular is None:
+            if self.corner.shape[1] == 6:
+                triangular = True
+            else:
+                triangular = False
+    
         # Iterate over the data and corner
         for corner, d in zip(self.corner, values):
-
             # Make a line
             string = '> -Z{} \n'.format(d)
             fout.write(string)
-
+    
             # Write the corners
-            xmin, ymin, xmax, ymax = corner
-            fout.write('{} {} \n'.format(xmin, ymin))
-            fout.write('{} {} \n'.format(xmin, ymax))
-            fout.write('{} {} \n'.format(xmax, ymax))
-            fout.write('{} {} \n'.format(xmax, ymin))
-            fout.write('{} {} \n'.format(xmin, ymin))
-
+            if triangular:
+                fout.write('{} {} \n'.format(corner[0], corner[1]))
+                fout.write('{} {} \n'.format(corner[2], corner[3]))
+                fout.write('{} {} \n'.format(corner[4], corner[5]))
+                fout.write('{} {} \n'.format(corner[0], corner[1]))
+            else:
+                xmin, ymin, xmax, ymax = corner
+                fout.write('{} {} \n'.format(xmin, ymin))
+                fout.write('{} {} \n'.format(xmin, ymax))
+                fout.write('{} {} \n'.format(xmax, ymax))
+                fout.write('{} {} \n'.format(xmax, ymin))
+                fout.write('{} {} \n'.format(xmin, ymin))
+    
         # Close the file
         fout.close()
-
+    
         # All done
         return
 

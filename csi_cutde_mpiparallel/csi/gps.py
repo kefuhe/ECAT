@@ -1034,7 +1034,7 @@ class gps(SourceInv):
         |     |     |       |       |       |       |             |
         |     |     |       |       |       |       |             |
         +-----+-----+-------+-------+-------+-------+-------------+ 
-        Lon Lat [dep] e n se sn [sen seu] sta
+        Lon Lat [dep] e n se sn [sen] sta
 
         Args:
             * velfile   : File containing the velocities.
@@ -1073,7 +1073,7 @@ class gps(SourceInv):
         if dep:
             sta_ind += 1
         if rho:
-            sta_ind += 2
+            sta_ind += 1
         
         disp_ind_offset = 0
         if dep:
@@ -1089,11 +1089,11 @@ class gps(SourceInv):
 
                 east = float(A[2 + disp_ind_offset])
                 north = float(A[3 + disp_ind_offset])
-                self.vel_enu.append([east, north, 0.0])
+                self.vel_enu.append([east, north, np.nan])
 
                 east = float(A[4 + disp_ind_offset])
                 north = float(A[5 + disp_ind_offset])
-                up = 0.0
+                up = np.nan
                 if east == 0.:
                     east = minerr
                 if north == 0.:
@@ -4004,7 +4004,7 @@ class gps(SourceInv):
              Map=True, Fault=True, zorder=None,
              vertical=False, verticalsize=[30], verticalnorm=None, box=None,
              width=0.005, headwidth=3, headlength=5, headaxislength=4.5, minshaft=1, minlength=1,
-             data=['data'], color=['k'], titleyoffset=1.1, alpha=1., legendunit=''):
+             data=['data'], color=['k'], titleyoffset=1.1, alpha=1., legendunit='', remove_direction_labels=False):
         '''
         Plot the network
 
@@ -4025,6 +4025,7 @@ class gps(SourceInv):
             * faults        : List of fault objects to plot the surface trace of a fault object (see verticalfault.py).
             * plot_los      : Plot the los projected gps as scatter points
             * box           : Lon/lat box [lonmin, lonmax, latmin, latmax]
+            * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
 
         Returns:
             * None
@@ -4048,7 +4049,7 @@ class gps(SourceInv):
             figsize=(None, None)
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, 
                                      latmin=latmin, latmax=latmax, 
-                                     figsize=figsize, Map=Map, Fault=Fault)
+                                     figsize=figsize, Map=Map, Fault=Fault, remove_direction_labels=remove_direction_labels)
 
         # Shaded topo
         if shadedtopo is not None: fig.shadedTopography(**shadedtopo)

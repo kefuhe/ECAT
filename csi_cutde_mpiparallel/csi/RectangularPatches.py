@@ -1085,6 +1085,7 @@ class RectangularPatches(Fault):
 
         # depth
         D = 0.0
+        d = 10000.
 
         # Loop over the file
         i = 0
@@ -1135,8 +1136,11 @@ class RectangularPatches(Fault):
                 lon4, lat4 = self.xy2ll(x4, y4)
             # Depth
             mm = min([float(z1), float(z2), float(z3), float(z4)])
-            if D<mm:
-                D=mm
+            mx = max([float(z1), float(z2), float(z3), float(z4)])
+            if D<mx:
+                D=mx
+            if d>mm:
+                d=mm
             # Set points
             if increasingy:
                 if y1>y2:
@@ -1172,6 +1176,7 @@ class RectangularPatches(Fault):
 
         # depth
         self.depth = D
+        self.top = d
         self.z_patches = np.linspace(0,D,5)
 
         # Translate slip to np.array
@@ -3106,7 +3111,8 @@ class RectangularPatches(Fault):
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
              drawCoastlines=True, expand=0.2, figsize=(None, None),
-             cmap='jet', edgecolor='slip', ftype='png', dpi=300, bbox_inches=None, savefig=False, suffix=''):
+             cmap='jet', edgecolor='slip', ftype='png', dpi=300, bbox_inches=None, savefig=False, suffix='', 
+             remove_direction_labels=False, cbticks=None, cblinewidth=1, cbfontsize=10, cb_label_side='opposite', map_cbaxis=None):
         '''
         Plot the available elements of the fault.
         
@@ -3121,6 +3127,12 @@ class RectangularPatches(Fault):
             * plot_on_2d    : Make a map plot of the fautl
             * drawCoastlines: True/False
             * expand        : How much to extend the map around the fault (degrees)
+            * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+            * cbticks       : List of ticks to set on the colorbar
+            * cblinewidth   : Width of the colorbar label border and tick lines
+            * cbfontsize    : Font size of the colorbar label, default is 10
+            * cb_label_side : Position of the label relative to the ticks ('opposite' or 'same'), default is 'opposite'
+            * map_cbaxis    : Axis for the colorbar on the map plot, default is None
         '''
 
         # Get lons lats
@@ -3134,7 +3146,8 @@ class RectangularPatches(Fault):
         latmax = np.max([p[:,1] for p in self.patchll])+expand
 
         # Create a figure
-        fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, latmin=latmin, latmax=latmax, figsize=figsize)
+        fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, latmin=latmin, latmax=latmax, figsize=figsize,
+                      remove_direction_labels=remove_direction_labels)
 
         # Draw the coastlines
         if drawCoastlines:
@@ -3143,7 +3156,8 @@ class RectangularPatches(Fault):
         # Draw the fault
         fig.faultpatches(self, slip=slip, norm=norm, colorbar=True, 
                          cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
-                         plot_on_2d=plot_on_2d, cmap=cmap, edgecolor=edgecolor)
+                         plot_on_2d=plot_on_2d, cmap=cmap, edgecolor=edgecolor,
+                         cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
 
         # Plot the trace of there is one
         if self.lon is not None:
@@ -3699,7 +3713,7 @@ class RectangularPatches(Fault):
         row=ifault//nstrike #Row number corresponding to this subfault
         column=ifault-(nstrike*row)
         if nstrike<4 or ndip<4:
-            print("ERROR: The fault model is too small for Laplacian regualrization. You need a minimum of 4 rows and 4 columns in the model.")
+            print("Warning: The fault model is too small for Laplacian regualrization. You need a minimum of 4 rows and 4 columns in the model.")
             return False,False
         if row==0 and column==0: #Top right corner
             stencil=array([ifault,ifault+1,ifault+nstrike])

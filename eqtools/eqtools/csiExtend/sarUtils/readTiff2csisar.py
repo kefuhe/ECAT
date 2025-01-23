@@ -1,15 +1,9 @@
-# insar导入需要在gdal前面可能存在cartopy，shapely库冲突放在其后
-from osgeo import gdal
-from osgeo import osr
 import numpy as np
-from pyproj import Proj
-import matplotlib.pyplot as plt
 import os
 from glob import glob
 
-from csi.insar import insar
 from .readBase2csisar import ReadBase2csisar, Hyp3TiffConfig, GammaTiffConfig
-
+from .readTiffUtils import read_tiff, read_tiff_info, utm_to_latlon
 
 class TiffsarReader(ReadBase2csisar):
     def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.', config=None):
@@ -82,7 +76,7 @@ class TiffsarReader(ReadBase2csisar):
             mesh_lat, mesh_lon = utm_to_latlon(mesh_lon.flatten(), mesh_lat.flatten(), im_proj)
             mesh_lat = mesh_lat.reshape(im_height, im_width)
             mesh_lon = mesh_lon.reshape(im_height, im_width)
-        
+
         if zero2nan:
             vel[vel == 0] = np.nan
 
@@ -91,8 +85,8 @@ class TiffsarReader(ReadBase2csisar):
         self.raw_vel = vel
         self.raw_azimuth = azi
         self.raw_incidence = inc
-        self.raw_lon = x_lon
-        self.raw_lat = x_lat
+        self.raw_lon = mesh_lon.mean(axis=0)
+        self.raw_lat = mesh_lat.mean(axis=1)
         self.raw_mesh_lon = mesh_lon
         self.raw_mesh_lat = mesh_lat
         self.im_geotrans = im_geotrans
@@ -131,6 +125,9 @@ class TiffsarReader(ReadBase2csisar):
         if apply_wavelength_conversion:
             self.vel = self.unw_phase_to_los(self.vel, wavelength)
             self.raw_vel = self.unw_phase_to_los(self.raw_vel, wavelength)
+        else:
+            self.vel = -self.vel
+            self.raw_vel = -self.raw_vel
 
         # Convert zeros to NaN in velocity data if enabled
         if zero2nan:
@@ -148,122 +145,6 @@ class GammaTiffReader(TiffsarReader):
         super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0)
         self.directory_name = directory_name
         self.config = config if config else GammaTiffConfig()
-
-
-def read_tiff(unwfile):
-    '''
-    Input:
-        * unwfile     : tiff格式影像文件
-    Output:
-        * im_data     : 数据矩阵
-        * im_geotrans : 横纵坐标起始点和步长
-        * im_proj     : 投影参数
-        * im_width    : 像元的行数
-        * im_height   : 像元的列数
-    '''
-    dataset = gdal.Open(unwfile, gdal.GA_ReadOnly)  # 打开文件
-    im_width = dataset.RasterXSize  # 栅格矩阵的列数
-    im_height = dataset.RasterYSize  # 栅格矩阵的行数
-    im_bands = dataset.RasterCount  # 波段数
-    im_geotrans = dataset.GetGeoTransform()  # 仿射矩阵，左上角像素的大地坐标和像素分辨率/步长
-    im_proj = dataset.GetProjection()  # 地图投影信息，字符串表示
-    im_band = dataset.GetRasterBand(1)
-    # im_data = np.asarray(imread(filename))
-    # 下面这个一直进行数据读取有问题
-    im_data = im_band.ReadAsArray(0, 0, im_width, im_height) # 将栅格图像值存为数据矩阵
-    del dataset
-    return im_data, im_geotrans, im_proj, im_width, im_height
-
-
-def read_tiff_info(unwfile, im_width, im_height, meshout=True):
-    '''
-    Object:
-        * 获取tiff文件坐标系统和横轴、纵轴范围
-    Input:
-        * tiff文件文件名
-    Output:
-        * x_lon, y_step, x_lat, y_step
-    '''
-
-    metadata = gdal.Info(unwfile, format='json', deserialize=True)
-    upperLeft = metadata['cornerCoordinates']['upperLeft']
-    lowerRight = metadata['cornerCoordinates']['lowerRight']
-    x_upperleft, y_upperleft = upperLeft
-    x_lowerright, y_lowerright = lowerRight
-    x_step = (x_upperleft - x_lowerright)/im_width
-    y_step = -(y_upperleft - y_lowerright)/im_height
-    x_lon = np.linspace(x_upperleft, x_lowerright, im_width)
-    x_lat = np.linspace(y_upperleft, y_lowerright, im_height)
-
-    if meshout:
-        mesh_lon, mesh_lat = np.meshgrid(x_lon, x_lat)
-        return x_lon, y_step, x_lat, y_step, mesh_lon, mesh_lat
-    else:
-        return x_lon, x_step, x_lat, y_step
-
-
-def write_tiff(filename, im_proj, im_geotrans, im_data=None):
-    # 判断栅格数据的数据类型
-    if 'int8' in im_data.dtype.name:
-        datatype = gdal.GDT_Byte
-    elif 'int16' in im_data.dtype.name:
-        datatype = gdal.GDT_UInt16
-    else:
-        datatype = gdal.GDT_Float32
-        
-    # 判读数组维数
-    # im_data.shape可能有三个元素，对应多维矩阵，即多个波段；
-    # 也可能有两个元素，对应二维矩阵，即一个波段
-    if len(im_data.shape) == 3:
-        im_bands, im_height, im_width = im_data.shape
-    else:
-        im_bands = 1
-        (im_height, im_width) = im_data.shape
-
-
-def utm_to_latlon(easting, northing, proj_info):
-    """
-    Convert UTM coordinates to latitude and longitude.
-
-    Parameters:
-    easting (numpy.ndarray): The easting values (X coordinates).
-    northing (numpy.ndarray): The northing values (Y coordinates).
-    proj_info (str): The projection information string.
-
-    Returns:
-    tuple: Two numpy arrays containing the latitudes and longitudes.
-    """
-    # Ensure easting and northing are numpy arrays
-    easting = np.asarray(easting)
-    northing = np.asarray(northing)
-
-    # Check if easting and northing arrays have the same size
-    if easting.shape != northing.shape:
-        raise ValueError("Easting and northing arrays must have the same size")
-
-    # Create a spatial reference object for the UTM projection
-    utm_srs = osr.SpatialReference()
-    utm_srs.ImportFromWkt(proj_info)
-
-    # Create a spatial reference object for the WGS84 geographic coordinate system
-    wgs84_srs = osr.SpatialReference()
-    wgs84_srs.ImportFromEPSG(4326)  # EPSG code for WGS84
-
-    # Create a coordinate transformation object
-    transform = osr.CoordinateTransformation(utm_srs, wgs84_srs)
-
-    # Initialize arrays for latitudes and longitudes
-    latitudes = np.zeros_like(easting)
-    longitudes = np.zeros_like(northing)
-
-    # Perform the transformation for each point
-    for i in range(len(easting)):
-        # TODO: Check Use of TransformPoint() method
-        lat, lon, _ = transform.TransformPoint(easting[i], northing[i])
-        latitudes[i] = lat
-        longitudes[i] = lon
-
-    return latitudes, longitudes
 
 
 if __name__ == '__main__':

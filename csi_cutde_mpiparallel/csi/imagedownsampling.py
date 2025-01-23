@@ -18,12 +18,15 @@ import copy
 import sys
 import os
 import multiprocessing as mp
+from scipy.spatial import KDTree
+import matplotlib.path as mpath
 
 # Personals
 from .insar import insar
 from .opticorr import opticorr
 from .imagecovariance import imagecovariance as imcov
 from .csiutils import _split_seq
+
 
 class mpstd(mp.Process):
     def __init__(self, downsampler, Bsize, indexes, queue):
@@ -55,11 +58,18 @@ class mpstd(mp.Process):
 
         std_dev = []
 
+        # Check if KDTree exists
+        if not hasattr(self.downsampler, 'PIXXY_Tree'):
+            raise AttributeError("KDTree not found. Please create KDTree using downsampler.PIXXY.")
+
         # Over each block, we compute the standard deviation
         for i in self.indexes:
 
             # Get block
             block = self.downsampler.blocks[i]
+
+            # Ensure block is a numpy array
+            block = np.array(block)
 
             # Check if the block size has reached the minimum
             if self.Bsize[i]:
@@ -67,17 +77,21 @@ class mpstd(mp.Process):
                 std_dev.append(0)
             else:
                 # Create a path
-                p = path.Path(block, closed=False)
+                p = mpath.Path(block, closed=False)
 
-                # Find those who are inside
-                ii = p.contains_points(self.downsampler.PIXXY)
+                # Find points inside the block using KDTree
+                block_center = np.mean(block, axis=0)
+                block_radius = np.max(np.linalg.norm(block - block_center, axis=1))
+                indices = self.downsampler.PIXXY_Tree.query_ball_point(block_center, r=block_radius)
+                points_inside = self.downsampler.PIXXY[indices]
+                mask = p.contains_points(points_inside)
 
                 # Compute standard deviation
                 if self.downsampler.datatype == 'insar':
-                    std_dev.append(np.std(self.downsampler.image.vel[ii]))
-                elif self.datatype == 'opticorr':
-                    east_std = np.std(self.downsampler.image.east[ii])
-                    north_std = np.std(self.downsampler.image.north[ii])
+                    std_dev.append(np.std(self.downsampler.image.vel[indices][mask]))
+                elif self.downsampler.datatype == 'opticorr':
+                    east_std = np.std(self.downsampler.image.east[indices][mask])
+                    north_std = np.std(self.downsampler.image.north[indices][mask])
                     std_dev.append(np.sqrt(east_std**2 + north_std**2))
 
         # Save standard deviation
@@ -85,6 +99,7 @@ class mpstd(mp.Process):
 
         # All done
         return
+
 
 # Initialize a class for multiprocessing gradient computation
 class mpgradcurv(mp.Process):
@@ -143,8 +158,19 @@ class mpgradcurv(mp.Process):
                 for subblock in subBlocks:
                     # Create a path
                     p = path.Path(subblock, closed=False)
-                    # Find those who are inside
-                    ii = p.contains_points(self.downsampler.PIXXY)
+
+                    # Keep block as numpy array
+                    subblock = np.array(subblock)
+
+                    # Find points inside the block using KDTree
+                    block_center = np.mean(subblock, axis=0)
+                    block_radius = np.max(np.linalg.norm(subblock - block_center, axis=1))
+                    indices = self.downsampler.PIXXY_Tree.query_ball_point(block_center, r=block_radius)
+                    points_inside = self.downsampler.PIXXY[indices]
+                    mask = p.contains_points(points_inside)
+                    indices = np.array(indices)
+                    ii = indices[mask]
+
                     # Check if total area is sufficient
                     check = self.downsampler._isItAGoodBlock(block,
                             np.flatnonzero(ii).shape[0])
@@ -228,9 +254,21 @@ class mpdownsampler(mp.Process):
             # Create a path
             p = path.Path(block, closed=False)
 
-            # Find those who are inside
-            ii = p.contains_points(self.downsampler.PIXXY)
+            # 
+            block = np.array(block)
 
+            # Find those who are inside
+            # ii = p.contains_points(self.downsampler.PIXXY)
+
+            # Find points inside the block using KDTree
+            block_center = np.mean(block, axis=0)
+            block_radius = np.max(np.linalg.norm(block - block_center, axis=1))
+            indices = self.downsampler.PIXXY_Tree.query_ball_point(block_center, r=block_radius)
+            points_inside = self.downsampler.PIXXY[indices]
+            mask = p.contains_points(points_inside)
+            indices = np.array(indices)
+            ii = indices[mask]
+            
             # Check if total area is sufficient
             check = self.downsampler._isItAGoodBlock(block, np.flatnonzero(ii).shape[0])
 
@@ -338,6 +376,8 @@ class imagedownsampling(object):
 
         # Save the image
         self.image = image
+        self.PIXXY = np.vstack((image.x, image.y)).T
+        self.PIXXY_Tree = KDTree(self.PIXXY)
 
         # Incidence and heading need to be defined if already defined
         if self.datatype == 'insar':
@@ -499,7 +539,7 @@ class imagedownsampling(object):
         newimage.factor = self.image.factor
 
         # Build the previous geometry
-        self.PIXXY = np.vstack((self.image.x, self.image.y)).T
+        # self.PIXXY = np.vstack((self.image.x, self.image.y)).T
         # Create a queue to hold the results
         output = mp.Queue()
 
@@ -639,10 +679,13 @@ class imagedownsampling(object):
         c1, c2, c3, c4 = block
         x1, y1 = c1
         x2, y2 = c2
+        x3, y3 = c3
         x4, y4 = c4
 
-        xc = x1 + (x2 - x1)/2.
-        yc = y1 + (y4 - y1)/2.
+        # xc = x1 + (x2 - x1)/2.
+        # yc = y1 + (y4 - y1)/2.
+        xc = (x1 + x2 + x3 + x4)/4.
+        yc = (y1 + y2 + y3 + y4)/4.
 
         # All done
         return xc, yc
@@ -854,7 +897,7 @@ class imagedownsampling(object):
         '''
 
         # Get the XY situation
-        self.PIXXY = np.vstack((self.image.x, self.image.y)).T
+        # self.PIXXY = np.vstack((self.image.x, self.image.y)).T
 
         # Get minimum size
         Bsize = self._is_minimum_size(self.blocks)
@@ -906,9 +949,11 @@ class imagedownsampling(object):
         Returns:
             * None
         '''
+        from scipy.spatial import KDTree
 
         # Get the XY situation
-        self.PIXXY = np.vstack((self.image.x, self.image.y)).T
+        # self.PIXXY = np.vstack((self.image.x, self.image.y)).T
+        # self.tree = KDTree(self.PIXXY)
 
         # Get minimum size
         Bsize = self._is_minimum_size(self.blocks)
@@ -1129,30 +1174,31 @@ class imagedownsampling(object):
         # All done
         return
 
-    def resolutionBased(self, threshold, damping, slipdirection='s', plot=False, verboseLevel='minimum', decimorig=10, vertical=False):
+    def resolutionBased(self, threshold, damping, slipdirection='s', plot=False, verboseLevel='minimum', decimorig=10, vertical=False, smooth=None):
         '''
         Iteratively downsamples the dataset until value compute inside each block is lower than the threshold.
-
+    
         Args:
             * threshold     : Threshold.
             * damping       : Damping coefficient (damping is made through an identity matrix).
-
+    
         Kwargs:
             * slipdirection : Which direction to accout for to build the slip Green's functions (s, d or t)
             * plot          : False/True
             * verboseLevel  : talk to me
             * decimorig     : decimate a bit before plotting
             * vertical      : Use vertical green's functions.
-
+            * smooth        : Smoothing parameter for resolution matrix.
+    
         Returns:
             * None
         '''
-
+    
         if self.verbose:
             print ("---------------------------------")
             print ("---------------------------------")
             print ("Downsampling Iterations")
-
+    
         # Check if vertical is set properly
         if not vertical and self.datatype == 'insar':
             print("----------------------------------")
@@ -1162,24 +1208,23 @@ class imagedownsampling(object):
             print(" LOS is always very sensitive to vertical")
             print(" displacements...")
             vertical = True
-
+    
         # Creates the variable that is supposed to stop the loop
-        # Check = [False]*len(self.blocks)
-        self.Rd = np.ones(len(self.blocks),)*(threshold+1.)
+        self.Rd = np.ones(len(self.blocks),) * (threshold + 1.)
         do_cut = False
-
+    
         # counter
         it = 0
-
+    
         # Check if block size is minimum
         Bsize = self._is_minimum_size(self.blocks)
-
+    
         # Loops until done
-        while not (self.Rd<threshold).all():
-
+        while not (self.Rd < threshold).all():
+    
             # Check
-            assert self.Rd.shape[0]==len(self.blocks), 'Resolution matrix has a size different than number of blocks'
-
+            assert self.Rd.shape[0] == len(self.blocks), 'Resolution matrix has a size different than number of blocks'
+    
             # Cut if asked
             if do_cut:
                 # New list of blocks
@@ -1187,7 +1232,7 @@ class imagedownsampling(object):
                 # Iterate over blocks
                 for j in range(len(self.blocks)):
                     block = self.blocks[j]
-                    if (self.Rd[j]>threshold) and not Bsize[j]:
+                    if (self.Rd[j] > threshold) and not Bsize[j]:
                         b1, b2, b3, b4 = self.cutblockinfour(block)
                         newblocks.append(b1)
                         newblocks.append(b2)
@@ -1201,31 +1246,38 @@ class imagedownsampling(object):
                 self.downsample(plot=False, decimorig=decimorig)
             else:
                 do_cut = True
-
+    
             # Iteration #
             it += 1
             if self.verbose:
                 print('Iteration {}: Testing {} data samples '.format(it, len(self.blocks)))
-
+    
             # Compute resolution
             self.computeResolution(slipdirection, damping, vertical=vertical)
-
+    
+            # Smooth the resolution matrix if smooth is provided
+            if smooth is not None:
+                centers = [self.getblockcenter(block) for block in self.blocks]
+                Distances = distance.cdist(centers, centers)**2
+                gauss = np.exp(-0.5 * Distances / (smooth**2))
+                self.Rd = np.dot(gauss, self.Rd) / np.sum(gauss, axis=1)
+    
             # Blocks that have a minimum size, don't check these
             Bsize = self._is_minimum_size(self.blocks)
             self.Rd[np.where(Bsize)] = 0.0
-
+    
             if self.verbose and verboseLevel != 'minimum':
                 sys.stdout.write(' ===> Resolution from {} to {}, Mean = {} +- {} \n'.format(self.Rd.min(),
                     self.Rd.max(), self.Rd.mean(), self.Rd.std()))
                 sys.stdout.flush()
-
+    
             # Plot at the end of that iteration
             if plot:
                 self.plotDownsampled(decimorig=decimorig)
-
+    
         if self.verbose:
             print(" ")
-
+    
         # All done
         return
 
@@ -1360,6 +1412,14 @@ class imagedownsampling(object):
         # Get the datasets
         original = self.image
         downsampled = self.newimage
+        corner = []
+        if len(self.blocksll[0]) == 4:
+            for block in self.blocksll:
+                corner.append(block[0] + block[1] + block[2] + block[3])
+        elif len(self.blocksll[0]) == 3:
+            for block in self.blocksll:
+                corner.append(block[0] + block[1] + block[2])
+        downsampled.corner = corner
         
         # Get the min max values
         if original.dtype == 'insar':

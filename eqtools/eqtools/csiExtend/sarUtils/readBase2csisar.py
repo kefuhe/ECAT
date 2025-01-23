@@ -178,7 +178,7 @@ class ReadBase2csisar(insar):
     
         return data_array
     
-    def cut_raw_sar(self, lon_range, lat_range):
+    def cut_raw_sar(self, lon_range, lat_range, inplace=False):
         """
         Cut the raw SAR data based on the given longitude and latitude ranges.
 
@@ -201,7 +201,17 @@ class ReadBase2csisar(insar):
         rawsar = self.raw_vel[lat_idx[0]:lat_idx[-1]+1, lon_idx[0]:lon_idx[-1]+1]
         coordrange = [mesh_lon.min(), mesh_lon.max(), mesh_lat.min(), mesh_lat.max()]
     
+        if inplace:
+            self.raw_vel = rawsar
+            self.raw_mesh_lon = mesh_lon
+            self.raw_mesh_lat = mesh_lat
+            self.raw_lon = mesh_lon[0, :]
+            self.raw_lat = mesh_lat[:, 0]
         return rawsar, mesh_lon, mesh_lat, coordrange
+    
+    def select_pixels(self, minlon, maxlon, minlat, maxlat):
+        self.cut_raw_sar([minlon, maxlon], [minlat, maxlat], inplace=True)
+        return super().select_pixels(minlon, maxlon, minlat, maxlat)
     
     # ------------------------Plotting-------------------------------#
     def plot_raw_sar(self, coordrange=None, faults=None, rawdownsample4plot=100, factor4plot=100, 

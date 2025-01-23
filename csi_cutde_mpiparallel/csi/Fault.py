@@ -409,8 +409,8 @@ class Fault(SourceInv):
 
         # Set lon and lat
         if utm:
-            self.xf  = np.array(x)/1000.
-            self.yf  = np.array(y)/1000.
+            self.xf  = np.array(x) # /1000.
+            self.yf  = np.array(y) # /1000.
             # to lat/lon
             self.trace2ll()
         else:
@@ -596,40 +596,49 @@ class Fault(SourceInv):
     #     return
 
     def discretize_trace(self, every, threshold=2):
+        """
+        Discretize the fault trace at regular intervals.
+    
+        Args:
+            * every (float): Interval at which to discretize the trace.
+            * threshold (float): Threshold distance to check the first and last vertex. Default is 2 km.
+                Add the first and last vertex in the rupture trace (self.xf, self.yf) if the distance to the nearest r_new point is greater than the threshold.
+    
+        Returns:
+            * None
+        """
         x, y = self.xf, self.yf
-        # 计算曲线的长度
+        # Calculate the length of the curve
         dx = np.insert(np.diff(x), 0, 0)
         dy = np.insert(np.diff(y), 0, 0)
         dr = np.sqrt(dx*dx + dy*dy)
-        # r = np.insert(cumtrapz(dr, initial=0), 0, 0)  # 曲线的长度
-        r = cumtrapz(dr, initial=0)  # 曲线的长度
-
-        # 创建插值函数
+        r = cumtrapz(dr, initial=0)  # Length of the curve
+    
+        # Create interpolation functions
         fx = interp1d(r, x, kind='linear')
         fy = interp1d(r, y, kind='linear')
-
-        # 在曲线长度上进行等间隔的划分
+    
+        # Discretize the curve length at regular intervals
         num_points = int(np.floor(r[-1] / every))
         remainder = r[-1] - num_points * every
         if remainder >= every / 2:
             num_points += 1
         r_new = np.linspace(0, r[-1], num_points)
-
-        # 检查第一个和最后一个顶点与最近的r_new点的距离
-        # threshold = 2  # 阈值，单位为km
+    
+        # Check the distance of the first and last vertex to the nearest r_new point
         if r_new[0] - r[0] > threshold:
             r_new = np.insert(r_new, 0, r[0])
         if r[-1] - r_new[-1] > threshold:
             r_new = np.append(r_new, r[-1])
-
-        # 计算新的 x 和 y 值
+    
+        # Calculate new x and y values
         x_new = fx(r_new)
         y_new = fy(r_new)
-
+    
         self.xi, self.yi = x_new, y_new
         # Compute the lon/lat
         self.loni, self.lati = self.xy2ll(self.xi, self.yi)
-
+    
         return
     # ----------------------------------------------------------------------
 
@@ -1670,6 +1679,10 @@ class Fault(SourceInv):
         """
         Builds the Green's functions based on the solution by cutde.
         The corresponding functions are in the cutde code that needs to be installed
+
+        Note:
+        The cutde code uses a different coordinate system with z-axis pointing upward instead of downward.
+        The vertex order of each patch need to be counter-clockwise when viewed from above.
         """
         from cutde.halfspace import disp_matrix
 
@@ -1705,7 +1718,6 @@ class Fault(SourceInv):
         # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
         # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
-        Gds *= -1.0 # cutde uses a different sign convention for dip slip, let reverse is positive
 
         if verbose:
             print(' ')
@@ -1723,6 +1735,10 @@ class Fault(SourceInv):
         """
         Builds the Green's functions based on the solution by cutde.
         The corresponding functions are in the cutde code that needs to be installed
+
+        Note:
+        The cutde code uses a different coordinate system with z-axis pointing upward instead of downward.
+        The vertex order of each patch need to be counter-clockwise when viewed from above.
         """
         from cutde.halfspace import disp_matrix
 
@@ -1758,7 +1774,6 @@ class Fault(SourceInv):
         # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
         # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
-        Gds *= -1.0 # cutde uses a different sign convention for dip slip, let reverse is positive
 
         if verbose:
             print(' ')

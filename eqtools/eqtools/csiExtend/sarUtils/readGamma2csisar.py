@@ -137,6 +137,9 @@ class GammasarReader(ReadBase2csisar):
         if apply_wavelength_conversion:
             self.vel = self.unw_phase_to_los(self.vel, wavelength)
             self.raw_vel = self.unw_phase_to_los(self.raw_vel, wavelength)
+        else:
+            self.vel = -self.vel
+            self.raw_vel = -self.raw_vel
 
         # Convert zeros to NaN in velocity data if enabled
         if zero2nan:

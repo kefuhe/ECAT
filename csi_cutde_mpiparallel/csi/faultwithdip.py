@@ -48,7 +48,7 @@ class faultwithdip(RectangularPatches):
         Builds a dipping fault.
         Args:
             * dip           : Dip angle
-            * dipdirection  : Direction towards which the fault dips.
+            * dipdirection  : Direction towards which the fault dips from North.
         '''
 
         # Print
@@ -65,6 +65,7 @@ class faultwithdip(RectangularPatches):
 
         # Discretize the surface trace of the fault
         self.discretize(every,trace_tol,trace_fracstep,trace_xaxis)
+        # self.discretize_trace(every=every, threshold=every/2.0)
 
         # degree to rad
         dip_rad = dip*np.pi/180.
@@ -284,7 +285,7 @@ class faultwithdip(RectangularPatches):
         self.slip = np.array(self.slip)
 
         # Re-discretoze to get the original fault
-        self.discretize(every,trace_tol,trace_fracstep,trace_xaxis)
+        # self.discretize(every,trace_tol,trace_fracstep,trace_xaxis)
 
         # Compute the equivalent rectangles
         self.computeEquivRectangle()

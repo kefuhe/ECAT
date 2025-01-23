@@ -421,12 +421,15 @@ class TriangularPatches(Fault):
             # Assert it works
             assert A[i].split()[0] == '>', 'Not a patch, reformat your file...'
             # Get the Patch Id
+            ids = 0
             if readpatchindex:
                 self.index_parameter.append([np.int64(A[i].split()[ipatch]),np.int64(A[i].split()[ipatch+1]),np.int64(A[i].split()[ipatch+2])])
+                ids += 3
             # Get the slip value
             if not donotreadslip:
-                if len(A[i].split())>7:
-                    slip = np.array([np.float_(A[i].split()[ipatch+4]), np.float_(A[i].split()[ipatch+5]), np.float_(A[i].split()[ipatch+6])])
+                step = ids if ids == 0 else ids + 1
+                if len(A[i].split())>ipatch + step:
+                    slip = np.array([np.float_(A[i].split()[ipatch+step]), np.float_(A[i].split()[ipatch+step+1]), np.float_(A[i].split()[ipatch+step+2])])
                 else:
                     slip = np.array([0.0, 0.0, 0.0])
                 Slip.append(slip)
@@ -457,8 +460,9 @@ class TriangularPatches(Fault):
                 lon3, lat3 = self.xy2ll(x3, y3)
             # Depth
             mm = min([float(z1), float(z2), float(z3)])
-            if D<mm:
-                D=mm
+            mx = max([float(z1), float(z2), float(z3)])
+            if D<mx:
+                D=mx
             if d>mm:
                 d=mm
             # Set points
@@ -502,28 +506,34 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def readPatchesFromAbaqus(self, vertexfile, topofile, readpatchindex=True, inputCoordinates='xyz', projstr=None, lon0=None, lat0=None):
+    def readPatchesFromAbaqus(self, vertexfile, topofile, readpatchindex=True, projstr=None, lon0=None, lat0=None):
         '''
-        Reads patches from a Abaqus formatted file. (Improved version)
-
+        Reads patches from an Abaqus formatted file.
+    
         Args:
-            * vertexfile             : Name of the Vertex coordinate file
-            * topofile               : Name of the Triangular topology file
-        
+            vertexfile (str): Name of the vertex coordinate file.
+            topofile (str): Name of the triangular topology file.
+    
         Kwargs:
-            * inputCoordinates       : Default is 'xyz' When projstr needs to be a non none value. Can be 'lonlat'
-            * readpatchindex         : Default True.
-            * projstr                : The Proj str used in Trelis with Proj(projstr)
-
+            readpatchindex (bool): Default is True. If True, keep the index order of the patches.
+            projstr (str): The Proj string used in Trelis with Proj(projstr).
+            lon0 (float): Central longitude for the projection. Used if UTM zone is not specified in projstr.
+            lat0 (float): Central latitude for the projection. Used if UTM zone is not specified in projstr.
+    
         Returns:
-            * None
-        TODO: Need to be fixed
+            None
+    
+        Raises:
+            ValueError: If lon0 and lat0 are not provided and cannot be extracted from projstr when UTM zone is not specified.
         '''
-
+    
         import pandas as pd
-        from pyproj import Proj
-
-        # create the lists
+        from pyproj import Proj, Transformer, CRS
+        from pyproj.database import query_utm_crs_info
+        from pyproj.aoi import AreaOfInterest
+        import re
+    
+        # Create the lists
         self.patch = []
         self.patchll = []
         if readpatchindex:
@@ -532,63 +542,86 @@ class TriangularPatches(Fault):
             # Keep the index order of node coordinates
             self.vertex_parameter = []
         
-        # open the files
-        # columns: [num, x, y, z]
+        # Open the files
+        # Vertex file columns: [num, x, y, z]
         Vertex = pd.read_csv(vertexfile, comment='*')
         vcol = Vertex.columns.str.replace(' ', '')
         Vertex = Vertex.set_axis(vcol, axis=1)
         Vertex.num -= 1
-        # columns: [num, a, b, c]
+        # Topology file columns: [num, a, b, c]
         Topology = pd.read_csv(topofile, comment='*')
         tcol = Topology.columns.str.replace(' ', '')
         Topology = Topology.set_axis(tcol, axis=1)
         Topology -= 1
-
+    
         if hasattr(self, 'vertex_parameter'):
             self.vertex_parameter = np.unique(np.sort(Topology[['a', 'b', 'c']].values.flatten()))
-            self.index_parameter = Topology[['a', 'b', 'c']].values.copy() # Topology.num.values
+            self.index_parameter = Topology[['a', 'b', 'c']].values.copy()
             self.faces_parameter = Topology[['a', 'b', 'c']].values.copy()
-
-        # Keep the Vertices which have been used in Topology
+    
+        # Keep the vertices which have been used in topology
         Vertex = Vertex.set_index('num')
         Vertex = Vertex.loc[self.vertex_parameter, :]
-
-        # The Proj str used in Trelis
-        from pyproj import CRS
-        from pyproj import Transformer
-        from pyproj.database import query_utm_crs_info 
-        from pyproj.aoi import AreaOfInterest
-
-        # Find the best zone
-        utm_crs_list = query_utm_crs_info(
-                            datum_name="WGS 84",
-                            area_of_interest=AreaOfInterest(
-                                west_lon_degree=lon0-2.,
-                                south_lat_degree=lat0-2.,
-                                east_lon_degree=lon0+2,
-                                north_lat_degree=lat0+2
-                            ),
-                        )
-        utm = CRS.from_epsg(utm_crs_list[0].code)
-        wgs = CRS('WGS84')
-        # Make the projector
-        # proj2utm = Transformer.from_crs(wgs, utm, always_xy=True) 
-        proj2wgs = Transformer.from_crs(utm, wgs, always_xy=True)
-        lon, lat = proj2wgs.transform(Vertex.x.values, Vertex.y.values)
-        # Original coordinates to UTM
-        # pproj = Proj(projstr)
-        # lon, lat = pproj(Vertex.x.values, Vertex.y.values, inverse=True)
-        depth = -Vertex.z.values/1000.
-        Vertices_ll = np.vstack((lon, lat, depth)).T
-        self.Vertices_ll = Vertices_ll
-        x, y = self.ll2xy(lon, lat)
-        Vertex.x = x
-        Vertex.y = y
-        Vertex.z = depth
-        Vertices = np.vstack((x, y, depth)).T
-        self.Vertices = Vertices
-
-        # Extrate the patches
+    
+        # Process projection if projstr is provided
+        if projstr is not None:
+            if 'utm' in projstr:
+                if 'zone' in projstr:
+                    # UTM projection with specified zone
+                    proj = Proj(projstr)
+                else:
+                    # UTM projection without specified zone
+                    if lon0 is None or lat0 is None:
+                        # Extract lon0 and lat0 from projstr
+                        lon0_match = re.search(r'\+lon_0=(-?\d+(\.\d+)?)', projstr)
+                        lat0_match = re.search(r'\+lat_0=(-?\d+(\.\d+)?)', projstr)
+                        if lon0_match and lat0_match:
+                            lon0 = float(lon0_match.group(1))
+                            lat0 = float(lat0_match.group(1))
+                        else:
+                            raise ValueError("lon0 and lat0 must be provided if UTM zone is not specified in projstr and cannot be extracted from projstr.")
+                    
+                    # Calculate the best UTM zone based on lon0 and lat0
+                    utm_crs_list = query_utm_crs_info(
+                        datum_name="WGS 84",
+                        area_of_interest=AreaOfInterest(
+                            west_lon_degree=lon0 - 2.,
+                            south_lat_degree=lat0 - 2.,
+                            east_lon_degree=lon0 + 2,
+                            north_lat_degree=lat0 + 2
+                        ),
+                    )
+                    utm = CRS.from_epsg(utm_crs_list[0].code)
+                    proj = Proj(utm)
+            else:
+                # Non-UTM projection (e.g., tmerc or gauss)
+                proj = Proj(projstr)
+    
+            transformer = Transformer.from_proj(proj, proj.to_latlong())
+            lon, lat = transformer.transform(Vertex.x.values, Vertex.y.values)
+            depth = -Vertex.z.values / 1000.0
+            Vertices_ll = np.vstack((lon, lat, depth)).T
+            self.Vertices_ll = Vertices_ll
+            x, y = self.ll2xy(lon, lat)
+            Vertex.x = x
+            Vertex.y = y
+            Vertex.z = depth
+            Vertices = np.vstack((x, y, depth)).T
+            self.Vertices = Vertices
+        else:
+            # If no projection is provided, assume input coordinates are already in lonlat
+            lon, lat = Vertex.x.values, Vertex.y.values
+            depth = -Vertex.z.values / 1000.0
+            Vertices_ll = np.vstack((lon, lat, depth)).T
+            self.Vertices_ll = Vertices_ll
+            x, y = self.ll2xy(lon, lat)
+            Vertex.x = x
+            Vertex.y = y
+            Vertex.z = depth
+            Vertices = np.vstack((x, y, depth)).T
+            self.Vertices = Vertices
+    
+        # Extract the patches
         patches = []
         Faces = []
         for i in range(Topology.shape[0]):
@@ -596,22 +629,22 @@ class TriangularPatches(Fault):
             tri = Topology.iloc[i][['a', 'b', 'c']].values
             patches.append(Vertex.loc[tri].values)
             for ntrivert in tri:
-                face.append(np.argwhere(Vertex.index==ntrivert).item(0))
+                face.append(np.argwhere(Vertex.index == ntrivert).item(0))
             Faces.append(face)
-
+    
         self.Faces = np.array(Faces)
         self.patch = patches
         self.patch2ll()
         self.numpatch = len(self.patch)
-
+    
         self.top = depth.min()
         self.depth = depth.max()
         self.z_patches = np.linspace(0, self.depth, 5)
-        self.factor_depth = 1.
-
-        # Initial the slip
+        self.factor_depth = 1.0
+    
+        # Initialize the slip
         self.initializeslip()
-
+    
         return
     # ----------------------------------------------------------------------
 
@@ -903,83 +936,87 @@ class TriangularPatches(Fault):
 
     # ----------------------------------------------------------------------
     def writeSlipDirection2File(self, filename, scale=1.0, factor=1.0,
-                                neg_depth=False, ellipse=False,nsigma=1.):
+                                neg_depth=False, ellipse=False, nsigma=1., reference_strike=None, threshold=0.0):
         '''
         Write a psxyz compatible file to draw lines starting from the center 
         of each patch, indicating the direction of slip. Scale can be a real 
         number or a string in 'total', 'strikeslip', 'dipslip' or 'tensile'
-
+    
         Args:
             * filename      : Name of the output file
-
+    
         Kwargs:
             * scale         : Scale of the line
             * factor        : Multiply slip by a factor
-            * neg_depth     : if True, depth is a negative nmber
+            * neg_depth     : if True, depth is a negative number
             * ellipse       : Write the ellipse
             * nsigma        : Nxsigma for the ellipse
-
+            * reference_strike : Reference strike direction in degrees. If the patch strike differs by 180 degrees, adjust rake by 180 degrees.
+            * threshold     : Threshold value for sca before multiplying by factor.
+    
         Returns:
             * None
         '''
-
-        # Copmute the slip direction
-        self.computeSlipDirection(scale=scale, factor=factor, ellipse=ellipse,nsigma=nsigma, neg_depth=neg_depth)
-
+    
+        # Compute the slip direction
+        self.computeSlipDirection(scale=scale, factor=factor, ellipse=ellipse, nsigma=nsigma, neg_depth=neg_depth, reference_strike=reference_strike, threshold=threshold)
+    
         # Write something
         print('Writing slip direction to file {}'.format(filename))
-
+    
         # Open the file
         fout = open(filename, 'w')
-
+    
         # Loop over the patches
-        for p in self.slipdirection:
-
+        for p, above_threshold in zip(self.slipdirection, self.slipdirection_above_threshold):
+            if not above_threshold:
+                continue
+    
             # Write the > sign to the file
             fout.write('> \n')
-
+    
             # Get the center of the patch
             xc, yc, zc = p[0]
             lonc, latc = self.xy2ll(xc, yc)
             if neg_depth:
                 zc = -1.0*zc
             fout.write('{} {} {} \n'.format(lonc, latc, zc))
-
+    
             # Get the end of the vector
             xc, yc, zc = p[1]
             lonc, latc = self.xy2ll(xc, yc)
             if neg_depth:
                 zc = -1.0*zc
             fout.write('{} {} {} \n'.format(lonc, latc, zc))
-
+    
         # Close file
         fout.close()
-
+    
         if ellipse:
             # Open the file
             fout = open('ellipse_'+filename, 'w')
-
+    
             # Loop over the patches
             for e in self.ellipse:
-
+    
                 # Get ellipse points
                 ex, ey, ez = e[:,0],e[:,1],e[:,2]
-
+    
                 # Depth
                 if neg_depth:
                     ez = -1.0 * ez
-
+    
                 # Conversion to geographical coordinates
                 lone,late = self.xy2ll(ex, ey)
-
+    
                 # Write the > sign to the file
                 fout.write('> \n')
-
+    
                 for lon,lat,z in zip(lone,late,ez):
                     fout.write('{} {} {} \n'.format(lon, lat, -1.*z))
             # Close file
             fout.close()
-
+    
         # All done
         return
     # ----------------------------------------------------------------------
@@ -1046,6 +1083,52 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def writeFourEdges2File(self, filename=None, dirname='.', top_tolerance=0.1, bottom_tolerance=0.1):
+        '''
+        Write the four edges of the patches to a file.
+
+        Kwargs:
+            * filename      : Name of the output file
+            * dirname       : Directory where the files will be written
+            * top_tolerance : Tolerance for the top edge
+            * bottom_tolerance : Tolerance for the bottom edge
+
+        Returns:
+            * None
+        '''
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        self.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
+
+        # Write edges to four edges file
+        edge_names = ['top', 'bottom', 'left', 'right']
+        four_edges = self.edge_vertices
+        if filename is not None:
+            basename = filename.split('.')[0]
+            extname = filename.split('.')[1]
+            for i, edge in enumerate(four_edges):
+                edge_file = '{}_{}.{}'.format(basename, edge_names[i], extname)
+                edge_file = os.path.join(dirname, edge_file)
+                with open(edge_file, 'w') as fout:
+                    edge_points = four_edges[edge]
+                    lon, lat = self.xy2ll(edge_points[:,0], edge_points[:,1])
+                    for i in range(len(lon)):
+                        fout.write('{} {} {}\n'.format(lon[i], lat[i], edge_points[i,2]))
+        else:
+            for i, edge in enumerate(four_edges):
+                edge_file = '{}_{}.{}'.format(self.name, edge_names[i], 'gmt')
+                edge_file = os.path.join(dirname, edge_file)
+                with open(edge_file, 'w') as fout:
+                    edge_points = four_edges[edge]
+                    lon, lat = self.xy2ll(edge_points[:,0], edge_points[:,1])
+                    for i in range(len(lon)):
+                        fout.write('{} {} {}\n'.format(lon[i], lat[i], edge_points[i,2]))
+
+        # All Done
+        return four_edges
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def getEllipse(self, patch, ellipseCenter=None, Npoints=10, factor=1.0,
                    nsigma=1.):
         '''
@@ -1109,80 +1192,100 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def computeSlipDirection(self, scale=1.0, factor=1.0, ellipse=False,nsigma=1., neg_depth=False):
+    def computeSlipDirection(self, scale=1.0, factor=1.0, ellipse=False, nsigma=1., neg_depth=False, reference_strike=None, threshold=0.0):
         '''
         Computes the segment indicating the slip direction.
-
+    
         Kwargs:
-            * scale     : can be a real number or a string in 'total', 'strikeslip', 'dipslip' or 'tensile'
-            * factor    : Multiply by a factor
-            * ellipse   : Compute the ellipse
-            * nsigma    : How many times sigma for the ellipse
-
+            * scale            : can be a real number or a string in 'total', 'strikeslip', 'dipslip' or 'tensile'
+            * factor           : Multiply by a factor
+            * ellipse          : Compute the ellipse
+            * nsigma           : How many times sigma for the ellipse
+            * reference_strike : Reference strike direction in degrees. If the patch strike differs by 180 degrees, adjust rake by 180 degrees.
+            * threshold        : Threshold value for sca before multiplying by factor.
+    
         Returns:
             * None
         '''
-
+    
         # Create the array
         self.slipdirection = []
-
+        self.slipdirection_above_threshold = []
+    
         # Check Cm if ellipse
         if ellipse:
             self.ellipse = []
-            assert((self.Cm!=None).all()), 'Provide Cm values'
-
+            assert((self.Cm != None).all()), 'Provide Cm values'
+    
         # Loop over the patches
         if self.N_slip is None:
             self.N_slip = len(self.patch)
         for p in range(self.N_slip):
             # Get some geometry
             xc, yc, zc, width, length, strike, dip = self.getpatchgeometry(p, center=True)
-            # Get the slip vector
-            slip = self.slip[p,:]
-            rake = np.arctan2(slip[1],slip[0])
-
-            # Compute the vector
-            #x = np.sin(strike)*np.cos(rake) + np.sin(strike)*np.cos(dip)*np.sin(rake)
-            #y = np.cos(strike)*np.cos(rake) - np.cos(strike)*np.cos(dip)*np.sin(rake)
-            #z = -1.0*np.sin(dip)*np.sin(rake)
-            x = (np.sin(strike)*np.cos(rake) - np.cos(strike)*np.cos(dip)*np.sin(rake))
-            y = (np.cos(strike)*np.cos(rake) + np.sin(strike)*np.cos(dip)*np.sin(rake))
-            if neg_depth:    # do we need to flip depths? EJF 2020/10/18
-                z =  1.0*np.sin(dip)*np.sin(rake)
+            
+            # Adjust strike and rake if necessary
+            if reference_strike is not None:
+                reference_strike_rad = np.radians(reference_strike)
+                strike_vector = np.array([np.cos(strike), np.sin(strike)])
+                reference_vector = np.array([np.cos(reference_strike_rad), np.sin(reference_strike_rad)])
+                dot_product = np.dot(strike_vector, reference_vector)
+                if dot_product < 0:
+                    rake_adjustment = np.pi
+                else:
+                    rake_adjustment = 0.0
             else:
-                z = -1.0*np.sin(dip)*np.sin(rake)
-
+                rake_adjustment = 0.0
+    
+            # Get the slip vector
+            slip = self.slip[p, :]
+            rake = np.arctan2(slip[1], slip[0]) + rake_adjustment
+    
+            # Compute the vector
+            x = (np.sin(strike) * np.cos(rake) - np.cos(strike) * np.cos(dip) * np.sin(rake))
+            y = (np.cos(strike) * np.cos(rake) + np.sin(strike) * np.cos(dip) * np.sin(rake))
+            if neg_depth:    # do we need to flip depths? EJF 2020/10/18
+                z = 1.0 * np.sin(dip) * np.sin(rake)
+            else:
+                z = -1.0 * np.sin(dip) * np.sin(rake)
+    
             # Scale these
-            if scale.__class__ is float:
+            if isinstance(scale, float):
                 sca = scale
-            elif scale.__class__ is str:
-                if scale in ('total'):
-                    sca = np.sqrt(slip[0]**2 + slip[1]**2 + slip[2]**2)*factor
-                elif scale in ('strikeslip'):
-                    sca = slip[0]*factor
-                elif scale in ('dipslip'):
-                    sca = slip[1]*factor
-                elif scale in ('tensile'):
-                    sca = slip[2]*factor
+            elif isinstance(scale, str):
+                if scale == 'total':
+                    sca = np.sqrt(slip[0]**2 + slip[1]**2 + slip[2]**2)
+                elif scale == 'strikeslip':
+                    sca = np.abs(slip[0])
+                elif scale == 'dipslip':
+                    sca = np.abs(slip[1])
+                elif scale == 'tensile':
+                    sca = np.abs(slip[2])
                 else:
                     print('Unknown Slip Direction in computeSlipDirection')
                     sys.exit(1)
+            
+            # Check if sca exceeds the threshold
+            above_threshold = sca > threshold
+            self.slipdirection_above_threshold.append(above_threshold)
+    
+            sca *= factor
             x *= sca
             y *= sca
             z *= sca
-
+    
             # update point
             xe = xc + x
             ye = yc + y
             ze = zc + z
-
+    
             # Append ellipse
             if ellipse:
-                self.ellipse.append(self.getEllipse(p,ellipseCenter=[xe, ye, ze],factor=factor,nsigma=nsigma))
-
+                self.ellipse.append(self.getEllipse(p, ellipseCenter=[xe, ye, ze], factor=factor, nsigma=nsigma))
+    
             # Append slip direction
-            self.slipdirection.append([[xc, yc, zc],[xe, ye, ze]])
-
+            self.slipdirection.append([[xc, yc, zc], [xe, ye, ze]])
+    
         # All done
         return
     # ----------------------------------------------------------------------
@@ -1420,18 +1523,25 @@ class TriangularPatches(Fault):
         assert type(patch) is np.ndarray, 'addPatch: Patch has to be a numpy array'
 
         # append the patch
-        self.patch.append(patch)
+        if type(self.patch) is np.ndarray:
+            if self.patch.size==0:
+                self.patch = patch[None, :, :]
+            else:
+                self.patch = np.vstack((self.patch, patch[None, :, :]))
+        else:
+            self.patch.append(patch.tolist())
 
         # modify the slip
-        if self.N_slip!=None and self.N_slip==len(self.patch):
-            sh = self.slip.shape
-            nl = sh[0] + 1
-            nc = 3
-            tmp = np.zeros((nl, nc))
-            if nl > 1:                      # Case where slip is empty
-                tmp[:nl-1,:] = self.slip
-            tmp[-1,:] = slip
-            self.slip = tmp
+        # if self.N_slip!=None and self.N_slip==len(self.patch):
+        sh = self.slip.shape
+        nl = sh[0] + 1
+        nc = 3
+        tmp = np.zeros((nl, nc))
+        if nl > 1:                      # Case where slip is empty
+            tmp[:nl-1,:] = self.slip
+        tmp[-1,:] = slip
+        self.slip = tmp
+        self.N_slip = nl
 
         # Create Vertices and Faces if not there
         if not hasattr(self, 'Vertices'):
@@ -1451,6 +1561,7 @@ class TriangularPatches(Fault):
         self.Faces = np.insert(self.Faces, self.Faces.shape[0], vids, axis=0)
 
         # Vertices2ll
+        self.patch = np.array(self.patch)
         self.vertices2ll()
         self.patch2ll()
 
@@ -1696,7 +1807,7 @@ class TriangularPatches(Fault):
 
         # Get the patch
         u = None
-        if type(patch) in (int, np.int64, np.int_, np.int32):
+        if type(patch) in (int, np.int64, np.int32):
             u = patch
         else:
             if checkindex:
@@ -1718,25 +1829,22 @@ class TriangularPatches(Fault):
         # Get the patch normal
         normal = np.cross(p2 - p1, p3 - p1)
 
-        # # If fault is vertical, force normal to be horizontal
-        # if self.vertical:
-        #     normal[2] = 0.
+        # If fault is vertical, force normal to be horizontal
+        if self.vertical:
+            normal[2] = 0.
 
         # Normalize
         normal /= np.linalg.norm(normal)
 
         # Enforce clockwise circulation
-        if np.round(normal[2],decimals=1) < 0:
+        if np.round(normal[2],decimals=2) < 0.:
             normal *= -1.0
             p2, p3 = p3, p2
 
-        # If fault is vertical, force normal to be horizontal
-        if np.round(normal[2],decimals=1) == 0.: 
-            normal[2] = 0.
         # Force strike between 0 and 90 or between 270 and 360
-            if normal[1] > 0:
-                normal *= -1
-                    
+        #if normal[1] > 0:
+        #     normal *= -1
+
         # Get the strike vector and strike angle
         strike = np.arctan2(-normal[0], normal[1]) - np.pi
         if strike<0.:
@@ -2132,12 +2240,12 @@ class TriangularPatches(Fault):
         top_edge, tpnt_inds = get_edge_and_inds(edge, 'top', 'left_top', 'right_top')
         bottom_edge, bpnt_inds = get_edge_and_inds(edge, 'bottom', 'left_bottom', 'right_bottom')
 
-        self.edges = {
+        self.edge_triangles_indices = {
             'left': left_edge, 
             'right': right_edge, 
             'top': top_edge, 
             'bottom': bottom_edge}
-        self.edgepntsInVertices = {
+        self.edge_triangle_vertex_indices = {
             'left': lpnt_inds, 
             'right': rpnt_inds, 
             'top': tpnt_inds, 
@@ -2146,156 +2254,58 @@ class TriangularPatches(Fault):
         return
     
     def find_fault_fouredge_vertices(self, top_tolerance=0.01, bottom_tolerance=0.01, refind=False):
-        from eqtools.csiExtend.findTriFaultEdges import find_left_or_right_edgeline_points
-        if not hasattr(self, 'edges') or refind:
+        from .findTriFaultEdges import find_left_or_right_edgeline_points
+        if not hasattr(self, 'edge_triangles_indices') or refind:
             self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
         
-        left_inds, left_pnts = find_left_or_right_edgeline_points(self.edges['left'], self.Faces, self.Vertices, side='left')
-        right_inds, right_pnts = find_left_or_right_edgeline_points(self.edges['right'], self.Faces, self.Vertices, side='right')
-
-        top_inds = self.edgepntsInVertices['top']
-        bottom_inds = self.edgepntsInVertices['bottom']
+        left_inds, left_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['left'], self.Faces, self.Vertices, side='left')
+        right_inds, right_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['right'], self.Faces, self.Vertices, side='right')
+    
+        top_inds = self.edge_triangle_vertex_indices['top']
+        bottom_inds = self.edge_triangle_vertex_indices['bottom']
         top_pnts = self.Vertices[top_inds]
         bottom_pnts = self.Vertices[bottom_inds]
         top_depth = np.min(top_pnts[:, -1])
         bottom_depth = np.max(bottom_pnts[:, -1])
-
+    
         top_flag = np.where(top_pnts[:, -1] <= top_depth + top_tolerance)[0]
         top_inds = top_inds[top_flag]
         top_pnts = top_pnts[top_flag]
         top_sortinds = np.argsort(top_pnts[:, 0])
         top_inds = top_inds[top_sortinds]
         top_pnts = top_pnts[top_sortinds]
-
+    
         bottom_flag = np.where(bottom_pnts[:, -1] >= bottom_depth - bottom_tolerance)[0]
         bottom_inds = bottom_inds[bottom_flag]
         bottom_pnts = bottom_pnts[bottom_flag]
         bottom_sortinds = np.argsort(bottom_pnts[:, 0])
         bottom_inds = bottom_inds[bottom_sortinds]
         bottom_pnts = bottom_pnts[bottom_sortinds]
-        self.fouredgepntsIndsInVertices = {
+        
+        self.edge_vertex_indices = {
             'top': top_inds,
             'bottom': bottom_inds,
             'left': left_inds, 
-            'right': right_inds}
-        self.fouredgepntsInVertices = {
+            'right': right_inds
+        }
+        self.edge_vertices = {
             'top': top_pnts,
             'bottom': bottom_pnts,
             'left': left_pnts, 
-            'right': right_pnts}
+            'right': right_pnts
+        }
+    
+        top_edge, top_inds = self.find_ordered_edge_vertices('top', top_tolerance=0.1, bottom_tolerance=0.1, return_indices=True)
+        bottom_edge, bottom_inds = self.find_ordered_edge_vertices('bottom', top_tolerance=0.1, bottom_tolerance=0.1, return_indices=True)
+    
+        self.edge_vertex_indices['top'] = top_inds
+        self.edge_vertex_indices['bottom'] = bottom_inds
+        self.edge_vertices['top'] = top_edge
+        self.edge_vertices['bottom'] = bottom_edge
         return
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    # def buildLaplacian_mudpy(self, verbose=True, method=None, irregular=False, bounds=None, corner=True, topscale=0.01, bottomscale=0.01):
-    #     '''
-    #     Build a discrete Laplacian smoothing matrix.
-
-    #     Kwargs:
-    #         * verbose       : Speak to me
-    #         * method        : Not used, here for consistency purposes
-    #         * irregular     : Not used, here for consistency purposes
-    #         * corner        : Not consider the case of corner if False
-    #         * bounds        : ['free'/'locked',]*4, default: ['free',]*4
-    #                           for ['top', 'bottom', 'left', 'right'], repestively
-        
-    #     Returns:
-    #         * Laplacian     : 2D array
-        
-    #     Reference:
-    #         * Jiang et al., 2013, GJI
-    #         * Wang et al., 2017, RS
-    #         * Melgar et al., 2014, PhD
-    #         * Zhou et al., 2014, GJI
-    #     Comments: 
-    #         * Added by kfhe at 10/16/2021
-    #     '''
-    #     # Find the boundary and corner triangles if not found
-    #     if not hasattr(self, 'edge_dict'):
-    #         self.find_boundary_and_corner_triangles(top_tolerance=topscale, bottom_tolerance=bottomscale)
-        
-    #     # Build the adjacency map if not built
-    #     if self.adjacencyMap is None or len(self.adjacencyMap) != len(self.patch):
-    #         self.buildAdjacencyMap(verbose=verbose)
-        
-    #     edge_dict = self.edge_dict
-    #     corner_dict = self.corner_dict
-        
-    #     if bounds is None:
-    #         bounds = ['free',]*4
-
-    #     # saved format is [top, bottom, left, right] with True/False
-    #     bounds_mark = np.array([bound.lower() == 'free' for bound in bounds])
-    #     # saved format is list with edge index which is free
-    #     free_edge_tris = [edge for bound, flag in zip(bounds, ['top', 'bottom', 'left', 'right']) if bound.lower() == 'free' for edge in edge_dict[flag]]
-    #     # saved format is {corner_index: corner_type}
-    #     free_corner_dict = {corner_dict[flag]: bounds_mark[idx].sum() for flag, idx in zip(['left_top', 'right_top', 'left_bottom', 'right_bottom'], [[0, 2], [0, 3], [1, 2], [1, 3]]) if corner_dict[flag] is not None}
-
-    #     if verbose:
-    #         print("------------------------------------------")
-    #         print("------------------------------------------")
-    #         print("Building the Laplacian matrix based on Mudpy")
-
-    #     # Pre-compute patch centers
-    #     centers = np.array(self.getcenters())
-    #     # Cache the vertices and faces arrays
-    #     vertices, faces = self.Vertices, self.Faces
-    #     # Allocate array for Laplace operator
-    #     npatch = len(self.patch)
-    #     D = np.zeros((npatch,npatch))
-
-    #     dists = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=-1)
-
-    #     # Loop over patches
-    #     for i in range(npatch):
-    #         if verbose:
-    #             sys.stdout.write('%i / %i\r' % (i, npatch))
-    #             sys.stdout.flush()
-
-    #         # Compute Laplacian using adjacent triangles
-    #         adjacents = self.adjacencyMap[i]
-    #         hvals = dists[i, adjacents]
-    #         # hvals_sorted = np.sort(hvals)
-    #         if len(hvals) == 3:
-    #             h12, h13, h14 = hvals
-    #             D[i, adjacents] = -np.array([h13*h14, h12*h14, h12*h13])
-    #             sumProd = h13*h14 + h12*h14 + h12*h13
-    #         elif len(hvals) == 2:
-    #             h12, h13 = hvals
-    #             # Make a virtual patch
-    #             h14 = max(h12, h13)
-    #             sumProd = h13*h14 + h12*h14 + h12*h13
-    #             if i in free_edge_tris:
-    #                 scale = sumProd/(h13*h14 + h12*h14)
-    #             else:
-    #                 scale = 1.0
-    #             D[i, adjacents] = -np.array([h13*h14, h12*h14])*scale
-    #         elif len(hvals) == 1:
-    #             if not corner:
-    #                 raise NotImplementedError('The corresponding option has not yet been implemented.')
-    #             else:
-    #                 h12 = hvals[0]
-    #                 h13 = h14 = h12
-    #                 sumProd = h13*h14 + h12*h14 + h12*h13
-    #                 if i in free_corner_dict.keys() and free_corner_dict[i] > 0:
-    #                     scale_cor = free_corner_dict[i]
-    #                     # 缩放
-    #                     scale = sumProd/(h13*h14)
-    #                     if scale_cor == 1:
-    #                         scale *= 2./3.
-    #                     elif scale_cor == 2:
-    #                         scale *= 1
-    #                 else:
-    #                     scale = 1.0
-    #                 D[i, adjacents[0]] = -h13*h14*scale
-    #         D[i, i] = sumProd
-
-    #     D = D / np.max(np.abs(np.diag(D)))
-    #     if verbose:
-    #         print('')
-
-    #     return D
-
     def buildLaplacian_mudpy(self, verbose=True, method=None, irregular=False, bounds=None, corner=True, topscale=0.01, bottomscale=0.01):
         '''
         Build a discrete Laplacian smoothing matrix.
@@ -2431,6 +2441,58 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def compute_slip_gradient(self, slip='total'):
+        """
+        Compute the gradient of slip values for each subfault.
+        
+        Parameters:
+        slip (str): Type of slip to compute gradient for ('total', 'strikeslip', 'dipslip').
+        
+        Returns:
+        np.ndarray: Gradient of slip values for each subfault.
+        """
+        from scipy.spatial import KDTree
+    
+        # Select the appropriate slip values
+        if slip == 'total':
+            slip_values = np.sqrt(self.slip[:, 0]**2 + self.slip[:, 1]**2 + self.slip[:, 2]**2)
+        elif slip == 'strikeslip':
+            slip_values = self.slip[:, 0]
+        elif slip == 'dipslip':
+            slip_values = self.slip[:, 1]
+        else:
+            raise ValueError("Invalid slip type. Choose from 'total', 'strikeslip', or 'dipslip'.")
+    
+        coordinates = np.mean(self.patch, axis=1)
+        tree = KDTree(coordinates)
+        gradients = np.zeros_like(slip_values)
+        
+        # Get the four edges of the fault
+        if not hasattr(self, 'edge_triangles_indices'):
+            self.find_fault_edge_vertices()
+        edge_indices = self.edge_triangles_indices
+        edge_indices = np.empty(0, dtype=int)
+        for key in ['top', 'bottom', 'left', 'right']:
+            if key in self.edge_triangles_indices:
+                edge_indices = np.append(edge_indices, self.edge_triangles_indices[key])
+        edge_indices = np.unique(edge_indices)
+
+        for i in range(len(slip_values)):
+            if i in edge_indices:
+                k = 3  # Only consider two neighbors
+            else:
+                k = 4  # Consider three neighbors
+            
+            distances, indices = tree.query(coordinates[i], k=k)  # k includes the point itself
+            indices = indices[1:]  # Exclude the point itself
+            
+            # Calculate the gradient as the mean of the absolute differences
+            gradients[i] = np.mean(np.abs(slip_values[i] - slip_values[indices]) / distances[1:])
+        
+        return gradients
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def getcenter(self, p):
         '''
         Get the center of one triangular patch.
@@ -2559,11 +2621,13 @@ class TriangularPatches(Fault):
         if (lon.max()>360.) or (lon.min()<-180.0) or (lat.max()>90.) or (lat.min()<-90):
             self.sim.x = lon
             self.sim.y = lat
+            lon, lat = self.sim.xy2ll(lon, lat)
+            self.sim.lon, self.sim.lat = lon, lat
         else:
             self.sim.lon = lon
             self.sim.lat = lat
             # put these in x y utm coordinates
-            self.sim.ll2xy()
+            self.sim.x, self.sim.y = self.sim.ll2xy(lon ,lat)
 
         # Initialize the vel_enu array
         self.sim.vel_enu = np.zeros((lon.size, 3))
@@ -2998,7 +3062,8 @@ class TriangularPatches(Fault):
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='', 
              drawCoastlines=True, expand=0.2, savefig=False, scalebar=None, figsize=(None, None),
-             cmap='jet', edgecolor='slip', ftype='eps', dpi=600, bbox_inches=None, suffix=''):
+             cmap='jet', edgecolor='slip', ftype='eps', dpi=600, bbox_inches=None, suffix='',
+             remove_direction_labels=False, cbticks=None, cblinewidth=1, cbfontsize=10, cb_label_side='opposite', map_cbaxis=None):
         '''
         Plot the available elements of the fault.
         
@@ -3015,11 +3080,17 @@ class TriangularPatches(Fault):
                               of the fault.
             * savefig       : Save figures as eps.
             * scalebar      : Length of a scalebar (float, default is None)
+            * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+            * cbticks       : List of ticks to set on the colorbar
+            * cblinewidth   : Width of the colorbar label border and tick lines
+            * cbfontsize    : Font size of the colorbar label, default is 10
+            * cb_label_side : Position of the label relative to the ticks ('opposite' or 'same'), default is 'opposite'
+            * map_cbaxis    : Axis for the colorbar on the map plot, default is None
         
         Returns:
             * None
         '''
-
+    
         # Get lons lats
         lon = np.unique(np.array([p[:,0] for p in self.patchll]))
         #lon[lon<0.] += 360.
@@ -3028,21 +3099,22 @@ class TriangularPatches(Fault):
         lonmax = lon.max()+expand
         latmin = lat.min()-expand
         latmax = lat.max()+expand
-
+    
         # Create a figure
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, 
-                                     latmin=latmin, latmax=latmax, figsize=figsize,
-                                     # scalebar=scalebar
-                                     )
-
+                                         latmin=latmin, latmax=latmax, figsize=figsize,
+                                         remove_direction_labels=remove_direction_labels
+                                         )
+    
         # Draw the coastlines
         if drawCoastlines:
             fig.drawCoastlines(parallels=None, meridians=None, drawOnFault=True)
-
+    
         # Draw the fault
-        fig.faultpatches(self, slip=slip, norm=norm, colorbar=True, cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel, 
-                         plot_on_2d=plot_on_2d, linewidth=linewidth, cmap=cmap, edgecolor=edgecolor)
-
+        fig.faultpatches(self, slip=slip, norm=norm, colorbar=colorbar, cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel, 
+                         plot_on_2d=plot_on_2d, linewidth=linewidth, cmap=cmap, edgecolor=edgecolor,
+                         cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
+    
         # Savefigs?
         if savefig:
             prefix = self.name.replace(' ','_')
@@ -3051,7 +3123,7 @@ class TriangularPatches(Fault):
             if plot_on_2d:
                 saveFig.append('map')
             fig.savefig(prefix+'{0}_{1}'.format(suffix, slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
-
+    
         self.slipfig = fig
         # show
         if show:
@@ -3059,7 +3131,7 @@ class TriangularPatches(Fault):
             if plot_on_2d:
                 showFig.append('map')
             fig.show(showFig=showFig)
-
+    
         # All done
         return
     # ----------------------------------------------------------------------
@@ -3309,6 +3381,152 @@ class TriangularPatches(Fault):
 
         # All done
         return fault
+
+    def find_ordered_edge_vertices(self, edge='top', depth=None, buffer_depth=0.1, 
+                                   top_tolerance=0.1, bottom_tolerance=0.1, refind=True,
+                                   return_indices=False):
+        """
+        Find the ordered edge vertices from the edge triangles.
+    
+        Parameters:
+        -----------
+        edge : str, optional
+            The edge to find vertices for ('top' or 'bottom'). Default is 'top'.
+        depth : float, optional
+            The depth to use for the edge. If None, uses self.top for 'top' edge and self.depth for 'bottom' edge.
+        buffer_depth : float, optional
+            The buffer depth to include points within the edge. Default is 0.1.
+        top_tolerance : float, optional
+            The tolerance for the top edge. Default is 0.1.
+        bottom_tolerance : float, optional
+            The tolerance for the bottom edge. Default is 0.1.
+        refind : bool, optional
+            Whether to refind the edge vertices. Default is True.
+        return_indices : bool, optional
+            Whether to return the indices of the ordered vertices. Default is False.
+    
+        Returns:
+        --------
+        ordered_vertices : list
+            List of ordered edge vertices.
+        """
+        self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
+
+        if edge not in ['top', 'bottom']:
+            raise ValueError("Invalid value for edge. It should be 'top' or 'bottom'.")
+    
+        if depth is None:
+            self.top = np.min(self.Vertices[:, 2])
+            self.depth = np.max(self.Vertices[:, 2])
+            depth = self.top if edge == 'top' else self.depth
+    
+        edge_faces = self.Faces[self.edge_dict[edge]]
+        vertices = self.Vertices[edge_faces]
+    
+        # Select points within depth and buffer depth
+        min_depth = depth - buffer_depth
+        max_depth = depth + buffer_depth
+        edge_points_mask = (vertices[:, :, 2] >= min_depth) & (vertices[:, :, 2] <= max_depth)
+        edge_points_index = set(edge_faces[edge_points_mask])
+    
+        # Create a dictionary to count occurrences of each vertex
+        vertex_count = {}
+        for face in edge_faces:
+            for vertex in face:
+                if vertex in edge_points_index:
+                    if vertex in vertex_count:
+                        vertex_count[vertex] += 1
+                    else:
+                        vertex_count[vertex] = 1
+    
+        # Find the starting vertex (vertex with only one occurrence)
+        start_vertex = None
+        for vertex, count in vertex_count.items():
+            if count == 1:
+                start_vertex = vertex
+                break
+    
+        if start_vertex is None:
+            raise ValueError("No starting vertex found. Check the edge triangles.")
+    
+        # Order the vertices
+        ordered_vertices = [start_vertex]
+        current_vertex = start_vertex
+        while len(ordered_vertices) < len(vertex_count):
+            found_next_vertex = False
+            for face in edge_faces:
+                if current_vertex in face:
+                    for vertex in face:
+                        if vertex != current_vertex and vertex not in ordered_vertices and vertex in vertex_count:
+                            ordered_vertices.append(vertex)
+                            current_vertex = vertex
+                            found_next_vertex = True
+                            break
+                    if found_next_vertex:
+                        break
+            if not found_next_vertex:
+                raise ValueError("Cannot find the next vertex. Check the edge triangles.")
+    
+        # Map ordered vertices to edge points
+        ordered_edge_points = self.Vertices[ordered_vertices]
+
+        if return_indices:
+            return ordered_edge_points, ordered_vertices
+        else:
+            return ordered_edge_points
+
+    def getfaultEdgeTriangles_and_EdgeLines(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False):
+        '''
+        Left: In West, Right: In East
+        Left: In North, Right: In South if the left/right can not be determined from west/east
+
+        Top edge vertices are ordered from left to right.
+        Bottom edge vertices are ordered from left to right.
+        Left edge vertices are ordered from top to bottom.
+        Right edge vertices are ordered from top to bottom.
+        '''
+        # find boundary and corner triangles indexes in fault.Faces
+        fault = self
+        if not hasattr(fault, 'edge_triangles_indices') or refind:
+            fault.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
+    
+        if not hasattr(fault, 'edge_vertex_indices') or refind:
+            fault.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
+    
+        def sort_edge_triangles(edge):
+            edge_tri_sort = []
+            for a_ind, b_ind in np.repeat(self.edge_vertex_indices[edge], 2)[1:-1].reshape(-1, 2):
+                for tri_ind in self.edge_triangles_indices[edge]:
+                    tri_vert_inds = fault.Faces[tri_ind]
+                    if a_ind in tri_vert_inds and b_ind in tri_vert_inds:
+                        edge_tri_sort.append(tri_ind)
+                        break
+            return np.array(edge_tri_sort, dtype=int)
+    
+        self.edge_triangles_indices['top'] = sort_edge_triangles('top')
+        self.edge_triangles_indices['bottom'] = sort_edge_triangles('bottom')
+    
+        def sort_edge_by_center_z(edge):
+            center_z = np.mean(fault.Vertices[fault.Faces[self.edge_triangles_indices[edge]], -1], axis=1)
+            sort_order = np.argsort(center_z)
+            self.edge_triangles_indices[edge] = self.edge_triangles_indices[edge][sort_order]
+    
+        sort_edge_by_center_z('left')
+        sort_edge_by_center_z('right')
+
+        # sort top and bottom from left to right
+        if self.edge_vertex_indices['top'][0] not in self.edge_vertex_indices['left']:
+            self.edge_vertex_indices['top'] = self.edge_vertex_indices['top'][::-1]
+            self.edge_vertices['top'] = self.edge_vertices['top'][::-1]
+            self.edge_triangles_indices['top'] = self.edge_triangles_indices['top'][::-1]
+        
+        if self.edge_vertex_indices['bottom'][0] not in self.edge_vertex_indices['left']:
+            self.edge_vertex_indices['bottom'] = self.edge_vertex_indices['bottom'][::-1]
+            self.edge_vertices['bottom'] = self.edge_vertices['bottom'][::-1]
+            self.edge_triangles_indices['bottom'] = self.edge_triangles_indices['bottom'][::-1]
+    
+        # All Done
+        return
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
