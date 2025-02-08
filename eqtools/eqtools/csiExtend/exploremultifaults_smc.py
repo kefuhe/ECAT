@@ -534,7 +534,7 @@ class explorefault(SourceInv):
     
     def walk(self, nchains=None, chain_length=None, comm=None, filename='samples.h5',
              save_every=1, save_at_interval=True, save_at_final=True,
-             covariance_epsilon = 1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
+             covariance_epsilon = 1e-9, amh_a=1.0/9.0, amh_b=8.0/9.0,
              updatepatches=None, dataFaults=None):
         '''
         March the SMC.
@@ -587,7 +587,7 @@ class explorefault(SourceInv):
         # All done
         return
 
-    def returnModels(self, model='mean'):
+    def returnModels(self, model='median'):
         '''
         Returns a list of faults corresponding to the desired model.
     
@@ -602,7 +602,7 @@ class explorefault(SourceInv):
         if model=='mean':
             samples = self.sampler['allsamples'].mean(axis=0)
         elif model=='median':
-            samples = self.sampler['allsamples'].median(axis=0)
+            samples = np.median(self.sampler['allsamples'], axis=0)
         elif model=='std':                     
             samples = self.sampler['allsamples'].std(axis=0)
         elif model=='MAP':
@@ -675,48 +675,90 @@ class explorefault(SourceInv):
         # All done
         return faults
     
-    def save_model_to_file(self, filename, model='mean', recalculate=False):
+    def save_model_to_file(self, filename=None, model='median', recalculate=False, output_to_screen=False):
         """
-        Output the model parameters to a file.
-
+        Output the model parameters to a file and/or screen.
+    
         Args:
-            * filename  : The name of the file to write the model parameters to
-
+            * filename  : The name of the file to write the model parameters to (default is None)
+        
         Kwargs:
             * model     : 'mean', 'median', 'std', 'MAP'
             * recalculate: True/False
+            * output_to_screen: True/False, whether to output to screen (default is False)
         
         Returns:
             * None
         """
+        if model != 'std' and (not hasattr(self, 'model_dict') or 'std' not in self.model_dict):
+            self.returnModels(model='std')
+    
         if recalculate or model not in self.model_dict:
             self.returnModels(model=model)
-
-        with open(filename, 'w', encoding='utf-8') as file:
-            # 写入 Fault 参数
-            for fault_name, fault_params in self.model_dict[model].items():
-                if fault_name.startswith('fault_'):
-                    file.write(f"Fault: {fault_name}\n")
-                    for param, value in fault_params.items():
-                        file.write(f"  {param}: {value}\n")
-                    file.write("\n")
-            
-            # 写入 Reference 参数
-            if 'reference' in self.model_dict[model]:
-                file.write("Reference:\n")
-                for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict[model]['reference']):
-                    file.write(f"  {ref_name}: {ref_value}\n")
-                file.write("\n")
-            
-            # 写入 Sigmas 参数
-            if 'sigmas' in self.model_dict[model]:
-                file.write("Sigmas:\n")
-                for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
-                    isigma_name = data.name
-                    file.write(f"  {isigma_name}: {sigma_value}\n")
-                file.write("\n")
     
-    def plot(self, model='mean', show=True, scale=2., legendscale=0.5, vertical=True):
+        output = []
+    
+        # Write the Fault parameters to the output
+        for fault_name, fault_params in self.model_dict[model].items():
+            if fault_name.startswith('fault_'):
+                output.append(f"Fault: {fault_name} ({model})")
+                for param, value in fault_params.items():
+                    output.append(f"  {param}: {value}")
+                # output.append("")
+    
+        # Write the reference values if they are updated
+        if 'reference' in self.model_dict[model]:
+            output.append("Reference:")
+            for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict[model]['reference']):
+                output.append(f"  {ref_name}: {ref_value}")
+            # output.append("")
+    
+        # Write the sigmas values if they are updated
+        if 'sigmas' in self.model_dict[model]:
+            output.append("Sigmas:")
+            for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
+                isigma_name = data.name
+                output.append(f"  {isigma_name}: {sigma_value}")
+            output.append("")
+    
+        # If model is not 'std', also write the 'std' model parameters
+        if model != 'std':
+            output.append("Standard Deviation (std):")
+            for fault_name, fault_params in self.model_dict['std'].items():
+                if fault_name.startswith('fault_'):
+                    output.append(f"Fault: {fault_name} (std)")
+                    for param, value in fault_params.items():
+                        output.append(f"  {param}: {value}")
+                    # output.append("")
+    
+            # Write the reference values if they are updated
+            if 'reference' in self.model_dict['std']:
+                output.append("Reference (std):")
+                for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict['std']['reference']):
+                    output.append(f"  {ref_name}: {ref_value}")
+                # output.append("")
+    
+            # Write the sigmas values if they are updated
+            if 'sigmas' in self.model_dict['std']:
+                output.append("Sigmas (std):")
+                for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict['std']['sigmas']):
+                    isigma_name = data.name
+                    output.append(f"  {isigma_name}: {sigma_value}")
+                output.append("")
+    
+        # Output to screen if requested
+        if output_to_screen:
+            for line in output:
+                # if line.strip():  # Check if the line is not empty
+                print(line)
+    
+        # Output to file if filename is provided
+        if filename:
+            with open(filename, 'w', encoding='utf-8') as file:
+                for line in output:
+                    file.write(line + "\n")
+    
+    def plot(self, model='median', show=True, scale=2., legendscale=0.5, vertical=True):
         '''
         Plots the PDFs and the desired model predictions and residuals.
 
@@ -826,7 +868,7 @@ class explorefault(SourceInv):
                 keys += self.param_keys[faults]
                 index += self.param_index[faults]
         
-        if plot_sigmas:
+        if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
             keys += self.sigmas_keys
             index += self.sigmas_index
         
@@ -887,11 +929,12 @@ class explorefault(SourceInv):
         plt.show()
 
     def extract_and_plot_bayesian_results(self, rank=0, filename='samples_mag_rake_multifaults.h5', 
-                                        plot_faults=True, plot_sigmas=True, plot_data=True,
-                                        antisymmetric=True, res_use_data_norm=True, cmap='jet'):
+                                          plot_faults=True, plot_sigmas=True, plot_data=True,
+                                          antisymmetric=True, res_use_data_norm=True, cmap='jet',
+                                          model='median'):
         """
         Extract and plot the Bayesian results.
-
+    
         args:
         rank: process rank (default is 0)
         filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
@@ -901,7 +944,11 @@ class explorefault(SourceInv):
         antisymmetric: whether to set the colormap to be antisymmetric (default is True)
         res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
         cmap: colormap to use (default is 'jet')
+        model: the model to use ('mean', 'median', 'std', 'MAP', default is 'mean')
         """
+        if model == 'std':
+            plot_data = False
+    
         if rank == 0:
             self.load_samples_from_h5(filename=filename)
             self.print_mcmc_parameter_positions()
@@ -910,16 +957,16 @@ class explorefault(SourceInv):
             if plot_faults:
                 for ifault, faultname in enumerate(self.faultnames):
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                        scatter=False, filename=f'kde_matrix_F{ifault}.png')
+                                         scatter=False, filename=f'kde_matrix_F{ifault}.png')
             
             # Plot Sigmas
-            if plot_sigmas:
+            if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
                 self.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
-                                    scatter=False, filename='kde_matrix_sigmas.png')
+                                     scatter=False, filename='kde_matrix_sigmas.png')
             
-            # save the model results
-            faults = self.returnModels(model='mean')
-            self.save_model_to_file('model_results_mean.json', model='mean')
+            # Save the model results
+            self.save_model_to_file(f'model_results_{model}.json', model=model, output_to_screen=True)
+            faults = self.returnModels(model=model)
 
             if plot_data:
                 cogps_vertical_list = []
@@ -965,7 +1012,22 @@ class explorefault(SourceInv):
                         cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
                                         bbox_inches='tight', mapaxis=None)
             
-            print(self.model_dict)
+            # import json
+            # def default_serializer(obj):
+            #     if isinstance(obj, np.ndarray):
+            #         return obj.tolist()
+            #     try:
+            #         return round(obj, 6)
+            #     except TypeError:
+            #         return str(obj)
+            
+            # print(f"Model ({model}):")
+            # print(json.dumps(self.model_dict[model], indent=2, ensure_ascii=False, separators=(',', ': '), default=default_serializer))
+            
+            # if 'std' not in model:
+            #     faults = self.returnModels(model='std')
+            #     print("Standard Deviation (std):")
+            #     print(json.dumps(self.model_dict['std'], indent=2, ensure_ascii=False, separators=(',', ': '), default=default_serializer))
 
     def save2h5(self, filename, datasets=None):
         '''
@@ -1044,5 +1106,29 @@ class explorefault(SourceInv):
             for ikey, key in enumerate(self.param_keys['sigmas']):
                 iname = 'data_{}'.format(ikey) if self.datas is None else self.datas[ikey].name
                 print(f"  {iname}: {self.param_index['sigmas'][ikey]}")
+
+    def guess_initial_dimensions_and_slip(self, magnitude, fault_type='SS'):
+        """
+        Guess initial fault length, width, and slip magnitude based on magnitude and fault type.
+
+        Parameters:
+        magnitude (float): The magnitude of the earthquake.
+        fault_type (str): The type of the fault ('SS' for strike-slip, 'R' for reverse-slip, 'N' for normal-slip).
+
+        Returns:
+        dict: A dictionary containing the guessed length, width, and slip magnitude.
+        """
+        from ..Tectonic_Utils.seismo import wells_and_coppersmith as wac
+
+        length = wac.RLD_from_M(magnitude, fault_type)
+        width = wac.RW_from_M(magnitude, fault_type)
+        # slip = wac.SLR_from_M(magnitude, fault_type)
+        slip_magnitude = wac.rectangular_slip(length * 1e3, width * 1e3, magnitude)  # Convert length and width to meters
+
+        return {
+            'length': length,
+            'width': width,
+            'slip': slip_magnitude,
+        }
 
 #EOF
