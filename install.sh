@@ -1,8 +1,6 @@
 #!/bin/bash
 
-# The full ECAT case library, including research cases and advanced examples, 
-# is stored in a separate repository. 
-# To download the full case library, run:
+# Uncomment the following line to download the full ECAT case library
 # git submodule update --init --recursive
 
 # install eqtools
@@ -14,3 +12,5 @@ cd ..
 cd csi_cutde_mpiparallel
 pip install .
 cd ..
+
+echo "Installation complete. If you need the full ECAT case library, uncomment the submodule command in this script or download it manually."
