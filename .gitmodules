@@ -1,0 +1,3 @@
+[submodule "ECAT-Cases"]
+	path = ECAT-Cases
+	url = https://github.com/kefuhe/ECAT-Cases.git
