@@ -215,15 +215,55 @@ class ReadBase2csisar(insar):
     
     # ------------------------Plotting-------------------------------#
     def plot_raw_sar(self, coordrange=None, faults=None, rawdownsample4plot=100, factor4plot=100, 
-                  vmin=None, vmax=None, symmetry=True, ax=None, tickfontsize=10, labelfontsize=10,
-                  style=['science'], fontsize=None, figsize=None, save_fig=False, 
-                  file_path='raw_sar.png', dpi=300, show=True, cmap='cmc.roma_r', 
-                  trace_color='black', trace_linewidth=0.5, colorbar_length=0.4, colorbar_height=0.02,
-                  colorbar_x=0.1, colorbar_y=0.1, colorbar_orientation='horizontal'):
+                      vmin=None, vmax=None, symmetry=True, cax=None, tickfontsize=10, labelfontsize=10,
+                      style=['science'], fontsize=None, figsize=None, save_fig=False, 
+                      file_path='raw_sar.png', dpi=300, show=True, cmap='cmc.roma_r', 
+                      trace_color='black', trace_linewidth=0.5, add_colorbar=True,
+                      colorbar_length=0.4, colorbar_height=0.02, cb_label_loc=None,
+                      colorbar_x=0.1, colorbar_y=0.1, colorbar_orientation='horizontal',
+                      cb_label='Disp. (cm)',
+                      text=None, text_position=(0.05, 0.95), text_fontsize=12, text_color='black'):
         """
         Plot the raw SAR data.
+    
+        Parameters:
+        - coordrange: Coordinate range for plotting.
+        - faults: Fault lines to plot.
+        - rawdownsample4plot: Downsampling factor for raw data.
+        - factor4plot: Factor to multiply the raw data for plotting.
+        - vmin, vmax: Minimum and maximum values for color scaling.
+        - symmetry: Whether to use symmetric color scaling.
+        - cax: Axes object to plot on.
+        - tickfontsize: Font size for colorbar ticks.
+        - labelfontsize: Font size for colorbar label.
+        - style: Plotting style.
+        - fontsize: Font size for plot.
+        - figsize: Figure size for plot.
+        - save_fig: Whether to save the figure.
+        - file_path: File path to save the figure.
+        - dpi: DPI for saving the figure.
+        - show: Whether to show the figure.
+        - cmap: Colormap for the plot.
+        - trace_color: Color for fault lines.
+        - trace_linewidth: Line width for fault lines.
+        - add_colorbar: Whether to add colorbar.
+        - colorbar_length: Length of the colorbar.
+        - colorbar_height: Height of the colorbar.
+        - colorbar_x: X position of the colorbar.
+        - colorbar_y: Y position of the colorbar.
+        - colorbar_orientation: Orientation of the colorbar.
+        - cb_label_loc: Location of the colorbar label.
+        - cb_label: Label for the colorbar.
+        - text: Text to add to the plot.
+        - text_position: Position of the text in the plot (relative coordinates).
+        - text_fontsize: Font size of the text.
+        - text_color: Color of the text.
+    
+        Returns:
+        - fig: Figure object.
+        - ax: Axes object.
         """
-        # 计算绘图数据
+        # Check if raw SAR data exists
         if coordrange is not None:
             lon_range, lat_range = coordrange[:2], coordrange[2:]
             rawsar, mesh_lon, mesh_lat, coordrange = self.cut_raw_sar(lon_range, lat_range)
@@ -237,58 +277,134 @@ class ReadBase2csisar(insar):
         rvmax = vmax if vmax is not None else np.nanmax(rawsar)
         rvmin = vmin if vmin is not None else np.nanmin(rawsar)
     
-        # 设置颜色条的对称性
+        # Set the color scaling
         if symmetry:
             vmax = max(abs(rvmin), rvmax)
             vmin = -vmax
         else:
             vmax, vmin = rvmax, rvmin
-
-        # 确定图像的原点
+    
+        # Determine the origin of the plot
         if mesh_lat[0, 0] > mesh_lat[0, -1]:
             origin = 'lower'
         else:
             origin = 'upper'
     
-        # 设置绘图风格
+        # Set the plotting style
         with sci_plot_style(style=style, fontsize=fontsize, figsize=figsize):
     
-            # 创建或使用现有的Axes对象
-            if ax is None:
+            # Create the figure and axes
+            if cax is None:
                 fig, ax = plt.subplots(1, 1) # , tight_layout=True
             else:
                 fig = plt.gcf()
+                ax = cax
     
-            # 绘制图像
+            # Plot the raw SAR data
             im = ax.imshow(rawsar, cmap=cmap, vmin=vmin, vmax=vmax, origin=origin, extent=extent)
             set_degree_formatter(ax, axis='both')
     
-            # 绘制断层
+            # Plot faults
             if faults is not None:
                 for fault in faults:
                     if isinstance(fault, pd.DataFrame):
                         ax.plot(fault.lon.values, fault.lat.values, color=trace_color, lw=trace_linewidth)
                     else:
                         ax.plot(fault.lon, fault.lat, color=trace_color, lw=trace_linewidth)
+            if coordrange is not None:
+                ax.set_xlim(*lon_range)
+                ax.set_ylim(*lat_range)
     
-            # 添加颜色条
-            cbar_ax = fig.add_axes([colorbar_x, colorbar_y, colorbar_length, colorbar_height])  # [left, bottom, width, height]
-            cb = fig.colorbar(im, cax=cbar_ax, orientation=colorbar_orientation)
-            cb.ax.tick_params(labelsize=tickfontsize)
-            cb.set_label('Disp. (cm)', fontdict={'size': labelfontsize})
-
-            # 根据颜色条的方向设置标签位置
-            if colorbar_orientation == 'vertical':
-                cb.ax.yaxis.set_label_position("left")
-            else:  # colorbar_orientation == 'horizontal'
-                cb.ax.xaxis.set_label_position("top")
-
-            # 保存或显示图像
+            # Add colorbar
+            if add_colorbar:
+                cbar_ax = fig.add_axes([colorbar_x, colorbar_y, colorbar_length, colorbar_height])  # [left, bottom, width, height]
+                cb = fig.colorbar(im, cax=cbar_ax, orientation=colorbar_orientation)
+                cb.ax.tick_params(labelsize=tickfontsize)
+                cb.set_label(cb_label, fontdict={'size': labelfontsize})
+        
+                # Set colorbar label position
+                if colorbar_orientation == 'vertical':
+                    cb.ax.yaxis.set_label_position("left" if cb_label_loc is None else cb_label_loc)
+                else:  # colorbar_orientation == 'horizontal'
+                    cb.ax.xaxis.set_label_position("top" if cb_label_loc is None else cb_label_loc)
+    
+            # Add text
+            if text is not None:
+                ax.text(text_position[0], text_position[1], text, transform=ax.transAxes,
+                        fontsize=text_fontsize, color=text_color, verticalalignment='top')
+    
+            # Save or show the figure
             if save_fig:
                 plt.savefig(file_path, dpi=dpi, bbox_inches='tight')
             if show:
                 plt.show()
-            else:
+            elif cax is None:
                 plt.close()
     
         return fig, ax
+
+    def remove_orbit_error(self, order=1, exclude_range=None, use_raw=False):
+        """
+        Remove orbital error from velocity data.
+        
+        Parameters:
+        order (int): The order of the polynomial to fit (1 for linear, 2 for quadratic).
+        exclude_range (tuple): Optional. A tuple of (lon_min, lon_max, lat_min, lat_max) to exclude from fitting.
+        use_raw (bool): Whether to use raw velocity data (raw_vel) or processed velocity data (vel).
+        
+        Returns:
+        np.ndarray: The velocity data with orbital error removed.
+        """
+        if use_raw and hasattr(self, 'raw_vel'):
+            vel = self.raw_vel.flatten()
+            x = self.raw_lon.flatten()
+            y = self.raw_lat.flatten()
+            x, y = self.ll2xy(x, y)
+        else:
+            vel = self.vel
+            x = self.x
+            y = self.y
+    
+        if exclude_range:
+            lon_min, lon_max, lat_min, lat_max = exclude_range
+            xmin, ymin = self.ll2xy(lon_min, lat_min)
+            xmax, ymax = self.ll2xy(lon_max, lat_max)
+            mask = (x < xmin) | (x > xmax) | (y < ymin) | (y > ymax)
+            x_fit = x[mask]
+            y_fit = y[mask]
+            vel_fit = vel[mask]
+        else:
+            x_fit = x
+            y_fit = y
+            vel_fit = vel
+    
+        # Fit a polynomial surface
+        if order == 1:
+            # Linear fit
+            A = np.c_[x_fit, y_fit, np.ones(x_fit.shape)]
+        elif order == 2:
+            # Quadratic fit
+            A = np.c_[x_fit**2, y_fit**2, x_fit*y_fit, x_fit, y_fit, np.ones(x_fit.shape)]
+        else:
+            raise ValueError("Order must be 1 (linear) or 2 (quadratic)")
+    
+        # Solve for the coefficients
+        coeff, _, _, _ = np.linalg.lstsq(A, vel_fit, rcond=None)
+    
+        # Create the fitted surface
+        if order == 1:
+            fitted_surface = coeff[0]*x + coeff[1]*y + coeff[2]
+        elif order == 2:
+            fitted_surface = coeff[0]*x**2 + coeff[1]*y**2 + coeff[2]*x*y + coeff[3]*x + coeff[4]*y + coeff[5]
+    
+        # Subtract the fitted surface from the original velocity data
+        vel_corrected = vel - fitted_surface
+        if use_raw and hasattr(self, 'raw_vel'):
+            self.raw_vel = vel_corrected.reshape(self.raw_vel.shape)
+        else:
+            self.vel = vel_corrected
+    
+        if order == 1:
+            return coeff[0], coeff[1], coeff[2]
+        elif order == 2:
+            return coeff[0], coeff[1], coeff[2], coeff[3], coeff[4], coeff[5]

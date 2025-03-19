@@ -16,6 +16,7 @@ from numba import jit, njit
 from multiprocessing import Pool
 from joblib import Parallel, delayed
 from numpy.random import RandomState
+from scipy.optimize import brentq
 import time
 from datetime import datetime
 import h5py
@@ -260,7 +261,6 @@ def calculate_weights(logpst, beta1, beta2):
     return probwght
 
 
-# %%
 class SMCclass:
     """
     Generates samples of the 'target' posterior PDF using SMC sampling. Also called Adapative Transitional Metropolis
@@ -436,6 +436,58 @@ class SMCclass:
                            self.samples.resmpl)
 
         return samples
+
+    def find_beta_brentq(self): 
+        """
+        Calculates the beta parameter for the next stage using Brent's method
+        Bug to be fixed: The function may not converge for some cases
+        """
+        beta1 = self.samples.beta[-1]       # prev_beta
+        max_post = np.max(self.samples.postval) 
+        logpst = self.samples.postval - max_post
+    
+        def objective(beta):
+            diffbeta = beta - beta1
+            logwght = diffbeta * logpst
+            wght = np.exp(logwght)
+    
+            # Use online algorithm to calculate standard deviation and mean
+            mean = 0
+            M2 = 0
+            for i in range(len(wght)):
+                delta = wght[i] - mean
+                mean += delta / (i + 1)
+                delta2 = wght[i] - mean
+                M2 += delta * delta2
+            var = M2 / (len(wght) - 1)
+            std_dev = np.sqrt(var)
+            covwght = std_dev / mean
+    
+            return covwght - 1  # We want covwght to be 1
+    
+        # Check the signs of the objective function at the endpoints
+        f_beta1 = objective(beta1)
+        f_1 = objective(1)
+    
+        # Adjust the interval if necessary
+        if f_beta1 * f_1 > 0:
+            if f_beta1 < 0:
+                # If f_beta1 < 0 and f_1 < 0, set beta to 1
+                betanew = 1
+            else:
+                # If f_beta1 > 0 and f_1 > 0, raise an error
+                raise ValueError("The objective function must have different signs at the endpoints beta1 and 1.")
+        else:
+            # Use Brent's method to find the root of the objective function
+            betanew = brentq(objective, beta1, 1, xtol=1e-6)
+    
+        betaarray = np.append(self.samples.beta, betanew)
+        newstage = np.arange(1, self.samples.stage[-1] + 2)
+        samples = self.NT2(self.samples.allsamples, self.samples.postval, 
+                        betaarray, newstage, self.samples.covsmpl, 
+                        self.samples.resmpl)
+    
+        return samples
     
     def resample_stage(self):
         '''
@@ -551,6 +603,41 @@ class SMCclass:
                         covariance, self.samples.resmpl)
         return samples
 
+    def make_covariance_lowerTriangular(self, epsilon=1e-6):
+        '''
+        make the model covariance using the weights and samples from previous 
+        stage
+        '''
+        # calculate the weight for model samples
+        dims = self.samples.allsamples.shape[1]
+        logpst = self.samples.postval - np.max(self.samples.postval)
+        logwght = (self.samples.beta[-1] - self.samples.beta[-2]) * logpst
+        wght = np.exp(logwght)
+        
+        probwght = wght / np.sum(wght)
+        
+        # calculate the mean samples
+        meansmpl = np.sum(probwght[:, None] * self.samples.allsamples, axis=0)
+        
+        # calculate the model covariance
+        smpldiff = self.samples.allsamples - meansmpl
+        covariance = np.zeros((dims, dims))
+        
+        # Calculate the lower triangle of the covariance matrix using vectorized operations
+        for i in range(dims):
+            covariance[i, :i+1] = np.sum(probwght[:, None] * smpldiff[:, i:i+1] * smpldiff[:, :i+1], axis=0)
+        
+        # Symmetric assignment
+        covariance = covariance + np.tril(covariance, -1).T
+        
+        # Add a small positive number to the diagonal
+        covariance += epsilon * np.eye(dims)
+
+        samples = self.NT2(self.samples.allsamples, self.samples.postval, 
+                        self.samples.beta, self.samples.stage, 
+                        covariance, self.samples.resmpl)
+        return samples
+
     def make_covariance_optimized_jit(self, epsilon = 1e-6):
         '''
         make the model covariance using the weights and samples from previous 
@@ -649,7 +736,6 @@ class SMCclass:
         return samples
                 
 
-# %%
 def SMC_samples(opt,samples, NT1, NT2):
     '''
     Sequential Monte Carlo technique
@@ -811,7 +897,7 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
     while samples.beta[-1] != 1:
         if rank == 0:
             current = SMCclass(opt, samples, NT1, NT2)
-            samples = current.find_beta_optimized()
+            samples = current.find_beta_optimized() # find_beta_optimized() changed to find_beta_brentq()
         
             current = SMCclass(opt, samples, NT1, NT2)
             samples = current.resample_stage() # resample_stage_optimized

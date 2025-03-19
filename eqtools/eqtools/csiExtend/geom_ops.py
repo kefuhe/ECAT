@@ -1,5 +1,7 @@
 from shapely.geometry import LineString, Point
 import numpy as np
+from scipy.interpolate import interp1d, griddata
+from scipy.integrate import cumulative_trapezoid as cumtrapz
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -140,6 +142,95 @@ class PolygonIntersector:
             
             ax.legend()
             plt.show()
+
+
+def discretize_coords(coords, every=None, num_segments=None, threshold=2):
+    '''
+    Discretize iso-depth nodes coordinates depicting the rupture trace.
+
+    Parameters:
+    - coords (np.ndarray): The coordinates of the iso-depth nodes.
+    - every (float, optional): The interval at which to discretize the coordinates. If provided, overrides num_segments.
+    - num_segments (int, optional): The number of segments to discretize the coordinates into. Ignored if every is provided.
+    - threshold (float, optional): The threshold distance to check the first and last vertex against the nearest r_new point. Default is 2.
+
+    Returns:
+    - xyz_new (np.ndarray): The new discretized coordinates in the original coordinate system.
+    - lonlatz_new (np.ndarray): The new discretized coordinates in the longitude/latitude coordinate system.
+    '''
+    x, y = coords[:, 0], coords[:, 1]
+    # Calculate the length of the curve
+    dx = np.insert(np.diff(x), 0, 0)
+    dy = np.insert(np.diff(y), 0, 0)
+    dr = np.sqrt(dx*dx + dy*dy)
+    r = cumtrapz(dr, initial=0)  # Length of the curve
+
+    # Create interpolation functions
+    fx = interp1d(r, x, kind='linear')
+    fy = interp1d(r, y, kind='linear')
+
+    # Discretize the curve length at equal intervals
+    if every is not None:
+        num_points = int(np.floor(r[-1] / every))
+        remainder = r[-1] - num_points * every
+        if remainder >= every / 2:
+            num_points += 1
+    elif num_segments is not None:
+        num_points = num_segments
+    else:
+        raise ValueError("Either 'every' or 'num_segments' must be set")
+
+    r_new = np.linspace(0, r[-1], num_points)
+
+    # Check the distance of the first and last vertex against the nearest r_new point
+    if r_new[0] - r[0] > threshold:
+        r_new = np.insert(r_new, 0, r[0])
+    if r[-1] - r_new[-1] > threshold:
+        r_new = np.append(r_new, r[-1])
+
+    # Calculate new x and y values
+    x_new = fx(r_new)
+    y_new = fy(r_new)
+
+    z = np.ones_like(x_new) * coords[0, 2]
+    xyz_new = np.vstack((x_new, y_new, z)).T
+
+    return xyz_new
+
+def calculate_average_direction(points):
+    """
+    Calculate the average direction of a piecewise linear curve using PCA.
+
+    Parameters:
+    -----------
+    points : np.ndarray
+        Array of points representing the piecewise linear curve. Shape should be (N, 2) or (N, 3).
+
+    Returns:
+    --------
+    avg_direction : np.ndarray
+        The average direction vector.
+    """
+    from sklearn.decomposition import PCA
+    # Ensure points are in 2D or 3D
+    if points.shape[1] not in [2, 3]:
+        raise ValueError("Points should be in 2D or 3D space.")
+
+    # Use only the first two dimensions (x and y)
+    X = points[:, 0].reshape(-1, 1)
+    y = points[:, 1]
+
+    # Perform PCA
+    pca = PCA(n_components=2)
+    pca.fit(points[:, :2])
+
+    # Get the direction vector from the first principal component
+    direction = pca.components_[0]
+
+    # Normalize the direction vector
+    avg_direction = direction / np.linalg.norm(direction)
+
+    return avg_direction
 
 
 if __name__ == '__main__':

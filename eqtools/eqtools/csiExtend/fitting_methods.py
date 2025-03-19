@@ -58,49 +58,103 @@ class DecisionTreeModel:
             x = x.reshape(-1, 1)
         return self.model.predict(x)
 
+# Define method information outside the class
+METHOD_INFO = {
+    'ols': {
+        'short_name': 'OLS',
+        'full_name': 'Ordinary Least Squares',
+        'color': '#1f77b4',
+        'line_style': '-',
+        'fit_method': 'fit_ols'
+    },
+    'theil_sen': {
+        'short_name': 'Theil-Sen',
+        'full_name': 'Theil-Sen Estimator',
+        'color': '#ff7f0e',
+        'line_style': '--',
+        'fit_method': 'fit_theil_sen'
+    },
+    'ransac': {
+        'short_name': 'RANSAC',
+        'full_name': 'Random Sample Consensus',
+        'color': '#2ca02c',
+        'line_style': '-.',
+        'fit_method': 'fit_ransac'
+    },
+    'huber': {
+        'short_name': 'Huber',
+        'full_name': 'Huber Regression',
+        'color': '#d62728',
+        'line_style': ':',
+        'fit_method': 'fit_huber'
+    },
+    'lasso': {
+        'short_name': 'LASSO',
+        'full_name': 'Least Absolute Shrinkage and Selection Operator',
+        'color': '#9467bd',
+        'line_style': '-',
+        'fit_method': 'fit_lasso'
+    },
+    'ridge': {
+        'short_name': 'Ridge',
+        'full_name': 'Ridge Regression',
+        'color': '#8c564b',
+        'line_style': '--',
+        'fit_method': 'fit_ridge'
+    },
+    'elasticnet': {
+        'short_name': 'ElasticNet',
+        'full_name': 'Elastic Net Regression',
+        'color': '#e377c2',
+        'line_style': '-.',
+        'fit_method': 'fit_elasticnet'
+    },
+    'quantile': {
+        'short_name': 'Quantile',
+        'full_name': 'Quantile Regression',
+        'color': '#7f7f7f',
+        'line_style': ':',
+        'fit_method': 'fit_quantile'
+    },
+    'groupby_interpolation': {
+        'short_name': 'GroupBy Interpolation',
+        'full_name': 'GroupBy Interpolation',
+        'color': '#bcbd22',
+        'line_style': '--',
+        'fit_method': 'fit_groupby_interpolation'
+    },
+    'polynomial': {
+        'short_name': 'Polynomial',
+        'full_name': 'Polynomial Regression',
+        'color': '#17becf',
+        'line_style': '-.',
+        'fit_method': 'fit_polynomial'
+    },
+    'svr': {
+        'short_name': 'SVR',
+        'full_name': 'Support Vector Regression',
+        'color': '#1f77b4',
+        'line_style': '-',
+        'fit_method': 'fit_svr'
+    },
+    'decision_tree': {
+        'short_name': 'Decision Tree',
+        'full_name': 'Decision Tree Regression',
+        'color': '#ff7f0e',
+        'line_style': '--',
+        'fit_method': 'fit_decision_tree'
+    }
+}
+
 class RegressionFitter:
     def __init__(self, x_values, y_values, degree=3):
         self.x_values = x_values
         self.y_values = y_values
         self.degree = degree
-        self.fit_methods = {
-            'ols': self.fit_ols,
-            'theil_sen': self.fit_theil_sen,
-            'ransac': self.fit_ransac,
-            'huber': self.fit_huber,
-            'lasso': self.fit_lasso,
-            'ridge': self.fit_ridge,
-            'elasticnet': self.fit_elasticnet,
-            'quantile': self.fit_quantile,
-            'groupby_interpolation': self.fit_groupby_interpolation,
-            'polynomial': self.fit_polynomial,
-            'svr': self.fit_svr,
-            'decision_tree': self.fit_decision_tree,
-        }
-        self.color_dict = {
-            'ols': '#1f77b4', 
-            'theil_sen': '#ff7f0e', 
-            'ransac': '#2ca02c', 
-            'huber': '#d62728', 
-            'lasso': '#9467bd', 
-            'ridge': '#8c564b',
-            'elasticnet': '#e377c2',
-            'quantile': '#7f7f7f',
-            'groupby_interpolation': '#bcbd22', 
-            'polynomial': '#17becf'
-        }
-        self.line_style_dict = {
-            'ols': '-', 
-            'theil_sen': '--', 
-            'ransac': '-.', 
-            'huber': ':', 
-            'lasso': '-', 
-            'ridge': '--',
-            'elasticnet': '-.',
-            'quantile': ':',
-            'groupby_interpolation': '--', 
-            'polynomial': '-.'
-        }
+        self.fit_methods = {key: getattr(self, value['fit_method']) for key, value in METHOD_INFO.items()}
+        self.color_dict = {method: METHOD_INFO[method]['color'] for method in METHOD_INFO}
+        self.line_style_dict = {method: METHOD_INFO[method]['line_style'] for method in METHOD_INFO}
+        self.short_name_dict = {method: METHOD_INFO[method]['short_name'] for method in METHOD_INFO}
 
     def fit_model(self, method, **kwargs):
         model = self.fit_methods.get(method)
@@ -173,38 +227,44 @@ class RegressionFitter:
         return InterpolationModel(cubic_interp_model)
 
     def fit_polynomial(self):
-        # 拟合多项式模型
+        # Fit polynomial model
         poly_model = np.polyfit(self.x_values, self.y_values, self.degree)
         poly_model_fn = np.poly1d(poly_model)
         return PolynomialModel(poly_model_fn)
 
     def plot_fit(self, models, mses=None, x_fit=None, show=False, 
-                save_fig=None, dpi=600, style=['science'], ax=None, swap_axes=False, 
-                show_error_in_legend=True, use_lon_lat=False, fault=None,
-                fontsize=None, figsize=None, scatter_props=None):
+                 save_fig=None, dpi=600, style=['science'], ax=None, swap_axes=False, 
+                 show_error_in_legend=True, use_lon_lat=False, fault=None,
+                 fontsize=None, figsize=None, scatter_props=None, custom_data=None):
         """
-        绘制拟合曲线。
-
-        参数:
-        models: dict。键是方法名，值是对应的模型。
-        mses: dict。键是方法名，值是对应的mse值。默认为None。
-        x_fit: numpy array。表示x坐标。
-        show: bool。表示是否显示图像。默认为False。
-        save_fig: str。表示保存图像的文件名。如果为None，则不保存图像。默认为None。
-        dpi: int。表示保存图像的分辨率。默认为600。
-        style: str。表示样式。默认为'science'。
-        ax: matplotlib.axes.Axes。表示绘图的子图对象。如果为None，则创建新的图形。默认为None。
-        swap_axes: bool。表示是否交换x轴和y轴。默认为False。
-        show_error_in_legend: bool。表示是否在图例中显示误差。默认为True。
-        use_lon_lat: bool。表示是否使用经纬度坐标进行绘制。默认为False。
-        fault: Fault。表示fault对象。默认为None。
-
-        返回值:
-        无。这个函数会绘制图像并显示。
+        Plot fitted curves.
+    
+        Parameters:
+        models: dict. Keys are method names, values are corresponding models.
+        mses: dict. Keys are method names, values are corresponding mse values. Default is None.
+        x_fit: numpy array. Represents x coordinates.
+        show: bool. Indicates whether to show the plot. Default is False.
+        save_fig: str. Indicates the filename to save the plot. If None, the plot is not saved. Default is None.
+        dpi: int. Indicates the resolution of the saved plot. Default is 600.
+        style: str. Indicates the style. Default is 'science'.
+        ax: matplotlib.axes.Axes. Indicates the subplot object for plotting. If None, a new figure is created. Default is None.
+        swap_axes: bool. Indicates whether to swap x and y axes. Default is False.
+        show_error_in_legend: bool. Indicates whether to show error in the legend. Default is True.
+        use_lon_lat: bool. Indicates whether to use longitude and latitude coordinates for plotting. Default is False.
+        fault: Fault. Indicates the fault object. Default is None.
+        fontsize: int. Font size for the plot. Default is None.
+        figsize: tuple. Figure size for the plot. Default is None.
+        scatter_props: dict. Properties for scatter plot. Default is None.
+        custom_data: dict. Custom data for plotting. Keys are labels, values are (x, y) tuples. Default is None.
+    
+        Returns:
+        None. This function will plot the figure and display it.
         """
+        from ..plottools import sci_plot_style
+
         if use_lon_lat and fault is None:
             raise ValueError("If use_lon_lat is True, fault cannot be None.")
-
+    
         if use_lon_lat:
             lon, lat = fault.xy2ll(self.x_values, self.y_values)
             x_values = lon
@@ -212,34 +272,17 @@ class RegressionFitter:
         else:
             x_values = self.x_values
             y_values = self.y_values
-
+    
         # Set default properties for plotting
-        with plt.style.context(style):
-            plt.rcParams['font.family'] = 'sans-serif'
-            plt.rcParams['axes.formatter.use_mathtext'] = False
-            plt.rcParams['text.usetex'] = False
-            plt.rcParams['mathtext.fontset'] = 'dejavusans'
-            plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica','DejaVu Sans', 'Bitstream Vera Sans', 
-                                            'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 
-                                            'Lucid', 'Avant Garde', 'sans-serif']
-
-            if fontsize is not None:
-                plt.rcParams['axes.labelsize'] = fontsize
-                plt.rcParams['xtick.labelsize'] = fontsize
-                plt.rcParams['ytick.labelsize'] = fontsize
-                plt.rcParams['legend.fontsize'] = fontsize
-                plt.rcParams['font.size'] = fontsize
-            
-            if figsize is not None:
-                plt.rcParams['figure.figsize'] = figsize
-
+        with sci_plot_style(style, fontsize=fontsize, figsize=figsize):
+    
             line_width = 2
-
+    
             if show:
                 default_scatter_props = {'color': "black", 's': 30, 'alpha': 0.6}
                 scatter_props = scatter_props if scatter_props is not None else {}
                 scatter_props = {**default_scatter_props, **scatter_props}  # Update default properties with provided ones
-
+    
                 if swap_axes:
                     (ax if ax is not None else plt).scatter(y_values, x_values, **scatter_props)
                 else:
@@ -251,12 +294,12 @@ class RegressionFitter:
                 else:
                     (ax if ax is not None else plt).xlabel("Y" if swap_axes else "X", fontsize=10)
                     (ax if ax is not None else plt).ylabel("X" if swap_axes else "Y", fontsize=10)
-
+    
             if x_fit is None:
                 X_smooth = np.linspace(self.x_values.min(), self.x_values.max(), 100)
             else:
                 X_smooth = x_fit
-
+    
             for method, model in models.items():
                 y_plot = model.predict(X_smooth[:, np.newaxis])
                 if use_lon_lat:
@@ -267,14 +310,22 @@ class RegressionFitter:
                     x_predict = X_smooth
                     y_predict = y_plot
                 if ax is not None or show:
-                    label = method if not show_error_in_legend or mses is None else '%s: error = %.3f' % (method, mses[method])
+                    label = self.short_name_dict[method] if not show_error_in_legend or mses is None else '%s: error = %.3f' % (self.short_name_dict[method], mses[method])
                     if swap_axes:
                         (ax if ax is not None else plt).plot(y_predict, x_predict, color=self.color_dict[method], linestyle=self.line_style_dict[method],
                                     linewidth=line_width, label=label)
                     else:
                         (ax if ax is not None else plt).plot(x_predict, y_predict, color=self.color_dict[method], linestyle=self.line_style_dict[method],
                                     linewidth=line_width, label=label)
-
+    
+            # Plot custom data if provided
+            if custom_data:
+                for label, (x_custom, y_custom) in custom_data.items():
+                    if swap_axes:
+                        (ax if ax is not None else plt).plot(y_custom, x_custom, color='red', linestyle='-', linewidth=line_width, label=label)
+                    else:
+                        (ax if ax is not None else plt).plot(x_custom, y_custom, color='red', linestyle='-', linewidth=line_width, label=label)
+    
             if show:
                 if use_lon_lat:
                     formatter = DegreeFormatter()

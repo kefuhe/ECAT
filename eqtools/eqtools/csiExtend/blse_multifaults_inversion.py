@@ -1,0 +1,438 @@
+import scipy
+import numpy as np
+import copy
+import matplotlib.pyplot as plt
+import pandas as pd
+
+from .bayesian_multifaults_inversion import MyMultiFaultsInversion
+from .bayesian_config import BoundLSEInversionConfig
+from ..plottools import sci_plot_style
+
+class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
+    def __init__(self, name, faults_list, geodata=None, config='default_config_BLSE.yml', encoding='utf-8',
+                 gfmethods=None, bounds_config='bounds_config.yml', rake_limits=None,
+                 extra_parameters=None, verbose=True):
+        # Initialize the faults ahead of the configuration
+        self.faults = faults_list
+        self.faults_dict = {fault.name: fault for fault in self.faults}
+        # To order the G matrix based on the order of the faults
+        self.faultnames = [fault.name for fault in self.faults]
+        # Initialize BoundLSEInversionConfig first
+        if isinstance(config, str):
+            assert geodata is not None, "geodata must be provided when config is a file"
+            self.config = BoundLSEInversionConfig(config, multifaults=None, 
+                                                  geodata=geodata, 
+                                                  faults_list=faults_list, 
+                                                  gfmethods=gfmethods, 
+                                                  encoding=encoding,
+                                                  verbose=verbose)
+        else:
+            self.config = config
+
+        # Initialize MyMultiFaultsInversion
+        super(BoundLSEMultiFaultsInversion, self).__init__(name, 
+                                                           faults_list, 
+                                                           extra_parameters=extra_parameters, 
+                                                           verbose=verbose)
+
+        self.assembleGFs() # assemble the Green's functions because the data is already assembled
+        self.update_config(self.config)
+        if self.config.use_bounds_constraints:
+            self.set_bounds_from_config(bounds_config, encoding=encoding)
+        if self.config.use_rake_angle_constraints:
+            if rake_limits is not None:
+                self.set_inequality_constraints_for_rake_angle(rake_limits)
+            elif self.config.use_bounds_constraints:
+                self.set_inequality_constraints_for_rake_angle(self.bounds_config['rake_angle']) 
+            else:
+                assert False, "Rake angle constraints can only be set when bounds constraints are used or rake_limits is provided."
+
+    def update_config(self, config):
+        self.config = config
+        self._update_faults()
+
+    def _update_faults(self):
+        # Update the faults based on the configuration parameters and method parameters for each fault 
+        for fault_name, fault_config in self.config.faults.items():
+            if fault_name != 'default':
+                # Update Green's functions
+                self.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
+                # Update Laplacian
+                self.update_Laplacian(fault_names=[fault_name], **fault_config['method_parameters']['update_Laplacian'])
+    
+    def run(self, penalty_weight=None, smoothing_constraints=None, data_weight=None, data_log_scaled=None, 
+            penalty_log_scaled=None, sigma=None, alpha=None, verbose=True):
+        """
+        Start the boundary-constrained least squares process.
+    
+        Parameters:
+        -----------
+        penalty_weight : int, float, list, or np.ndarray, optional
+            Penalty weights to apply to the Green's functions. If None, the function will use the initial values from the configuration.
+        smoothing_constraints : tuple or dict, optional
+            Smoothing constraints to apply during the least squares process. If None, the function will use the combined Green's functions matrix.
+            If a tuple, it should be a 4-tuple. If a dict, the keys should be fault names and the values should be 4-tuples.
+            (top, bottom, left, right) for the smoothing constraints.
+        data_weight : np.ndarray, optional
+            Weights to apply to the data. If None, the function will use the initial values from the configuration.
+        data_log_scaled : bool, optional
+            Whether to apply log scaling to the data weights. If None, the function will use the log_scaled value from the configuration.
+        penalty_log_scaled : bool, optional
+            Whether to apply log scaling to the penalty weights. If None, the function will use the log_scaled value from the configuration.
+        sigma : np.ndarray, optional
+            Data standard deviations. If None, the function will use the initial values from the configuration.
+        alpha : np.ndarray, optional
+            Smoothing standard deviations. If None, the function will use the initial values from the configuration.
+        verbose : bool, optional
+            Whether to print the results of the inversion. Default is True.
+    
+        Returns:
+        --------
+        None
+        """
+        # Ensure data_weight and sigma are either both None or only one is provided
+        if (data_weight is not None) and (sigma is not None):
+            raise ValueError("data_weight and sigma must either both be None or only one is provided.")
+    
+        # Ensure penalty_weight and alpha are either both None or only one is provided
+        if (penalty_weight is not None) and (alpha is not None):
+            raise ValueError("penalty_weight and alpha must either both be None or only one is provided.")
+    
+        # Handle data weights
+        if data_weight is None:
+            if sigma is None:
+                sigma = self.config.sigmas['initial_value']
+            sigma = np.array(sigma)
+            if data_log_scaled is None:
+                data_log_scaled = self.config.sigmas['log_scaled']
+            if data_log_scaled:
+                sigma = np.power(10, sigma)
+            data_weight = 1.0 / sigma
+        else:
+            data_weight = np.array(data_weight)
+    
+        # Handle penalty weights
+        if penalty_weight is None:
+            if alpha is None:
+                alpha = self.config.alpha['initial_value']
+            alpha = np.array(alpha)
+            fault_index = self.config.alpha['faults_index']
+            alpha = alpha[fault_index]
+            if penalty_log_scaled is None:
+                penalty_log_scaled = self.config.alpha['log_scaled']
+            if penalty_log_scaled:
+                penalty_weight = 1.0 / np.power(10, alpha)
+            else:
+                penalty_weight = 1.0 / alpha
+        else:
+            if isinstance(penalty_weight, (int, float)):
+                penalty_weight = np.ones(len(self.faults)) * penalty_weight
+            elif isinstance(penalty_weight, (list, np.ndarray)):
+                penalty_weight = np.array(penalty_weight)
+                assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
+            else:
+                raise ValueError("penalty_weight should be a scalar or a list of scalars.")
+    
+        # Handle smoothing constraints
+        if smoothing_constraints is not None:
+            if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
+                smoothing_constraints = {fault_name: smoothing_constraints for fault_name in self.faultnames}
+            elif isinstance(smoothing_constraints, dict):
+                assert all(fault_name in smoothing_constraints for fault_name in self.faultnames), "All fault names must be in smoothing_constraints."
+            else:
+                raise ValueError("smoothing_constraints should be a 4-tuple or a dictionary with fault names as keys and 4-tuples as values.")
+    
+        if smoothing_constraints is not None:
+            self.ConstrainedLeastSquareSoln(penalty_weight=penalty_weight, 
+                                            smoothing_constraints=smoothing_constraints, 
+                                            data_weight=data_weight,
+                                            verbose=True)
+        else:
+            self.combine_GL_poly(penalty_weight=penalty_weight)
+            self.ConstrainedLeastSquareSoln(penalty_weight=penalty_weight, 
+                                            smoothing_matrix=self.GL_combined_poly,
+                                            data_weight=data_weight,
+                                            verbose=True)
+        self.distributem()
+
+        if verbose:
+            # Caluculate RMS and VR for the solution and print the results
+            rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
+            vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
+            self.combine_GL_poly()
+            roughness = np.dot(self.GL_combined_poly, self.mpost)
+            roughness = np.sqrt(np.mean(roughness**2))
+            print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
+            self.combine_GL_poly(penalty_weight=penalty_weight)
+    
+    def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m'):
+        """
+        Run the inversion for a range of penalty weights.
+    
+        Parameters:
+        -----------
+        penalty_weights : list, np.ndarray, optional
+            Penalty weights to apply to the Green's functions. If None, the function will use the initial values from the configuration.
+        output_file : str, optional
+            Path to the output file. If None, the results will only be printed to the screen. Default is 'run_loop.dat'.
+        preferred_penalty_weight : float, optional
+            The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
+        rms_unit : str, optional
+            The unit for RMS. Default is 'm'. If set to other values, RMS will be scaled accordingly.
+        """
+        results = []
+    
+        # ---------------------------------Loop Penalty Weight---------------------------------------------#
+        # penalty_weight = [1.0, 10.0, 30.0, 50.0, 80.0, 100.0, 125.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0]
+        for ipenalty in penalty_weights:
+            alpha = [np.log10(1.0/ipenalty)] * len(self.faults)
+            self.run(penalty_weight=None, alpha=alpha, verbose=False)
+    
+            # Calculate RMS and VR for the solution and print the results
+            rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
+            vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
+            self.combine_GL_poly()
+            roughness = np.dot(self.GL_combined_poly, self.mpost)
+            roughness = np.sqrt(np.mean(roughness**2))
+            result = {
+                'Penalty_weight': ipenalty,
+                'Roughness': roughness,
+                'RMS': rms,
+                'VR': vr
+            }
+            results.append(result)
+            output = f'Penalty_weight: {ipenalty:.1f}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
+            print(output)
+    
+        # Convert results to DataFrame
+        df = pd.DataFrame(results)
+    
+        # Save DataFrame to file if output_file is specified
+        if output_file:
+            df.to_csv(output_file, index=False)
+    
+        # Default plot
+        self.plot_roughness_vs_rms(df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=preferred_penalty_weight, rms_unit=rms_unit)
+    
+        return df
+    
+    def plot_roughness_vs_rms(self, df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=None, rms_unit='m'):
+        """
+        Plot Roughness vs RMS and save the plot to a file.
+    
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            DataFrame containing the results with columns 'Roughness' and 'RMS'.
+        output_file : str, optional
+            Path to the output file. Default is 'Roughness_vs_RMS.png'.
+        show : bool, optional
+            Whether to display the plot. Default is True.
+        preferred_penalty_weight : float, optional
+            The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
+        rms_unit : str, optional
+            The unit for RMS. Default is 'm'. If set to other values, RMS will be scaled accordingly.
+        """
+        # Scale RMS values if necessary
+        rms_values = df.RMS.values
+        if rms_unit != 'm':
+            if rms_unit == 'cm':
+                rms_values *= 100
+            elif rms_unit == 'mm':
+                rms_values *= 1000
+            else:
+                raise ValueError(f"Unsupported RMS unit: {rms_unit}")
+    
+        with sci_plot_style():
+            plt.plot(df.Roughness.values[1:], rms_values[1:], marker='o', linestyle='-', label='L-Curve')
+            
+            # Highlight the preferred penalty weight point if specified
+            if preferred_penalty_weight is not None:
+                preferred_point = df[df.Penalty_weight == preferred_penalty_weight]
+                if not preferred_point.empty:
+                    plt.plot(preferred_point.Roughness.values, preferred_point.RMS.values, marker='o', c='#e54726', label='Preferred')
+            
+            plt.xlabel('Roughness')
+            plt.ylabel(f'RMS ({rms_unit})')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(output_file, dpi=600)
+            if show:
+                plt.show()
+            else:
+                plt.close()
+
+    def returnModel(self, mpost=None):
+        if mpost is not None:
+            mpost_backup = copy.deepcopy(self.mpost)
+            self.mpost = mpost
+        self.distributem()
+        if mpost is not None:
+            self.mpost = mpost_backup
+        
+        # Predict the data
+        for idata, ivert in zip(self.config.geodata['data'], self.config.geodata['verticals']):
+            idata.buildsynth(self.faults, direction='sd', poly='include', vertical=ivert)
+
+            id = idata.vel
+            isynth = idata.synth
+            irms = np.sqrt(np.mean((isynth - id)**2))
+            ivr = (1 - np.sum((isynth - id)**2) / np.sum(id**2)) * 100
+            print(f'{idata.name} RMS: {irms:.4f}, VR: {ivr:.2f}%')
+
+    def combine_GL_poly(self, GL_combined=None, penalty_weight=None):
+        """
+        Combine Green's functions (GL) with polynomial constraints and apply penalty weights.
+    
+        Parameters:
+        -----------
+        GL_combined : np.ndarray, optional
+            Pre-combined Green's functions matrix. If None, the function will combine the Green's functions.
+        penalty_weight : int, float, list, or np.ndarray, optional
+            Penalty weights to apply to the Green's functions. If None, the function will use the initial values from the configuration.
+    
+        Returns:
+        --------
+        GL_combined_poly : np.ndarray
+            Combined Green's functions matrix with polynomial constraints and applied penalty weights.
+        """
+        if penalty_weight is not None:
+            if isinstance(penalty_weight, (int, float)):
+                penalty_weight = np.ones(len(self.faults)) * penalty_weight
+            elif isinstance(penalty_weight, (list, np.ndarray)):
+                assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
+            else:
+                raise ValueError("penalty_weight should be a scalar or a list of scalars.")
+        else:
+            penalty_weight = np.array(self.config.alpha['initial_value'])
+            fault_index = self.config.alpha['faults_index']
+            penalty_weight = penalty_weight[fault_index]
+            assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
+            if self.config.alpha['log_scaled']:
+                penalty_weight = 1.0 / np.power(10, penalty_weight)
+            else:
+                penalty_weight = 1.0 / penalty_weight
+    
+        if GL_combined is None:
+            GL_combined_poly = []
+            for fault, ipenalty_weight in zip(self.faults, penalty_weight):
+                poly_positions = self.poly_positions.get(fault.name, (0, 0))
+                # Create a zero matrix with the correct size
+                combined = np.zeros((fault.GL.shape[0], fault.GL.shape[1] + poly_positions[1] - poly_positions[0]))
+                # Copy the values from the original matrix to the combined matrix at the correct positions
+                combined[:, :fault.GL.shape[1]] = fault.GL.toarray() * ipenalty_weight
+                GL_combined_poly.append(combined)
+            self.GL_combined_poly = scipy.linalg.block_diag(*GL_combined_poly)
+    
+        return self.GL_combined_poly
+
+    def extract_and_plot_blse_results(self, rank=0, 
+                                          plot_faults=True, plot_data=True,
+                                          antisymmetric=True, res_use_data_norm=True, cmap='jet', azimuth=None, elevation=None,
+                                          slip_cmap='precip3_16lev_change.cpt', depth_range=None, z_ticks=None, 
+                                          axis_shape=(1.0, 1.0, 0.6), 
+                                          gps_title=True, sar_title=True, sar_cbaxis=[0.15, 0.25, 0.25, 0.02],
+                                          gps_figsize=None, sar_figsize=(3.5, 2.7), gps_scale=0.05, gps_legendscale=0.2,
+                                          file_type='png',
+                                          remove_direction_labels=False,
+                                          fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
+                                          ):
+        """
+        Extract and plot the Bayesian results.
+    
+        args:
+        rank: process rank (default is 0)
+        filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
+        plot_faults: whether to plot faults (default is True)
+        plot_data: whether to plot data (default is True)
+        antisymmetric: whether to set the colormap to be antisymmetric (default is True)
+        res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
+        cmap: colormap to use (default is 'jet')
+        slip_cmap: colormap for slip (default is 'precip3_16lev_change.cpt')
+        depth_range: depth range for the plot (default is None)
+        z_ticks: z-axis ticks for the plot (default is None)
+        gps_title: whether to show title for GPS data plots (default is True)
+        sar_title: whether to show title for SAR data plots (default is True)
+        sar_cbaxis: colorbar axis position for SAR data plots (default is [0.15, 0.25, 0.25, 0.02])
+        gps_figsize: figure size for GPS data plots (default is None)
+        sar_figsize: figure size for SAR data plots (default is (3.5, 2.7))
+        gps_scale: scale for GPS data plots (default is 0.05)
+        gps_legendscale: legend scale for GPS data plots (default is 0.2)
+        file_type: file type to save the figures (default is 'png')
+        remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+        """
+        if rank == 0:
+            import cmcrameri
+            from ..getcpt import get_cpt 
+    
+            if slip_cmap is not None and slip_cmap.endswith('.cpt'):
+                cmap_slip = get_cpt.get_cmap(slip_cmap, method='list', N=15)
+            else:
+                cmap_slip = slip_cmap
+            if slip_cmap is None:
+                cmap_slip = get_cpt.get_cmap('precip3_16lev_change.cpt', method='list', N=15)
+            self.returnModel()
+    
+            if plot_faults:
+                self.plot_multifaults_slip(slip='total', cmap=cmap_slip,
+                                                drawCoastlines=False, cblabel='Slip (m)',
+                                                savefig=True, style=['notebook'], cbaxis=fault_cbaxis,
+                                                xtickpad=5, ytickpad=5, ztickpad=5,
+                                                xlabelpad=15, ylabelpad=15, zlabelpad=15,
+                                                shape=axis_shape, elevation=elevation, azimuth=azimuth,
+                                                depth=depth_range, zticks=z_ticks, fault_expand=0.0,
+                                                plot_faultEdges=False, suffix='_slip', ftype=file_type,
+                                                remove_direction_labels=remove_direction_labels,
+                                                )
+
+            # Build the synthetic data and plot the results
+            faults = self.faults
+            cogps_vertical_list = []
+            cosar_list = []
+            datas = self.config.geodata.get('data', [])
+            verticals = self.config.geodata.get('verticals', [])
+            for data, vertical in zip(datas, verticals):
+                if data.dtype == 'gps':
+                    cogps_vertical_list.append([data, vertical])
+                elif data.dtype == 'insar':
+                    cosar_list.append(data)
+
+            # Plot GPS data
+            for fault in faults:
+                if fault.lon is None or fault.lat is None:
+                    fault.setTrace(0.1)
+                fault.color = 'b' # Set the color to blue
+            for cogps, vertical in cogps_vertical_list:
+                cogps.buildsynth(faults, vertical=vertical)
+                if plot_data:
+                    box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
+                    cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], 
+                                scale=gps_scale, legendscale=gps_legendscale, color=['k', 'r'],
+                                seacolor='lightblue', box=box, titleyoffset=1.02, title=gps_title, figsize=gps_figsize,
+                                remove_direction_labels=remove_direction_labels)
+                    cogps.fig.savefig(f'gps_{cogps.name}', ftype=file_type, dpi=600, 
+                                    bbox_inches='tight', mapaxis=None, saveFig=['map'])
+            # Plot SAR data
+            for fault in faults:
+                fault.color = 'k'
+            for cosar in cosar_list:
+                cosar.buildsynth(faults, vertical=True)
+                if plot_data:
+                    datamin, datamax = cosar.vel.min(), cosar.vel.max()
+                    absmax = max(abs(datamin), abs(datamax))
+                    data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
+                    for data in ['data', 'synth', 'res']:
+                        if data == 'res':
+                            cosar.res = cosar.vel - cosar.synth
+                            absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
+                            res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
+                            res_norm = data_norm if res_use_data_norm else res_norm
+                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=res_norm, cmap=cmap,
+                                cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
+                                remove_direction_labels=remove_direction_labels)
+                        else:
+                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=data_norm, cmap=cmap,
+                                    cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
+                                    remove_direction_labels=remove_direction_labels)
+                        cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
+                                        bbox_inches='tight', mapaxis=None)

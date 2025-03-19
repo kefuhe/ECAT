@@ -55,48 +55,53 @@ class mpstd(mp.Process):
         '''
         Runs the standard deviation computation
         '''
-
+    
         std_dev = []
-
+        abs_mean = []
+    
         # Check if KDTree exists
         if not hasattr(self.downsampler, 'PIXXY_Tree'):
             raise AttributeError("KDTree not found. Please create KDTree using downsampler.PIXXY.")
-
-        # Over each block, we compute the standard deviation
+    
+        # Over each block, we compute the standard deviation and mean absolute value
         for i in self.indexes:
-
+    
             # Get block
             block = self.downsampler.blocks[i]
-
+    
             # Ensure block is a numpy array
             block = np.array(block)
-
+    
             # Check if the block size has reached the minimum
             if self.Bsize[i]:
-                # If so, set the standard deviation to 0
+                # If so, set the standard deviation and mean absolute value to 0
                 std_dev.append(0)
+                abs_mean.append(0)
             else:
                 # Create a path
                 p = mpath.Path(block, closed=False)
-
+    
                 # Find points inside the block using KDTree
                 block_center = np.mean(block, axis=0)
                 block_radius = np.max(np.linalg.norm(block - block_center, axis=1))
                 indices = self.downsampler.PIXXY_Tree.query_ball_point(block_center, r=block_radius)
                 points_inside = self.downsampler.PIXXY[indices]
                 mask = p.contains_points(points_inside)
-
-                # Compute standard deviation
+    
+                # Compute standard deviation and mean absolute value
                 if self.downsampler.datatype == 'insar':
-                    std_dev.append(np.std(self.downsampler.image.vel[indices][mask]))
+                    values = self.downsampler.image.vel[indices][mask]
+                    std_dev.append(np.std(values))
+                    abs_mean.append(np.abs(np.mean(values)))
                 elif self.downsampler.datatype == 'opticorr':
-                    east_std = np.std(self.downsampler.image.east[indices][mask])
-                    north_std = np.std(self.downsampler.image.north[indices][mask])
-                    std_dev.append(np.sqrt(east_std**2 + north_std**2))
-
-        # Save standard deviation
-        self.queue.put([std_dev, self.indexes])
-
+                    east_values = self.downsampler.image.east[indices][mask]
+                    north_values = self.downsampler.image.north[indices][mask]
+                    std_dev.append(np.sqrt(np.std(east_values)**2 + np.std(north_values)**2))
+                    abs_mean.append(np.mean(np.sqrt(east_values**2 + north_values**2)))
+    
+        # Save standard deviation and mean absolute value
+        self.queue.put([std_dev, abs_mean, self.indexes])
+    
         # All done
         return
 
@@ -960,6 +965,7 @@ class imagedownsampling(object):
 
         # Standard deviation (if we cannot compute the standard deviation, the value is zero, so the algo stops)
         self.StdDev = np.ones(len(self.blocks,))*1e7
+        self.AbsMean = np.ones(len(self.blocks,))*1e7
 
         # Create a queue to hold the results
         output = mp.Queue()
@@ -979,8 +985,9 @@ class imagedownsampling(object):
 
         # Collect
         for w in range(nworkers):
-            std_dev, istd = output.get()
+            std_dev, abs_mean, istd = output.get()
             self.StdDev[istd] = std_dev
+            self.AbsMean[istd] = abs_mean
 
         # Smooth?
         if smooth is not None:
@@ -988,90 +995,120 @@ class imagedownsampling(object):
             Distances = distance.cdist(centers,centers)**2
             gauss = np.exp(-0.5*Distances/(smooth**2))
             self.StdDev = np.dot(gauss, self.StdDev)/np.sum(gauss, axis=1)
+            self.AbsMean = np.dot(gauss, self.AbsMean)/np.sum(gauss, axis=1)
 
         # All done
         return
 
-    def stdBased(self, threshold, plot=False, verboseLevel='minimum', decimorig=10, smooth=None, itmax=100):
+    def stdBased(self, threshold, plot=False, verboseLevel='minimum', decimorig=10, smooth=None, itmax=100, 
+                 high_value_ratio=0.25, min_splits_high_value=1, reference_max_value=None, 
+                 mask_polygon=None, max_splits_mask_out=5, use_variance=False):
         '''
         Iteratively downsamples the dataset using a quadtree approach until the standard deviation inside each block is lower than the threshold.
-
+    
         Args:
-            * threshold     : Standard deviation threshold
-
+            * threshold                 : Standard deviation threshold
+    
         Kwargs:
-            * plot          : True/False, whether to plot the downsampled image
-            * verboseLevel  : Level of verbosity
-            * decimorig     : Decimation rate before plotting
-            * itmax         : Maximum number of iterations
-
+            * plot                      : True/False, whether to plot the downsampled image
+            * verboseLevel              : Level of verbosity
+            * decimorig                 : Decimation rate before plotting
+            * itmax                     : Maximum number of iterations
+            * high_value_ratio          : Minimum mean threshold as a proportion of the reference maximum value. Default is 0.25.
+            * min_splits_high_value     : Minimum number of divisions for blocks with high mean values. Default is 1.
+            * mask_polygon              : Polygon defining the area of interest. Default is None.
+            * max_splits_mask_out       : Maximum number of divisions for blocks outside the mask polygon. Default is 5.
+            * reference_max_value       : Reference maximum value for high value ratio. Default is None (uses max absolute value of self.image.vel).
+            * use_variance            : Use variance instead of standard deviation for threshold comparison. Default is False.
+    
         Returns:
             * None
         '''
-
+    
         if self.verbose:
             print ("---------------------------------")
             print ("---------------------------------")
             print ("Downsampling Iterations")
-
+    
         # Creates the variable that is supposed to stop the loop
         self.StdDev = np.ones(len(self.blocks),)*(threshold+1.)
+        self.AbsMean = np.zeros(len(self.blocks),)
         do_cut = False
-
+    
         # counter
         it = 0
-
+    
         # Check if block size is minimum
         Bsize = self._is_minimum_size(self.blocks)
-
+    
+        # Compute the reference maximum value in the dataset
+        if reference_max_value is None:
+            reference_max_value = np.max(np.abs(self.image.vel))
+    
+        # Initialize division counts
+        division_counts = np.ones(len(self.blocks), dtype=int)
+    
         # Loops until done
         while not (self.StdDev<threshold).all() and it<itmax:
-
+    
             # Check
             assert self.StdDev.shape[0]==len(self.blocks), 'StdDev vector has a size different than number of blocks'
-
+    
             # Cut if asked
             if do_cut:
                 # New list of blocks
                 newblocks = []
+                new_division_counts = []
                 # Iterate over blocks
                 for j in range(len(self.blocks)):
                     block = self.blocks[j]
-                    if (self.StdDev[j]>threshold) and not Bsize[j]:
+                    block_mean = self.AbsMean[j]
+                    if use_variance:
+                        value_to_compare = self.StdDev[j]**2
+                    else:
+                        value_to_compare = self.StdDev[j]
+                    if ((value_to_compare>threshold) or ((block_mean > high_value_ratio * reference_max_value) and (division_counts[j] < min_splits_high_value))) and not Bsize[j]:
+                        if mask_polygon is not None:
+                            p = path.Path(mask_polygon, closed=False)
+                            block_center = self.getblockcenter(block)
+                            if not p.contains_point(block_center) and division_counts[j] >= max_splits_mask_out:
+                                newblocks.append(block)
+                                new_division_counts.append(division_counts[j])
+                                continue
                         b1, b2, b3, b4 = self.cutblockinfour(block)
-                        newblocks.append(b1)
-                        newblocks.append(b2)
-                        newblocks.append(b3)
-                        newblocks.append(b4)
+                        newblocks.extend([b1, b2, b3, b4])
+                        new_division_counts.extend([division_counts[j]+1]*4)
                     else:
                         newblocks.append(block)
+                        new_division_counts.append(division_counts[j])
                 # Set the blocks
                 self.setBlocks(newblocks)
+                division_counts = np.array(new_division_counts, dtype=int)
                 # Do the downsampling
                 self.downsample(plot=False, decimorig=decimorig)
             else:
                 do_cut = True
-
+    
             # Iteration #
             it += 1
             if self.verbose:
                 print('Iteration {}: Testing {} data samples '.format(it, len(self.blocks)))
-
+    
             # Compute standard deviation
             self.computeStdDev(smooth=smooth)
-
+    
             # initialize
             Bsize = self._is_minimum_size(self.blocks)
-
+    
             if self.verbose and verboseLevel != 'minimum':
                 sys.stdout.write(' ===> StdDev from {} to {}, Mean = {} +- {} \n'.format(self.StdDev.min(),
                     self.StdDev.max(), self.StdDev.mean(), self.StdDev.std()))
                 sys.stdout.flush()
-
+    
             # Plot at the end of that iteration
             if plot:
                 self.plotDownsampled(decimorig=decimorig)
-
+    
         # All done
         return
 

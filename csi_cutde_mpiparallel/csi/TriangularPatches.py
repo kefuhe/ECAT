@@ -224,39 +224,42 @@ class TriangularPatches(Fault):
     def setVerticesFromPatches(self):
         '''
         Takes the patches and constructs a list of Vertices and Faces
-
+    
         Returns:
             * None
         '''
-
+    
         # Get patches
-        patches = self.patch
-
-        # Create lists
-        vertices = []
-        faces = []
-
-        # Iterate to build vertices
-        for patch in patches:
-            for vertex in patch.tolist():
-                if vertex not in vertices:
-                    vertices.append(vertex)
-
+        patches = np.array(self.patch)
+    
+        # Flatten the patches array
+        flat_patches = patches.reshape(-1, patches.shape[-1])
+    
+        # Use cKDTree to find unique vertices
+        from scipy.spatial import cKDTree
+        tree = cKDTree(flat_patches)
+        _, unique_indices = np.unique(tree.query(flat_patches)[1], return_index=True)
+        vertices = flat_patches[unique_indices]
+    
+        # Create a dictionary for vertex indices
+        vertex_index = {tuple(vertex): idx for idx, vertex in enumerate(vertices)}
+    
         # Iterate to build Faces
+        faces = []
         for patch in patches:
-            face = []
-            for vertex in patch.tolist():
-                uu = np.flatnonzero(np.array([vertex==v for v in vertices]))[0]
-                face.append(uu)
+            face = [vertex_index[tuple(vertex)] for vertex in patch]
             faces.append(face)
-
+    
+        # Convert faces list to NumPy array
+        faces = np.array(faces)
+    
         # Set them
-        self.Vertices = np.array(vertices)
-        self.Faces = np.array(faces)
-
+        self.Vertices = vertices
+        self.Faces = faces
+    
         # 2 lon lat
         self.vertices2ll()
-
+    
         # All done
         return
     # ----------------------------------------------------------------------

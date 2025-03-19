@@ -376,7 +376,7 @@ class multifaultsolve_boundLSE(multifaultsolve):
             raise ValueError("data_weight should be a scalar or a list of scalars.")
         # Icovd = np.linalg.inv(Cd)
         # Icovd_chol = np.linalg.cholesky(Icovd)
-        Icovd_chol = self.Icovd_chol
+        Icovd_chol = self.Icovd_chol.copy()
         st = 0
         ed = 0
         datanames = self.faults[0].datanames

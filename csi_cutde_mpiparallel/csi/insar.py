@@ -252,6 +252,21 @@ class insar(SourceInv):
             self.deletePixels(np.flatnonzero([not i for i in island]))
         else:
             return island
+    
+    def get_bbox(self):
+        '''
+        Get the bounding box of the data set.
+
+        Returns:
+            * lonmin, lonmax, latmin, latmax
+        '''
+
+        # Get the bounding box
+        lonmin, lonmax = np.min(self.lon), np.max(self.lon)
+        latmin, latmax = np.min(self.lat), np.max(self.lat)
+
+        # All done
+        return lonmin, lonmax, latmin, latmax
 
     def read_from_ascii_simple(self, filename, factor=1.0, step=0.0, header=0, los=None):
         '''
@@ -2394,21 +2409,45 @@ class insar(SourceInv):
         # All done
         return u
 
-    def getprofile(self, name, loncenter, latcenter, length, azimuth, width):
+    def getprofile(self, name, loncenter=None, latcenter=None, length=None, azimuth=None, 
+                   width=None, lonend=None, latend=None, ref_to_start=False):
         '''
-        Project the SAR velocities onto a profile. Works on the lat/lon coordinates system. Profile is stored in a dictionary called {self}.profile
+        Project the seismic locations onto a profile. Works on the lat/lon coordinates system.
 
         Args:
             * name              : Name of the profile.
             * loncenter         : Profile origin along longitude.
             * latcenter         : Profile origin along latitude.
             * length            : Length of profile.
-            * azimuth           : Azimuth in degrees.
+            * azimuth           : Azimuth in degrees. 0 is north, 90 is east.
             * width             : Width of the profile.
+            * lonend            : Profile end along longitude (optional).
+            * latend            : Profile end along latitude (optional).
+            * ref_to_start      : If True, the profile is referenced to the start point.
+        
+            Way to call the function:
+            * getprofile('name', loncenter=, latcenter=, length=, azimuth=, width=),
+                where loncenter, latcenter are the coordinates of the center of the profile,
+                length is the length of the profile, azimuth is the azimuth of the profile in degrees,
+                and width is the width of the profile.
+            * getprofile('name', loncenter=, latcenter=, lonend=, latend=, width=),
+                where loncenter, latcenter are the coordinates of the starting point of the profile,
+                length is the length of the profile, azimuth is the azimuth of the profile in degrees,
+                and width is the width of the profile.
 
         Returns:
-            * None
+            * None. Profiles are stored in the attribute {profiles}
         '''
+
+        # If lonend and latend are provided, calculate length and azimuth
+        if lonend is not None and latend is not None:
+            xs, ys = self.ll2xy(loncenter, latcenter)
+            xe, ye = self.ll2xy(lonend, latend)
+            length = np.sqrt((xe - xs)**2 + (ye - ys)**2)
+            azimuth = np.degrees(np.arctan2(ye - ys, xe - xs))
+            azimuth = (90 - azimuth + 360) % 360
+            xc, yc = (xs + xe) / 2., (ys + ye) / 2.
+            loncenter, latcenter = self.xy2ll(xc, yc)
 
         # the profiles are in a dictionary
         if not hasattr(self, 'profiles'):
@@ -2419,7 +2458,7 @@ class insar(SourceInv):
 
         # Get the profile
         Dalong, Dacros, Bol, boxll, box, xe1, ye1, xe2, ye2, \
-                lon, lat = utils.coord2prof(self, xc, yc, length, azimuth, width)
+                lon, lat = utils.coord2prof(self, xc, yc, length, azimuth, width, ref_to_start=ref_to_start)
 
         # Get values
         vel = self.vel[Bol]
@@ -2446,6 +2485,7 @@ class insar(SourceInv):
         dic['Lon'] = lon
         dic['Lat'] = lat
         dic['LOS Velocity'] = vel
+        dic['LOS vector'] = los
         dic['LOS Synthetics'] = synth
         dic['LOS Error'] = err
         dic['Distance'] = np.array(Dalong)
@@ -2455,7 +2495,7 @@ class insar(SourceInv):
         lone2, late2 = self.xy2ll(xe2, ye2)
         dic['EndPointsLL'] = [[lone1, late1],
                               [lone2, late2]]
-        dic['LOS vector'] = los
+        dic['Indices'] = Bol
 
         # All done
         return
@@ -3466,7 +3506,7 @@ class insar(SourceInv):
         return
 
 
-    def write2file(self, fname, data='data', outDir='./'):
+    def write2file(self, fname, data='data', outDir='./', write_los=False):
         '''
         Write to an ascii file
 
@@ -3476,6 +3516,7 @@ class insar(SourceInv):
         Kwargs:
             * data      : can be 'data', 'synth' or 'resid'
             * outDir    : output Directory
+            * write_los : write the los vector as well
 
         Returns:
             * None
@@ -3495,13 +3536,17 @@ class insar(SourceInv):
 
         # Write these to a file
         fout = open(os.path.join(outDir, fname), 'w')
-        for i in range(x.shape[0]):
-            fout.write('{} {} {} \n'.format(x[i], y[i], z[i]))
+        if write_los:
+            for i in range(x.shape[0]):
+                fout.write('{} {} {} {} {} {} \n'.format(x[i], y[i], z[i], self.los[i,0], self.los[i,1], self.los[i,2]))
+        else:
+            for i in range(x.shape[0]):
+                fout.write('{} {} {} \n'.format(x[i], y[i], z[i]))
         fout.close()
 
         return
 
-    def writeDecim2file(self, filename, data='data', outDir='./', triangular=None):
+    def writeDecim2file(self, filename, data='data', outDir='./', triangular=None, write_los=False):
         '''
         Writes the decimation scheme to a file plottable by GMT psxy command.
     
@@ -3512,6 +3557,7 @@ class insar(SourceInv):
             * data      : Add the value with a -Z option for each rectangle. Can be 'data', 'synth', 'res', 'transformation'
             * outDir    : output directory
             * triangular: If True, write triangular downsampling scheme. Default is None, which will auto-detect based on corner shape.
+            * write_los : write the los vector as well
     
         Returns:
             * None
@@ -3538,9 +3584,9 @@ class insar(SourceInv):
                 triangular = False
     
         # Iterate over the data and corner
-        for corner, d in zip(self.corner, values):
+        for i, (corner, d) in enumerate(zip(self.corner, values)):
             # Make a line
-            string = '> -Z{} \n'.format(d)
+            string = '> -Z{} # {} {} {} \n'.format(d, self.los[i,0], self.los[i,1], self.los[i,2]) if write_los else '> -Z{} \n'.format(d)
             fout.write(string)
     
             # Write the corners

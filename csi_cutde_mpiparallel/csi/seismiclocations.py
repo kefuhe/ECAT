@@ -1619,35 +1619,35 @@ class seismiclocations(SourceInv):
     def getClosestFaultPatch(self, fault):
         '''
         Returns a list of index for all the earthquakes containing the index of the closest fault patch.
-
+    
         Args:
             * fault : an instance of a fault class
-
+    
         Returns:
             * ipatch, a list of the index of the closest patch for each event
         '''
-
+    
         # Create a list
         ipatch = []
-
-        # scipy.distance
-        import scipy.spatial.distance as distance
-
+    
+        # Import KDTree
+        from scipy.spatial import KDTree
+    
         # Create a list of patch centers
         Centers = [fault.getpatchgeometry(i, center=True)[:3] for i in range(len(fault.patch))]
-
+    
+        # Create a KDTree for the patch centers
+        tree = KDTree(Centers)
+    
         # Create a list of points
         Earthquakes = [[self.x[i], self.y[i], self.depth[i]] for i in range(self.x.shape[0])]
-
-        # Iterate on the earthquakes
-        for eq in Earthquakes:
-
-            # Create a list of distances
-            dis = distance.cdist([eq], Centers)
-
-            # Get the index of the smallest distance
-            ipatch.append((np.array(dis)).argmin())
-
+    
+        # Query the KDTree for the closest patch for each earthquake
+        _, indices = tree.query(Earthquakes)
+    
+        # Append the indices to the ipatch list
+        ipatch.extend(indices)
+    
         # All done
         return ipatch
 
@@ -1980,7 +1980,8 @@ class seismiclocations(SourceInv):
         # all done
         return
 
-    def getprofile(self, name, loncenter, latcenter, length, azimuth, width):
+    def getprofile(self, name, loncenter=None, latcenter=None, length=None, azimuth=None, 
+                   width=None, lonend=None, latend=None, ref_to_start=False):
         '''
         Project the seismic locations onto a profile. Works on the lat/lon coordinates system.
 
@@ -1989,12 +1990,35 @@ class seismiclocations(SourceInv):
             * loncenter         : Profile origin along longitude.
             * latcenter         : Profile origin along latitude.
             * length            : Length of profile.
-            * azimuth           : Azimuth in degrees.
+            * azimuth           : Azimuth in degrees. 0 is north, 90 is east.
             * width             : Width of the profile.
+            * lonend            : Profile end along longitude (optional).
+            * latend            : Profile end along latitude (optional).
+            * ref_to_start      : If True, the distance is computed from the start of the profile.
+        
+            Way to call the function:
+            * getprofile('name', loncenter=, latcenter=, length=, azimuth=, width=),
+                where loncenter, latcenter are the coordinates of the center of the profile,
+                length is the length of the profile, azimuth is the azimuth of the profile in degrees,
+                and width is the width of the profile.
+            * getprofile('name', loncenter=, latcenter=, lonend=, latend=, width=),
+                where loncenter, latcenter are the coordinates of the starting point of the profile,
+                length is the length of the profile, azimuth is the azimuth of the profile in degrees,
+                and width is the width of the profile.
 
         Returns:
             * None. Profiles are stored in the attribute {profiles}
         '''
+
+        # If lonend and latend are provided, calculate length and azimuth
+        if lonend is not None and latend is not None:
+            xs, ys = self.ll2xy(loncenter, latcenter)
+            xe, ye = self.ll2xy(lonend, latend)
+            length = np.sqrt((xe - xs)**2 + (ye - ys)**2)
+            azimuth = np.degrees(np.arctan2(ye - ys, xe - xs))
+            azimuth = (90 - azimuth + 360) % 360
+            xc, yc = (xs + xe) / 2., (ys + ye) / 2.
+            loncenter, latcenter = self.xy2ll(xc, yc)
 
         # the profiles are in a dictionary
         if not hasattr(self, 'profiles'):
@@ -2005,7 +2029,7 @@ class seismiclocations(SourceInv):
 
         # Get the profile
         Dalong, Mag, Depth, Time, Dacros, boxll, xe1, ye1, xe2, ye2, lon, lat, Bol = self.coord2prof(
-                xc, yc, length, azimuth, width)
+                xc, yc, length, azimuth, width, ref_to_start=ref_to_start)
 
         # Store it in the profile list
         self.profiles[name] = {}
@@ -2025,7 +2049,7 @@ class seismiclocations(SourceInv):
         lone1, late1 = self.xy2ll(xe1, ye1)
         lone2, late2 = self.xy2ll(xe2, ye2)
         dic['EndPointsLL'] = [[lone1, late1],
-                              [lone2, late2]]
+                            [lone2, late2]]
         dic['Indices'] = Bol                              
 
         # All done
@@ -2160,7 +2184,7 @@ class seismiclocations(SourceInv):
         X_scaled[:, 1] *= distance_weight
         return X_scaled
 
-    def coord2prof(self, xc, yc, length, azimuth, width):
+    def coord2prof(self, xc, yc, length, azimuth, width, ref_to_start=False):
         '''
         Routine returning the profile
 
@@ -2170,6 +2194,9 @@ class seismiclocations(SourceInv):
             * length            : length of the profile.
             * azimuth           : azimuth of the profile.
             * width             : width of the profile.
+
+        Kwargs:
+            * ref_to_start      : If True, the distance is computed from the start of the profile.
 
         Returns:
             * dis                 : Distance from the center
@@ -2277,6 +2304,13 @@ class seismiclocations(SourceInv):
         else:
             Dalong = mag
             Dacros = mag
+        
+        if ref_to_start:
+            # Get the distance to the start
+            Dalong = np.array(Dalong)
+            PP = geom.MultiPoint(np.array([[xe2, ye2]]).tolist())
+            offset = Lacros.distance(PP.geoms[0])*-1
+            Dalong = Dalong - offset
 
         Dalong = np.array(Dalong)
         Dacros = np.array(Dacros)
@@ -2719,4 +2753,304 @@ class seismiclocations(SourceInv):
             else:
                 plt.close()
 
+
+    def plot_profiles_with_map(self, names, x_key='Distance', y_key='Depth', figsize=(10, 8), 
+                               scatter_props=None, save_fig=False, file_path='profiles.png', 
+                               dpi=300, show=True, invert_yaxis=True, map_use_degrees=True):
+        '''
+        Plot profiles based on the given names, including a map view and a profile view.
+    
+        Args:
+            * names          : Name or list of names of the profiles to plot.
+            * x_key          : Key for x-axis values in the profile dictionary. Default is 'Distance'.
+            * y_key          : Key for y-axis values in the profile dictionary. Default is 'Depth'.
+            * figsize        : Size of the figure. Default is (10, 8).
+            * scatter_props  : Properties for the scatter plot. Default is None.
+            * save_fig       : Whether to save the figure. Default is False.
+            * file_path      : Path to save the figure. Default is 'profiles.png'.
+            * dpi            : DPI for saving the figure. Default is 300.
+            * show           : Whether to show the figure. Default is True.
+            * invert_yaxis   : Whether to invert the y-axis. Default is True.
+            * map_use_degrees: Whether to use degrees for the axes. Default is True
+    
+        Returns:
+            * None
+        '''
+    
+        import matplotlib.pyplot as plt
+    
+        # Ensure names is a list
+        if isinstance(names, str):
+            names = [names]
+    
+        # Set default scatter properties if not provided
+        if scatter_props is None:
+            scatter_props = {'color': '#1a6faf', 's': 10, 'alpha': 0.6}
+    
+        # Create a figure
+        fig, axes = plt.subplots(len(names), 2, figsize=figsize, gridspec_kw={'width_ratios': [1, 3]})
+    
+        if len(names) == 1:
+            axes = [axes]
+    
+        for i, name in enumerate(names):
+            profile = self.profiles[name]
+    
+            # Plot the profile box and line on the map
+            ax_map = axes[i][0]
+            box = profile['Box']
+            end_points_ll = profile['EndPointsLL']
+    
+            # Plot all earthquakes
+            ax_map.scatter(self.lon, self.lat, **scatter_props)
+    
+            # Plot the profile box
+            box_closed = np.append(box, [box[0]], axis=0)
+            ax_map.plot(box_closed[:, 0], box_closed[:, 1], 'k--')
+    
+            # Plot the profile line
+            ax_map.plot([point[0] for point in end_points_ll], [point[1] for point in end_points_ll], 'k-')
+    
+            # Plot the profile arrow
+            start_point = end_points_ll[1]
+            end_point = end_points_ll[0]
+            ax_map.annotate('', xy=end_point, xytext=start_point, arrowprops=dict(arrowstyle='->', linewidth=1, color='k', shrinkA=0, shrinkB=0))
+    
+            # Set aspect ratio and labels
+            ax_map.set_aspect('equal', adjustable='box')
+            ax_map.set_xlabel('Longitude')
+            ax_map.set_ylabel('Latitude')
+    
+            # Plot the profile detail view
+            ax_profile = axes[i][1]
+            x_values = profile[x_key]
+            y_values = profile[y_key]
+            ax_profile.scatter(x_values, y_values, **scatter_props)
+    
+            # Set labels
+            ax_profile.set_xlabel(x_key)
+            ax_profile.set_ylabel(y_key)
+
+            # Invert y-axis if requested
+            if invert_yaxis:
+                ax_profile.invert_yaxis()
+
+        # Set aspect ratio for the first column
+        for ax in axes[:, 0]:
+            ax.set_aspect('equal', adjustable='box')
+            if map_use_degrees:
+                from eqtools.plottools import set_degree_formatter
+                set_degree_formatter(ax)
+
+        # Adjust layout
+        plt.tight_layout()
+    
+        # Save the figure if requested
+        if save_fig:
+            plt.savefig(file_path, dpi=dpi, bbox_inches='tight')
+    
+        # Show the figure if requested
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+        # All done
+        return
+
+    def plot_profiles_map(self, names, scatter_props=None, save_fig=False, file_path='profiles_map.png', dpi=300, 
+                          show=True, figsize=(7.5, 6.5), map_equal=True, use_degrees=True,
+                          xlim=None, ylim=None, show_profile_names=True):
+        '''
+        Plot all profiles on a single map.
+    
+        Args:
+            * names          : Name or list of names of the profiles to plot.
+            * scatter_props  : Properties for the scatter plot. Default is None.
+            * save_fig       : Whether to save the figure. Default is False.
+            * file_path      : Path to save the figure. Default is 'profiles_map.png'.
+            * dpi            : DPI for saving the figure. Default is 300.
+            * show           : Whether to show the figure. Default is True.
+            * figsize        : Size of the figure. Default is (10, 8).
+            * map_equal      : Whether to set the aspect ratio of the map to be equal. Default is True.
+            * use_degrees    : Whether to use degrees for the axes. Default is True
+            * xlim           : Limits for the x-axis. Default is None.
+            * ylim           : Limits for the y-axis. Default is None.
+            * show_profile_names: Whether to show profile names at the start point. Default is True.
+    
+        Returns:
+            * None
+        '''
+    
+        import matplotlib.pyplot as plt
+    
+        # Ensure names is a list
+        if isinstance(names, str):
+            names = [names]
+    
+        # Set default scatter properties if not provided
+        if scatter_props is None:
+            scatter_props = {'color': '#1a6faf', 's': 10, 'alpha': 0.6}
+    
+        # Create a figure for the map
+        fig_map, ax_map = plt.subplots(figsize=figsize)
+    
+        # Plot all earthquakes on the map
+        ax_map.scatter(self.lon, self.lat, **scatter_props)
+    
+        for i, name in enumerate(names):
+            profile = self.profiles[name]
+    
+            # Plot the profile box and line on the map
+            box = profile['Box']
+            end_points_ll = profile['EndPointsLL']
+    
+            # Plot the profile box
+            box_closed = np.append(box, [box[0]], axis=0)
+            ax_map.plot(box_closed[:, 0], box_closed[:, 1], 'k--')
+    
+            # Plot the profile line
+            ax_map.plot([point[0] for point in end_points_ll], [point[1] for point in end_points_ll], 'k-')
+    
+            # Plot the profile arrow
+            start_point = end_points_ll[1]
+            end_point = end_points_ll[0]
+            ax_map.annotate('', xy=end_point, xytext=start_point, arrowprops=dict(arrowstyle='->', linewidth=1, color='k', shrinkA=0, shrinkB=0))
+    
+            # Add profile name at the start point if requested
+            if show_profile_names:
+                # label = f"({chr(97 + i)}) {name}"
+                label = f'{name}'
+                ax_map.text(start_point[0], start_point[1], label, fontsize=10, va='bottom', ha='right')
+    
+        # Set aspect ratio and labels for the map
+        if map_equal:
+            ax_map.set_aspect('equal', adjustable='box')
+        ax_map.set_xlabel('Longitude')
+        ax_map.set_ylabel('Latitude')
+    
+        if xlim is not None:
+            ax_map.set_xlim(xlim)
+        if ylim is not None:
+            ax_map.set_ylim(ylim)
+    
+        if use_degrees:
+            from eqtools.plottools import set_degree_formatter
+            set_degree_formatter(ax_map)
+    
+        # Save the figure if requested
+        if save_fig:
+            fig_map.savefig(file_path, dpi=dpi, bbox_inches='tight')
+    
+        # Show the figure if requested
+        if show:
+            plt.show()
+        else:
+            plt.close(fig_map)
+    
+        # All done
+        return
+    
+    def plot_profiles_detail(self, names, x_key='Distance', y_key='Depth', figsize=(10, 8), scatter_props=None, 
+                             save_fig=False, file_path='profiles_detail.png', dpi=300, show=True, invert_yaxis=True, 
+                             profile_equal=False, color_key='Depth', cmap='cmc.hawaii_r', subplots_per_row=3, 
+                             add_label_prefix=True, label_position=(0.05, 0.95)):
+        '''
+        Plot detailed profiles based on the given names.
+    
+        Args:
+            * names          : Name or list of names of the profiles to plot.
+            * x_key          : Key for x-axis values in the profile dictionary. Default is 'Distance'.
+            * y_key          : Key for y-axis values in the profile dictionary. Default is 'Depth'.
+            * figsize        : Size of the figure. Default is (10, 8).
+            * scatter_props  : Properties for the scatter plot. Default is None.
+            * save_fig       : Whether to save the figure. Default is False.
+            * file_path      : Path to save the figure. Default is 'profiles_detail.png'.
+            * dpi            : DPI for saving the figure. Default is 300.
+            * show           : Whether to show the figure. Default is True.
+            * invert_yaxis   : Whether to invert the y-axis. Default is True.
+            * profile_equal  : Whether to set the aspect ratio of the profile to be equal. Default is False.
+            * color_key      : Key for color values in the profile dictionary. Default is 'Depth'.
+            * cmap           : Colormap for the color values. Default is 'cmc.hawaii_r'.
+            * subplots_per_row: Number of subplots per row. Default is 3.
+            * add_label_prefix: Whether to add a letter prefix to the profile labels. Default is True.
+            * label_position : Position of the label in the subplot. Default is (0.05, 0.95).
+    
+        Returns:
+            * None
+        '''
+    
+        import matplotlib.pyplot as plt
+        import cmcrameri as cmc
+    
+        # Ensure names is a list
+        if isinstance(names, str):
+            names = [names]
+    
+        # Set default scatter properties if not provided
+        if scatter_props is None:
+            scatter_props = {'s': 10, 'alpha': 0.6}
+    
+        # Calculate the number of rows needed
+        num_profiles = len(names)
+        num_rows = (num_profiles + subplots_per_row - 1) // subplots_per_row
+    
+        # Create a figure for the profiles
+        fig_profiles, axes_profiles = plt.subplots(num_rows, subplots_per_row, figsize=figsize)
+        axes_profiles = axes_profiles.flatten()
+    
+        for i, name in enumerate(names):
+            profile = self.profiles[name]
+    
+            # Plot the profile detail view
+            ax_profile = axes_profiles[i]
+            x_values = profile[x_key]
+            y_values = profile[y_key]
+            if color_key is not None:
+                color_values = profile[color_key]
+                if 'c' in scatter_props:
+                    del scatter_props['c']
+                scatter = ax_profile.scatter(x_values, y_values, c=color_values, cmap=cmap, **scatter_props)
+            else:
+                scatter = ax_profile.scatter(x_values, y_values, **scatter_props)
+    
+            # Set labels
+            ax_profile.set_xlabel(x_key)
+            ax_profile.set_ylabel(y_key)
+    
+            # Invert y-axis if requested
+            if invert_yaxis:
+                ax_profile.invert_yaxis()
+    
+            # Set aspect ratio for the profile if requested
+            if profile_equal:
+                ax_profile.set_aspect('equal', adjustable='box')
+    
+            # Add color bar
+            cbar = plt.colorbar(scatter, ax=ax_profile)
+            cbar.set_label(color_key)
+    
+            # Add profile label with optional prefix
+            label = f"({chr(97 + i)}) {name}" if add_label_prefix else name
+            ax_profile.text(label_position[0], label_position[1], label, transform=ax_profile.transAxes, fontsize=12, verticalalignment='top')
+    
+        # Remove unused subplots
+        for j in range(i + 1, len(axes_profiles)):
+            fig_profiles.delaxes(axes_profiles[j])
+    
+        # Adjust layout for profiles
+        plt.tight_layout()
+    
+        # Save the figure if requested
+        if save_fig:
+            fig_profiles.savefig(file_path, dpi=dpi, bbox_inches='tight')
+    
+        # Show the figure if requested
+        if show:
+            plt.show()
+        else:
+            plt.close(fig_profiles)
+    
+        # All done
+        return
 # EOF

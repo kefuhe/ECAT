@@ -842,9 +842,55 @@ class explorefault(SourceInv):
 
         plt.show()
 
-    def plot_kde_matrix(self, figsize=(7.5, 6.5), save=False, filename='kde_matrix.png', show=True, 
+    def plot_kde_matrix(self, figsize=None, save=False, filename='kde_matrix.png', show=True, 
                         style='white', fill=True, scatter=False, scatter_size=15, 
-                        plot_sigmas=False, plot_faults=True, faults=None):
+                        plot_sigmas=False, plot_faults=True, faults=None, axis_labels=None,
+                        wspace=None, hspace=None, center_lon_lat=False,
+                        xtick_rotation=None, ytick_rotation=None, lonlat_decimal=3):
+        """
+        Plot a KDE matrix of the SMC samples.
+    
+        Parameters:
+        figsize: tuple, optional
+            Figure size in inches. The default is (7.5, 6.5).
+        save: bool, optional
+            Whether to save the figure. The default is False.
+        filename: str, optional
+            The name of the file to save the figure. The default is 'kde_matrix.png'.
+        show: bool, optional
+            Whether to show the figure. The default is True.
+        style: str, optional
+            The style of the plot. The default is 'white'.
+        fill: bool, optional
+            Whether to fill the KDE plots. The default is True.
+        scatter: bool, optional
+            Whether to plot scatter points on the upper half. The default is False.
+        scatter_size: int, optional
+            The size of the scatter points. The default is 15.
+        plot_sigmas: bool, optional
+            Whether to plot sigmas. The default is False.
+        plot_faults: bool, optional
+            Whether to plot faults. The default is True.
+        faults: list or str, optional
+            The list of faults to plot. The default is None.
+        axis_labels: list, optional
+            The list of axis labels. The default is None.
+        wspace: float, optional
+            The amount of width reserved for space between subplots, expressed as a fraction of the average axis width. The default is None.
+        hspace: float, optional
+            The amount of height reserved for space between subplots, expressed as a fraction of the average axis height. The default is None.
+        center_lon_lat: bool, optional
+            Whether to center lon and lat by subtracting their means. The default is False.
+        xtick_rotation: int, optional
+            The rotation of x-tick labels. The default is 45.
+        ytick_rotation: int, optional
+            The rotation of y-tick labels. The default is 45.
+        lonlat_decimal: int, optional
+            The number of decimal places to round lon and lat. The default is 3.
+    
+        Returns:
+        None
+        """
         import seaborn as sns
         import pandas as pd
         import matplotlib.pyplot as plt
@@ -874,36 +920,88 @@ class explorefault(SourceInv):
         
         # Convert the SMC chains to a DataFrame
         df = pd.DataFrame(trace[:, index], columns=keys)
-    
+        
         # Remove columns with zero variance
         df = df.loc[:, df.var() != 0]
-
+        
+        # Center lon and lat if required
+        if center_lon_lat:
+            for key in keys:
+                if 'lon' in key:
+                    lon_mean = df[key].mean()
+                    df[key] -= lon_mean
+                    print(f"Mean of {key}: {lon_mean}")
+                if 'lat' in key:
+                    lat_mean = df[key].mean()
+                    df[key] -= lat_mean
+                    print(f"Mean of {key}: {lat_mean}")
+        
         # Set the style
         sns.set_style(style)
-
+        
         # Create a pair grid with separate y-axis for diagonal plots
         g = sns.PairGrid(df, diag_sharey=False)
-
+        
+        if figsize is not None:
+            g.figure.set_size_inches(*figsize)
+        
         # Remove the upper half of plots if scatter is not required
         if not scatter:
             for i, j in zip(*np.triu_indices_from(g.axes, 1)):
                 g.axes[i, j].set_visible(False)
-
+        
         # Plot a filled KDE on the diagonal
         g.map_diag(sns.kdeplot, fill=fill)
-
+        
         # Plot a filled KDE with scatter points on the off-diagonal
         g.map_lower(sns.kdeplot, fill=fill)
-
+        
         # Plot scatter points on the upper half if required
         if scatter:
             g.map_upper(sns.scatterplot, s=scatter_size)
+        
+        # Format tick labels to scientific notation for lon and lat
+        from matplotlib.ticker import FuncFormatter
+        def scientific_formatter(x, pos):
+            return f'{x:.2g}' if x <= 1 else f'{x:.{lonlat_decimal}f}'
+        
+        for ax in g.axes.flatten():
+            if ax is not None:
+                if 'lon' in ax.get_xlabel() or 'lat' in ax.get_xlabel():
+                    ax.xaxis.set_major_formatter(FuncFormatter(scientific_formatter))
+                    for label in ax.get_xticklabels():
+                        label.set_rotation(45)
+                        label.set_ha('right')
+                if 'lon' in ax.get_ylabel() or 'lat' in ax.get_ylabel():
+                    ax.yaxis.set_major_formatter(FuncFormatter(scientific_formatter))
+
+        # Set x-tick rotation if provided
+        if xtick_rotation is not None:
+            for ax in g.axes[-1, :]:
+                for label in ax.get_xticklabels():
+                    label.set_rotation(xtick_rotation)
+                    label.set_ha('right')
+
+        # Set y-tick rotation if provided
+        if ytick_rotation is not None:
+            for ax in g.axes[:, 0]:
+                for label in ax.get_yticklabels():
+                    label.set_rotation(ytick_rotation)
+                    label.set_ha('right')
+        # Set axis labels if provided
+        if axis_labels:
+            for i, label in enumerate(axis_labels):
+                g.axes[-1, i].set_xlabel(label, fontsize=12)
+                g.axes[i, 0].set_ylabel(label, fontsize=12)
 
         plt.tight_layout()
+        if wspace is not None or hspace is not None:
+            plt.subplots_adjust(wspace=wspace, hspace=hspace)
+        
         # Save the figure if required
         if save:
             plt.savefig(filename, dpi=600)
-
+        
         # Show the figure if required
         if show:
             plt.show()
@@ -929,12 +1027,13 @@ class explorefault(SourceInv):
         plt.show()
 
     def extract_and_plot_bayesian_results(self, rank=0, filename='samples_mag_rake_multifaults.h5', 
-                                          plot_faults=True, plot_sigmas=True, plot_data=True,
-                                          antisymmetric=True, res_use_data_norm=True, cmap='jet',
-                                          model='median'):
+                                        plot_faults=True, plot_sigmas=True, plot_data=True,
+                                        antisymmetric=True, res_use_data_norm=True, cmap='jet',
+                                        model='median', fault_figsize=(7.5, 6.5), sigmas_figsize=(7.5, 6.5),
+                                        save_data=True, sar_corner=None):
         """
         Extract and plot the Bayesian results.
-    
+
         args:
         rank: process rank (default is 0)
         filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
@@ -945,10 +1044,14 @@ class explorefault(SourceInv):
         res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
         cmap: colormap to use (default is 'jet')
         model: the model to use ('mean', 'median', 'std', 'MAP', default is 'mean')
+        fault_figsize: figure size for fault KDE plots (default is A4 size (7.5, 6.5))
+        sigmas_figsize: figure size for sigmas KDE plots (default is A4 size (7.5, 6.5))
+        save_data: whether to save the data to a file (default is True)
+        sar_corner (None, 'tri', 'quad'): sar corner type (default is None)
         """
         if model == 'std':
             plot_data = False
-    
+
         if rank == 0:
             self.load_samples_from_h5(filename=filename)
             self.print_mcmc_parameter_positions()
@@ -957,26 +1060,47 @@ class explorefault(SourceInv):
             if plot_faults:
                 for ifault, faultname in enumerate(self.faultnames):
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                         scatter=False, filename=f'kde_matrix_F{ifault}.png')
+                                        scatter=False, filename=f'kde_matrix_F{ifault}.png', figsize=fault_figsize)
             
             # Plot Sigmas
             if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
                 self.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
-                                     scatter=False, filename='kde_matrix_sigmas.png')
+                                    scatter=False, filename='kde_matrix_sigmas.png', figsize=sigmas_figsize)
             
             # Save the model results
             self.save_model_to_file(f'model_results_{model}.json', model=model, output_to_screen=True)
             faults = self.returnModels(model=model)
 
+            # Build Synthetics
+            cogps_vertical_list = []
+            cosar_list = []
+            for data, vertical in zip(self.datas, self.verticals):
+                if data.dtype == 'gps':
+                    cogps_vertical_list.append([data, vertical])
+                elif data.dtype == 'insar':
+                    cosar_list.append(data)
+            ## Synth gps and insar data
+            for cogps, vertical in cogps_vertical_list:
+                cogps.buildsynth(faults, vertical=vertical)
+            for cosar in cosar_list:
+                cosar.buildsynth(faults, vertical=True)
+                if '{}'.format(cosar.name) in self.keys:
+                    cosar.synth += self.model[cosar.refnumber]
+            
+            if save_data:
+                assert sar_corner is not None, "Please provide the SAR corner type."
+                if not os.path.exists('Modeling'):
+                    os.makedirs('Modeling')
+                for i, sardata in enumerate(cosar_list):
+                    corner_flag = True if sar_corner=='tri' else False
+                    for itype in ['data', 'synth', 'resid']:
+                        sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=corner_flag)
+                for i, (gpsdata, gpsvertical) in enumerate(cogps_vertical_list):
+                    for itype in ['data', 'synth', 'res']:
+                        gpsdata.write2file(f'{gpsdata.name}_{itype}.txt', itype, outDir='Modeling')
+            
+            # Plot GPS and SAR data
             if plot_data:
-                cogps_vertical_list = []
-                cosar_list = []
-                for data, vertical in zip(self.datas, self.verticals):
-                    if data.dtype == 'gps':
-                        cogps_vertical_list.append([data, vertical])
-                    elif data.dtype == 'insar':
-                        cosar_list.append(data)
-                
                 # Plot GPS data
                 for fault in faults:
                     fault.color = 'b' # Set the color to blue
@@ -992,9 +1116,6 @@ class explorefault(SourceInv):
                 for fault in faults:
                     fault.color = 'k'
                 for cosar in cosar_list:
-                    cosar.buildsynth(faults, vertical=True)
-                    if '{}'.format(cosar.name) in self.keys:
-                        cosar.synth += self.model[cosar.refnumber]
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))
                     data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]

@@ -322,10 +322,10 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         # Set geodata attributes
         # Set the data of geodata
         self._update_geodata(geodata)
-        # Select the data sets based on the clipping options
-        self._select_data_sets()
         # Validate the verticals
         self._validate_verticals(verticals)
+        # Select the data sets based on the clipping options
+        self._select_data_sets()
         # Validate the polys
         self._validate_polys(polys)
 
@@ -354,6 +354,12 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                     self.geodata['polys'].append(3)
                 else:
                     self.geodata['polys'].append(None)
+        
+        if isinstance(self.geodata['polys'], list):
+            if len(self.geodata['polys']) != len(self.geodata['data']):
+                raise ValueError("Length of 'polys' list must be equal to the length of 'data'")
+        elif isinstance(self.geodata['polys'], (int, str, type(None))):
+            self.geodata['polys'] = [self.geodata['polys']] * len(self.geodata['data'])
     
     @property
     def alphaFaults(self):
@@ -384,7 +390,8 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                     else:
                         raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
             elif 'rake_angle' in config_data:
-                print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
+                if self.verbose:
+                    print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
 
         # Get the default parameters
         default_fault_parameters = config_data.get('faults', {}).get('defaults', {})
@@ -423,6 +430,27 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
 
             self._process_fixed_nodes(config_data['faults'][fault_name])
             self.faults[fault_name] = config_data['faults'][fault_name]
+        
+        # Ensure all faults in faultnames are configured
+        for fault_name in self.faultnames:
+            if fault_name not in self.faults:
+                config_data['faults'][fault_name] = default_fault_parameters.copy()
+                self.faults[fault_name] = config_data['faults'][fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
+    
+        # Remove faults not in faultnames from config_data and self.faults
+        for fault_name in list(config_data['faults'].keys()):
+            if fault_name != 'defaults' and fault_name not in self.faultnames:
+                del config_data['faults'][fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
+
+        for fault_name in list(self.faults.keys()):
+            if fault_name not in self.faultnames:
+                del self.faults[fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
 
         self.set_attributes(**config_data)
 
@@ -482,6 +510,332 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                 setattr(self, key, value)
             else:
                 raise ValueError(f"Unknown attribute '{key}'")
+    
+    def set_faults_method_parameters(self, method_parameters_dict):
+        """
+        Update the method parameters for all faults.
+        """
+        for fault_name, method_parameters in method_parameters_dict.items():
+            if fault_name in self.faults:
+                self.faults[fault_name]['method_parameters'].update(method_parameters)
+            else:
+                raise ValueError(f"Fault {fault_name} does not exist in the configuration.")
+
+    def update_GFs_parameters(self, geodata, verticals, dataFaults=None, gfmethods=None):
+        """
+        Update the update_GFs method parameters for all faults.
+        """
+        if len(geodata) != len(verticals):
+            raise ValueError("Length of geodata and verticals should be the same.")
+        
+        if gfmethods is not None and len(self.faultnames) != len(gfmethods):
+            raise ValueError("Length of faultnames and gfmethods should be the same.")
+        
+        for i, fault_name in enumerate(self.faultnames):
+            fault_parameters = self.faults[fault_name]
+            method = gfmethods[i] if gfmethods is not None else None
+            
+            if method is None:
+                ifault = self.faults_list[i]
+                method = fault_parameters['method_parameters']['update_GFs'].get('method')
+                
+                if method is None:
+                    if ifault.patchType == 'triangle':
+                        method = 'cutde'
+                    elif ifault.patchType == 'rectangle':
+                        method = 'okada'
+                    else:
+                        raise ValueError("Unknown patchType")
+            
+            fault_parameters['method_parameters']['update_GFs'] = {
+                'geodata': geodata,
+                'verticals': verticals,
+                'dataFaults': dataFaults,
+                'method': method
+            }
+
+    def set_data_faults(self, dataFaults=None):
+        if dataFaults is not None:
+            self.dataFaults = dataFaults
+        elif self.dataFaults is None:
+            self.dataFaults = [self.faultnames]*len(self.geodata['data'])
+        
+        # Check if self.dataFaults is a list
+        if not isinstance(self.dataFaults, list):
+            raise ValueError("self.dataFaults must be a list")
+        
+        # Check the length of self.dataFaults
+        if len(self.dataFaults) != len(self.geodata['data']):
+            raise ValueError("Length of self.dataFaults should be equal to the length of geodata")
+        
+        # Check contents of self.dataFaults
+        # flatten the list of lists to a single list if sublist is a list
+        self.validate_faults(check_dataFaults=True)
+
+    def validate_faults(self, check_dataFaults=False, check_alphaFaults=False):
+        """
+        Validate the dataFaults or alphaFaults.
+        """
+
+        if check_dataFaults:
+            # Flatten the list of lists to a single list if sublist is a list
+            flattened_dataFaults = [item for sublist in self.dataFaults for item in (sublist if isinstance(sublist, list) else [sublist])]
+            
+            # Check flattened_dataFaults is subset of self.faultnames
+            if not set(flattened_dataFaults).issubset(set(self.faultnames + [None])):
+                raise ValueError("The dataFaults must be a subset of the faultnames in self.multifaults")
+        
+        if check_alphaFaults:
+            # Check if self.alphaFaults does not contain None and all other items are lists
+            if None not in self.alphaFaults:
+                if not all(isinstance(item, list) for item in self.alphaFaults):
+                    raise ValueError("All items in self.alphaFaults must be lists")
+
+                # Flatten the list of lists
+                flattened_faults = [fault for sublist in self.alphaFaults for fault in sublist]
+                
+                # Check if self.alphaFaults contains duplicate items
+                if len(flattened_faults) != len(set(flattened_faults)):
+                    raise ValueError("self.alphaFaults cannot contain duplicate items")
+
+                # Check if the union of self.alphaFaults equals self.faultnames
+                if set(flattened_faults) != set(self.faultnames):
+                    raise ValueError("The union of self.alphaFaults must equal the items in self.faultnames")
+
+    def set_alpha_faults(self, alphaFaults=None):
+        if alphaFaults is not None:
+            self.alphaFaults = alphaFaults
+        elif self.alphaFaults is None:
+            self.alphaFaults = [None]
+
+        # Check if self.alphaFaults is a list
+        if not isinstance(self.alphaFaults, list):
+            raise ValueError("self.alphaFaults must be a list")
+
+        # Check if self.alphaFaults contains more than one None
+        if None in self.alphaFaults and len(self.alphaFaults) > 1:
+            raise ValueError("self.alphaFaults cannot contain None and other items simultaneously")
+
+        # Check if self.alphaFaults does not contain None and all other items are lists
+        self.validate_faults(check_alphaFaults=True)
+        
+        # 
+        self.alpha['faults'] = self.alphaFaults
+        if None in self.alphaFaults:
+            self.alphaFaultsIndex = [0] * len(self.faultnames)
+        else:
+            # Create a dictionary to map fault names to their indices
+            fault_index_map = {fault: idx for idx, sublist in enumerate(self.alphaFaults) for fault in sublist}
+            # Generate the alphaFaultsIndex based on the order of faultnames
+            self.alphaFaultsIndex = [fault_index_map[fault] for fault in self.faultnames]
+        self.alpha['faults_index'] = self.alphaFaultsIndex
+
+
+class BoundLSEInversionConfig(BaseBayesianConfig):
+    def __init__(self, config_file='default_config.yml', multifaults=None, geodata=None, 
+                 verticals=None, polys=None, dataFaults=None, alphaFaults=None, faults_list=None,
+                 gfmethods=None, encoding='utf-8', verbose=False, **kwargs):
+        """
+        Initialize the BayesianMultiFaultsInversionConfig object.
+        """
+        from .bayesian_multifaults_inversion import MyMultiFaultsInversion
+
+        super().__init__(config_file, geodata=geodata, verbose=verbose)
+        self.multifaults = multifaults # Multifaults object for the inversion
+        self.use_bounds_constraints = True # Use bounds constraints for the inversion, only for SMC_F_J mode
+        self.use_rake_angle_constraints = True # Use rake angle constraints for the inversion, only for SMC_F_J mode
+        self.alpha = None
+        self.GLs = None
+        self.moment_magnitude_threshold = None
+        self.patch_areas = None
+        self.shear_modulus = 3.0e10
+        self.magnitude_tolerance = None 
+        self.nonlinear_inversion = False
+        self.rake_angle = None # Only used when slip_sampling_mode is 'rake_fixed'
+        self.faults = {}  # Dictionary to store the fault parameters
+
+        assert multifaults or faults_list, "Either multifaults or faults_list must be provided"
+        if multifaults is not None:
+            self.faultnames = multifaults.faultnames
+            self.faults_list = multifaults.faults
+        else:
+            self.faults_list = faults_list
+            self.faultnames = [fault.name for fault in faults_list]
+        
+        # Load the configuration from a file
+        if config_file is not None:
+            self.load_from_file(config_file, encoding=encoding)
+        
+        self.shear_modulus = float(self.shear_modulus)
+
+        # Set the attributes based on the key-value pairs in kwargs
+        self.set_attributes(**kwargs)
+
+        # Set geodata attributes
+        # Set the data of geodata
+        self._update_geodata(geodata)
+        # Validate the verticals
+        self._validate_verticals(verticals)
+        # Select the data sets based on the clipping options
+        self._select_data_sets()
+        # Validate the polys
+        self._validate_polys(polys)
+
+        # Update the GFs parameters based on the geodata and verticals
+        self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
+
+        # Set the dataFaults based on the data configuration
+        self.set_data_faults(dataFaults)
+        # Set the alphaFaults based on the alpha configuration
+        self.set_alpha_faults(alphaFaults)
+
+        if self.clipping_options.get('enabled', False):
+            self._initialize_faults_and_assemble_data()
+
+        self._initialize_faults_and_assemble_data()
+        # Initialize the faults and assemble the data
+        if multifaults is None:
+            multifaults = MyMultiFaultsInversion('myfault', self.faults_list, verbose=False)
+            self.multifaults = multifaults
+        multifaults.assembleGFs() # assemble the Green's functions because the data is already assembled
+    
+    def _validate_polys(self, polys):
+        if 'polys' not in self.geodata or self.geodata['polys'] is None:
+            self.geodata['polys'] = polys if polys else []
+        if not self.geodata['polys']:
+            for data in self.geodata['data']:
+                if data.dtype == 'insar':
+                    self.geodata['polys'].append(3)
+                else:
+                    self.geodata['polys'].append(None)
+
+        if isinstance(self.geodata['polys'], list):
+            if len(self.geodata['polys']) != len(self.geodata['data']):
+                raise ValueError("Length of 'polys' list must be equal to the length of 'data'")
+        elif isinstance(self.geodata['polys'], (int, str, type(None))):
+            self.geodata['polys'] = [self.geodata['polys']] * len(self.geodata['data'])
+    
+    @property
+    def alphaFaults(self):
+        return self.alpha.get('faults')
+    
+    @alphaFaults.setter
+    def alphaFaults(self, value):
+        self.alpha['faults'] = value
+    
+    def load_from_file(self, config_file, encoding='utf-8'):
+        # Load the configuration from a file
+        with open(config_file, 'r', encoding=encoding) as f:
+            config_data = yaml.safe_load(f)
+        
+        # Set lon0 and lat0 based on the configuration file
+        lon_lat_0 = config_data.get('lon_lat_0', None)
+        if lon_lat_0 is not None:
+            self.lon0 = lon_lat_0[0]
+            self.lat0 = lon_lat_0[1]
+        config_data.pop('lon_lat_0', None)
+
+        # Get the default parameters
+        default_fault_parameters = config_data.get('faults', {}).get('defaults', {})
+
+        # Handle the faults
+        for fault_name, fault_parameters in config_data.get('faults', {}).items():
+            if fault_name == 'defaults':
+                continue
+
+            # Use the default parameters if fault_parameters is None
+            if fault_parameters is None:
+                config_data['faults'][fault_name] = default_fault_parameters.copy()
+            else:
+                # Combine the default parameters with the fault parameters
+                merged_parameters = {**default_fault_parameters, **fault_parameters}
+
+                # Special handling for 'geometry'
+                merged_geometry = {**default_fault_parameters.get('geometry', {}), **fault_parameters.get('geometry', {})}
+                merged_parameters['geometry'] = merged_geometry
+
+                # Special handling for 'method_parameters'
+                merged_method_parameters = default_fault_parameters.get('method_parameters', {}).copy()
+                for method_name, method_params in fault_parameters.get('method_parameters', {}).items():
+                    if method_name in merged_method_parameters:
+                        # Check if 'method' is in the method parameters
+                        # If it is, then the method parameters are to be replaced
+                        if 'method' in merged_method_parameters[method_name] or 'method' in method_params:
+                            merged_method_parameters[method_name] = method_params
+                        else:
+                            merged_method_parameters[method_name] = {**merged_method_parameters[method_name], **method_params}
+                    else:
+                        merged_method_parameters[method_name] = method_params
+                merged_parameters['method_parameters'] = merged_method_parameters
+
+                config_data['faults'][fault_name] = merged_parameters
+
+            self.faults[fault_name] = config_data['faults'][fault_name]
+        
+        # Ensure all faults in faultnames are configured
+        for fault_name in self.faultnames:
+            if fault_name not in self.faults:
+                config_data['faults'][fault_name] = default_fault_parameters.copy()
+                self.faults[fault_name] = config_data['faults'][fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
+    
+        # Remove faults not in faultnames from config_data and self.faults
+        for fault_name in list(config_data['faults'].keys()):
+            if fault_name != 'defaults' and fault_name not in self.faultnames:
+                del config_data['faults'][fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
+
+        for fault_name in list(self.faults.keys()):
+            if fault_name not in self.faultnames:
+                del self.faults[fault_name]
+                if self.verbose:
+                    print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
+
+        self.set_attributes(**config_data)
+
+    def _initialize_faults_and_assemble_data(self, faults_list=None, geodata=None):
+        """
+        Setup faults by building Green's functions, assembling data and Green's functions for inversion,
+        and building covariance matrices for GPS/InSAR data.
+        """
+        # --------------------------------Build GreenFns-----------------------------------------#
+        faults_list = faults_list or self.faults_list
+        geodata = self.geodata['data'] or geodata
+        verticals = self.geodata['verticals']
+        polys = self.geodata['polys']
+        nonpolys = [None] * len(geodata)
+
+        for ifault in faults_list:
+            faultname = ifault.name
+            gfmethod = self.faults[faultname]['method_parameters']['update_GFs']['method']
+            for obsdata, vertical in zip(geodata, verticals):
+                ifault.buildGFs(obsdata, vertical=vertical, slipdir='sd', method=gfmethod, verbose=False)
+            ifault.initializeslip()
+
+        # ----------------------Assemble data and GreenFns for Inversion------------------------#
+        poly_assembled = False  # flag to check if the polynomial is assembled
+        for ifault in faults_list:
+            # assemble data
+            ifault.assembled(geodata, verbose=False)
+            # assemble GreensFns
+            if not poly_assembled:
+                ifault.assembleGFs(geodata, polys=polys, slipdir='sd', verbose=False, custom=False)
+                poly_assembled = True
+            else:
+                ifault.assembleGFs(geodata, polys=nonpolys, slipdir='sd', verbose=False, custom=False)
+
+        # --------------------------Build Covariance Matrix for GPS/InSAR data-------------------#
+        # assemble data Covariance matrices, You should assemble the Green's function matrix first
+        for ifault in faults_list:
+            # Bug: the verbose may lead to the error if it is set to True
+            ifault.assembleCd(geodata, verbose=False, add_prediction=None)
+
+    def set_attributes(self, **kwargs):
+        # Set the attributes based on the key-value pairs in kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
     
     def set_faults_method_parameters(self, method_parameters_dict):
         """
