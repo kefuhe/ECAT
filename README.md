@@ -22,6 +22,33 @@
 
 - See Readme ***Install.md***
 
+## Download ECAT Case Library
+
+The full ECAT case library, including research cases and advanced examples, is stored in a separate repository. To download the full case library, you have two options:
+
+### Option 1: Enable Submodule Download in the Installation Script
+
+1. Open the install.bat (Windows) or [install.sh](http://install.sh) (Linux/Mac) file.
+2. Uncomment the following line:
+
+```Bash
+git submodule update --init --recursive
+```
+
+### Option 2: Download the Case Library Manually
+
+If you prefer to download the case library manually, you can do so with the following script:
+
+```bash
+./download_cases.sh
+```
+
+Or download the case manually:
+
+```bash
+git clone https://github.com/kefuhe/ECAT-cases.git
+```
+
 ## Coseismic （Uploaded）
 
 ### Building fault with variance dip angle determined by relocated aftershocks
