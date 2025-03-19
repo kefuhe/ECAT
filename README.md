@@ -78,7 +78,7 @@
 
 If you use this package in your research, please cite it as follows:
 
-Kefeng He, Guangyu Xu, Longxiang Sun, Caijun Xu, Yangmao, Wen. (2024). ECAT: Advanced Nonlinear Inversion for Complex Fault Systems (Version 1.1.5). Zenodo. http://doi.org/10.5281/zenodo.13730102
+Kefeng He, Guangyu Xu, Longxiang Sun, Caijun Xu, Yangmao, Wen. (2025). ECAT: Integrated Nonlinear and Linear Inversion for Complex Fault Systems and Slip Distribution (Version 1.5.0). Zenodo. http://doi.org/10.5281/zenodo.13730101.
 
 ## Postseismic （Pending)
 
