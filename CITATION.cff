@@ -1,9 +1,9 @@
 cff-version: 1.1.0
 message: "If you use this software, please cite it as below."
 title: "ECAT"
-version: "1.1.5"
+version: "1.5.0"
 doi: "10.5281/zenodo.13730102"  
-date-released: 2023-10-01
+date-released: 2025-03-19
 authors:
   - family-names: He
     given-names: Kefeng
@@ -12,10 +12,12 @@ authors:
     given-names: Guangyu
   - family-names: Sun
     given-names: Longxiang
-  - family-names: Xu
-    given-names: Caijun
+  - family-names: Cai
+    given-names: Jianfeng
   - family-names: Wen
     given-names: Yangmao
+  - family-names: Xu
+    given-names: Caijun
 keywords:
   - Adaptive fault constructing
   - Nonlinear and Nonlinear-cross-linear bayesian inversion
