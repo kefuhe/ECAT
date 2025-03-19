@@ -1,15 +1,4 @@
-![Version](https://img.shields.io/badge/version-1.1.5-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101)[![GitHub All Releases](https://img.shields.io/github/downloads/kefuhe/ECAT/total?label=Code%20Downloads)](https://github.com/kefuhe/ECAT/releases)
-
-
-## Downloads
-
-### Version v1.5.0
-
-[![Zenodo Downloads](https://img.shields.io/badge/dynamic/json?color=blue&label=Downloads&query=files.downloads&url=https%3A%2F%2Fzenodo.org%2Fapi%2Frecords%2F15050361)](https://doi.org/10.5281/zenodo.15050361)
-
-### Version v1.1.5
-
-[![Zenodo Downloads](https://img.shields.io/badge/dynamic/json?color=blue&label=Downloads&query=files.downloads&url=https%3A%2F%2Fzenodo.org%2Fapi%2Frecords%2F13730102)](https://doi.org/10.5281/zenodo.13730102)
+![Version](https://img.shields.io/badge/version-1.1.5-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101)
 
 <img src="image/logo.jpg" alt="Logo">
 
