@@ -1,8 +1,4 @@
-![Version](https://img.shields.io/badge/version-1.1.5-blue) 
-
-```
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101)
-```
+![Version](https://img.shields.io/badge/version-1.1.5-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101)
 
 <img src="image/logo.jpg" alt="Logo">
 
