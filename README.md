@@ -1,16 +1,6 @@
-![Version](https://img.shields.io/badge/version-1.5.0-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101)
+![GitHub Stars](https://img.shields.io/github/stars/kefuhe/ECAT?style=social)![GitHub Forks](https://img.shields.io/github/forks/kefuhe/ECAT?style=social)
 
- ![GitHub Stars](https://img.shields.io/github/stars/kefuhe/ECAT?style=social) ![GitHub Forks](https://img.shields.io/github/forks/kefuhe/ECAT?style=social)
-
-```
-<img src="https://visitor-badge.laobi.icu/badge?page_id=kefuhe.kefuhe&" />
-```
-
-
-<img src="https://visitor-badge.laobi.icu/badge?page_id=kefuhe.ECAT" />
-
-
-![Repository Size](https://img.shields.io/github/repo-size/kefuhe/ECAT) ![GitHub Language](https://img.shields.io/github/languages/top/kefuhe/ECAT) ![GitHub Last Commit](https://img.shields.io/github/last-commit/kefuhe/ECAT)
+![Version](https://img.shields.io/badge/version-1.5.0-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13730101.svg)](https://doi.org/10.5281/zenodo.13730101) ![Repository Size](https://img.shields.io/github/repo-size/kefuhe/ECAT) ![GitHub Language](https://img.shields.io/github/languages/top/kefuhe/ECAT) ![GitHub Last Commit](https://img.shields.io/github/last-commit/kefuhe/ECAT)
 
 <img src="image/logo.jpg" alt="Logo">
 
