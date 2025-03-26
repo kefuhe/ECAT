@@ -7,6 +7,8 @@
 ```
 
 
+<img src="https://visitor-badge.laobi.icu/badge?page_id=kefuhe.ECAT" />
+
 
 ![Repository Size](https://img.shields.io/github/repo-size/kefuhe/ECAT) ![GitHub Language](https://img.shields.io/github/languages/top/kefuhe/ECAT) ![GitHub Last Commit](https://img.shields.io/github/last-commit/kefuhe/ECAT)
 
