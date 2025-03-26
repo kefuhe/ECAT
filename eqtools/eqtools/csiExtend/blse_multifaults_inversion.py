@@ -336,6 +336,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                           file_type='png',
                                           remove_direction_labels=False,
                                           fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
+                                          data_poly=None
                                           ):
         """
         Extract and plot the Bayesian results.
@@ -360,6 +361,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         gps_legendscale: legend scale for GPS data plots (default is 0.2)
         file_type: file type to save the figures (default is 'png')
         remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+        fault_cbaxis: colorbar axis position for fault plots (default is [0.15, 0.22, 0.15, 0.02])
+        data_poly: whether to include polynomial constraints in the data (default is None), options are 'include' or None
         """
         if rank == 0:
             import cmcrameri
@@ -403,7 +406,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     fault.setTrace(0.1)
                 fault.color = 'b' # Set the color to blue
             for cogps, vertical in cogps_vertical_list:
-                cogps.buildsynth(faults, vertical=vertical)
+                cogps.buildsynth(faults, vertical=vertical, poly=data_poly)
                 if plot_data:
                     box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
                     cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], 
@@ -416,7 +419,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             for fault in faults:
                 fault.color = 'k'
             for cosar in cosar_list:
-                cosar.buildsynth(faults, vertical=True)
+                cosar.buildsynth(faults, vertical=True, poly=data_poly)
                 if plot_data:
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))

@@ -287,7 +287,6 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         self.bayesian_sampling_mode = bayesian_sampling_mode # Bayesian sampling mode, default is SMC_F_J, other options are FULLSMC
         self.use_bounds_constraints = True # Use bounds constraints for the inversion, only for SMC_F_J mode
         self.use_rake_angle_constraints = True # Use rake angle constraints for the inversion, only for SMC_F_J mode
-        self.alpha = None
         self.GLs = None
         self.moment_magnitude_threshold = None
         self.patch_areas = None
@@ -297,6 +296,15 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         self.slip_sampling_mode = slip_sampling_mode
         self.rake_angle = None # Only used when slip_sampling_mode is 'rake_fixed'
         self.faults = {}  # Dictionary to store the fault parameters
+
+        # Initialize alpha with default values
+        self.alpha = {
+            'enabled': True,
+            'update': True,
+            'initial_value': 0.0,
+            'log_scaled': True,
+            'faults': None
+        }
 
         assert multifaults or faults_list, "Either multifaults or faults_list must be provided"
         if multifaults is not None:
@@ -314,6 +322,22 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
 
         # Set the attributes based on the key-value pairs in kwargs
         self.set_attributes(**kwargs)
+
+        # Set the geometry update to False for faults with shared info
+        # True is to calculate green's functions for the fault each iteration
+        # [0, 0] is no sampling for the fault geometry
+        # Added by kfhe at 03/25/2025
+        for ifault in self.faults_list:
+            if hasattr(ifault, 'use_shared_info') and ifault.use_shared_info:
+                self.faults[ifault.name]['geometry'] = {
+                    'update': True,
+                    'sample_positions': [0, 0]
+                }
+
+        # Set alpha['update'] to False if alpha is not enabled
+        if not self.alpha['enabled']:
+            self.alpha['update'] = False
+            self.alpha['initial_value'] = 0.0
 
         # Enforce the slip sampling mode as 'magnitude_rake' in F-J inversion
         if self.bayesian_sampling_mode == 'SMC_F_J':
@@ -370,48 +394,71 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         self.alpha['faults'] = value
     
     def load_from_file(self, config_file, encoding='utf-8'):
+        """
+        Load the configuration from a file and ensure defaults are always present with required attributes.
+        """
         # Load the configuration from a file
         with open(config_file, 'r', encoding=encoding) as f:
             config_data = yaml.safe_load(f)
-        
+    
+        # Ensure defaults exist and have required attributes, which is added by kfhe at 03/25/2025
+        if 'faults' not in config_data:
+            config_data['faults'] = {}
+        if 'defaults' not in config_data['faults']:
+            config_data['faults']['defaults'] = {}
+        if 'geometry' not in config_data['faults']['defaults']:
+            config_data['faults']['defaults']['geometry'] = {
+                'update': False,
+                'sample_positions': [0, 0]
+            }
+        else:
+            # Ensure geometry has required attributes
+            config_data['faults']['defaults']['geometry'].setdefault('update', False)
+            config_data['faults']['defaults']['geometry'].setdefault('sample_positions', [0, 0])
+    
         # Set lon0 and lat0 based on the configuration file
         lon_lat_0 = config_data.get('lon_lat_0', None)
         if lon_lat_0 is not None:
             self.lon0 = lon_lat_0[0]
             self.lat0 = lon_lat_0[1]
         config_data.pop('lon_lat_0', None)
-
+    
+        # Handle alpha configuration
+        if 'alpha' in config_data:
+            self.alpha.update(config_data['alpha'])
+            config_data.pop('alpha')  # Remove alpha from config_data to avoid overwriting the alpha attribute
+    
         # Handle the default parameters
         if 'slip_sampling_mode' in config_data:
             self.slip_sampling_mode = config_data['slip_sampling_mode']
             if self.slip_sampling_mode == 'rake_fixed':
-                    if 'rake_angle' in config_data:
-                        self.rake_angle = config_data['rake_angle']
-                    else:
-                        raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
+                if 'rake_angle' in config_data:
+                    self.rake_angle = config_data['rake_angle']
+                else:
+                    raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
             elif 'rake_angle' in config_data:
                 if self.verbose:
                     print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
-
+    
         # Get the default parameters
-        default_fault_parameters = config_data.get('faults', {}).get('defaults', {})
-
+        default_fault_parameters = config_data['faults']['defaults']
+    
         # Handle the faults
-        for fault_name, fault_parameters in config_data.get('faults', {}).items():
+        for fault_name, fault_parameters in config_data['faults'].items():
             if fault_name == 'defaults':
                 continue
-
+    
             # Use the default parameters if fault_parameters is None
             if fault_parameters is None:
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
             else:
                 # Combine the default parameters with the fault parameters
                 merged_parameters = {**default_fault_parameters, **fault_parameters}
-
+    
                 # Special handling for 'geometry'
                 merged_geometry = {**default_fault_parameters.get('geometry', {}), **fault_parameters.get('geometry', {})}
                 merged_parameters['geometry'] = merged_geometry
-
+    
                 # Special handling for 'method_parameters'
                 merged_method_parameters = default_fault_parameters.get('method_parameters', {}).copy()
                 for method_name, method_params in fault_parameters.get('method_parameters', {}).items():
@@ -425,12 +472,12 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                     else:
                         merged_method_parameters[method_name] = method_params
                 merged_parameters['method_parameters'] = merged_method_parameters
-
+    
                 config_data['faults'][fault_name] = merged_parameters
-
+    
             self._process_fixed_nodes(config_data['faults'][fault_name])
             self.faults[fault_name] = config_data['faults'][fault_name]
-        
+    
         # Ensure all faults in faultnames are configured
         for fault_name in self.faultnames:
             if fault_name not in self.faults:
@@ -445,13 +492,13 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                 del config_data['faults'][fault_name]
                 if self.verbose:
                     print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
-
+    
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
                 if self.verbose:
                     print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
-
+    
         self.set_attributes(**config_data)
 
     def _process_fixed_nodes(self, fault_parameters):
@@ -644,7 +691,6 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         self.multifaults = multifaults # Multifaults object for the inversion
         self.use_bounds_constraints = True # Use bounds constraints for the inversion, only for SMC_F_J mode
         self.use_rake_angle_constraints = True # Use rake angle constraints for the inversion, only for SMC_F_J mode
-        self.alpha = None
         self.GLs = None
         self.moment_magnitude_threshold = None
         self.patch_areas = None
@@ -653,6 +699,15 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         self.nonlinear_inversion = False
         self.rake_angle = None # Only used when slip_sampling_mode is 'rake_fixed'
         self.faults = {}  # Dictionary to store the fault parameters
+
+        # Initialize alpha with default values
+        self.alpha = {
+            'enabled': True,
+            'update': True,
+            'initial_value': 0.0,
+            'log_scaled': True,
+            'faults': None
+        }
 
         assert multifaults or faults_list, "Either multifaults or faults_list must be provided"
         if multifaults is not None:
@@ -734,6 +789,11 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             self.lon0 = lon_lat_0[0]
             self.lat0 = lon_lat_0[1]
         config_data.pop('lon_lat_0', None)
+
+        # Handle alpha configuration
+        if 'alpha' in config_data:
+            self.alpha.update(config_data['alpha'])
+            config_data.pop('alpha')  # Remove alpha from config_data to avoid overwriting the alpha attribute
 
         # Get the default parameters
         default_fault_parameters = config_data.get('faults', {}).get('defaults', {})
