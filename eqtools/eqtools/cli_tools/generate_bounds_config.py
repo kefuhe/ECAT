@@ -17,6 +17,37 @@ def generate_bounds_config(output_path, faultnames=None):
         faultnames = ["ExampleFault"]
 
     # Define the configuration with comments
+    header_comment = """
+# ----------- Boundary Configuration Guide ----------- #
+# This configuration file defines the parameter bounds for Bayesian inversion.
+# Different sampling modes and their corresponding boundary constraints are as follows:
+#
+# 1. SMC-FJ Mode:
+#    - Only supports 'ss_ds' slip sampling mode.
+#    - Slip is constrained by the following boundaries:
+#      - rake_angle
+#      - strikeslip
+#      - dipslip
+#
+# 2. FULLSMC Mode:
+#    - Supports 'ss_ds', 'magnitude_rake', and 'rake_fixed' slip sampling modes.
+#    - Slip constraints:
+#      - 'ss_ds': rake_angle, strikeslip, dipslip
+#      - 'magnitude_rake': slip_magnitude, rake_angle
+#
+# 3. BLSE Mode:
+#    - Default to 'ss_ds' slip inversion mode.
+#    - Slip is constrained by the following boundaries:
+#      - rake_angle
+#      - strikeslip
+#      - dipslip
+#
+# Note:
+# - Left-lateral slip is positive, reverse slip is positive, and opening is positive.
+# - Pay attention to the sign conventions when setting slip boundaries.
+# ---------------------------------------------------- #
+"""
+
     geometry_bounds = "\n".join([f"    {fault}: [-10, 10]  # Geometry parameter bounds for {fault}" for fault in faultnames])
     slip_magnitude_bounds = "\n".join([f"    {fault}: [0, 15]  # Slip magnitude bounds for {fault} (unit: meters)" for fault in faultnames])
     rake_angle_bounds = "\n".join([f"    {fault}: [-120, -60]  # Rake angle bounds for {fault} (unit: degrees; counterclockwise rotation)" for fault in faultnames])
@@ -25,6 +56,8 @@ def generate_bounds_config(output_path, faultnames=None):
     poly_bounds = "\n".join([f"    {fault}: [-1000, 1000]  # Polynomial parameter bounds for {fault}" for fault in faultnames])
 
     config = yaml.load(f"""
+{header_comment}
+
 # ----------- Global Bounds Settings ----------- #
 # Global setting for lower and upper bounds
 lb: -3  # Global lower bound for all parameters
