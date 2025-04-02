@@ -26,14 +26,14 @@ from collections import namedtuple
 import matplotlib.pyplot as plt
 
 """
-This script demonstrates how to perform a Bayesian inversion for a multifault model using the CSI package.
-The script reads GPS and InSAR data, sets up the Bayesian inversion, and runs the inversion.
+This script demonstrates how to perform a BLSE inversion for a multifault model using the CSI package.
+The script reads GPS and InSAR data, sets up the BLSE inversion, and runs the inversion.
 The results are then plotted using the explorefault class.
 Steps:
 1. Read GPS and InSAR data. [Where you need to modify]
 2. run ecat-generate-config to generate the default configuration file. [Where you need to modify]
 3. run ecat-generate-boundary to generate the default boundary configuration file. [Where you need to modify]
-4. Set up the BayesianMultiFaultsInversion object with the data and configuration file.
+4. Set up the BoundLSEMultiFaultsInversion object with the data and configuration file.
 5. Run the BLSE inversion using the run method.
 6. Extract and plot the results using the extract_and_plot_bayesian_results method. [Where you need to modify]
 """
