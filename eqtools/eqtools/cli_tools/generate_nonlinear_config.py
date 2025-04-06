@@ -36,18 +36,18 @@ clipping_options:
 # All bounds use the format [lower bound, range increment]
 bounds:
   defaults:  # Default bounds for all faults
-    lon: [87.3, 0.3]  # Longitude bounds
-    lat: [28.6, 0.2]  # Latitude bounds
-    depth: [0.0, 10.0]  # Depth bounds (in kilometers)
-    dip: [10, 70]  # Dip angle bounds (in degrees)
-    width: [1.0, 39.0]  # Fault width bounds (in kilometers)
-    length: [1.0, 199.0]  # Fault length bounds (in kilometers)
-    strike: [270.0, 90.0]  # Strike angle bounds (in degrees)
-    magnitude: [0.0, 10.0]  # Magnitude bounds
-    rake: [-150, 120.0]  # Rake angle bounds (in degrees)
+    lon: [Uniform, 87.3, 0.3]  # Longitude bounds
+    lat: [Uniform, 28.6, 0.2]  # Latitude bounds
+    depth: [Uniform, 0.0, 10.0]  # Depth bounds (in kilometers)
+    dip: [Uniform, 10, 70]  # Dip angle bounds (in degrees)
+    width: [Uniform, 1.0, 39.0]  # Fault width bounds (in kilometers)
+    length: [Uniform, 1.0, 199.0]  # Fault length bounds (in kilometers)
+    strike: [Uniform, 270.0, 90.0]  # Strike angle bounds (in degrees)
+    magnitude: [Uniform, 0.0, 10.0]  # Magnitude bounds
+    rake: [Uniform, -150, 120.0]  # Rake angle bounds (in degrees)
   fault_1:  # Specific bounds for fault_1
-    rake: [-30, 60.0]  # Rake angle bounds for fault_1 (in degrees)
-    strike: [0.0, 270.0]  # Strike angle bounds for fault_1 (in degrees)
+    rake: [Uniform, -30, 60.0]  # Rake angle bounds for fault_1 (in degrees)
+    strike: [Uniform, 0.0, 270.0]  # Strike angle bounds for fault_1 (in degrees)
 
 # ----------- Fixed Parameters ----------- #
 # Fixed parameters for specific faults
@@ -68,13 +68,13 @@ geodata:
   polys:  # Options for estimating polynomial corrections
     enabled: true  # Whether to estimate polynomial corrections
     boundaries:
-      defaults: [-200.0, 400.0]  # Default polynomial correction bounds
+      defaults: [Uniform, -200.0, 400.0]  # Default polynomial correction bounds
   faults: null  # Fault names for each geodata (e.g., [null, null, null, null])
   sigmas:  # Standard deviations for geodata
     update: true  # Whether to update sigmas during inversion
     bounds:
-      defaults: [-3.0, 6.0]  # Default bounds for sigmas
-      sigma_0: [-3.0, 6.0]  # Bounds for sigma_0
+      defaults: [Uniform, -3.0, 6.0]  # Default bounds for sigmas
+      sigma_0: [Uniform, -3.0, 6.0]  # Bounds for sigma_0
     values: [0.0, 0.0, 0.0, 0.0]  # Initial values for sigmas
     log_scaled: true  # Whether sigmas are log-scaled
 

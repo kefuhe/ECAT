@@ -1088,13 +1088,19 @@ class explorefault(SourceInv):
                     cosar.synth += self.model[cosar.refnumber]
             
             if save_data:
-                assert sar_corner is not None, "Please provide the SAR corner type."
                 if not os.path.exists('Modeling'):
                     os.makedirs('Modeling')
-                for i, sardata in enumerate(cosar_list):
-                    corner_flag = True if sar_corner=='tri' else False
-                    for itype in ['data', 'synth', 'resid']:
-                        sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=corner_flag)
+                # Save SAR data
+                if sar_corner is not None:
+                    for i, sardata in enumerate(cosar_list):
+                        corner_flag = True if sar_corner=='tri' else False
+                        for itype in ['data', 'synth', 'resid']:
+                            sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=corner_flag)
+                else:
+                    for i, sardata in enumerate(cosar_list):
+                        for itype in ['data', 'synth', 'resid']:
+                            sardata.write2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling')
+                # Save GPS data
                 for i, (gpsdata, gpsvertical) in enumerate(cogps_vertical_list):
                     for itype in ['data', 'synth', 'res']:
                         gpsdata.write2file(f'{gpsdata.name}_{itype}.txt', itype, outDir='Modeling')
