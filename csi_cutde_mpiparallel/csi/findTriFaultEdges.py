@@ -116,6 +116,7 @@ def find_top_bottom_sides_triangles(adjacent_maps: list, vertex_indices: np.ndar
 def find_left_and_right_boundary_triangles(sideedge_triangle_index: np.ndarray, vertex_indices: np.ndarray, vertex_coordinates: np.ndarray) -> tuple:
     """
     Find the triangles on the left and right boundaries of a mesh.
+    Left: In North, Right: In South if the left/right can not be determined from west/east
 
     Args:
         sideedge_triangle_index: A numpy array containing the indices of the triangles on the side edge of the mesh.
@@ -175,12 +176,26 @@ def find_left_and_right_boundary_triangles(sideedge_triangle_index: np.ndarray, 
         ind_lower = np.argwhere(rotation_angles < 0).flatten()
         ind_upper_triangles = sideedge_triangle_index[ind_upper]
         ind_lower_triangles = sideedge_triangle_index[ind_lower]
-        if np.mean(vertex_coordinates[vertex_indices[ind_upper_triangles], 1]) > np.mean(vertex_coordinates[vertex_indices[ind_lower_triangles], 1]):
-            left_boundary_triangles = ind_upper_triangles.tolist()
-            right_boundary_triangles = ind_lower_triangles.tolist()
+    
+        # Check if ind_upper_triangles or ind_lower_triangles is empty
+        if len(ind_upper_triangles) > 0 and len(ind_lower_triangles) > 0:
+            mean_upper = np.mean(vertex_coordinates[vertex_indices[ind_upper_triangles], 1])
+            mean_lower = np.mean(vertex_coordinates[vertex_indices[ind_lower_triangles], 1])
+            if mean_upper > mean_lower:
+                left_boundary_triangles = ind_upper_triangles.tolist()
+                right_boundary_triangles = ind_lower_triangles.tolist()
+            else:
+                left_boundary_triangles = ind_lower_triangles.tolist()
+                right_boundary_triangles = ind_upper_triangles.tolist()
         else:
-            left_boundary_triangles = ind_lower_triangles.tolist()
-            right_boundary_triangles = ind_upper_triangles.tolist()
+            # Fallback: Divide triangles based on their y-coordinates
+            left_boundary_triangles, right_boundary_triangles = [], []
+            mean_y = np.mean(vertex_coordinates[vertex_indices[sideedge_triangle_index], 1])
+            for i in sideedge_triangle_index:
+                if vertex_coordinates[vertex_indices[i], 1].mean() > mean_y:
+                    left_boundary_triangles.append(i)
+                else:
+                    right_boundary_triangles.append(i)
 
     return left_boundary_triangles, right_boundary_triangles
 

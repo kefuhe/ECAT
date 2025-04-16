@@ -599,13 +599,13 @@ class explorefault(SourceInv):
         '''
     
         # Get it 
-        if model=='mean':
+        if model in ('Mean', 'mean'):
             samples = self.sampler['allsamples'].mean(axis=0)
-        elif model=='median':
+        elif model in ('Median', 'median'):
             samples = np.median(self.sampler['allsamples'], axis=0)
-        elif model=='std':                     
+        elif model in ('Std', 'std', 'STD'):                     
             samples = self.sampler['allsamples'].std(axis=0)
-        elif model=='MAP':
+        elif model in ('MAP', 'map', 'Map'):
             # Assuming 'logposterior' is the key for log posterior values
             max_posterior_index = np.argmax(self.sampler['postval'])
             samples = self.sampler['allsamples'][max_posterior_index, :]
@@ -681,12 +681,12 @@ class explorefault(SourceInv):
     
         Args:
             * filename  : The name of the file to write the model parameters to (default is None)
-        
+    
         Kwargs:
             * model     : 'mean', 'median', 'std', 'MAP'
             * recalculate: True/False
             * output_to_screen: True/False, whether to output to screen (default is False)
-        
+    
         Returns:
             * None
         """
@@ -704,14 +704,12 @@ class explorefault(SourceInv):
                 output.append(f"Fault: {fault_name} ({model})")
                 for param, value in fault_params.items():
                     output.append(f"  {param}: {value}")
-                # output.append("")
     
         # Write the reference values if they are updated
         if 'reference' in self.model_dict[model]:
             output.append("Reference:")
             for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict[model]['reference']):
                 output.append(f"  {ref_name}: {ref_value}")
-            # output.append("")
     
         # Write the sigmas values if they are updated
         if 'sigmas' in self.model_dict[model]:
@@ -720,7 +718,29 @@ class explorefault(SourceInv):
                 isigma_name = data.name
                 output.append(f"  {isigma_name}: {sigma_value}")
             output.append("")
+
+        # Get the samples for the specified model
+        if model in ('mean', 'Mean'):
+            samples = self.sampler['allsamples'].mean(axis=0)
+        elif model in ('median', 'Median'):
+            samples = np.median(self.sampler['allsamples'], axis=0)
+        elif model in ('std', 'Std', 'STD'):
+            samples = self.sampler['allsamples'].std(axis=0)
+        elif model in ('MAP', 'map', 'Map'):
+            # Assuming 'logposterior' is the key for log posterior values
+            # Find the index of the maximum posterior value
+            max_posterior_index = np.argmax(self.sampler['postval'])
+            samples = self.sampler['allsamples'][max_posterior_index, :]
+        else:
+            raise ValueError(f"Unsupported model type: {model}")
     
+        # Add the samples as a list to the output
+        samples_fixedPrecision = [round(float(sample), 6) for sample in samples]
+        samples = np.array(samples_fixedPrecision)
+        samples_list_str = f"{model.upper()}: {samples.tolist()}"
+        output.append(samples_list_str)
+        output.append("")
+
         # If model is not 'std', also write the 'std' model parameters
         if model != 'std':
             output.append("Standard Deviation (std):")
@@ -729,16 +749,12 @@ class explorefault(SourceInv):
                     output.append(f"Fault: {fault_name} (std)")
                     for param, value in fault_params.items():
                         output.append(f"  {param}: {value}")
-                    # output.append("")
     
-            # Write the reference values if they are updated
             if 'reference' in self.model_dict['std']:
                 output.append("Reference (std):")
                 for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict['std']['reference']):
                     output.append(f"  {ref_name}: {ref_value}")
-                # output.append("")
     
-            # Write the sigmas values if they are updated
             if 'sigmas' in self.model_dict['std']:
                 output.append("Sigmas (std):")
                 for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict['std']['sigmas']):
@@ -749,7 +765,6 @@ class explorefault(SourceInv):
         # Output to screen if requested
         if output_to_screen:
             for line in output:
-                # if line.strip():  # Check if the line is not empty
                 print(line)
     
         # Output to file if filename is provided

@@ -273,9 +273,12 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         # Predict the data
         for idata, ivert in zip(self.config.geodata['data'], self.config.geodata['verticals']):
             idata.buildsynth(self.faults, direction='sd', poly='include', vertical=ivert)
-
-            id = idata.vel
-            isynth = idata.synth
+            if idata.dtype in ('gps', 'insar'):
+                id = idata.vel
+                isynth = idata.synth
+            elif idata.dtype in ('opticorr', 'optical'):
+                id = np.hstack((idata.east, idata.north))
+                isynth = np.hstack((idata.east_synth, idata.north_synth))
             irms = np.sqrt(np.mean((isynth - id)**2))
             ivr = (1 - np.sum((isynth - id)**2) / np.sum(id**2)) * 100
             print(f'{idata.name} RMS: {irms:.4f}, VR: {ivr:.2f}%')

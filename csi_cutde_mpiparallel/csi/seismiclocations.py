@@ -478,80 +478,102 @@ class seismiclocations(SourceInv):
         # All done
         return
 
-    def read_ascii(self, infile, header=0, delimiter=None, lat_lon_order=True):
+    def read_ascii(self, infile, header=0, delimiter=None, lat_lon_order=True, time_formats=None):
         '''
         Reads data from an ascii file.
-
+    
         +----------------------------+-----+-----+-------+-----------+
         | time (isoformat)           | lat | lon | depth | magnitude |
         +----------------------------+-----+-----+-------+-----------+
         | yyy-mm-ddThh:mm:ss.ss      |float|float| float |   float   |
         +----------------------------+-----+-----+-------+-----------+
-
+    
         Args:
-            * infile    : input file
-                
+            * infile        : input file
+                    
         Kwargs:
-            * header    : length of the header
-            * delimiter : delimiter used in the input file
+            * header        : length of the header
+            * delimiter     : delimiter used in the input file
             * lat_lon_order : order of latitude and longitude in the input file
-
+            * time_formats  : list of possible time formats (default includes common formats)
+    
         Returns:
             * None
         '''
-
-        # open the file
-        fin = open(infile, 'r')
-
-        # Read all
-        All = fin.readlines()
-
-        # Initialize things
+    
+        # Default time formats if none are provided
+        if time_formats is None:
+            time_formats = [
+                "%Y-%m-%dT%H:%M:%S.%fZ",  # ISO format with microseconds and Z
+                "%Y-%m-%d %H:%M:%S.%f",   # Standard format with microseconds
+                "%Y-%m-%d %H:%M:%S",      # Standard format without microseconds
+                "%Y/%m/%d %H:%M:%S",      # Alternative format with slashes
+            ]
+    
+        # Open the file
+        with open(infile, 'r') as fin:
+            # Read all lines
+            All = fin.readlines()
+    
+        # Initialize attributes
         self.time = []
         self.lon = []
         self.lat = []
         self.depth = []
         self.mag = []
-
-        # Loop
+    
+        # Loop through the file, skipping the header
         for i in range(header, len(All)):
-
-            # Get the splitted string
-            tmp = All[i].split(delimiter)
-
-            # Get values
-            time = dt.datetime.strptime(tmp[0], "%Y-%m-%dT%H:%M:%S.%fZ")
-            if len(tmp)>=5:
-                if lat_lon_order:
-                    lat = float(tmp[1])
-                    lon = float(tmp[2])
-                else:
-                    lon = float(tmp[1])
-                    lat = float(tmp[2])
-                depth = float(tmp[3])
-                mag = float(tmp[4])
-                self.time.append(time)
-                self.lon.append(lon)
-                self.lat.append(lat)
-                self.depth.append(depth)
-                self.mag.append(mag)
-
-        # Close the file
-        fin.close()
-
-        # Make arrays
+            # Split the line using the specified delimiter
+            tmp = All[i].strip().split(delimiter)
+    
+            # Skip empty lines or lines with insufficient columns
+            if not tmp or len(tmp) < 5:
+                continue
+    
+            # Parse time with multiple formats
+            time = None
+            for fmt in time_formats:
+                try:
+                    time = dt.datetime.strptime(tmp[0], fmt)
+                    break
+                except ValueError:
+                    continue
+    
+            # Raise an error if no format matches
+            if time is None:
+                raise ValueError(f"Error parsing time '{tmp[0]}' with available formats: {time_formats}")
+    
+            # Parse other values
+            if lat_lon_order:
+                lat = float(tmp[1])
+                lon = float(tmp[2])
+            else:
+                lon = float(tmp[1])
+                lat = float(tmp[2])
+            depth = float(tmp[3])
+            mag = float(tmp[4])
+    
+            # Append to lists
+            self.time.append(time)
+            self.lon.append(lon)
+            self.lat.append(lat)
+            self.depth.append(depth)
+            self.mag.append(mag)
+    
+        # Convert lists to numpy arrays
         self.time = np.array(self.time)
         self.lon = np.array(self.lon)
         self.lat = np.array(self.lat)
         self.depth = np.array(self.depth)
         self.mag = np.array(self.mag)
-
-        # Create the utm
+    
+        # Create UTM coordinates
         self.lonlat2xy()
-
+    
         # All done
         return
-
+    
     def read_CMTSolutions(self, infile):
         '''
         Reads data and moment tensors from an ascii file listing CMT solutions format. Go check the GCMT webpage for format description

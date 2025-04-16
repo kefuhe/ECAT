@@ -370,15 +370,31 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self.multifaults = multifaults
     
     def _validate_polys(self, polys):
+        """
+        Validate and initialize the 'polys' parameter in the geodata configuration.
+    
+        If the user sets 'polys' to None or does not provide this parameter, it indicates that
+        polynomial corrections will not be estimated for the geodata. The method ensures that
+        the 'polys' parameter is properly initialized and consistent with the length of the geodata.
+    
+        Parameters:
+        polys (list, int, str, or None): The 'polys' parameter provided by the user. It can be:
+            - None: Indicates no polynomial corrections will be estimated.
+            - A list: Specifies the polynomial correction settings for each geodata.
+            - An integer or string: A single value applied to all geodata.
+    
+        Raises:
+        ValueError: If the length of the 'polys' list does not match the length of the geodata.
+        """
         if 'polys' not in self.geodata or self.geodata['polys'] is None:
             self.geodata['polys'] = polys if polys else []
         if not self.geodata['polys']:
             for data in self.geodata['data']:
                 if data.dtype == 'insar':
-                    self.geodata['polys'].append(3)
+                    self.geodata['polys'].append(None)  # Indicates no polynomial correction for this data
                 else:
                     self.geodata['polys'].append(None)
-        
+    
         if isinstance(self.geodata['polys'], list):
             if len(self.geodata['polys']) != len(self.geodata['data']):
                 raise ValueError("Length of 'polys' list must be equal to the length of 'data'")
@@ -755,15 +771,31 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         multifaults.assembleGFs() # assemble the Green's functions because the data is already assembled
     
     def _validate_polys(self, polys):
+        """
+        Validate and initialize the 'polys' parameter in the geodata configuration.
+    
+        If the user sets 'polys' to None or does not provide this parameter, it indicates that
+        polynomial corrections will not be estimated for the geodata. The method ensures that
+        the 'polys' parameter is properly initialized and consistent with the length of the geodata.
+    
+        Parameters:
+        polys (list, int, str, or None): The 'polys' parameter provided by the user. It can be:
+            - None: Indicates no polynomial corrections will be estimated.
+            - A list: Specifies the polynomial correction settings for each geodata.
+            - An integer or string: A single value applied to all geodata.
+    
+        Raises:
+        ValueError: If the length of the 'polys' list does not match the length of the geodata.
+        """
         if 'polys' not in self.geodata or self.geodata['polys'] is None:
             self.geodata['polys'] = polys if polys else []
         if not self.geodata['polys']:
             for data in self.geodata['data']:
                 if data.dtype == 'insar':
-                    self.geodata['polys'].append(3)
+                    self.geodata['polys'].append(None)  # Indicates no polynomial correction for this data
                 else:
                     self.geodata['polys'].append(None)
-
+    
         if isinstance(self.geodata['polys'], list):
             if len(self.geodata['polys']) != len(self.geodata['data']):
                 raise ValueError("Length of 'polys' list must be equal to the length of 'data'")

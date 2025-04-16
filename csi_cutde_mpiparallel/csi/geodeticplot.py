@@ -753,7 +753,7 @@ class geodeticplot(object):
         #lon[np.logical_or(lon<self.lonmin, lon>self.lonmax)] += 360.
         if hasattr(fault, 'color'): color = fault.color
         if hasattr(fault, 'linewidth'): linewidth = fault.linewidth
-        if self.faille is not None: self.faille.plot(lon, lat, fault.top, '-{}'.format(color), linewidth=linewidth)
+        if self.faille is not None: self.faille.plot(lon, lat, -fault.top, '-{}'.format(color), linewidth=linewidth)
         if self.carte is not None: self.carte.plot(lon, lat, '-{}'.format(color), zorder=zorder, 
                                                    linewidth=linewidth)
 
@@ -1856,9 +1856,10 @@ class geodeticplot(object):
         # All done
         return
 
-    def opticorr(self, corr, norm=None, colorbar=True, 
+    def opticorr(self, corr, norm=None, colorbar=True, markersize=10, lognorm=False,
                  cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
-                 data='dataEast', plotType='decimate', decim=1, zorder=3):
+                 data='dataEast', plotType='decimate', decim=1, zorder=3, cmap='jet', 
+                 edgewidth=1, alpha=1., cbticks=None, cblinewidth=1, cbfontsize=10):
         '''
         Plot opticorr instance
 
@@ -1911,55 +1912,56 @@ class geodeticplot(object):
 
         # Prepare the colorlimits
         if norm == None:
-            vmin = d.min()
-            vmax = d.max()
+            vmin = np.nanmin(d)
+            vmax = np.nanmax(d)
         else:
             vmin = norm[0]
             vmax = norm[1]
-
+    
         # Prepare the colormap
-        cmap = plt.get_cmap('jet')
-        cNorm  = colors.Normalize(vmin=vmin, vmax=vmax)
+        cmap = plt.get_cmap(cmap)
+        if lognorm:
+            cNorm = colors.LogNorm(vmin=vmin, vmax=vmax)
+        else:
+            cNorm = colors.Normalize(vmin=vmin, vmax=vmax)
         scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=cmap)
 
         if plotType == 'decimate':
             for corner, disp in zip(corr.corner, d):
-                x = []
-                y = []
-                # upper left
-                x.append(corner[0])
-                y.append(corner[1])
-                # upper right
-                x.append(corner[2])
-                y.append(corner[1])
-                # down right
-                x.append(corner[2])
-                y.append(corner[3])
-                # down left
-                x.append(corner[0])
-                y.append(corner[3])
-                verts = []
-                for xi,yi in zip(x,y):
-                    #if xi<0.: xi += 360.
-                    verts.append((xi,yi))
-                rect = colls.PolyCollection([verts])
+                if len(corner) == 6:
+                    verts = [
+                        (corner[0], corner[1]),
+                        (corner[2], corner[3]),
+                        (corner[4], corner[5])
+                    ]
+                else:
+                    verts = [
+                        (corner[0], corner[1]),
+                        (corner[2], corner[1]),
+                        (corner[2], corner[3]),
+                        (corner[0], corner[3])
+                    ]
+                rect = colls.PolyCollection([verts], linewidth=edgewidth)
                 rect.set_color(scalarMap.to_rgba(disp))
                 rect.set_edgecolors('k')
                 rect.set_zorder(zorder)
+                rect.set_alpha(alpha)
                 self.carte.add_collection(rect)
 
         elif plotType == 'scatter':
             lon = corr.lon
             #lon[np.logical_or(lon<self.lonmin, lon>self.lonmax)] += 360.
             lat = corr.lat
-            self.carte.scatter(lon[::decim], lat[::decim], s=10., c=d[::decim], cmap=cmap, vmin=vmin, vmax=vmax, linewidth=0.0, zorder=zorder)
+            self.carte.scatter(lon[::decim], lat[::decim], s=markersize, c=d[::decim], cmap=cmap, vmin=vmin, vmax=vmax, 
+                               linewidth=0.0, zorder=zorder)
 
         else:
             assert False, 'unsupported plot type. Must be rect or scatter'
 
         # plot colorbar
         if colorbar:
-            self.addColorbar(d, scalarMap, cbaxis, cborientation, self.figCarte, cblabel=cblabel) 
+            self.addColorbar(d, scalarMap, cbaxis, cborientation, self.figCarte, cblabel=cblabel, 
+                             cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize) 
 
         # All done
         return
