@@ -353,12 +353,15 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
         # Only for triangular faults at current stage
         if plot_faultEdges and add_faults is not None:
             for ifault in add_faults:
-                ifault.find_fault_fouredge_vertices(refind=True)
-                for edgename in ifault.edge_vertices:
-                    edge = ifault.edge_vertices[edgename]
-                    x, y, z = edge[:, 0], edge[:, 1], -edge[:, 2]
-                    lon, lat = fault.xy2ll(x, y)
-                    ax.plot(lon, lat, z, color=faultEdges_color, linewidth=faultEdges_linewidth)
+                if ifault.patchType == 'triangle':
+                    ifault.find_fault_fouredge_vertices(refind=True)
+                    for edgename in ifault.edge_vertices:
+                        edge = ifault.edge_vertices[edgename]
+                        x, y, z = edge[:, 0], edge[:, 1], -edge[:, 2]
+                        lon, lat = ifault.xy2ll(x, y)
+                        ax.plot(lon, lat, z, color=faultEdges_color, linewidth=faultEdges_linewidth)
+                else:
+                    Warning(f"Fault {ifault.name} is not a triangular fault. Currently, finding edge vertices is not supported.")
 
         if plotTrace and add_faults is not None:
             for ifault in add_faults:
