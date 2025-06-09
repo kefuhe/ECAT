@@ -69,7 +69,7 @@ class opticorr(SourceInv):
         # All done
         return
 
-    def read_from_varres(self,filename, factor=1.0, step=0.0, header=2, cov=False):
+    def read_from_varres(self,filename, factor=1.0, step=0.0, header=2, cov=False, triangular=False):
         '''
         Read the Optical Corr east-north offsets from the VarRes output. This is what comes from the decimation process in imagedownsampling
 
@@ -81,6 +81,7 @@ class opticorr(SourceInv):
             * step          : Add a value to the velocity.
             * header        : Size of the header.
             * cov           : Read an additional covariance file (binary np.float32, Nd*Nd elements).
+            * triangular    : If True, read triangular downsampling scheme. Default is False.
 
         Returns:
             * None
@@ -116,8 +117,10 @@ class opticorr(SourceInv):
             self.err_east.append(float(tmp[5]))
             self.err_north.append(float(tmp[6]))
             tmp = B[i].split()
-            self.corner.append([float(tmp[6]), float(tmp[7]),
-                                float(tmp[8]), float(tmp[9])])
+            if triangular:
+                self.corner.append([np.float32(tmp[2]), np.float32(tmp[3]), np.float32(tmp[4]), np.float32(tmp[5]), np.float32(tmp[6]), np.float32(tmp[7])])
+            else:
+                self.corner.append([np.float32(tmp[6]), np.float32(tmp[7]), np.float32(tmp[8]), np.float32(tmp[9])])
 
 
         # Make arrays
@@ -141,12 +144,23 @@ class opticorr(SourceInv):
 
         # Compute corner to xy
         self.xycorner = np.zeros(self.corner.shape)
-        x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
-        self.xycorner[:,0] = x
-        self.xycorner[:,1] = y
-        x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
-        self.xycorner[:,2] = x
-        self.xycorner[:,3] = y
+        if triangular:
+            x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
+            self.xycorner[:,0] = x
+            self.xycorner[:,1] = y
+            x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
+            self.xycorner[:,2] = x
+            self.xycorner[:,3] = y
+            x, y = self.ll2xy(self.corner[:,4], self.corner[:,5])
+            self.xycorner[:,4] = x
+            self.xycorner[:,5] = y
+        else:
+            x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
+            self.xycorner[:,0] = x
+            self.xycorner[:,1] = y
+            x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
+            self.xycorner[:,2] = x
+            self.xycorner[:,3] = y
 
         # Read the covariance
         if cov:
@@ -657,6 +671,103 @@ class opticorr(SourceInv):
         # All done
         return
 
+    def remove_significant_outliers(self, threshold):
+        '''
+        Remove the significant outliers based on a threshold value.
+    
+        Args:
+            * threshold     : Threshold value to determine significant outliers.
+    
+        Returns:
+            * None
+        '''
+    
+        # Select significant outliers based on the threshold
+        vel_mag = np.sqrt(self.east**2 + self.north**2)
+        outliers = np.flatnonzero(vel_mag > threshold)
+    
+        # Do it
+        self.reject_pixel(outliers)
+    
+        # All done
+        return
+    
+    def add_random_noise(self, sigma_east, sigma_north, mu=0, round_digits=6, data='synth', seed=None):
+        '''
+        Add random noise to optical data (east and north components).
+    
+        Args:
+            * sigma_east   : Standard deviation of the noise for the east component.
+            * sigma_north  : Standard deviation of the noise for the north component.
+    
+        Kwargs:
+            * mu           : Mean of the noise. Default is 0.
+            * round_digits : Number of decimal places to round the noise. Default is 6.
+            * data         : Target data to add noise ('synth' or 'data'). Default is 'synth'.
+            * seed         : Random seed for reproducibility. Default is None.
+    
+        Returns:
+            * None
+        '''
+        # Validate input
+        assert sigma_east > 0, "Sigma for east component must be a positive number."
+        assert sigma_north > 0, "Sigma for north component must be a positive number."
+        assert data in ['synth', 'data'], "Invalid data type. Choose 'synth' or 'data'."
+    
+        # Set the random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+    
+        # Select target arrays based on the data parameter
+        if data == 'synth':
+            target_east = self.east_synth
+            target_north = self.north_synth
+        elif data == 'data':
+            target_east = self.east
+            target_north = self.north
+    
+        # Ensure target arrays are initialized
+        assert target_east is not None and target_north is not None, f"{data} components must be initialized."
+    
+        # Generate random noise for east and north components
+        noise_east = np.random.normal(mu, sigma_east, size=target_east.shape)
+        noise_north = np.random.normal(mu, sigma_north, size=target_north.shape)
+    
+        # Round the noise
+        noise_east = np.round(noise_east, round_digits)
+        noise_north = np.round(noise_north, round_digits)
+    
+        # Add noise to the components
+        target_east += noise_east
+        target_north += noise_north
+    
+        # Print information
+        print(f"Added random noise to {data} data:")
+        print(f"  East: mu={mu}, sigma={sigma_east}, round_digits={round_digits}, seed={seed}")
+        print(f"  North: mu={mu}, sigma={sigma_north}, round_digits={round_digits}, seed={seed}")
+    
+        # All done
+        return
+
+    def buildDiagCd(self):
+        '''
+        Builds a full Covariance matrix from the uncertainties. The Matrix is just a diagonal matrix.
+        '''
+
+        # Assert
+        assert self.err_east is not None and self.err_north is not None, 'Need some uncertainties on the LOS displacements...'
+
+        # Get some size
+        nd = self.err_east.shape[0]
+
+        # Fill Cd
+        self.Cd = np.zeros((nd*2, nd*2))
+        self.Cd[:nd, :nd] = np.diag(self.err_east**2)
+        self.Cd[nd:2*nd, nd:2*nd] = np.diag(self.err_north**2)
+
+        # All done
+        return
+
     def setGFsInFault(self, fault, G, vertical=True):
         '''
         From a dictionary of Green's functions, sets these correctly into the fault
@@ -720,7 +831,7 @@ class opticorr(SourceInv):
         return
 
 
-    def computeTransformNormalizingFactor(self):
+    def computeTransformNormalizingFactor(self, verbose=True):
         '''
         Compute orbit normalizing factors and store them in insar object.
 
@@ -732,7 +843,8 @@ class opticorr(SourceInv):
         y0 = self.y[0]
         normX = np.abs(self.x - x0).max()
         normY = np.abs(self.y - y0).max()
-
+        if verbose:
+            print('normalizing factors are ', x0,y0,normX,normY)
         self.TransformNormalizingFactor = {}
         self.TransformNormalizingFactor['x'] = normX
         self.TransformNormalizingFactor['y'] = normY
@@ -1127,7 +1239,7 @@ class opticorr(SourceInv):
         # All done
         return
 
-    def writeDecim2file(self, filename, data='dataNorth', outDir='./'):
+    def writeDecim2file(self, filename, data='dataNorth', outDir='./', triangular=None):
         '''
         Writes the decimation scheme to a file plottable by GMT psxy command.
 
@@ -1137,6 +1249,7 @@ class opticorr(SourceInv):
         Kwargs:
             * data      : Add the value with a -Z option for each rectangle. Can be 'dataNorth', 'dataEast', synthNorth, synthEast, data or synth
             * outDir    : Output directory
+            * triangular: If True, write triangular downsampling scheme. Default is None, which will auto-detect based on corner shape.
 
         Returns:
             * None
@@ -1157,9 +1270,20 @@ class opticorr(SourceInv):
         elif data in ('dataEast', 'dataeast', 'east'):
             values = self.east
         elif data in ('synthNorth', 'synthnorth'):
-            value = self.east_synth
+            values = self.north_synth
         elif data in ('synthEast', 'syntheast'):
-            value = self.east_north
+            values = self.east_synth
+        elif data in ('resNorth', 'resnorth'):
+            values = self.north - self.north_synth
+        elif data in ('resEast', 'reseast'):
+            values = self.east - self.east_synth
+        
+        # Auto-detect triangular if not specified
+        if triangular is None:
+            if self.corner.shape[1] == 6:
+                triangular = True
+            else:
+                triangular = False
 
         # Iterate over the data and corner
         for corner, d in zip(self.corner, values):
@@ -1169,12 +1293,18 @@ class opticorr(SourceInv):
             fout.write(string)
 
             # Write the corners
-            xmin, ymin, xmax, ymax = corner
-            fout.write('{} {} \n'.format(xmin, ymin))
-            fout.write('{} {} \n'.format(xmin, ymax))
-            fout.write('{} {} \n'.format(xmax, ymax))
-            fout.write('{} {} \n'.format(xmax, ymin))
-            fout.write('{} {} \n'.format(xmin, ymin))
+            if triangular:
+                fout.write('{} {} \n'.format(corner[0], corner[1]))
+                fout.write('{} {} \n'.format(corner[2], corner[3]))
+                fout.write('{} {} \n'.format(corner[4], corner[5]))
+                fout.write('{} {} \n'.format(corner[0], corner[1]))
+            else:
+                xmin, ymin, xmax, ymax = corner
+                fout.write('{} {} \n'.format(xmin, ymin))
+                fout.write('{} {} \n'.format(xmin, ymax))
+                fout.write('{} {} \n'.format(xmax, ymax))
+                fout.write('{} {} \n'.format(xmax, ymin))
+                fout.write('{} {} \n'.format(xmin, ymin))
 
         # Close the file
         fout.close()
@@ -1213,14 +1343,17 @@ class opticorr(SourceInv):
     def reject_pixel(self, u):
         '''
         Reject pixels.
-
+    
         Args:
-            * u         : Index of the pixel to reject.
-
+            * u         : Index or array of indices of pixels to reject.
+    
         Returns:
             * None
         '''
-
+        # Store original dimension before deletion
+        nd = self.east.shape[0]
+        
+        # Delete data points
         self.lon = np.delete(self.lon, u)
         self.lat = np.delete(self.lat, u)
         self.x = np.delete(self.x, u)
@@ -1229,27 +1362,43 @@ class opticorr(SourceInv):
         self.north = np.delete(self.north, u)
         self.err_east = np.delete(self.err_east, u)
         self.err_north = np.delete(self.err_north, u)
-
+    
+        # Handle covariance matrix if it exists
         if self.Cd is not None:
-            nd = self.east.shape[0]
+            # Delete rows and columns from covariance matrix blocks
             Cd1 = np.delete(self.Cd[:nd, :nd], u, axis=0)
             Cd1 = np.delete(Cd1, u, axis=1)
-            Cd2 = np.delete(self.Cd[nd:,nd:], u, axis=0)
+            Cd2 = np.delete(self.Cd[nd:, nd:], u, axis=0)
             Cd2 = np.delete(Cd2, u, axis=1)
-            Cd = np.vstack( (np.hstack((Cd1, np.zeros((nd,nd)))),
-                np.hstack((np.zeros((nd,nd)),Cd2))) )
+            
+            # Get new dimensions after deletion
+            nd1 = Cd1.shape[0]
+            nd2 = Cd2.shape[0]
+            
+            # Create zero matrices with correct dimensions
+            zeros_top_right = np.zeros((nd1, nd2))
+            zeros_bottom_left = np.zeros((nd2, nd1))
+            
+            # Reconstruct covariance matrix with proper dimensions
+            Cd = np.vstack((
+                np.hstack((Cd1, zeros_top_right)),
+                np.hstack((zeros_bottom_left, Cd2))
+            ))
+            
             self.Cd = Cd
-
+    
+        # Handle corner and corner coordinates if they exist
         if self.corner is not None:
             self.corner = np.delete(self.corner, u, axis=0)
             self.xycorner = np.delete(self.xycorner, u, axis=0)
-
+    
+        # Handle synthetic data if they exist
         if self.east_synth is not None:
             self.east_synth = np.delete(self.east_synth, u, axis=0)
-
+    
         if self.north_synth is not None:
             self.north_synth = np.delete(self.north_synth, u, axis=0)
-
+    
         # All done
         return
 
@@ -1660,7 +1809,9 @@ class opticorr(SourceInv):
     def plot(self, faults=None, figure=None, gps=None, decim=False, norm=None,
              Map=True, Fault=True,
              data='data', show=True, drawCoastlines=True, expand=0.2,
-             colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel=''):
+             colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
+             edgewidth=1, cmap='jet', alpha=1., markersize=10., 
+             remove_direction_labels=False):
         '''
         Plot the data set, together with a fault, if asked.
 
@@ -1674,6 +1825,8 @@ class opticorr(SourceInv):
             * show      : Show me
             * drawCoastlines : True or False
             * expand    : How to expand the map around the data in degrees.
+            * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+            * markersize : size of the markers
 
         Returns:
             * None
@@ -1690,7 +1843,8 @@ class opticorr(SourceInv):
         latmax = self.lat.max()+expand
 
         # Create a figure
-        fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, latmin=latmin, latmax=latmax, Fault=Fault, Map=Map)
+        fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, latmin=latmin, latmax=latmax, Fault=Fault, Map=Map,
+                      remove_direction_labels=remove_direction_labels)
 
         # Draw the coastlines
         if drawCoastlines:
@@ -1712,11 +1866,15 @@ class opticorr(SourceInv):
 
         # Plot the decimation process, if asked
         if decim:
-            fig.opticorr(self, norm=norm, colorbar=True, data=data, plotType='decimate', cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel)
+            fig.opticorr(self, norm=norm, colorbar=True, data=data, plotType='decimate', 
+                         cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
+                         edgewidth=edgewidth, cmap=cmap, alpha=alpha)
 
         # Plot the data
         if not decim:
-            fig.opticorr(self, norm=norm, colorbar=True, data=data, plotType='scatter', cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel)
+            fig.opticorr(self, norm=norm, colorbar=True, data=data, plotType='scatter', 
+                         cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
+                         edgewidth=edgewidth, cmap=cmap, alpha=alpha, markersize=markersize)
 
         # Show
         if show:

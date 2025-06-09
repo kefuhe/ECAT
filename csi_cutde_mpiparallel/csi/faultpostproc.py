@@ -281,7 +281,7 @@ class faultpostproc(SourceInv):
         '''
 
         # Compute the area of each patch
-        if not hasattr(self.fault, 'area'):
+        if not hasattr(self.fault, 'area') or self.fault.area is None:
             self.fault.computeArea()
 
         # Initialize an empty moment

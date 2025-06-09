@@ -2183,6 +2183,7 @@ class TriangularPatches(Fault):
     def find_boundary_and_corner_triangles(self, top_tolerance: float, bottom_tolerance: float):
         '''
         Find the triangles on the top, bottom, left and right boundaries of a mesh, as well as the corner triangles.
+        Left: In North, Right: In South if the left/right can not be determined from west/east
 
         Args:
             vertex_indices: A numpy array of shape (n, 3) containing the vertex indices for each triangle in the mesh.
@@ -2260,7 +2261,7 @@ class TriangularPatches(Fault):
         from .findTriFaultEdges import find_left_or_right_edgeline_points
         if not hasattr(self, 'edge_triangles_indices') or refind:
             self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
-        
+
         left_inds, left_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['left'], self.Faces, self.Vertices, side='left')
         right_inds, right_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['right'], self.Faces, self.Vertices, side='right')
     
@@ -2329,6 +2330,7 @@ class TriangularPatches(Fault):
             * Wang et al., 2017, RS
             * Melgar et al., 2014, PhD
             * Zhou et al., 2014, GJI
+            * Kefeng He et al., 2022, SRL
         Comments: 
             * Added by kfhe at 10/16/2021
         '''

@@ -165,7 +165,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
             self.combine_GL_poly(penalty_weight=penalty_weight)
     
-    def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m'):
+    def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True):
         """
         Run the inversion for a range of penalty weights.
     
@@ -179,6 +179,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
         rms_unit : str, optional
             The unit for RMS. Default is 'm'. If set to other values, RMS will be scaled accordingly.
+        verbose : bool, optional
+            Whether to print the results of the inversion. Default is True.
         """
         results = []
     
@@ -187,7 +189,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         for ipenalty in penalty_weights:
             alpha = [np.log10(1.0/ipenalty)] * len(self.faults)
             self.run(penalty_weight=None, alpha=alpha, verbose=False)
-    
+            if verbose:
+                self.returnModel()
+
             # Calculate RMS and VR for the solution and print the results
             rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
             vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
@@ -261,6 +265,38 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 plt.show()
             else:
                 plt.close()
+
+    def reassemble_data(self, geodata=None, trifaults_list=None, verticals=None):
+        """
+        Assemble data for inversion.
+
+        Parameters:
+        - geodata: list
+            List of geodetic data objects (e.g., InSAR, GPS, Optical).
+        - trifaults_list: list
+            List of fault objects.
+        - verticals: list
+            List of vertical data objects.
+        """
+        faults = self.faults if trifaults_list is None else trifaults_list
+        geodata = self.config.geodata['data'] if geodata is None else geodata
+        vertical = self.config.geodata['verticals'] if verticals is None else verticals
+        for data, vert in zip(geodata, vertical):
+            for ifault in faults:
+                if data.dtype in ('insar', 'tsunami'):
+                    ifault.d[data.name] = data.vel if data.dtype == 'insar' else data.d
+                elif data.dtype in ('gps', 'multigps'):
+                    ifault.d[data.name] = data.vel_enu[:, :data.obs_per_station].T.flatten()
+                    ifault.d[data.name] = ifault.d[data.name][np.isfinite(ifault.d[data.name])]
+                elif data.dtype == 'opticorr':
+                    ifault.d[data.name] = np.hstack((data.east.T.flatten(), data.north.T.flatten()))
+                    if vert:
+                        ifault.d[data.name] = np.hstack((ifault.d[data.name], np.zeros_like(data.east.T.ravel())))
+
+        for ifault in faults:
+            ifault.assembled(geodata)
+
+        self.d = faults[0].dassembled
 
     def returnModel(self, mpost=None):
         if mpost is not None:

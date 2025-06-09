@@ -2669,29 +2669,31 @@ class seismiclocations(SourceInv):
         return strike, dip, rake
 
     def plot_profiles(self, fault, plot_aftershocks=False, figsize=None, 
-                      style=['science'], fontsize=None, save_fig=False, 
+                      style=['notebook'], fontsize=None, save_fig=False, 
                       file_path='profile.png', dpi=300, scatter_props=None,
                       show=True, draw_trace_arrow=True):
         from eqtools.plottools import DegreeFormatter
+        from eqtools.plottools import sci_plot_style
+        with sci_plot_style(style=style, fontsize=fontsize, figsize=figsize):
         # Set default properties for plotting
-        with plt.style.context(style):
-            plt.rcParams['font.family'] = 'sans-serif'
-            plt.rcParams['axes.formatter.use_mathtext'] = False
-            plt.rcParams['text.usetex'] = False
-            plt.rcParams['mathtext.fontset'] = 'dejavusans'
-            plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica','DejaVu Sans', 'Bitstream Vera Sans', 
-                                            'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 
-                                            'Lucid', 'Avant Garde', 'sans-serif']
+        # with plt.style.context(style):
+        #     plt.rcParams['font.family'] = 'sans-serif'
+        #     plt.rcParams['axes.formatter.use_mathtext'] = False
+        #     plt.rcParams['text.usetex'] = False
+        #     plt.rcParams['mathtext.fontset'] = 'dejavusans'
+        #     plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica','DejaVu Sans', 'Bitstream Vera Sans', 
+        #                                     'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 
+        #                                     'Lucid', 'Avant Garde', 'sans-serif']
 
-            if fontsize is not None:
-                plt.rcParams['axes.labelsize'] = fontsize
-                plt.rcParams['xtick.labelsize'] = fontsize
-                plt.rcParams['ytick.labelsize'] = fontsize
-                plt.rcParams['legend.fontsize'] = fontsize
-                plt.rcParams['font.size'] = fontsize
+        #     if fontsize is not None:
+        #         plt.rcParams['axes.labelsize'] = fontsize
+        #         plt.rcParams['xtick.labelsize'] = fontsize
+        #         plt.rcParams['ytick.labelsize'] = fontsize
+        #         plt.rcParams['legend.fontsize'] = fontsize
+        #         plt.rcParams['font.size'] = fontsize
             
-            if figsize is not None:
-                plt.rcParams['figure.figsize'] = figsize
+        #     if figsize is not None:
+        #         plt.rcParams['figure.figsize'] = figsize
 
             # Convert the top_strike from degrees to radians
             top_strike_rad = np.radians(90.0 - fault.top_strike[0])

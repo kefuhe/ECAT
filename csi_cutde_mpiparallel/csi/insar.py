@@ -751,10 +751,10 @@ class insar(SourceInv):
         self.Azimuth = azimuth
 
         # Convert angles
-        alpha = azimuth*np.pi/180.
-        phi = incidence*np.pi/180.
+        alpha = azimuth*np.pi/180. # Azimuth angle, 0 is East, 90 is North
+        phi = incidence*np.pi/180. # Elevation angle, 0 is at zenith, 90 is at horizon
 
-        # Compute LOS with alpha + 90
+        # Compute LOS with alpha - 90
         Se = -1.0 * np.sin(alpha) * np.sin(phi)
         Sn = np.cos(alpha) * np.sin(phi)
         Su = np.cos(phi)
@@ -1272,6 +1272,52 @@ class insar(SourceInv):
     
         # Do it
         self.keepPixels(non_outliers)
+    
+        # All done
+        return
+    
+    def add_random_noise(self, sigma, data='synth', mu=0, round_digits=6, seed=None):
+        '''
+        Add random noise to self.vel or self.synth.
+    
+        Args:
+            * sigma         : Standard deviation of the noise.
+    
+        Kwargs:
+            * data          : Target data to add noise ('data' or 'synth'). Default is 'data'.
+            * mu            : Mean of the noise. Default is 0.
+            * round_digits  : Number of decimal places to round the noise. Default is 6.
+            * seed          : Random seed for reproducibility. Default is None.
+    
+        Returns:
+            * None
+        '''
+        # Validate input
+        assert data in ['data', 'synth'], "Invalid data type. Choose 'data' or 'synth'."
+        assert sigma > 0, "Sigma must be a positive number."
+    
+        # Set the random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+
+        # Select target array
+        if data == 'data':
+            target = self.vel
+        elif data == 'synth':
+            target = self.synth
+    
+        # Ensure target exists
+        assert target is not None, f"{data} is not initialized."
+    
+        # Generate random noise
+        noise = np.random.normal(mu, sigma, size=target.shape)
+        noise = np.round(noise, round_digits)
+    
+        # Add noise to the target
+        target += noise
+    
+        # Print information
+        print(f"Added random noise to {data}: mu={mu}, sigma={sigma}, round_digits={round_digits}, seed={seed}")
     
         # All done
         return

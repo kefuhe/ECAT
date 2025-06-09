@@ -643,6 +643,102 @@ class Fault(SourceInv):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def generate_checkboard_slip(self, Mu=3e10, horizontal_discretization=40, depth_ranges=[5, 15], 
+                                 normalize=True, target_moment=None, target_magnitude=None, rake_angle=0):
+        """
+        Generate a checkerboard slip distribution for testing.
+    
+        Parameters:
+        - Mu: float, default=3e10
+            Shear modulus.
+        - horizontal_discretization: int, default=40
+            Horizontal discretization distance for the fault trace.
+        - depth_ranges: list, default=[5, 15]
+            Depth ranges for vertical discretization.
+        - normalize: bool, default=True
+            Whether to normalize the slip to match a target moment magnitude.
+        - target_moment: float, optional
+            Target scalar moment for normalization. If None, normalize to the original slip moment.
+        - target_magnitude: float, optional
+            Target moment magnitude (Mw) for normalization. If provided, it will be converted to scalar moment.
+        - rake_angle: float, default=0, unit: degree
+            Rake angle for the slip distribution.
+    
+        Notes:
+        - If both `target_moment` and `target_magnitude` are provided, `target_moment` takes precedence.
+        """
+        def selectPatches_trans(fault, tvert1, tvert2, mindep, maxdep, tol=0.2):
+            '''
+            Select patches based on the given criteria.
+            '''
+            pselect = []
+            tx1, ty1 = tvert1[0], tvert1[1]
+            tx2, ty2 = tvert2[0], tvert2[1]
+            slope = np.arctan2(ty2 - ty1, tx2 - tx1)
+            slp_len = np.sqrt((ty2 - ty1)**2 + (tx2 - tx1)**2)
+            for p in range(len(fault.patch)):
+                x1, x2, x3, width, length, strike, dip = fault.getpatchgeometry(p)
+                xy_trans = ((x1 - tx1) + (x2 - ty1) * 1j) * np.exp(-slope * 1j)
+                x_trans = xy_trans.real
+                if -tol <= x_trans < slp_len + tol and mindep < x3 < maxdep:
+                    pselect.append(p)
+            return pselect
+    
+        from .faultpostproc import faultpostproc
+    
+        # Step 1: Compute raw moment
+        if normalize:
+            if target_moment is None and target_magnitude is None:
+                rawmoment = 0.0
+                self.type = 'Fault'
+                self.computeArea()
+                rawproces = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
+                rawproces.computeMomentTensor()
+                rawmoment += rawproces.computeScalarMoment()
+                print(f"Raw moment Mo={rawmoment:.2e}")
+            elif target_magnitude is not None and target_moment is None:
+                # Mw = 2/3 * (log10(Mo) - 9.1) -> Mo = 10**((Mw * 3/2) + 9.1)
+                target_moment = 10**((target_magnitude * 3.0 / 2.0) + 9.1)
+                print(f"Converted target magnitude Mw={target_magnitude} to scalar moment Mo={target_moment:.2e}")
+    
+        # Step 3: Horizontal discretization
+        self.setTrace(0.1)
+        self.discretize_trace(every=horizontal_discretization)
+    
+        # Step 4: Vertical discretization and slip assignment
+        self.initializeslip()
+        rake_rad = np.radians(rake_angle)
+        for i in range(len(depth_ranges) - 1):
+            mindep, maxdep = depth_ranges[i], depth_ranges[i + 1]
+            layer_cnt = 0 if i % 2 == 0 else 1
+            for k in range(layer_cnt, len(self.xi) - 1, 2):
+                # xmin, xmax = np.sort([self.xi[k], self.xi[k+1]])
+                # ymin, ymax = np.sort([self.yi[k], self.yi[k+1]])
+                pselect = selectPatches_trans(self, [self.xi[k], self.yi[k]], [self.xi[k + 1], self.yi[k + 1]], mindep, maxdep)
+                self.slip[pselect, 0] = np.cos(rake_rad) * 1.0  # Strike-slip component
+                self.slip[pselect, 1] = np.sin(rake_rad) * 1.0  # Dip-slip component
+    
+        # Step 5: Normalize slip to match target moment or original moment
+        if normalize:
+            # Compute new moment
+            newmoment = 0.0
+            postfault1 = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
+            postfault1.computeMomentTensor()
+            newmoment += postfault1.computeScalarMoment()
+    
+            # Determine normalization factor
+            if target_moment is not None:
+                moment_ratio = target_moment / newmoment
+            else:
+                moment_ratio = rawmoment / newmoment
+    
+            print(f"Normalizing slip: Raw moment to New moment ratio = {moment_ratio:.2f}")
+            self.slip[:, :] *= moment_ratio
+        else:
+            print("Slip normalization skipped. Using unit slip (1 m).")
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def cumdistance(self, discretized=False):
         '''
         Computes the distance between the first point of the fault and every
@@ -2207,9 +2303,11 @@ class Fault(SourceInv):
                 # Build the polynomial function
                 if data.dtype in ('gps', 'multigps'):
                     orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
-                elif data.dtype in ('insar', 'opticorr'):
+                elif data.dtype in ('insar', ):
                     # orb = data.getPolyEstimator(self.poly[data.name],computeNormFact=computeNormFact)
                     orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
+                elif data.dtype == 'opticorr':
+                    orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, verbose=verbose)
                 elif data.dtype == 'tsunami':
                     orb = data.getRampEstimator(self.poly[data.name])
 

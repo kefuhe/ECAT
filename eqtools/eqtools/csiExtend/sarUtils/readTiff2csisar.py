@@ -12,19 +12,22 @@ class TiffsarReader(ReadBase2csisar):
         self.config = config if config else Hyp3TiffConfig()
 
     def extract_raw_grd(self, directory_name=None, prefix=None, phsname=None,
-                        azifile=None, incfile=None, zero2nan=True, wavelength=None,
-                        azi_reference=None, azi_unit=None, azi_direction=None,
-                        inc_reference=None, inc_unit=None, mode=None, is_lonlat=None):
+                        azifile=None, incfile=None, phase_band=1, azi_band=1, inc_band=1, factor_to_m=1.0,
+                        zero2nan=True, wavelength=None, azi_reference=None, azi_unit=None,
+                        azi_direction=None, inc_reference=None, inc_unit=None, mode=None, is_lonlat=None):
         """
         Extract SAR raw images and process azimuth and incidence angles.
-
+    
         Parameters:
         directory_name (str, optional): The directory name where the raw images are stored. Defaults to None.
         prefix (str, optional): The prefix for the output files. Defaults to None.
         phsname (str, optional): The name of the phase file. Defaults to None.
-        rscname (str, optional): The name of the resource file. Defaults to None.
         azifile (str, optional): The name of the azimuth file. Defaults to None.
         incfile (str, optional): The name of the incidence file. Defaults to None.
+        phase_band (int, optional): Band index to read from the phase file. Defaults to 1.
+        azi_band (int, optional): Band index to read from the azimuth file. Defaults to 1.
+        inc_band (int, optional): Band index to read from the incidence file. Defaults to 1.
+        factor_to_m (float, optional): Factor to convert phase to meters. Defaults to 1.0.
         zero2nan (bool, optional): Whether to convert zero values to NaN. Defaults to config value.
         wavelength (float, optional): The wavelength of the SAR signal. Defaults to config value.
         azi_reference (str, optional): The reference direction for azimuth. Defaults to config value.
@@ -34,7 +37,7 @@ class TiffsarReader(ReadBase2csisar):
         inc_unit (str, optional): The unit of the incidence angle. Defaults to config value.
         mode (str, optional): The mode of processing. Defaults to config value.
         is_lonlat (bool, optional): Whether the data is in longitude and latitude. Defaults to config value.
-
+    
         Returns:
         None
         """
@@ -47,13 +50,14 @@ class TiffsarReader(ReadBase2csisar):
         inc_unit = inc_unit if inc_unit is not None else self.config.inc_unit
         mode = mode if mode is not None else self.config.mode
         is_lonlat = is_lonlat if is_lonlat is not None else self.config.is_lonlat
-
-        # extract sar raw images 
+    
+        # Extract SAR raw images
         if directory_name is not None:
             self.directory_name = directory_name
         else:
             directory_name = self.directory_name
-        # phase file
+    
+        # Construct file paths
         if prefix:
             phase_file, azi_file, inc_file = self._construct_file_paths(directory_name, prefix)
         else:
@@ -61,25 +65,29 @@ class TiffsarReader(ReadBase2csisar):
             phase_file = os.path.join(directory_name, phsname)
             azi_file = os.path.join(directory_name, azifile)
             inc_file = os.path.join(directory_name, incfile)
-        
-        vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat, im_geotrans, im_proj = self._read_sar_data(phase_file, azi_file, inc_file)
-
+    
+        # Read SAR data from specified bands
+        vel, azi, inc, x_lon, x_lat, mesh_lon_x, mesh_lat_y, im_geotrans, im_proj = self._read_sar_data(
+            phase_file, azi_file, inc_file, phase_band=phase_band, azi_band=azi_band, inc_band=inc_band, factor_to_m=factor_to_m
+        )
+    
         self.raw_azi_input = azi
         self.raw_inc_input = inc
+    
         # Process azimuth and incidence angles
         azi = self._process_azimuth(azi, azi_reference, azi_unit, azi_direction, mode=mode)
         inc = self._process_incidence(inc, inc_reference, inc_unit)
-
+    
         # Transfer coordinate system from UTM to latitude and longitude
         if not is_lonlat:
-            im_height, im_width = mesh_lon.shape
-            mesh_lat, mesh_lon = utm_to_latlon(mesh_lon.flatten(), mesh_lat.flatten(), im_proj)
+            im_height, im_width = mesh_lon_x.shape
+            mesh_lat, mesh_lon = utm_to_latlon(mesh_lon_x.flatten(), mesh_lat_y.flatten(), im_proj)
             mesh_lat = mesh_lat.reshape(im_height, im_width)
             mesh_lon = mesh_lon.reshape(im_height, im_width)
-
+    
         if zero2nan:
             vel[vel == 0] = np.nan
-
+    
         # Save in self
         self.wavelength = wavelength
         self.raw_vel = vel
@@ -98,17 +106,42 @@ class TiffsarReader(ReadBase2csisar):
         inc_file = glob(os.path.join(directory_name, f'{prefix}*.inc.tif'))[0]
         return phase_file, azi_file, inc_file
 
-    def _read_sar_data(self, phase_file, azi_file, inc_file):
-        vel, im_geotrans, im_proj, im_width, im_height = read_tiff(phase_file)
-        # Azimuth information
-        azi, _, _, _, _ = read_tiff(azi_file)
-        # Incidence information
-        inc, _, _, _, _ = read_tiff(inc_file)
-
-        # Read Metadata information
-        x_lon, _, x_lat, _, mesh_lon, mesh_lat = read_tiff_info(phase_file, im_width, im_height)
-
-        return vel, azi, inc, x_lon, x_lat, mesh_lon, mesh_lat, im_geotrans, im_proj
+    def _read_sar_data(self, phase_file, azi_file, inc_file, phase_band=1, azi_band=1, inc_band=1, factor_to_m=1.0):
+        """
+        Read SAR data from phase, azimuth, and incidence files.
+    
+        Parameters:
+            phase_file (str): Path to the phase file (TIFF format).
+            azi_file (str): Path to the azimuth file (TIFF format).
+            inc_file (str): Path to the incidence file (TIFF format).
+            phase_band (int, optional): Band index to read from the phase file. Defaults to 1.
+            azi_band (int, optional): Band index to read from the azimuth file. Defaults to 1.
+            inc_band (int, optional): Band index to read from the incidence file. Defaults to 1.
+            factor_to_m (float, optional): Factor to convert phase to meters. Defaults to 1.0.
+    
+        Returns:
+            tuple:
+                - vel (numpy.ndarray): Phase data matrix.
+                - azi (numpy.ndarray): Azimuth data matrix.
+                - inc (numpy.ndarray): Incidence data matrix.
+                - x_lon (numpy.ndarray): Longitude coordinates.
+                - x_lat (numpy.ndarray): Latitude coordinates.
+                - mesh_lon_x (numpy.ndarray): Projected x mesh grid along Longitude direction.
+                - mesh_lat_y (numpy.ndarray): Projected y mesh grid along Latitude direction.
+                - im_geotrans (tuple): Geotransform (origin and pixel size).
+                - im_proj (str): Projection parameters.
+        """
+        # Read phase data
+        vel, im_geotrans, im_proj, im_width, im_height = read_tiff(phase_file, band_index=phase_band, factor=factor_to_m)
+        # Read azimuth data
+        azi, _, _, _, _ = read_tiff(azi_file, band_index=azi_band)
+        # Read incidence data
+        inc, _, _, _, _ = read_tiff(inc_file, band_index=inc_band)
+    
+        # Read metadata information
+        x_lon, _, x_lat, _, mesh_lon_x, mesh_lat_y = read_tiff_info(phase_file, im_width, im_height)
+    
+        return vel, azi, inc, x_lon, x_lat, mesh_lon_x, mesh_lat_y, im_geotrans, im_proj
 
     def read_from_tiff(self, downsample=1, apply_wavelength_conversion=False, 
                        zero2nan=True, wavelength=None):

@@ -185,11 +185,11 @@ def find_buffer_points(nodes, trace, buffer_distances):
         # Find indices of nodes on either side of the given node within the buffer distance
         left_indices = np.where((trace[:nearest_index, 0] - node[0])**2 + (trace[:nearest_index, 1] - node[1])**2 <= buffer_distance**2)[0]
         right_indices = np.where((trace[nearest_index+1:, 0] - node[0])**2 + (trace[nearest_index+1:, 1] - node[1])**2 <= buffer_distance**2)[0] + nearest_index + 1
-        # If multiple points are found, only return the closest point on each side
+        # If multiple points are found, only return the furthest points within the buffer distance
         if len(left_indices) > 0:
-            buffer_points[i, 0] = trace[left_indices[-1]]
+            buffer_points[i, 0] = trace[left_indices[0]]
         if len(right_indices) > 0:
-            buffer_points[i, 1] = trace[right_indices[0]]
+            buffer_points[i, 1] = trace[right_indices[-1]]
     return buffer_points
 
 
@@ -416,19 +416,44 @@ class AdaptiveTriangularPatches(TriangularPatches):
         
         self.set_bottom_coords(bcoords, lonlat=lonlat)
 
-    def set_top_coords_from_trace(self, discretized=False):
+    def set_top_coords_from_trace(self, discretized=False, sort_axis=0, sort_order=None):
         """
-        Sets the top coordinates from the fault trace.
-
+        Set the top coordinates from the fault trace, with optional sorting.
+    
         Parameters:
-        discretized (bool): If True, uses the discretized fault trace. Otherwise
+        -----------
+        discretized : bool
+            If True, use the discretized fault trace; otherwise, use the original.
+        sort_axis : int, optional
+            Axis to sort by (0 for x, 1 for y). Default is 0.
+        sort_order : str or None, optional
+            'ascend' for ascending, 'descend' for descending, None for no sorting (default).
+    
+        Returns:
+        --------
+        None
         """
         if discretized:
             x, y = self.xi, self.yi
         else:
-            x, y = self.xf, self.yf 
-        z = np.ones_like(x)*self.top
-        self.set_coords(np.vstack((x, y, z)).T, lonlat=False, coord_type='top')
+            x, y = self.xf, self.yf
+        z = np.ones_like(x) * self.top
+        coords = np.vstack((x, y, z)).T
+    
+        # Sorting logic
+        if sort_order is not None:
+            if sort_order == 'ascend':
+                # If the first value is greater than the last, reverse to make ascending
+                if coords[0, sort_axis] > coords[-1, sort_axis]:
+                    coords = coords[::-1]
+            elif sort_order == 'descend':
+                # If the first value is less than the last, reverse to make descending
+                if coords[0, sort_axis] < coords[-1, sort_axis]:
+                    coords = coords[::-1]
+            else:
+                raise ValueError("sort_order must be 'ascend', 'descend', or None")
+    
+        self.set_coords(coords, lonlat=False, coord_type='top')
 
     #--------------------------------------Simply Mesh From Top to Bottom--------------------------------------#
     def discretize_coords(self, coords, every=None, num_segments=None, threshold=2):
@@ -1378,7 +1403,6 @@ class AdaptiveTriangularPatches(TriangularPatches):
         DataFrame: The updated DataFrame containing the coordinates and dips. 
         If buffer nodes and radius are provided, it will contain the buffer node information.
         """
-        # If buffer nodes and radius are provided, find the buffer node segments
         if buffer_nodes is not None and buffer_radius is not None:
             # Convert buffer nodes' lat/lon to x, y coordinates
             buffer_nodes = np.array(buffer_nodes)
@@ -1392,44 +1416,61 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
             # Find points within the buffer zone
             buffer_points = find_buffer_points(buffer_nodes, top_coords, buffer_radius)
+            # print('buffer_nodes:', buffer_nodes)
+            # print('buffer_points:', buffer_points)
     
+            # Sort xydip based on the interpolation axis
+            if interpolation_axis == 'x':
+                sorted_xydip = xydip.sort_values(by='x', ascending=True).reset_index(drop=True)
+                buffer_axis = 0  # x-axis
+            else:
+                sorted_xydip = xydip.sort_values(by='y', ascending=True).reset_index(drop=True)
+                buffer_axis = 1  # y-axis
+            # print('sorted_xydip:', sorted_xydip)
             # Iterate over each buffer node segment
-            for i in range(buffer_nodes.shape[0] - 1):
-                # Get the two endpoints of the current node segment
-                right_buffer_point, left_buffer_point = buffer_points[i][1, :], buffer_points[i+1][0, :]
+            left_buffer_points = buffer_points[:, 0, buffer_axis]
+            right_buffer_points = buffer_points[:, 1, buffer_axis]
     
-                # Select the corresponding coordinates and mask based on the interpolation axis
-                if interpolation_axis == 'x':
-                    segment_mask = (xydip.x >= right_buffer_point[0]) & (xydip.x <= left_buffer_point[0])
-                    segment_coords = xydip[segment_mask].x.values
+            # Ensure xydip is sorted between left and right buffer points
+            buffer_dfs = []
+            for i, (left, right) in enumerate(zip(left_buffer_points, right_buffer_points)):
+                # Filter xydip within the current buffer range
+                if left < right:
+                    left_candidates = sorted_xydip.loc[sorted_xydip[interpolation_axis] <= left]
+                    if not left_candidates.empty:
+                        left_index = left_candidates.index[-1]
+                    else:
+                        left_index = sorted_xydip.loc[sorted_xydip[interpolation_axis] >= left].index[0]
+                    right_index = left_index + 1
                 else:
-                    segment_mask = (xydip.y >= right_buffer_point[1]) & (xydip.y <= left_buffer_point[1])
-                    segment_coords = xydip[segment_mask].y.values
-    
-                # Get the dips for the current node segment
-                segment_dips = xydip[segment_mask].dip.values
-    
-                # Create an interpolation function
-                intp_func = interp1d(segment_coords, segment_dips, kind='nearest', 
-                                     bounds_error=False, fill_value='extrapolate')
-    
-                # Calculate the dips for the buffer nodes
-                left_dip = intp_func(left_buffer_point[0] if interpolation_axis == 'x' else left_buffer_point[1])
-                right_dip = intp_func(right_buffer_point[0] if interpolation_axis == 'x' else right_buffer_point[1])
-                buffer_dips = np.array([left_dip, right_dip])
+                    left_index = sorted_xydip.loc[sorted_xydip[interpolation_axis] <= left].index[-1] + 1
+                    if left_index >= len(sorted_xydip):
+                        left_index = len(sorted_xydip) - 1
+                    right_index = left_index - 1
+                # print((sorted_xydip.loc[:, interpolation_axis] <= left))
+                # print('left_index:', left_index, 'right_index:', right_index)
+                # print('left:', left, 'right:', right)
+                # Assign dips based on the sorted order
+                left_dip = sorted_xydip.iloc[left_index]['dip']
+                right_dip = sorted_xydip.iloc[right_index]['dip']
     
                 # Create a new DataFrame containing the buffer nodes' coordinates and dips
+                right_lon, right_lat = self.xy2ll(buffer_points[i, 1, 0], buffer_points[i, 1, 1])
+                left_lon, left_lat = self.xy2ll(buffer_points[i, 0, 0], buffer_points[i, 0, 1])
                 buffer_df = pd.DataFrame({
-                    'x': [left_buffer_point[0], right_buffer_point[0]],
-                    'y': [left_buffer_point[1], right_buffer_point[1]],
-                    'lon': buffer_nodes_ll[[i, i+1], 0],
-                    'lat': buffer_nodes_ll[[i, i+1], 1],
-                    'dip': buffer_dips
+                    'x': [buffer_points[i, 0, 0], buffer_points[i, 1, 0]],
+                    'y': [buffer_points[i, 0, 1], buffer_points[i, 1, 1]],
+                    'lon': [left_lon, right_lon],
+                    'lat': [left_lat, right_lat],
+                    'dip': [left_dip, right_dip]
                 })
-    
-                # Merge the new DataFrame into xydip and reset the index
-                xydip = pd.concat([xydip, buffer_df]).drop_duplicates().reset_index(drop=True)
 
+                buffer_dfs.append(buffer_df)
+            # Merge the new DataFrame into xydip and reset the index
+            xydip = pd.concat([xydip] + buffer_dfs).drop_duplicates().reset_index(drop=True)
+
+            # print('xydip:', xydip)
+    
         if update_ref:
             self.xydip_ref = xydip
         return xydip
@@ -1483,11 +1524,16 @@ class AdaptiveTriangularPatches(TriangularPatches):
         
         # Read coordinates and dips using the read_coordinates_and_dips function
         xydip = self.read_coordinates_and_dips(xydip, is_utm, method, profiles_to_keep, profiles_to_remove)
+        # print('xydip:', xydip)
+        # print('buffer_nodes:', buffer_nodes)
+        # print('buffer_radius:', buffer_radius)
+        # print('interpolation_axis:', interpolation_axis)
         # Handle buffer nodes and update self.xydip_ref
         xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis, update_ref=update_xydip_ref or not hasattr(self, 'xydip_ref'))
         
         # Save to csv file
-        xydip.to_csv(f'{self.name}_used.csv', index=False, header=True, float_format='%.6f')
+        if save_to_file:
+            xydip.to_csv(f'{self.name}_used.csv', index=False, header=True, float_format='%.6f')
 
         # Interpolation
         if interpolation_axis == 'x':
@@ -1934,10 +1980,6 @@ class AdaptiveTriangularPatches(TriangularPatches):
         x, y = self.ll2xy(dip_info.lon.values, dip_info.lat.values)
         dip_info['xproj'] = x
         dip_info['yproj'] = y
-        # Dip angle transfer to 0~90, and strike angle transfer in order to make dip right hand is positive
-        negative_dip_flag = dip_info.dip_rad < 0
-        dip_info.loc[negative_dip_flag, 'strike_rad'] += np.pi
-        dip_info.loc[negative_dip_flag, 'dip_rad'] = -dip_info.loc[negative_dip_flag, 'dip_rad']
     
         # Calculate the average strike direction if required
         strike_direction = np.array([x[-1] - x[0], y[-1] - y[0]])
@@ -1963,7 +2005,20 @@ class AdaptiveTriangularPatches(TriangularPatches):
                 print(f"Average strike direction: {np.rad2deg(strike_rad):.2f}")
         else:
             strike_rad = dip_info.strike_rad.values
-    
+        
+        # Dip angle transfer to 0~90, and strike angle transfer in order to make dip right hand is positive
+        negative_dip_flag = dip_info.dip_rad < 0
+        
+        # Adjust strike_rad for negative dips
+        dip_info.loc[:, 'strike_rad'] = strike_rad
+        dip_info.loc[negative_dip_flag, 'strike_rad'] += np.pi
+        dip_info.loc[negative_dip_flag, 'dip_rad'] = -dip_info.loc[negative_dip_flag, 'dip_rad']
+        
+        # Ensure strike_rad is within 0-2π (0-360 degrees)
+        dip_info.loc[:, 'strike_rad'] = np.mod(dip_info['strike_rad'], 2 * np.pi)
+        dip_info.loc[:, 'strike'] = np.rad2deg(dip_info['strike_rad'])
+        strike_rad = dip_info.strike_rad.values
+
         # update bottom_coords
         dip_rad = dip_info.dip_rad.values
         width = ((fault_depth - self.top)/sin(dip_rad)).reshape(-1, 1)

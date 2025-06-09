@@ -208,29 +208,98 @@ def plot_displacement_data(displacement_data=None, sigma_data=None,
         plt.savefig(output_file, dpi=300)
         plt.show()
 # -------------------------For 3D SAR Displacements------------------------------#
+def read_tiff_with_metadata(unwfile, band_index=1, factor=1.0, meshout=True):
+    """
+    Read data from a specific band of a TIFF file and retrieve metadata including geotransform,
+    projection, and coordinate mesh grids.
 
-def read_tiff(unwfile):
-    '''
-    Input:
-        * unwfile     : TIFF format image file
-    Output:
-        * im_data     : Data matrix
-        * im_geotrans : Geotransform (origin and pixel size)
-        * im_proj     : Projection parameters
-        * im_width    : Number of columns (pixels)
-        * im_height   : Number of rows (pixels)
-    '''
+    Parameters:
+        unwfile (str): Path to the TIFF file.
+        band_index (int, optional): Band index to read (1-based). Defaults to 1.
+        factor (float, optional): Factor to multiply the data values. Defaults to 1.0.
+        meshout (bool, optional): Whether to output mesh grids for longitude and latitude. Defaults to True.
+
+    Returns:
+        dict: A dictionary containing the following keys:
+            - 'data' (numpy.ndarray): Data matrix of the specified band.
+            - 'geotrans' (tuple): Geotransform (origin and pixel size).
+            - 'proj' (str): Projection parameters.
+            - 'width' (int): Number of columns (pixels).
+            - 'height' (int): Number of rows (pixels).
+            - 'x_lon' (numpy.ndarray): Longitude values along the x-axis.
+            - 'y_lat' (numpy.ndarray): Latitude values along the y-axis.
+            - 'mesh_lon' (numpy.ndarray, optional): Longitude mesh grid (if meshout=True).
+            - 'mesh_lat' (numpy.ndarray, optional): Latitude mesh grid (if meshout=True).
+    """
+    # Read the specified band data and metadata
+    im_data, im_geotrans, im_proj, im_width, im_height = read_tiff(unwfile, band_index=band_index, factor=factor)
+
+    # Get coordinate system and range information
+    if meshout:
+        x_lon, y_step, y_lat, y_step, mesh_lon_x, mesh_lat_y = read_tiff_info(unwfile, im_width, im_height, meshout=meshout)
+    else:
+        x_lon, x_step, y_lat, y_step = read_tiff_info(unwfile, im_width, im_height, meshout=meshout)
+
+    # Convert UTM coordinates to latitude and longitude if necessary
+    if meshout:
+        im_height, im_width = mesh_lon_x.shape
+        mesh_lat, mesh_lon = utm_to_latlon(mesh_lon_x.flatten(), mesh_lat_y.flatten(), im_proj)
+        mesh_lat = mesh_lat.reshape(im_height, im_width)
+        mesh_lon = mesh_lon.reshape(im_height, im_width)
+
+    # Construct the result dictionary
+    result = {
+        'data': im_data,
+        'geotrans': im_geotrans,
+        'proj': im_proj,
+        'width': im_width,
+        'height': im_height,
+        'x_lon': x_lon,
+        'y_lat': y_lat
+    }
+
+    if meshout:
+        result['mesh_lon'] = mesh_lon
+        result['mesh_lat'] = mesh_lat
+
+    return result
+
+
+def read_tiff(unwfile, band_index=1, factor=1.0):
+    """
+    Read a specific band from a TIFF file.
+
+    Parameters:
+        unwfile (str): TIFF format image file.
+        band_index (int, optional): The band index to read (1-based). Defaults to 1.
+        factor (float, optional): Factor to multiply the data values. Defaults to 1.0.
+
+    Returns:
+        tuple: 
+            - im_data (numpy.ndarray): Data matrix of the specified band.
+            - im_geotrans (tuple): Geotransform (origin and pixel size).
+            - im_proj (str): Projection parameters.
+            - im_width (int): Number of columns (pixels).
+            - im_height (int): Number of rows (pixels).
+    """
     dataset = gdal.Open(unwfile, gdal.GA_ReadOnly)  # Open file
+    if dataset is None:
+        raise FileNotFoundError(f"Unable to open file: {unwfile}")
+
     im_width = dataset.RasterXSize  # Number of columns in the raster matrix
     im_height = dataset.RasterYSize  # Number of rows in the raster matrix
     im_bands = dataset.RasterCount  # Number of bands
+
+    if band_index < 1 or band_index > im_bands:
+        raise ValueError(f"Invalid band_index {band_index}. The file has {im_bands} band(s).")
+
     im_geotrans = dataset.GetGeoTransform()  # Affine transform (origin and pixel size)
     im_proj = dataset.GetProjection()  # Map projection information (as a string)
-    im_band = dataset.GetRasterBand(1)
-    # im_data = np.asarray(imread(filename))
-    # The following line has issues with data reading
+    im_band = dataset.GetRasterBand(band_index)  # Get the specified band
     im_data = im_band.ReadAsArray(0, 0, im_width, im_height)  # Store raster image values as a data matrix
-    del dataset
+    im_data *= factor  # Apply the factor to the data
+
+    del dataset  # Close the dataset
     return im_data, im_geotrans, im_proj, im_width, im_height
 
 
@@ -252,13 +321,13 @@ def read_tiff_info(unwfile, im_width, im_height, meshout=True):
     x_step = (x_upperleft - x_lowerright) / im_width
     y_step = -(y_upperleft - y_lowerright) / im_height
     x_lon = np.linspace(x_upperleft, x_lowerright, im_width)
-    x_lat = np.linspace(y_upperleft, y_lowerright, im_height)
+    y_lat = np.linspace(y_upperleft, y_lowerright, im_height)
 
     if meshout:
-        mesh_lon, mesh_lat = np.meshgrid(x_lon, x_lat)
-        return x_lon, y_step, x_lat, y_step, mesh_lon, mesh_lat
+        mesh_lon_x, mesh_lat_y = np.meshgrid(x_lon, y_lat)
+        return x_lon, x_step, y_lat, y_step, mesh_lon_x, mesh_lat_y
     else:
-        return x_lon, x_step, x_lat, y_step
+        return x_lon, x_step, y_lat, y_step
 
 
 def write_tiff(filename, im_proj, im_geotrans, im_data=None):
@@ -323,3 +392,57 @@ def utm_to_latlon(easting, northing, proj_info):
         longitudes[i] = lon
 
     return latitudes, longitudes
+
+
+def save_to_tiff(data, lon, lat, output_file, dtype=gdal.GDT_Float32):
+    """
+    Save a 2D array as a GeoTIFF file.
+
+    Parameters:
+    - data: numpy.ndarray, 2D array to save.
+    - lon: numpy.ndarray, longitude array.
+    - lat: numpy.ndarray, latitude array.
+    - output_file: str, path to the output GeoTIFF file.
+    - dtype: gdal data type, default is gdal.GDT_Float32.
+    """
+    # Ensure lon and lat are numpy arrays
+    lon = np.asarray(lon)
+    lat = np.asarray(lat)
+
+    # Check for NaN or invalid values in lon and lat
+    if np.any(np.isnan(lon)) or np.any(np.isnan(lat)):
+        raise ValueError("Longitude or latitude contains NaN values. Please check the input data.")
+
+    # Ensure lon and lat are 1D arrays
+    if lon.ndim > 1:
+        lon = lon[0, :]  # Take the first row if it's a 2D array
+    if lat.ndim > 1:
+        lat = lat[:, 0]  # Take the first column if it's a 2D array
+
+    # Ensure data is a 2D array
+    if data.ndim != 2:
+        raise ValueError("Data must be a 2D array.")
+
+    nrows, ncols = data.shape
+    if len(lon) != ncols or len(lat) != nrows:
+        raise ValueError("Longitude and latitude dimensions do not match the data dimensions.")
+
+    # Create GeoTIFF file
+    driver = gdal.GetDriverByName('GTiff')
+    dataset = driver.Create(output_file, ncols, nrows, 1, dtype)
+
+    # Set geotransform (top-left corner and pixel size)
+    lon_step = lon[1] - lon[0] if len(lon) > 1 else 0
+    lat_step = lat[1] - lat[0] if len(lat) > 1 else 0
+    geotransform = (lon.min(), lon_step, 0, lat.max(), 0, -lat_step)
+    dataset.SetGeoTransform(geotransform)
+
+    # Set projection (WGS84)
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)  # EPSG:4326 corresponds to WGS84
+    dataset.SetProjection(srs.ExportToWkt())
+
+    # Write data to the GeoTIFF
+    dataset.GetRasterBand(1).WriteArray(data)
+    dataset.FlushCache()
+    print(f"Saved GeoTIFF: {output_file}")

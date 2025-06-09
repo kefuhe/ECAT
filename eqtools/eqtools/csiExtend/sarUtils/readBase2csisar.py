@@ -301,7 +301,8 @@ class ReadBase2csisar(insar):
                 ax = cax
     
             # Plot the raw SAR data
-            im = ax.imshow(rawsar, cmap=cmap, vmin=vmin, vmax=vmax, origin=origin, extent=extent)
+            # im = ax.imshow(rawsar, cmap=cmap, vmin=vmin, vmax=vmax, origin=origin, extent=extent)
+            im = ax.pcolormesh(mesh_lon, mesh_lat, rawsar, cmap=cmap, shading='auto', vmin=vmin, vmax=vmax)
             set_degree_formatter(ax, axis='both')
     
             # Plot faults
@@ -333,6 +334,8 @@ class ReadBase2csisar(insar):
                 ax.text(text_position[0], text_position[1], text, transform=ax.transAxes,
                         fontsize=text_fontsize, color=text_color, verticalalignment='top')
     
+            # Set equatorial aspect ratio
+            ax.set_aspect('equal', adjustable='box')
             # Save or show the figure
             if save_fig:
                 plt.savefig(file_path, dpi=dpi, bbox_inches='tight')
