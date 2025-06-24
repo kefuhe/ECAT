@@ -486,3 +486,66 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                     remove_direction_labels=remove_direction_labels)
                         cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
                                         bbox_inches='tight', mapaxis=None)
+
+
+    def print_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=1.0):
+        """
+        Calculate and print the moment magnitude for the given faults.
+    
+        This method computes the moment magnitude based on the slip and geometry of the faults.
+        It uses a specified shear modulus (mu) and an optional slip factor to scale the slip values.
+        The results are printed to the console.
+    
+        Parameters:
+        - faults (list, optional): List of faults to calculate the moment magnitude for. If None, uses all faults in the self.faults list.
+        - mu (float): Shear modulus used in the calculation (default is 3.e10).
+        - slip_factor (float): Factor to scale the slip values (default is 1.0).
+        """
+        import csi.faultpostproc as faultpp
+    
+        if faults is None:
+            faults = self.faults
+    
+        # Get the first fault's parameters
+        first_fault = faults[0]
+        lon0, lat0, utmzone = first_fault.lon0, first_fault.lat0, first_fault.utmzone
+    
+        # Combine the first fault
+        combined_fault = first_fault.duplicateFault()
+    
+        # Combine the remaining faults
+        for ifault in faults[1:]:
+            for patch, slip in zip(ifault.patch, ifault.slip):
+                combined_fault.N_slip = combined_fault.slip.shape[0] + 1
+                combined_fault.addpatch(patch, slip)
+    
+        # Combine the fault names
+        fault_names = [fault.name for fault in faults]
+        combined_name = '_'.join(fault_names)
+    
+        # Scale the slip
+        combined_fault.slip *= slip_factor
+    
+        # Patches 2 vertices
+        combined_fault.setVerticesFromPatches()
+        combined_fault.numpatch = len(combined_fault.patch)
+    
+        # Compute the triangle areas, moments, moment tensor, and magnitude
+        combined_fault.compute_patch_areas()
+        fault_processor = faultpp(combined_name, combined_fault, mu, lon0=lon0, lat0=lat0, utmzone=utmzone, verbose=False)
+        fault_processor.computeMoments()
+        fault_processor.computeMomentTensor()
+        fault_processor.computeMagnitude()
+    
+        # Print the moment magnitude
+        self.tripproc = fault_processor
+        
+        # Print results based on number of faults
+        if len(faults) == 1:
+            # Single fault
+            print(f'Seismic moment and magnitude of the fault {faults[0].name} is {fault_processor.Mo:.2e} Nm and {fault_processor.Mw:.2f}, respectively.')
+        else:
+            # Multiple faults
+            print(f'Combined seismic moment and magnitude of {len(faults)} faults ({", ".join(fault_names)}) is {fault_processor.Mo:.2e} Nm and {fault_processor.Mw:.2f}, respectively.')
+
+#EOF
