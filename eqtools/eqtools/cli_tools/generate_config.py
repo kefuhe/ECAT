@@ -43,10 +43,40 @@ clipping_options:
 # Parameters related to geodata
 geodata:
   data: null  # Automatically generated from the script
-  verticals: true  # Whether to include vertical data, default true for insar data, optional: (boolean, list of boolean)
-  polys: 3  # Number of polygons, default 3 for insar data, optional: (value, list of values)
+  
+  # Vertical displacement data configuration - multiple formats supported:
+  # 1. Boolean: true (all datasets) or false (none)
+  # 2. List of booleans: [true, true, false] (per-dataset)
+  verticals: true  # Whether to include vertical data, default true for InSAR data
+  
+  # Polynomial correction configuration - multiple formats supported:
+  # 1. null: No polynomial correction for any dataset
+  # 2. Boolean: true (enable default order) or false (disable for all)
+  # 3. Integer: Same polynomial order for all datasets
+  # 4. List of values: [3, null, 1] (per-dataset polynomial orders)
+  # 5. String: polynomial order as string (for compatibility)
+  # 
+  # Recommended values by data type:
+  # - InSAR (SAR): 3 (removes orbital ramps and atmospheric effects)
+  # - GPS: null (high precision, no polynomial needed)
+  # - Optical/Offset (POT/FT): 1 (removes linear trends)
+  # - Other displacement data: 1-2 or 'eulerrotation' (depending on quality)
+  # 
+  # Common usage examples:
+  # polys: null                    # No correction for all datasets
+  # polys: 3                       # Order-3 polynomial for all datasets
+  # polys: [3, null, 1]           # Mixed: SAR=3, GPS=null, Optical=1
+  # polys: true                    # Enable with auto-selected order
+  polys: null  # Default: no polynomial correction
+  
   faults: null  # List of fault names, optional: (null, list of fault name list)
   sigmas:  # Standard deviation of the geodata
+    # Update configuration - multiple formats supported:
+    # 1. Boolean: true (update all) or false (update none)
+    # 2. List of booleans: [true, false, true] (explicit per-dataset)
+    # 3. List of indices: [0, 2] (update datasets at these indices)
+    # 4. List of names: ["sar_a", "sar_c"] (update datasets by name)
+    # 5. Dictionary: {"true_indices": [0, 2]} (legacy format)
     update: true
     initial_value: 0  # Initial value for sigmas, optional: (float, list of floats)
     log_scaled: true  # Whether sigmas are log-scaled

@@ -951,7 +951,7 @@ class opticorr(SourceInv):
         # All done
         return orb
 
-    def computePoly(self, fault, computeNormFact=True):
+    def computePoly(self, fault, computeNormFact=True, verbose=True):
         '''
         Computes the orbital bias estimated in fault
 
@@ -974,7 +974,7 @@ class opticorr(SourceInv):
             params = params[ptype]
 
         # Get the estimator
-        Horb = self.getPolyEstimator(ptype, computeNormFact=computeNormFact)
+        Horb = self.getPolyEstimator(ptype, computeNormFact=computeNormFact, verbose=verbose)
 
         # Compute the polynomial
         tmporbit = np.dot(Horb, params)
@@ -1156,7 +1156,7 @@ class opticorr(SourceInv):
         # All done
         return
 
-    def buildsynth(self, faults, direction='sd', poly=None, vertical=False, custom=False,computeNormFact=True):
+    def buildsynth(self, faults, direction='sd', poly=None, vertical=False, custom=False,computeNormFact=True, verbose=False):
         '''
         Computes the synthetic data using the faults and the associated slip distributions.
 
@@ -1169,6 +1169,7 @@ class opticorr(SourceInv):
             * include_poly  : if a polynomial function has been estimated, include it.
             * custom        : if True, uses the fault.custom and fault.G[data.name]['custom'] to correct
             * computeNormFact : if False, uses TransformNormalizingFactor set with self.setTransformNormalizingFactor
+            * verbose       : if True, enables verbose output
 
         Returns:
             * None
@@ -1231,7 +1232,7 @@ class opticorr(SourceInv):
                     self.up_synth += dc_synth[2*Nd:]
 
             if poly is not None:
-                self.computePoly(fault, computeNormFact=computeNormFact)
+                self.computePoly(fault, computeNormFact=computeNormFact, verbose=verbose)
                 if poly == 'include':
                     self.east_synth += self.east_orbit
                     self.north_synth += self.north_orbit

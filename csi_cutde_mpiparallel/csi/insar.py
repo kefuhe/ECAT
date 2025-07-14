@@ -1594,7 +1594,7 @@ class insar(SourceInv):
         # All done
         return orb
 
-    def computePoly(self, fault, computeNormFact=True):
+    def computePoly(self, fault, computeNormFact=True, verbose=True):
         '''
         Computes the orbital bias estimated in fault
 
@@ -1617,7 +1617,7 @@ class insar(SourceInv):
             params = params[ptype]
 
         # Get the estimator
-        Horb = self.getPolyEstimator(ptype, computeNormFact=computeNormFact)
+        Horb = self.getPolyEstimator(ptype, computeNormFact=computeNormFact, verbose=verbose)
 
         # Compute the polynomial
         self.orbit = np.dot(Horb, params)
@@ -2167,7 +2167,7 @@ class insar(SourceInv):
     # ---------------------------------------------------------------------- 
 
     # ---------------------------------------------------------------------- 
-    def buildsynth(self, faults, direction='sd', poly=None, vertical=True, custom=False, computeNormFact=True, computeIntStrainNormFact=True):
+    def buildsynth(self, faults, direction='sd', poly=None, vertical=True, custom=False, computeNormFact=True, computeIntStrainNormFact=True, verbose=False):
         '''
         Computes the synthetic data using either the faults and the associated slip distributions or the pressure sources.
 
@@ -2180,6 +2180,8 @@ class insar(SourceInv):
             * vertical          : always True. Used here for consistency among data types
             * custom            : if True, uses the fault.custom and fault.G[data.name]['custom'] to correct
             * computeNormFact   : if False, uses TransformNormalizingFactor set with self.setTransformNormalizingFactor
+            * computeIntStrainNormFact : if False, uses TransformInternalStrainNormalizingFactor set with self.setTransformInternalStrainNormalizingFactor
+            * verbose           : if True, enables verbose output
 
         Returns:
             * None
@@ -2242,10 +2244,10 @@ class insar(SourceInv):
                                 self.computeInternalStrain(fault, computeIntStrainNormFact=computeIntStrainNormFact)
                                 self.synth = self.synth + self.IntStrain
                         elif type(sarref) is int:
-                            self.computePoly(fault, computeNormFact=computeNormFact)
+                            self.computePoly(fault, computeNormFact=computeNormFact, verbose=verbose)
                             self.synth = self.synth + self.orbit
                         elif type(sarref) is list:
-                            self.computeTransformation(fault, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
+                            self.computeTransformation(fault, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
                             self.synth = self.synth + self.transformation
 
 

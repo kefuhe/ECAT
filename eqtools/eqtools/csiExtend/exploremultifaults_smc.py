@@ -167,7 +167,13 @@ class explorefault(SourceInv):
         self.ndatas = self.config.ndatas
         self.nfaults = self.config.nfaults
         self.slip_sampling_mode = self.config.slip_sampling_mode
-    
+
+        # Initialize sigma values
+        self._sigma_update_mask = np.array(self.sigmas['update']) # mask for which sigmas to update
+        self._sigma_initial = np.array(self.sigmas['values'], dtype=np.float64) # initial sigma values
+        self._sigma_update_indices = np.where(self._sigma_update_mask)[0] # indices of sigma to be updated
+        self._sigma_update_flag = np.any(self._sigma_update_mask) # whether any sigma is to be updated
+
     def build_fault_params(self, samples, fault_name):
         '''
         Build the parameters for a fault.
@@ -342,17 +348,17 @@ class explorefault(SourceInv):
             if not hasattr(self, 'sigmas') or len(self.sigmas)==0:
                 self.sigmas = {}
         
-        if self.sigmas['update']:
+        if self._sigma_update_flag:
             self.param_keys['sigmas'] = []
             self.param_index['sigmas'] = []
             ndatas = self.sigmas['ndatas']
-            self.sigmas_index = [len(self.Priors)+i for i in range(ndatas)]
-            self.sigmas_keys = ['sigma_{}'.format(i) for i in range(ndatas)]
-            for i in range(ndatas):
+            self.sigmas_index = [len(self.Priors)+i for i in range(len(self._sigma_update_indices))] # ?
+            self.sigmas_keys = ['sigma_{}'.format(i) for i in self._sigma_update_indices]
+            for i in range(len(self._sigma_update_indices)): # range(ndatas)
                 self.param_keys['sigmas'].append(i)
                 self.param_index['sigmas'].append(len(self.Priors)+i)
             bound = self.sigmas['bounds']
-            for i in range(ndatas):
+            for i in range(len(self._sigma_update_indices)): # range(ndatas)
                 ibound = bound['defaults'] if self.sigmas_keys[i] not in bound else bound[self.sigmas_keys[i]]
                 if ibound[0] == 'Normal':
                     # Use scipy's normal distribution instead of numpy's
@@ -365,7 +371,8 @@ class explorefault(SourceInv):
                 args = ibound[1:]
                 pm_func = function(*args)
                 self.Priors.append(pm_func)
-                ikey = f'sigma_{i}'
+                # ikey = f'sigma_{i}'
+                ikey = f'sigma_{self._sigma_update_indices[i]}'
                 initialSample.setdefault(ikey, pm_func.rvs())  # draw a sample for the initial sample
                 initSampleVec.append(initialSample[ikey])
                 # initSampleVec.append(pm_func.rvs())
@@ -518,7 +525,14 @@ class explorefault(SourceInv):
                 return -np.inf
             else:
                 log_likelihood = 0
-                sigmas = self.sigmas_values if not self.sigmas['update'] else samples[self.sigmas_index]
+                # Extract sigmas values if to be updated
+                if not self._sigma_update_flag:
+                    sigmas = self._sigma_initial
+                else:
+                    sigmas = self._sigma_initial.astype(np.float64, copy=True)
+                    sigmas[self._sigma_update_indices] = samples[self.sigmas_index]
+                # print(f"sigmas: {sigmas}, sigmas_position: {self.sigmas_index}, _sigma_update_indices: {self._sigma_update_indices}")
+                # If log_scaled, convert sigmas to log scale
                 sigmas = np.power(10, np.array(sigmas)) if self.sigmas['log_scaled'] else np.array(sigmas)
                 for i, (data, dobs, Cd_inv, logCd_det, vertical) in enumerate(self.Likelihoods):
                     # Determine the faults to use for this dataset
@@ -663,7 +677,7 @@ class explorefault(SourceInv):
             specs['reference'] = np.array(samples[self.param_index['reference']])
 
         # Extract the sigmas
-        if self.sigmas['update']:
+        if self._sigma_update_flag:
             specs['sigmas'] = np.array(samples[self.sigmas_index])
 
         # Save the desired model 
@@ -714,8 +728,8 @@ class explorefault(SourceInv):
         # Write the sigmas values if they are updated
         if 'sigmas' in self.model_dict[model]:
             output.append("Sigmas:")
-            for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
-                isigma_name = data.name
+            for update_idx, sigma_value in zip(self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
+                isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
                 output.append(f"  {isigma_name}: {sigma_value}")
             output.append("")
 
@@ -757,8 +771,8 @@ class explorefault(SourceInv):
     
             if 'sigmas' in self.model_dict['std']:
                 output.append("Sigmas (std):")
-                for data, sigma_name, sigma_value in zip(self.datas, self.param_keys['sigmas'], self.model_dict['std']['sigmas']):
-                    isigma_name = data.name
+                for update_idx, sigma_value in zip(self.param_keys['sigmas'], self.model_dict['std']['sigmas']):
+                    isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
                     output.append(f"  {isigma_name}: {sigma_value}")
                 output.append("")
     
@@ -1245,8 +1259,9 @@ class explorefault(SourceInv):
                 print(f"  {key}: {self.param_index['reference'][ikey]}")
         if 'sigmas' in self.param_keys:
             print('Sigmas:')
-            for ikey, key in enumerate(self.param_keys['sigmas']):
-                iname = 'data_{}'.format(ikey) if self.datas is None else self.datas[ikey].name
+            for ikey in self.param_keys['sigmas']:
+                idata = self._sigma_update_indices[ikey]
+                iname = 'data_{}'.format(idata) if self.datas is None else self.datas[idata].name
                 print(f"  {iname}: {self.param_index['sigmas'][ikey]}")
 
     def guess_initial_dimensions_and_slip(self, magnitude, fault_type='SS'):

@@ -3172,7 +3172,7 @@ class gps(SourceInv):
         return
 
     # ---------------------------------------------------------------------- 
-    def buildsynth(self, faults, direction='sd', poly=None, vertical=True, custom=False, computeNormFact=True, computeIntStrainNormFact=True):
+    def buildsynth(self, faults, direction='sd', poly=None, vertical=True, custom=False, computeNormFact=True, computeIntStrainNormFact=True, verbose=False):
         '''
         Takes the slip model in each of the faults and builds the synthetic displacement using the Green's functions.
 
@@ -3184,6 +3184,7 @@ class gps(SourceInv):
             * vertical      : True/False
             * include_poly  : if a polynomial function has been estimated, include it.
             * custom        : if some custom green's function was used, include it.
+            * verbose       : if True, enables verbose output
 
         Returns:
             * None
@@ -3362,7 +3363,7 @@ class gps(SourceInv):
                         if len(gpsref)==3:
                             self.synth += gpsref[2]
                     elif type(gpsref) is list:
-                        self.computeTransformation(fault, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact)
+                        self.computeTransformation(fault, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
                         self.synth = self.synth + self.transformation
 
         # All done
@@ -3434,7 +3435,7 @@ class gps(SourceInv):
             z = self.vel_enu
         elif data == 'synth':
             z = self.synth
-        elif data == 'res':
+        elif data  in ('res', 'resid', 'residuals'):
             z = self.vel_enu - self.synth
         elif data == 'strain':
             z = self.Strain

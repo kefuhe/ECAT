@@ -29,7 +29,7 @@ slip_sampling_mode: 'mag_rake'  # 'mag_rake' for magnitude and rake, 'ss_ds' for
 clipping_options:
   enabled: false  # Whether to perform clipping
   method: 'lon_lat_range'  # Clipping method (e.g., 'lon_lat_range')
-  lon_lat_range: [-119.0, -117.0, 34.0, 36.0]  # [lon_min, lon_max, lat_min, lat_max]
+    lon_lat_range: [-119.0, -117.0, 34.0, 36.0]  # [lon_min, lon_max, lat_min, lat_max]
 
 # ----------- Bounds Settings ----------- #
 # Define parameter bounds for faults
@@ -71,6 +71,12 @@ geodata:
       defaults: [Uniform, -200.0, 400.0]  # Default polynomial correction bounds
   faults: null  # Fault names for each geodata (e.g., [null, null, null, null])
   sigmas:  # Standard deviations for geodata
+    # Update configuration - multiple formats supported:
+    # 1. Boolean: true (update all) or false (update none)
+    # 2. List of booleans: [true, false, true] (explicit per-dataset)
+    # 3. List of indices: [0, 2] (update datasets at these indices)
+    # 4. List of names: ["sar_a", "sar_c"] (update datasets by name)
+    # 5. Dictionary: {"true_indices": [0, 2]} (legacy format)
     update: true  # Whether to update sigmas during inversion
     bounds:
       defaults: [Uniform, -3.0, 6.0]  # Default bounds for sigmas

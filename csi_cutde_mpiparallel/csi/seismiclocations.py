@@ -961,18 +961,30 @@ class seismiclocations(SourceInv):
         # All done
         return
 
-    def fitBvalue(self, b=None):
+    def fitBvalue(self, method='mle', min_mag=None, bin_width=0.1, delta_mag=0):
         '''
-        Fits a B-value to a Gutemberg-Righter distribution.
-        option: if b is provided, then the fit is forced to have a slope b.
-
-        :Note: This method has not been implemented
+        Estimate Gutenberg-Richter b-value using Maximum Likelihood Estimation (MLE) or Least Squares (LS).
+    
+        Args:
+            mags      : array-like, earthquake magnitudes
+            method    : 'mle' or 'ls', fitting method ('mle' for maximum likelihood, 'ls' for least squares)
+            min_mag   : minimum magnitude to include (default: minimum in mags)
+            bin_width : bin width for least squares method (default: 0.1)
+            delta_mag : delta magnitude for MLE method (default: 0)
+    
+        Returns:
+            b_value   : estimated b-value
         '''
-
-        raise NotImplementedError('not yet implemented')
-
-        # All done
-        return
+        if method == 'mle':
+            from seismo_tools import calc_b_value_mle
+            b = calc_b_value_mle(self.mag, min_mag=min_mag, delta_mag=delta_mag)
+            return b
+        elif method == 'ls':
+            from seismo_tools import calc_b_value_least_squares
+            b, a, fit_params = calc_b_value_least_squares(self.mag, bin_width=bin_width, fit_min_mag=min_mag)
+            return b, a, fit_params
+        else:
+            raise ValueError("Method must be 'mle' or 'ls'.")
 
     def distance2fault(self, faults, distance=5.):
         '''
@@ -3077,4 +3089,90 @@ class seismiclocations(SourceInv):
     
         # All done
         return
+    
+    def plot_epicenter_combo(
+        self, xlim=None, ylim=None,
+        show_kde=True, show_hist=True, bins=50, kde_levels=5,
+        style=['science', 'no-latex'], figsize=None, plot_style=None,
+        title="Epicenter Distribution (with Density)", save_path=None
+    ):
+        '''
+        Plots the epicenter distribution with optional KDE and histogram.
+
+        Args:
+            * xlim          : Limits for the x-axis.
+            * ylim          : Limits for the y-axis.
+            * show_kde      : Whether to show the KDE plot. Default is True.
+            * show_hist     : Whether to show the histogram. Default is True.
+            * bins          : Number of bins for the histogram. Default is 50.
+            * kde_levels    : Number of levels for the KDE contour plot. Default is 5.
+            * style         : Style for the plot. Default is ['science', 'no-latex'].
+            * figsize       : Size of the figure. Default is None.
+            * plot_style    : Additional style parameters for the sci_plot_style plot. Default is None.
+            * title         : Title of the plot. Default is "Epicenter Distribution (with Density)".
+            * save_path     : Path to save the figure. Default is None.
+
+        Returns:
+            * None
+        '''
+
+        from seismo_tools import plot_epicenter_combo
+        # Call the plot_epicenter_combo function from seismo_tools
+        plot_epicenter_combo(
+            self.lon, self.lat, xlim=xlim, ylim=ylim,
+            show_kde=show_kde, show_hist=show_hist, bins=bins, kde_levels=kde_levels,
+            style=style, figsize=figsize, plot_style=plot_style,
+            title=title, save_path=save_path
+        )
+    
+    def plot_mag_and_cumulative(self, style=['science', 'no-latex'], figsize='double', plot_style=None,
+                                title="Time-Magnitude Stick Plot & Cumulative Number", save_path=None):
+        """
+        Plots the time-magnitude stick plot and cumulative number of earthquakes.
+        Args:
+            * style         : Style for the plot. Default is ['science', 'no-latex'].
+            * figsize       : Size of the figure. Default is 'double'.
+            * plot_style    : Additional style parameters for the sci_plot_style plot. Default is None.
+            * title         : Title of the plot. Default is "Time-Magnitude Stick Plot & Cumulative Number".
+            * save_path     : Path to save the figure. Default is None.
+        Returns:
+            * None
+        """
+        from seismo_tools import plot_mag_and_cumulative
+        # Call the plot_mag_and_cumulative function from seismo_tools
+        plot_mag_and_cumulative(
+            self.time, self.mag, style=style, figsize=figsize,
+            plot_style=plot_style, title=title, save_path=save_path
+        )
+    
+    def plot_gutenberg_richter(
+        self, bin_width=0.1, fit_min_mag=None, fit_method="ls", delta_mag=0.0,
+        style=['science'], figsize=None, plot_style=None,
+        title="Gutenberg-Richter (logN-M) Relation", save_path=None
+    ):
+        """
+        Plots the Gutenberg-Richter relation for the earthquake catalog.
+        
+        Args:
+            * bin_width     : Width of the bins for the histogram. Default is 0.1.
+            * fit_min_mag   : Minimum magnitude for fitting the Gutenberg-Richter relation. Default is None.
+            * fit_method    : Method for fitting the relation. Default is "ls" (least squares).
+            * delta_mag     : Offset to apply to the magnitudes. Default is 0.0.
+            * style         : Style for the plot. Default is ['science'].
+            * figsize       : Size of the figure. Default is None.
+            * plot_style    : Additional style parameters for the sci_plot_style plot. Default is None.
+            * title         : Title of the plot. Default is "Gutenberg-Richter (logN-M) Relation".
+            * save_path     : Path to save the figure. Default is None.
+
+        Returns:
+            * None
+        """
+        from seismo_tools import plot_gutenberg_richter
+        # Call the plot_gutenberg_richter function from seismo_tools
+        plot_gutenberg_richter(
+            self.mag, bin_width=bin_width, fit_min_mag=fit_min_mag,
+            fit_method=fit_method, delta_mag=delta_mag,
+            style=style, figsize=figsize, plot_style=plot_style,
+            title=title, save_path=save_path
+        )
 # EOF

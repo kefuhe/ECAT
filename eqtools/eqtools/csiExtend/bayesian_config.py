@@ -8,6 +8,9 @@ from csi.gps import gps
 from csi.insar import insar
 # from .bayesian_multifaults_inversion import MyMultiFaultsInversion
 
+# Import utility functions for parsing configuration updates
+from .config_utils import parse_update, parse_initial_values
+
 
 class BaseBayesianConfig:
     def __init__(self, config_file='default_config.yml', geodata=None, encoding='utf-8', verbose=False):
@@ -35,8 +38,8 @@ class BaseBayesianConfig:
         self.geodata['sigmas'] = value
         # Check 'update' is in sigmas and is a boolean
         if 'update' not in self.geodata['sigmas']:
-            self.geodata['sigmas']['update'] = True
-        elif not isinstance(self.geodata['sigmas']['update'], bool):
+            self.geodata['sigmas']['update'] = [True] * len(self.geodata.get('data', []))
+        elif not all(isinstance(item, bool) for item in self.geodata['sigmas']['update']):
             raise ValueError("The 'update' parameter in sigmas must be a boolean")
         
         # Check 'log_scaled' is in sigmas and is a boolean
@@ -195,6 +198,27 @@ class explorefaultConfig(BaseBayesianConfig):
 
         if config_file:
             self.load_config(config_file, geodata=geodata)
+        
+        # Parse the 'update' parameter in sigmas
+        # Added by kfhe at 07/11/2025
+        n_datasets = len(self.geodata.get('data', []))
+        data_names = [d.name for d in self.geodata.get('data', [])]
+        # parsed_update = parse_update(self.geodata['sigmas'], n_datasets, param_name='update', 
+        #                                 dataset_names=data_names)
+        # self.geodata['sigmas']['update'] = parsed_update
+        # print(f"Parsed update for sigmas: {self.geodata['sigmas']['update']}")
+        
+        # Parse initial values using the new generic function
+        parsed_initial_values = parse_initial_values(
+            self.geodata['sigmas'],
+            n_datasets,
+            param_name='values',  # initial_value or 'values'
+            default_value=0.01,
+            min_value=0.0,
+            dataset_names=data_names
+        )
+        self.geodata['sigmas']['values'] = parsed_initial_values
+        # print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['values']}")
 
     def load_config(self, config_file, geodata=None):
         with open(config_file, 'r') as f:
@@ -215,6 +239,15 @@ class explorefaultConfig(BaseBayesianConfig):
 
         self._update_geodata(geodata)
         self._validate_verticals()
+
+        # Parse the 'update' parameter in sigmas
+        n_datasets = len(self.geodata.get('data', []))
+        data_names = [d.name for d in self.geodata.get('data', [])]
+        parsed_update = parse_update(self.geodata['sigmas'], n_datasets, param_name='update', 
+                                        dataset_names=data_names)
+        self.geodata['sigmas']['update'] = parsed_update
+        # print(f"Parsed update for sigmas: {self.geodata['sigmas']['update']}")
+
         self._set_geodata_attributes()
         self.update_polys_estimate_and_boundaries()
         self._select_data_sets()
@@ -361,6 +394,27 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         # Set the alphaFaults based on the alpha configuration
         self.set_alpha_faults(alphaFaults)
 
+        # Parse the 'update' parameter in sigmas
+        # Added by kfhe at 07/11/2025
+        n_datasets = len(self.geodata.get('data', []))
+        data_names = [d.name for d in self.geodata.get('data', [])]
+        parsed_update = parse_update(self.geodata['sigmas'], n_datasets, param_name='update', 
+                                        dataset_names=data_names)
+        self.geodata['sigmas']['update'] = parsed_update
+        # print(f"Parsed update for sigmas: {self.geodata['sigmas']['update']}")
+
+        # Parse initial values using the new generic function
+        parsed_initial_values = parse_initial_values(
+            self.geodata['sigmas'],
+            n_datasets,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.01,
+            min_value=0.0,
+            dataset_names=data_names
+        )
+        self.geodata['sigmas']['initial_value'] = parsed_initial_values
+        # print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['initial_value']}")
+
         if self.clipping_options.get('enabled', False):
             self._initialize_faults_and_assemble_data()
         if multifaults is None:
@@ -371,36 +425,60 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
     
     def _validate_polys(self, polys):
         """
-        Validate and initialize the 'polys' parameter in the geodata configuration.
-    
-        If the user sets 'polys' to None or does not provide this parameter, it indicates that
-        polynomial corrections will not be estimated for the geodata. The method ensures that
-        the 'polys' parameter is properly initialized and consistent with the length of the geodata.
-    
+        Parse and validate the 'polys' parameter from geodata configuration with enhanced flexibility.
+        
         Parameters:
-        polys (list, int, str, or None): The 'polys' parameter provided by the user. It can be:
-            - None: Indicates no polynomial corrections will be estimated.
-            - A list: Specifies the polynomial correction settings for each geodata.
-            - An integer or string: A single value applied to all geodata.
-    
+        -----------
+        polys : int, str, list, or None
+            The 'polys' parameter provided by the user. Multiple formats supported:
+            - None: No polynomial corrections will be estimated for any dataset
+            - int/str: Single polynomial order applied to all datasets
+            - list: Polynomial settings for each dataset individually
+        
+        Examples:
+        ---------
+        >>> _validate_polys(None)  # No polynomial corrections
+        geodata['polys'] = [None, None, None]
+        
+        >>> _validate_polys(3)  # Polynomial order 3 for all datasets
+        geodata['polys'] = [3, 3, 3]
+        
+        >>> _validate_polys([3, None, 1])  # Per-dataset settings
+        geodata['polys'] = [3, None, 1]
+        
         Raises:
-        ValueError: If the length of the 'polys' list does not match the length of the geodata.
+        -------
+        ValueError: If the length of the 'polys' list does not match the number of datasets
         """
-        if 'polys' not in self.geodata or self.geodata['polys'] is None:
-            self.geodata['polys'] = polys if polys else []
-        if not self.geodata['polys']:
-            for data in self.geodata['data']:
+        # Get current polys configuration safely, default to input parameter or empty list
+        current_polys = self.geodata.get('polys')
+        if current_polys is None:
+            self.geodata['polys'] = polys if polys is not None else []
+        
+        # If polys is still empty/None, set default based on data types
+        if not self.geodata.get('polys'):
+            self.geodata['polys'] = []
+            for data in self.geodata.get('data', []):
                 if data.dtype == 'insar':
-                    self.geodata['polys'].append(None)  # Indicates no polynomial correction for this data
+                    self.geodata['polys'].append(None)  # No polynomial correction for InSAR by default
                 else:
-                    self.geodata['polys'].append(None)
-    
-        if isinstance(self.geodata['polys'], list):
-            if len(self.geodata['polys']) != len(self.geodata['data']):
-                raise ValueError("Length of 'polys' list must be equal to the length of 'data'")
-        elif isinstance(self.geodata['polys'], (int, str, type(None))):
-            self.geodata['polys'] = [self.geodata['polys']] * len(self.geodata['data'])
-    
+                    self.geodata['polys'].append(None)  # No polynomial correction for other data types
+        
+        # Handle different input formats
+        polys_config = self.geodata.get('polys', [])
+        n_datasets = len(self.geodata.get('data', []))
+        
+        if isinstance(polys_config, list):
+            # List format - validate length matches number of datasets
+            if len(polys_config) != n_datasets:
+                raise ValueError(f"Length of 'polys' list ({len(polys_config)}) must equal the number of datasets ({n_datasets})")
+        elif isinstance(polys_config, (int, str, type(None))):
+            # Single value format - expand to all datasets
+            self.geodata['polys'] = [polys_config] * n_datasets
+        else:
+            raise ValueError(f"'polys' must be None, int, str, or list, got {type(polys_config)}")
+        # print(f"Polys configuration set to: {self.geodata['polys']}")
+
     @property
     def alphaFaults(self):
         return self.alpha.get('faults')
@@ -719,7 +797,7 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         # Initialize alpha with default values
         self.alpha = {
             'enabled': True,
-            'update': True,
+            'update': False,
             'initial_value': 0.0,
             'log_scaled': True,
             'faults': None
