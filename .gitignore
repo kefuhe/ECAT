@@ -4,6 +4,7 @@ dependencies/
 # Ignore build and csi.egg-info folders in csi_cutde_mpiparallel
 csi_cutde_mpiparallel/build/
 csi_cutde_mpiparallel/csi.egg-info/
+csi_cutde_mpiparallel/csi/__pycache__/
 
 # Ignore build and eqtools.egg-info folders in eqtools
 eqtools/build/
