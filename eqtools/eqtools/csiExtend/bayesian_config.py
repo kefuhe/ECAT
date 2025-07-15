@@ -13,9 +13,10 @@ from .config_utils import parse_update, parse_initial_values
 
 
 class BaseBayesianConfig:
-    def __init__(self, config_file='default_config.yml', geodata=None, encoding='utf-8', verbose=False):
+    def __init__(self, config_file='default_config.yml', geodata=None, encoding='utf-8', verbose=False, parallel_rank=None):
         self.verbose = verbose
-        if verbose:
+        self.parallel_rank = parallel_rank # Rank for parallel processing, if applicable
+        if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
             self._print_initialization_message()
 
         self.config_file = config_file
@@ -187,8 +188,8 @@ class BaseBayesianConfig:
 
 
 class explorefaultConfig(BaseBayesianConfig):
-    def __init__(self, config_file=None, geodata=None, verbose=False):
-        super().__init__(config_file=config_file, geodata=geodata, verbose=verbose)
+    def __init__(self, config_file=None, geodata=None, verbose=False, parallel_rank=None):
+        super().__init__(config_file=config_file, geodata=geodata, verbose=verbose, parallel_rank=parallel_rank)
         self.bounds = {}
         self.initial = {} # Initial parameters for each fault
         self.fixed_params = {} # Fixed parameters for each fault
@@ -309,13 +310,14 @@ class explorefaultConfig(BaseBayesianConfig):
 class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
     def __init__(self, config_file='default_config.yml', multifaults=None, geodata=None, 
                  verticals=None, polys=None, dataFaults=None, alphaFaults=None, faults_list=None,
-                 gfmethods=None, slip_sampling_mode='ss_ds', bayesian_sampling_mode='SMC_F_J', encoding='utf-8', verbose=False, **kwargs):
+                 gfmethods=None, slip_sampling_mode='ss_ds', bayesian_sampling_mode='SMC_F_J', encoding='utf-8', 
+                 verbose=False, parallel_rank=None, **kwargs):
         """
         Initialize the BayesianMultiFaultsInversionConfig object.
         """
         from .bayesian_multifaults_inversion import MyMultiFaultsInversion
 
-        super().__init__(config_file, geodata=geodata, verbose=verbose)
+        super().__init__(config_file, geodata=geodata, verbose=verbose, parallel_rank=parallel_rank)
         self.multifaults = multifaults # Multifaults object for the inversion
         self.bayesian_sampling_mode = bayesian_sampling_mode # Bayesian sampling mode, default is SMC_F_J, other options are FULLSMC
         self.use_bounds_constraints = True # Use bounds constraints for the inversion, only for SMC_F_J mode
@@ -419,6 +421,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self._initialize_faults_and_assemble_data()
         if multifaults is None:
             self._initialize_faults_and_assemble_data()
+            verbose = self.verbose and (self.parallel_rank is None or self.parallel_rank == 0)
             multifaults = MyMultiFaultsInversion('myfault', self.faults_list, verbose=verbose)
             multifaults.assembleGFs() # assemble the Green's functions because the data is already assembled
             self.multifaults = multifaults
@@ -531,7 +534,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                 else:
                     raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
             elif 'rake_angle' in config_data:
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
     
         # Get the default parameters
@@ -577,23 +580,27 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             if fault_name not in self.faults:
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
     
         # Remove faults not in faultnames from config_data and self.faults
         for fault_name in list(config_data['faults'].keys()):
             if fault_name != 'defaults' and fault_name not in self.faultnames:
                 del config_data['faults'][fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
     
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
     
+        # Set the attributes based on the key-value pairs in config_data
         self.set_attributes(**config_data)
+
+        # Validate fault configurations
+        self._validate_fault_configurations()
 
     def _process_fixed_nodes(self, fault_parameters):
         # Make sure the fixed nodes are in the correct format
@@ -771,6 +778,95 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self.alphaFaultsIndex = [fault_index_map[fault] for fault in self.faultnames]
         self.alpha['faults_index'] = self.alphaFaultsIndex
 
+    def _validate_fault_configurations(self):
+        """
+        Validate fault configurations for smoothing bounds and geometry sample positions.
+        
+        1. All faults' update_Laplacian bounds must only contain 'free' and 'locked', with length 4
+        2. All geometry-updating faults' sample_positions must form a complete 0-n sequence union
+        """
+        
+        # 1. Validate smoothing bounds
+        valid_bounds = {'free', 'locked'}
+        
+        for fault_name, fault_config in self.faults.items():
+            laplacian_config = fault_config.get('method_parameters', {}).get('update_Laplacian', {})
+            bounds = laplacian_config.get('bounds')
+            
+            # Handle null bounds - expand to ['free', 'free', 'free', 'free']
+            if bounds is None:
+                laplacian_config['bounds'] = ['free', 'free', 'free', 'free']
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                    print(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
+            else:
+                # Validate bounds format
+                if not isinstance(bounds, list) or len(bounds) != 4:
+                    raise ValueError(f"Fault '{fault_name}': bounds must be a list of length 4, got {bounds}")
+                
+                # Validate bounds values
+                invalid_bounds = set(bounds) - valid_bounds
+                if invalid_bounds:
+                    raise ValueError(f"Fault '{fault_name}': bounds can only contain 'free' and 'locked', "
+                                   f"found invalid values: {list(invalid_bounds)}")
+        
+        # 2. Validate geometry sample positions
+        geometry_updating_faults = []
+        all_sample_positions = set()
+        
+        for fault_name, fault_config in self.faults.items():
+            geometry_config = fault_config.get('geometry', {})
+            update_geometry = geometry_config.get('update', False)
+            
+            if update_geometry:
+                sample_positions = geometry_config.get('sample_positions', [0, 0])
+                
+                # Validate sample_positions format
+                if not isinstance(sample_positions, list) or len(sample_positions) != 2:
+                    raise ValueError(f"Fault '{fault_name}': sample_positions must be a list of length 2, "
+                                   f"got {sample_positions}")
+                
+                start, end = sample_positions
+                if not isinstance(start, int) or not isinstance(end, int):
+                    raise ValueError(f"Fault '{fault_name}': sample_positions must contain integers, "
+                                   f"got {sample_positions}")
+                
+                if start > end:
+                    raise ValueError(f"Fault '{fault_name}': sample_positions start ({start}) "
+                                   f"cannot be greater than end ({end})")
+                
+                # Check if this fault actually updates geometry (end > start)
+                if end > start:
+                    geometry_updating_faults.append(fault_name)
+                    # Add all positions in the range to the set
+                    all_sample_positions.update(range(start, end))
+        
+        # Validate that sample_positions form a complete 0-n sequence
+        if geometry_updating_faults:
+            if not all_sample_positions:
+                raise ValueError("No valid geometry sample positions found in geometry-updating faults")
+            
+            min_pos = min(all_sample_positions)
+            max_pos = max(all_sample_positions)
+            expected_positions = set(range(min_pos, max_pos + 1))
+            
+            # Check if starting from 0
+            if min_pos != 0:
+                raise ValueError(f"Geometry sample positions must start from 0, but starts from {min_pos}")
+            
+            # Check if positions form a complete sequence
+            missing_positions = expected_positions - all_sample_positions
+            if missing_positions:
+                raise ValueError(f"Geometry sample positions must form a complete sequence, "
+                               f"missing positions: {sorted(missing_positions)}")
+            
+            # Check if n > 0 (at least one position)
+            if max_pos == 0:
+                raise ValueError("Geometry sample positions must have n > 0 (at least position 0 and 1)")
+            
+            if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                print(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
+                      f"sample positions [0, {max_pos+1}) complete")
+
 
 class BoundLSEInversionConfig(BaseBayesianConfig):
     def __init__(self, config_file='default_config.yml', multifaults=None, geodata=None, 
@@ -829,6 +925,8 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         self._select_data_sets()
         # Validate the polys
         self._validate_polys(polys)
+        # Validate the Laplacian bounds
+        self._validate_laplacian_bounds()
 
         # Update the GFs parameters based on the geodata and verticals
         self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
@@ -879,7 +977,37 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
                 raise ValueError("Length of 'polys' list must be equal to the length of 'data'")
         elif isinstance(self.geodata['polys'], (int, str, type(None))):
             self.geodata['polys'] = [self.geodata['polys']] * len(self.geodata['data'])
-    
+
+    def _validate_laplacian_bounds(self):
+        """
+        Validate fault configurations for smoothing bounds.
+        
+        All faults' update_Laplacian bounds must only contain 'free' and 'locked', with length 4
+        """
+        
+        # 1. Validate smoothing bounds
+        valid_bounds = {'free', 'locked'}
+        
+        for fault_name, fault_config in self.faults.items():
+            laplacian_config = fault_config.get('method_parameters', {}).get('update_Laplacian', {})
+            bounds = laplacian_config.get('bounds')
+            
+            # Handle null bounds - expand to ['free', 'free', 'free', 'free']
+            if bounds is None:
+                laplacian_config['bounds'] = ['free', 'free', 'free', 'free']
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                    print(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
+            else:
+                # Validate bounds format
+                if not isinstance(bounds, list) or len(bounds) != 4:
+                    raise ValueError(f"Fault '{fault_name}': bounds must be a list of length 4, got {bounds}")
+                
+                # Validate bounds values
+                invalid_bounds = set(bounds) - valid_bounds
+                if invalid_bounds:
+                    raise ValueError(f"Fault '{fault_name}': bounds can only contain 'free' and 'locked', "
+                                f"found invalid values: {list(invalid_bounds)}")
+
     @property
     def alphaFaults(self):
         return self.alpha.get('faults')
@@ -947,20 +1075,20 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             if fault_name not in self.faults:
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
     
         # Remove faults not in faultnames from config_data and self.faults
         for fault_name in list(config_data['faults'].keys()):
             if fault_name != 'defaults' and fault_name not in self.faultnames:
                 del config_data['faults'][fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
 
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
-                if self.verbose:
+                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
                     print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
 
         self.set_attributes(**config_data)

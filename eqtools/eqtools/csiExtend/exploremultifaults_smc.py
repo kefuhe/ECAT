@@ -82,14 +82,15 @@ class explorefault(SourceInv):
 
     def __init__(self, name, mode=None, num_faults=None, utmzone=None, 
                     ellps='WGS84', lon0=None, lat0=None, 
-                    verbose=True, fixed_params=None, config_file='default_config.yml', geodata=None):
+                    verbose=True, fixed_params=None, config_file='default_config.yml', geodata=None, parallel_rank=None):
 
+        self.verbose = verbose
+        self.parallel_rank = parallel_rank if parallel_rank is not None else MPI.COMM_WORLD.Get_rank()
         # Initialize the fault
-        if verbose:
+        if self.verbose and self.parallel_rank == 0:
             print ("---------------------------------")
             print ("---------------------------------")
             print ("Initializing fault exploration {}".format(name))
-        self.verbose = verbose
 
         # Base class init
         if lon0 is None or lat0 is None:

@@ -113,7 +113,7 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     min_value : float, optional
         Minimum allowed value. Default is None (no minimum check)
     dataset_names : list, optional
-        List of dataset names for validation (currently unused but for future extension)
+        List of dataset names for name-based indexing
     
     Returns:
     --------
@@ -136,6 +136,10 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     
     >>> parse_initial_values({"initial_value": 0}, 3)
     [0.0, 0.0, 0.0]
+    
+    >>> parse_initial_values({"initial_value": {"sar_a": 0.01, "sar_c": 0.02}}, 3, 
+    ...                     dataset_names=["sar_a", "sar_b", "sar_c"])
+    [0.01, 0.0, 0.02]
     """
     initial_value = config.get(param_name)
     
@@ -161,8 +165,26 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
         
         return processed_values
     
+    # Handle dictionary format (dataset names to values mapping)
+    elif isinstance(initial_value, dict):
+        if dataset_names is None:
+            raise ValueError(f"Dataset names must be provided when using dictionary format for '{param_name}'")
+        
+        processed_values = []
+        for i, dataset_name in enumerate(dataset_names):
+            if dataset_name in initial_value:
+                val = initial_value[dataset_name]
+                if not isinstance(val, (int, float)):
+                    raise ValueError(f"Value for dataset '{dataset_name}' in '{param_name}' must be a number, got {type(val)}")
+                processed_values.append(float(val))
+            else:
+                # Use default value for datasets not specified in dictionary
+                processed_values.append(float(default_value))
+        
+        return processed_values
+    
     else:
-        raise ValueError(f"'{param_name}' must be a number or a list of numbers, got {type(initial_value)}")
+        raise ValueError(f"'{param_name}' must be a number, list of numbers, or dictionary mapping dataset names to numbers, got {type(initial_value)}")
 
 
 def parse_bounds(bounds_config, param_names, param_type="parameter"):
