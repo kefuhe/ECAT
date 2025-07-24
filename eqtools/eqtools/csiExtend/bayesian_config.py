@@ -388,6 +388,19 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         # Validate the polys
         self._validate_polys(polys)
 
+        # Parse initial values for alpha 
+        n_faults = len(self.faultnames)
+        parsed_initial_values = parse_initial_values(
+            self.alpha,
+            n_faults,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.0,
+            min_value=None,
+            dataset_names=self.faultnames
+        )
+        self.alpha['initial_value'] = parsed_initial_values
+        # print(f"Parsed initial values for alpha: {self.alpha}")
+
         # Update the GFs parameters based on the geodata and verticals
         self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
 
@@ -410,8 +423,8 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self.geodata['sigmas'],
             n_datasets,
             param_name='initial_value',  # initial_value or 'values'
-            default_value=0.01,
-            min_value=0.0,
+            default_value=0.0,
+            min_value=None,
             dataset_names=data_names
         )
         self.geodata['sigmas']['initial_value'] = parsed_initial_values
@@ -928,6 +941,19 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         # Validate the Laplacian bounds
         self._validate_laplacian_bounds()
 
+        # Parse initial values for alpha 
+        n_faults = len(self.faultnames)
+        parsed_initial_values = parse_initial_values(
+            self.alpha,
+            n_faults,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.0,
+            min_value=None,
+            dataset_names=self.faultnames
+        )
+        self.alpha['initial_value'] = parsed_initial_values
+        # print(f"Parsed initial values for alpha: {self.alpha}")
+
         # Update the GFs parameters based on the geodata and verticals
         self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
 
@@ -935,6 +961,27 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         self.set_data_faults(dataFaults)
         # Set the alphaFaults based on the alpha configuration
         self.set_alpha_faults(alphaFaults)
+
+        # Parse the 'update' parameter in sigmas
+        # Added by kfhe at 07/11/2025
+        n_datasets = len(self.geodata.get('data', []))
+        data_names = [d.name for d in self.geodata.get('data', [])]
+        parsed_update = parse_update(self.geodata['sigmas'], n_datasets, param_name='update', 
+                                        dataset_names=data_names)
+        self.geodata['sigmas']['update'] = parsed_update
+        # print(f"Parsed update for sigmas: {self.geodata['sigmas']['update']}")
+
+        # Parse initial values using the new generic function
+        parsed_initial_values = parse_initial_values(
+            self.geodata['sigmas'],
+            n_datasets,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.0,
+            min_value=None,
+            dataset_names=data_names
+        )
+        self.geodata['sigmas']['initial_value'] = parsed_initial_values
+        # print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['initial_value']}")
 
         if self.clipping_options.get('enabled', False):
             self._initialize_faults_and_assemble_data()

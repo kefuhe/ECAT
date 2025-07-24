@@ -1100,6 +1100,8 @@ class RectangularPatches(Fault):
             if not donotreadslip:
                 if len(A[i].split())>7:
                     slip = np.array([np.float32(A[i].split()[7]), np.float32(A[i].split()[8]), np.float32(A[i].split()[9])])
+                elif not readpatchindex and len(A[i].split()) == 6:
+                    slip = np.array([np.float32(A[i].split()[3]), np.float32(A[i].split()[4]), np.float32(A[i].split()[5])])
                 else:
                     slip = np.array([0.0, 0.0, 0.0])
                 Slip.append(slip)
@@ -1192,6 +1194,178 @@ class RectangularPatches(Fault):
 
         # All done
         return
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def writeFourEdges2File(self, filename=None, dirname='.', depth_tolerance=0.1, 
+                            min_layer_thickness=0.5, sort_axis='auto', ascending=True,
+                            merge_threshold=1e-1, verbose=True):
+        '''
+        Write the four edges of the rectangular patches to files.
+        
+        This method identifies the four boundary edges (top, bottom, left, right) of the 
+        rectangular patch geometry and writes each edge's vertices to separate files in 
+        longitude/latitude/depth format.
+    
+        Kwargs:
+            * filename : str, optional
+                Base name of the output files (default: None, uses fault name).
+                If provided, files will be named as: basename_top.ext, basename_bottom.ext, etc.
+                
+            * dirname : str, optional
+                Directory where the files will be written (default: '.').
+                Directory will be created if it doesn't exist.
+                
+            * depth_tolerance : float, optional
+                Tolerance for grouping vertices into depth layers (default: 0.1 km).
+                Vertices within this distance in Z-direction are considered same layer.
+                
+            * min_layer_thickness : float, optional
+                Minimum thickness between depth layers (default: 0.5 km).
+                Layers separated by less than this distance will be merged.
+                
+            * sort_axis : str, optional
+                Axis for lateral sorting within each layer (default: 'auto').
+                Options: 'auto' (PCA-based), 'x' (Easting), 'y' (Northing).
+                
+            * ascending : bool, optional
+                Sort order for lateral arrangement (default: True).
+                True: ascending order, False: descending order.
+                
+            * merge_threshold : float, optional
+                Distance threshold for merging overlapping vertices (default: 1e-1 km).
+                Critical for handling duplicate vertices from patch boundaries.
+                
+            * verbose : bool, optional
+                Enable detailed output messages (default: True).
+    
+        Returns:
+            * four_edges : dict
+                Dictionary containing the edge vertices for each boundary:
+                - 'top'    : ndarray, top edge vertices [lon, lat, depth]
+                - 'bottom' : ndarray, bottom edge vertices [lon, lat, depth] 
+                - 'left'   : ndarray, left edge vertices [lon, lat, depth]
+                - 'right'  : ndarray, right edge vertices [lon, lat, depth]
+    
+        Files Created:
+            * {basename}_top.{ext}    : Top edge vertices
+            * {basename}_bottom.{ext} : Bottom edge vertices  
+            * {basename}_left.{ext}   : Left edge vertices
+            * {basename}_right.{ext}  : Right edge vertices
+            
+        File Format:
+            Each line contains: longitude latitude depth
+            
+        Examples:
+            >>> fault = RectangularPatches("MyFault")
+            >>> # Basic usage
+            >>> edges = fault.writeFourEdges2File()
+            >>> 
+            >>> # Custom parameters
+            >>> edges = fault.writeFourEdges2File(
+            ...     filename='fault_edges.gmt',
+            ...     dirname='output',
+            ...     merge_threshold=1e-2,
+            ...     sort_axis='x'
+            ... )
+    
+        Notes:
+            - This method uses the specialized RectangularPatchAnalyzer for robust 
+              edge detection in complex patch geometries.
+            - The merge_threshold is crucial for handling overlapping patch boundaries
+              commonly found in real fault models.
+            - Output files are in GMT-compatible format for easy visualization.
+        '''
+        
+        # Create output directory if it doesn't exist
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        
+        # Find the four edge vertices using the specialized method
+        if verbose:
+            print(f"Finding four edge vertices for fault {self.name}...")
+            
+        result = self.find_fault_fouredge_vertices(
+            depth_tolerance=depth_tolerance,
+            min_layer_thickness=min_layer_thickness,
+            sort_axis=sort_axis,
+            ascending=ascending,
+            verbose=verbose,
+            merge_threshold=merge_threshold
+        )
+        
+        # Get the edge vertices (already set in self.edge_vertices by find_fault_fouredge_vertices)
+        four_edges = self.edge_vertices
+        edge_names = ['top', 'bottom', 'left', 'right']
+        
+        # Determine file naming
+        if filename is not None:
+            basename = filename.split('.')[0]
+            extname = filename.split('.')[1] if '.' in filename else 'gmt'
+        else:
+            basename = self.name.replace(' ', '_')
+            extname = 'gmt'
+        
+        # Write edges to separate files
+        if verbose:
+            print(f"Writing edge files to directory: {dirname}")
+        
+        edge_files = {}
+        for i, edge_name in enumerate(edge_names):
+            if edge_name not in four_edges:
+                if verbose:
+                    print(f"Warning: No vertices found for {edge_name} edge")
+                continue
+                
+            # Create filename
+            edge_file = f'{basename}_{edge_name}.{extname}'
+            edge_file_path = os.path.join(dirname, edge_file)
+            edge_files[edge_name] = edge_file_path
+            
+            # Get edge points
+            edge_points = four_edges[edge_name]
+            
+            if len(edge_points) == 0:
+                if verbose:
+                    print(f"Warning: Empty vertex set for {edge_name} edge")
+                continue
+            
+            # Convert to longitude/latitude coordinates
+            lon, lat = self.xy2ll(edge_points[:, 0], edge_points[:, 1])
+            
+            # Write to file
+            with open(edge_file_path, 'w') as fout:
+                fout.write(f'# {edge_name.capitalize()} edge vertices for fault {self.name}\n')
+                fout.write(f'# Format: longitude latitude depth\n')
+                fout.write(f'# Total vertices: {len(lon)}\n')
+                fout.write(f'# Generated with merge_threshold: {merge_threshold} km\n')
+                
+                for j in range(len(lon)):
+                    fout.write(f'{lon[j]:.6f} {lat[j]:.6f} {edge_points[j, 2]:.3f}\n')
+            
+            if verbose:
+                print(f"  {edge_name.capitalize()} edge: {len(edge_points)} vertices -> {edge_file}")
+        
+        # Print summary
+        if verbose:
+            print(f"  Edge files written:")
+            for edge_name, filepath in edge_files.items():
+                vertex_count = len(four_edges[edge_name]) if edge_name in four_edges else 0
+                print(f"    {edge_name}: {vertex_count} vertices -> {os.path.basename(filepath)}")
+        
+        # Convert edge vertices to lon/lat format for return
+        four_edges_lonlat = {}
+        for edge_name in edge_names:
+            if edge_name in four_edges and len(four_edges[edge_name]) > 0:
+                edge_points = four_edges[edge_name]
+                lon, lat = self.xy2ll(edge_points[:, 0], edge_points[:, 1])
+                # Create array with [lon, lat, depth] format
+                four_edges_lonlat[edge_name] = np.column_stack([lon, lat, edge_points[:, 2]])
+            else:
+                four_edges_lonlat[edge_name] = np.array([]).reshape(0, 3)
+        
+        # All done
+        return four_edges_lonlat
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -3888,6 +4062,357 @@ class RectangularPatches(Fault):
                 sys.exit(1)
             D = self.buildLaplacian_mudpy(verbose=verbose, irregular=irregular, bounds=bounds)
         return D
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def find_fault_fouredge_vertices(self, depth_tolerance=0.1, min_layer_thickness=0.5, 
+                                   sort_axis='auto', ascending=True, verbose=True, 
+                                   merge_threshold=1e-1):
+        """
+        Find the four edge vertices of rectangular fault patches using specialized analyzer.
+        
+        This method identifies and extracts the vertices that form the top, bottom, left, and 
+        right boundaries of the fault geometry. It handles overlapping/duplicate vertices 
+        automatically through distance-based merging.
+        
+        Parameters:
+        -----------
+        depth_tolerance : float, optional
+            Tolerance for grouping vertices into depth layers (default: 0.1 km).
+            Vertices within this distance in the Z-direction will be considered 
+            as belonging to the same depth layer.
+        
+        min_layer_thickness : float, optional
+            Minimum thickness between depth layers (default: 0.5 km).
+            Layers separated by less than this distance will be merged.
+        
+        sort_axis : str, optional
+            Axis for lateral sorting within each layer (default: 'auto').
+            Options:
+            - 'auto' : Uses PCA to find the main horizontal direction
+            - 'x'    : Sort along X-axis (Easting)
+            - 'y'    : Sort along Y-axis (Northing)
+        
+        ascending : bool, optional
+            Sort order for lateral arrangement (default: True).
+            - True  : Ascending order (left to right)
+            - False : Descending order (right to left)
+        
+        verbose : bool, optional
+            Enable detailed output messages (default: True).
+            When True, prints processing information and edge summary.
+        
+        merge_threshold : float, optional
+            Distance threshold for merging overlapping/duplicate vertices (default: 1e-3 km).
+            Vertices closer than this distance will be treated as identical and merged.
+            This is crucial for handling imperfect patch connectivity in real fault models.
+        
+        Returns:
+        --------
+        result : dict
+            Dictionary containing detailed edge information with the following keys:
+            
+            'edge_vertex_indices' : dict
+                Vertex indices for each edge:
+                - 'top'    : list of int, indices of top edge vertices
+                - 'bottom' : list of int, indices of bottom edge vertices  
+                - 'left'   : list of int, indices of left edge vertices
+                - 'right'  : list of int, indices of right edge vertices
+                
+            'edge_vertices' : dict
+                Actual vertex coordinates for each edge:
+                - 'top'    : ndarray (N, 3), top edge vertex coordinates [x, y, z]
+                - 'bottom' : ndarray (M, 3), bottom edge vertex coordinates [x, y, z]
+                - 'left'   : ndarray (P, 3), left edge vertex coordinates [x, y, z]
+                - 'right'  : ndarray (Q, 3), right edge vertex coordinates [x, y, z]
+                
+            'depth_layers' : list of dict
+                Information about identified depth layers, each containing:
+                - 'depth'       : float, representative depth of the layer
+                - 'indices'     : list of int, vertex indices in this layer
+                - 'depth_range' : list of float, [min_depth, max_depth] in layer
+                - 'vertex_count': int, number of vertices in layer
+                
+            'sort_info' : dict
+                Sorting method information:
+                - 'axis'      : str, sorting axis used
+                - 'method'    : str, description of sorting method
+                - 'ascending' : bool, sort order used
+                
+            'patch_info' : dict
+                Patch processing statistics:
+                - 'total_patches'     : int, number of input patches
+                - 'unique_vertices'   : int, number of unique vertices after merging
+                - 'original_vertices' : int, original number of vertices (patches × 4)
+        
+        Sets Attributes:
+        ----------------
+        self.edge_vertex_indices : dict
+            Same as returned 'edge_vertex_indices'
+        
+        self.edge_vertices : dict  
+            Same as returned 'edge_vertices'
+        
+        Examples:
+        ---------
+        >>> # Basic usage with default parameters
+        >>> fault = RectangularPatches("MyFault")
+        >>> result = fault.find_fault_fouredge_vertices()
+        >>> 
+        >>> # Access top edge vertices
+        >>> top_vertices = fault.edge_vertices['top']
+        >>> top_indices = fault.edge_vertex_indices['top']
+        >>> 
+        >>> # Custom parameters for high-precision analysis
+        >>> result = fault.find_fault_fouredge_vertices(
+        ...     depth_tolerance=0.05,
+        ...     merge_threshold=1e-4,
+        ...     sort_axis='x',
+        ...     verbose=False
+        ... )
+        
+        Notes:
+        ------
+        - The method automatically handles duplicate vertices that may arise from 
+          overlapping patch boundaries in real fault models.
+        - Edge detection works by analyzing the unique vertex structure after 
+          removing duplicates based on the merge_threshold.
+        - For complex fault geometries, the 'auto' sort_axis option using PCA 
+          often provides the most robust results.
+        - The depth_tolerance should be set according to the precision of your 
+          fault model coordinates.
+        
+        Raises:
+        -------
+        ImportError
+            If required edge_utils package is not available
+        ValueError
+            If sort_axis is not one of 'auto', 'x', or 'y'
+        
+        See Also:
+        ---------
+        RectangularPatchAnalyzer : The underlying analysis class
+        """
+        from .edge_utils.patch_edge_finder import RectangularPatchAnalyzer
+        
+        # Create analyzer with specified merge threshold
+        analyzer = RectangularPatchAnalyzer(self.patch, merge_threshold=merge_threshold)
+        
+        # Find four edge vertices with all specified parameters
+        result = analyzer.find_fault_fouredge_vertices(
+            depth_tolerance=depth_tolerance,
+            min_layer_thickness=min_layer_thickness, 
+            sort_axis=sort_axis,
+            ascending=ascending
+        )
+        
+        # Copy the attributes to self for direct access
+        self.edge_vertex_indices = result['edge_vertex_indices']
+        self.edge_vertices = result['edge_vertices']
+        
+        # Print summary if requested
+        if verbose:
+            analyzer.print_edge_summary()
+            print(f"Merge threshold used: {merge_threshold} km")
+            original_count = len(self.patch) * 4
+            unique_count = len(analyzer.vertices)
+            merged_count = original_count - unique_count
+            if merged_count > 0:
+                print(f"Merged {merged_count} overlapping vertices (threshold: {merge_threshold} km)")
+        
+        return result
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def interpolate_curve_at_depth(self, target_depth, variable_axis='auto', ascending=True, 
+                                  depth_tolerance=0.5, output_file=None, verbose=True,
+                                  layer_depth_tolerance=None, layer_min_thickness=None,
+                                  merge_threshold=0.1):
+        """
+        Interpolate a curve at specified depth using depth layers from rectangular patches
+        
+        This method generates a 3D curve at any target depth by interpolating between
+        existing depth layers. The curve is automatically converted to longitude/latitude
+        coordinates before output.
+        
+        Parameters:
+        -----------
+        target_depth : float
+            Target depth for curve generation (positive value, in km)
+        variable_axis : str, optional
+            Independent variable axis ('x', 'y', or 'auto'). Default: 'auto'
+            - 'x': Use X-coordinate as independent variable
+            - 'y': Use Y-coordinate as independent variable  
+            - 'auto': Use the axis with larger range
+        ascending : bool, optional
+            Sort order for the independent variable (default: True)
+        depth_tolerance : float, optional
+            Tolerance for considering target depth as existing layer (default: 0.5 km)
+        output_file : str, optional
+            Output GMT format file path (default: None, no file output)
+        verbose : bool, optional
+            Enable detailed output messages (default: True)
+        layer_depth_tolerance : float, optional
+            Tolerance for grouping vertices into depth layers (default: None, uses 0.1 km)
+            Override this for different fault geometries
+        layer_min_thickness : float, optional
+            Minimum thickness between depth layers (default: None, uses 0.5 km)
+            Override this for different fault geometries
+        merge_threshold : float, optional
+            Distance threshold for merging overlapping vertices (default: 0.1 km)
+            Critical for handling duplicate vertices from patch boundaries
+            
+        Returns:
+        --------
+        curve_lonlat : ndarray
+            Interpolated curve points (N, 3) in [longitude, latitude, depth] format
+        curve_info : dict
+            Dictionary containing interpolation information:
+            - 'method': str, interpolation method used
+            - 'source_layers': list, source depth layers used
+            - 'variable_axis': str, independent variable axis
+            - 'point_count': int, number of points in curve
+            - 'depth_range': list, actual depth range of curve points
+            - 'target_depth': float, requested target depth
+            
+        Examples:
+        ---------
+        >>> fault = RectangularPatches("MyFault")
+        >>> 
+        >>> # Basic usage with default parameters
+        >>> curve, info = fault.interpolate_curve_at_depth(10.0)
+        >>> 
+        >>> # Custom parameters for high-resolution analysis
+        >>> curve, info = fault.interpolate_curve_at_depth(
+        ...     target_depth=25.0,
+        ...     depth_tolerance=0.02,
+        ...     variable_axis='x',
+        ...     layer_depth_tolerance=1.5,
+        ...     layer_min_thickness=2.0,
+        ...     output_file='fault_curve_25km.gmt'
+        ... )
+        
+        Notes:
+        ------
+        - This method uses the specialized RectangularPatchAnalyzer for robust 
+          interpolation in complex patch geometries
+        - All coordinates are automatically converted to longitude/latitude format
+        - The merge_threshold is crucial for handling overlapping patch boundaries
+        - Adjust layer parameters for different fault model resolutions
+        - Output files are in GMT-compatible format for visualization
+        """
+        from .edge_utils import RectangularPatchAnalyzer
+        
+        if verbose:
+            print(f"Creating RectangularPatchAnalyzer for fault {self.name}")
+            print(f"Using merge threshold: {merge_threshold} km")
+        
+        # Create analyzer with specified merge threshold
+        analyzer = RectangularPatchAnalyzer(self.patch, merge_threshold=merge_threshold)
+        
+        # Find four edge vertices first (required for interpolation)
+        edge_result = analyzer.find_fault_fouredge_vertices(
+            depth_tolerance=layer_depth_tolerance if layer_depth_tolerance is not None else 0.1,
+            min_layer_thickness=layer_min_thickness if layer_min_thickness is not None else 0.5,
+            # verbose=verbose
+        )
+        
+        if verbose:
+            print(f"Found {len(edge_result['depth_layers'])} depth layers for interpolation")
+        
+        # Perform curve interpolation
+        curve_points, curve_info = analyzer.interpolate_curve_at_depth(
+            target_depth=target_depth,
+            variable_axis=variable_axis,
+            ascending=ascending,
+            depth_tolerance=depth_tolerance,
+            output_file=None,  # Don't output file yet, convert coordinates first
+            verbose=verbose,
+            layer_depth_tolerance=layer_depth_tolerance,
+            layer_min_thickness=layer_min_thickness
+        )
+        
+        if verbose:
+            print(f"Generated curve with {len(curve_points)} points")
+            print(f"Converting coordinates from X/Y to Longitude/Latitude...")
+        
+        # Convert X/Y coordinates to longitude/latitude
+        x_coords = curve_points[:, 0]
+        y_coords = curve_points[:, 1]
+        depths = curve_points[:, 2]
+        
+        # Use self.xy2ll for coordinate conversion
+        lon_coords, lat_coords = self.xy2ll(x_coords, y_coords)
+        
+        # Create output array in [longitude, latitude, depth] format
+        curve_lonlat = np.column_stack([lon_coords, lat_coords, depths])
+        
+        if verbose:
+            print(f"Coordinate conversion completed")
+            print(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
+            print(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
+            print(f"Depth range: {depths.min():.3f} to {depths.max():.3f} km")
+        
+        # Update curve_info with coordinate conversion info
+        curve_info.update({
+            'coordinate_system': 'longitude_latitude',
+            'fault_name': self.name,
+            'merge_threshold': merge_threshold,
+            'lon_range': [lon_coords.min(), lon_coords.max()],
+            'lat_range': [lat_coords.min(), lat_coords.max()]
+        })
+    
+        # Output to GMT file if requested
+        if output_file is not None:
+            self._write_curve_lonlat_to_gmt(curve_lonlat, output_file, curve_info, verbose)
+        
+        return curve_lonlat, curve_info
+    
+    def _write_curve_lonlat_to_gmt(self, curve_lonlat, output_file, curve_info, verbose):
+        """
+        Write longitude/latitude curve to GMT format file
+        """
+        import os
+        
+        try:
+            # Create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            with open(output_file, 'w') as f:
+                # Write comprehensive header
+                f.write(f"# Interpolated fault curve for {self.name}\n")
+                f.write(f"# Target depth: {curve_info['target_depth']:.2f} km\n")
+                f.write(f"# Actual depth range: {curve_info['depth_range'][0]:.3f} - {curve_info['depth_range'][1]:.3f} km\n")
+                f.write(f"# Interpolation method: {curve_info['method']}\n")
+                f.write(f"# Source layers: {curve_info['source_layers']}\n")
+                f.write(f"# Variable axis: {curve_info['variable_axis']}\n")
+                f.write(f"# Point count: {curve_info['point_count']}\n")
+                f.write(f"# Merge threshold: {curve_info.get('merge_threshold', 'N/A')} km\n")
+                
+                if 'layer_parameters' in curve_info:
+                    layer_params = curve_info['layer_parameters']
+                    f.write(f"# Layer depth tolerance: {layer_params['depth_tolerance']:.3f} km\n")
+                    f.write(f"# Layer min thickness: {layer_params['min_thickness']:.3f} km\n")
+                
+                f.write(f"# Longitude range: {curve_info['lon_range'][0]:.6f} to {curve_info['lon_range'][1]:.6f}\n")
+                f.write(f"# Latitude range: {curve_info['lat_range'][0]:.6f} to {curve_info['lat_range'][1]:.6f}\n")
+                f.write(f"# Format: Longitude Latitude Depth\n")
+                f.write(f"# Coordinate system: WGS84\n")
+                f.write(f">\n")  # GMT segment separator
+                
+                # Write data points
+                for point in curve_lonlat:
+                    f.write(f"{point[0]:.8f} {point[1]:.8f} {point[2]:.3f}\n")
+            
+            if verbose:
+                print(f"Curve written to GMT file: {output_file}")
+                print(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
+                
+        except Exception as e:
+            print(f"Error writing GMT file: {e}")
+            raise
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------

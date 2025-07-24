@@ -509,146 +509,255 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def readPatchesFromAbaqus(self, vertexfile, topofile, readpatchindex=True, projstr=None, lon0=None, lat0=None):
-        '''
-        Reads patches from an Abaqus formatted file.
-    
-        Args:
-            vertexfile (str): Name of the vertex coordinate file.
-            topofile (str): Name of the triangular topology file.
-    
-        Kwargs:
-            readpatchindex (bool): Default is True. If True, keep the index order of the patches.
-            projstr (str): The Proj string used in Trelis with Proj(projstr).
-            lon0 (float): Central longitude for the projection. Used if UTM zone is not specified in projstr.
-            lat0 (float): Central latitude for the projection. Used if UTM zone is not specified in projstr.
-    
-        Returns:
-            None
-    
-        Raises:
-            ValueError: If lon0 and lat0 are not provided and cannot be extracted from projstr when UTM zone is not specified.
-        '''
-    
-        import pandas as pd
-        from pyproj import Proj, Transformer, CRS
-        from pyproj.database import query_utm_crs_info
-        from pyproj.aoi import AreaOfInterest
-        import re
-    
-        # Create the lists
-        self.patch = []
-        self.patchll = []
-        if readpatchindex:
-            # Keep the index order of the patches
-            self.index_parameter = []
-            # Keep the index order of node coordinates
-            self.vertex_parameter = []
+    def readPatchesFromAbaqus(self, vertexfile, topofile, readpatchindex=True, 
+                             projstr=None, lon0=None, lat0=None):
+        """
+        Read patches from Abaqus format files
         
-        # Open the files
-        # Vertex file columns: [num, x, y, z]
+        Optimized version: Better code organization and error handling
+        """
+        try:
+            # Data loading and preprocessing
+            Vertex, Topology = self._load_and_preprocess_files(
+                vertexfile, topofile, readpatchindex
+            )
+            
+            # Coordinate transformation
+            Vertices_ll, Vertices, proj_info = self._setup_projection_and_transform(
+                projstr, lon0, lat0, Vertex
+            )
+            
+            # Set object attributes
+            self._set_coordinate_attributes(Vertices_ll, Vertices, proj_info)
+            
+            # Extract patches and faces
+            self._extract_patches_and_faces(Vertex, Topology)
+            
+            # Set depth and slip attributes
+            self._finalize_fault_setup(Vertices[:, 2])
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to read Abaqus files: {e}") from e
+    
+    def _load_and_preprocess_files(self, vertexfile, topofile, readpatchindex):
+        """Load and preprocess input files"""
+        import pandas as pd
+        
+        # Read vertex file
         Vertex = pd.read_csv(vertexfile, comment='*')
         vcol = Vertex.columns.str.replace(' ', '')
         Vertex = Vertex.set_axis(vcol, axis=1)
-        Vertex.num -= 1
-        # Topology file columns: [num, a, b, c]
+        Vertex.num -= 1  # Convert to 0-based indexing
+        
+        # Read topology file
         Topology = pd.read_csv(topofile, comment='*')
         tcol = Topology.columns.str.replace(' ', '')
         Topology = Topology.set_axis(tcol, axis=1)
-        Topology -= 1
-    
-        if hasattr(self, 'vertex_parameter'):
-            self.vertex_parameter = np.unique(np.sort(Topology[['a', 'b', 'c']].values.flatten()))
+        Topology -= 1  # Convert to 0-based indexing
+        
+        # Handle index parameters
+        if readpatchindex:
+            self.vertex_parameter = np.unique(
+                np.sort(Topology[['a', 'b', 'c']].values.flatten())
+            )
             self.index_parameter = Topology[['a', 'b', 'c']].values.copy()
             self.faces_parameter = Topology[['a', 'b', 'c']].values.copy()
+            
+            # Keep only vertices used in topology
+            Vertex = Vertex.set_index('num')
+            Vertex = Vertex.loc[self.vertex_parameter, :]
+        
+        return Vertex, Topology
     
-        # Keep the vertices which have been used in topology
-        Vertex = Vertex.set_index('num')
-        Vertex = Vertex.loc[self.vertex_parameter, :]
+    def _set_coordinate_attributes(self, Vertices_ll, Vertices, proj_info):
+        """Set coordinate-related attributes"""
+        self.Vertices_ll = Vertices_ll
+        self.Vertices = Vertices
+        self.projection_info = proj_info  # Save projection info for later use
+        
+        if hasattr(self, 'verbose') and self.verbose:
+            print(f"Projection info: {proj_info}")
+            print(f"Coordinate ranges: "
+                  f"Longitude {Vertices_ll[:, 0].min():.6f} - {Vertices_ll[:, 0].max():.6f}, "
+                  f"Latitude {Vertices_ll[:, 1].min():.6f} - {Vertices_ll[:, 1].max():.6f}")
     
-        # Process projection if projstr is provided
-        if projstr is not None:
-            if 'utm' in projstr:
-                if 'zone' in projstr:
-                    # UTM projection with specified zone
-                    proj = Proj(projstr)
-                else:
-                    # UTM projection without specified zone
-                    if lon0 is None or lat0 is None:
-                        # Extract lon0 and lat0 from projstr
-                        lon0_match = re.search(r'\+lon_0=(-?\d+(\.\d+)?)', projstr)
-                        lat0_match = re.search(r'\+lat_0=(-?\d+(\.\d+)?)', projstr)
-                        if lon0_match and lat0_match:
-                            lon0 = float(lon0_match.group(1))
-                            lat0 = float(lat0_match.group(1))
-                        else:
-                            raise ValueError("lon0 and lat0 must be provided if UTM zone is not specified in projstr and cannot be extracted from projstr.")
-                    
-                    # Calculate the best UTM zone based on lon0 and lat0
-                    utm_crs_list = query_utm_crs_info(
-                        datum_name="WGS 84",
-                        area_of_interest=AreaOfInterest(
-                            west_lon_degree=lon0 - 2.,
-                            south_lat_degree=lat0 - 2.,
-                            east_lon_degree=lon0 + 2,
-                            north_lat_degree=lat0 + 2
-                        ),
-                    )
-                    utm = CRS.from_epsg(utm_crs_list[0].code)
-                    proj = Proj(utm)
-            else:
-                # Non-UTM projection (e.g., tmerc or gauss)
-                proj = Proj(projstr)
-    
-            transformer = Transformer.from_proj(proj, proj.to_latlong())
-            lon, lat = transformer.transform(Vertex.x.values, Vertex.y.values)
-            depth = -Vertex.z.values / 1000.0
-            Vertices_ll = np.vstack((lon, lat, depth)).T
-            self.Vertices_ll = Vertices_ll
-            x, y = self.ll2xy(lon, lat)
-            Vertex.x = x
-            Vertex.y = y
-            Vertex.z = depth
-            Vertices = np.vstack((x, y, depth)).T
-            self.Vertices = Vertices
-        else:
-            # If no projection is provided, assume input coordinates are already in lonlat
-            lon, lat = Vertex.x.values, Vertex.y.values
-            depth = -Vertex.z.values / 1000.0
-            Vertices_ll = np.vstack((lon, lat, depth)).T
-            self.Vertices_ll = Vertices_ll
-            x, y = self.ll2xy(lon, lat)
-            Vertex.x = x
-            Vertex.y = y
-            Vertex.z = depth
-            Vertices = np.vstack((x, y, depth)).T
-            self.Vertices = Vertices
-    
-        # Extract the patches
+    def _extract_patches_and_faces(self, Vertex, Topology):
+        """Extract patches and faces"""
         patches = []
         Faces = []
+        
         for i in range(Topology.shape[0]):
-            face = []
             tri = Topology.iloc[i][['a', 'b', 'c']].values
             patches.append(Vertex.loc[tri].values)
+            
+            # Build face index mapping
+            face = []
             for ntrivert in tri:
-                face.append(np.argwhere(Vertex.index == ntrivert).item(0))
+                face_idx = np.argwhere(Vertex.index == ntrivert).item(0)
+                face.append(face_idx)
             Faces.append(face)
-    
+        
         self.Faces = np.array(Faces)
         self.patch = patches
         self.patch2ll()
         self.numpatch = len(self.patch)
     
-        self.top = depth.min()
-        self.depth = depth.max()
+    def _finalize_fault_setup(self, depths):
+        """Complete fault setup"""
+        self.top = depths.min()
+        self.depth = depths.max()
         self.z_patches = np.linspace(0, self.depth, 5)
         self.factor_depth = 1.0
-    
-        # Initialize the slip
+        
+        # Initialize slip
         self.initializeslip()
+
+    def _setup_projection_and_transform(self, projstr, lon0, lat0, Vertex):
+        """
+        Setup projection and execute coordinate transformation
+        
+        Returns:
+        --------
+        tuple: (Vertices_ll, Vertices, proj_info)
+        """
+        import pandas as pd
+        from pyproj import Proj, Transformer, CRS
+        from pyproj.database import query_utm_crs_info
+        from pyproj.aoi import AreaOfInterest
+        import re
+        
+        if projstr is None:
+            return self._handle_lonlat_input(Vertex)
+        
+        # Parse projection parameters
+        proj, proj_info = self._parse_projection_string(projstr, lon0, lat0)
+        
+        # Execute coordinate transformation
+        return self._transform_coordinates(proj, Vertex, proj_info)
     
-        return
+    def _parse_projection_string(self, projstr, lon0, lat0):
+        """Parse projection string and create projection object"""
+        import re
+        from pyproj import Proj, CRS
+        from pyproj.database import query_utm_crs_info
+        from pyproj.aoi import AreaOfInterest
+        
+        proj_info = {'type': 'custom', 'string': projstr}
+        
+        if 'utm' in projstr:
+            if 'zone' in projstr:
+                # UTM projection with specified zone
+                proj = Proj(projstr)
+                proj_info['type'] = 'utm_with_zone'
+            else:
+                # UTM projection without specified zone, auto-calculate
+                proj, proj_info = self._auto_determine_utm_zone(projstr, lon0, lat0)
+        else:
+            # Non-UTM projection (e.g., tmerc, gauss)
+            proj = Proj(projstr)
+            proj_info['type'] = 'other'
+        
+        return proj, proj_info
+    
+    def _auto_determine_utm_zone(self, projstr, lon0, lat0):
+        """Automatically determine optimal UTM zone"""
+        import re
+        from pyproj import CRS
+        from pyproj import Proj
+        from pyproj.database import query_utm_crs_info
+        from pyproj.aoi import AreaOfInterest
+        
+        # Try to extract coordinates from projstr
+        if lon0 is None or lat0 is None:
+            lon0_match = re.search(r'\+lon_0=(-?\d+(\.\d+)?)', projstr)
+            lat0_match = re.search(r'\+lat_0=(-?\d+(\.\d+)?)', projstr)
+            if lon0_match and lat0_match:
+                lon0 = float(lon0_match.group(1))
+                lat0 = float(lat0_match.group(1))
+            else:
+                raise ValueError(
+                    "UTM zone not specified and cannot extract lon0 and lat0 from projstr, "
+                    "please provide lon0 and lat0 parameters"
+                )
+        
+        # Query optimal UTM zone
+        utm_crs_list = query_utm_crs_info(
+            datum_name="WGS 84",
+            area_of_interest=AreaOfInterest(
+                west_lon_degree=lon0 - 2.,
+                south_lat_degree=lat0 - 2.,
+                east_lon_degree=lon0 + 2,
+                north_lat_degree=lat0 + 2
+            ),
+        )
+        
+        if not utm_crs_list:
+            raise ValueError(f"Cannot find suitable UTM zone for coordinates ({lon0}, {lat0})")
+        
+        utm_crs = CRS.from_epsg(utm_crs_list[0].code)
+        proj = Proj(utm_crs)
+        
+        proj_info = {
+            'type': 'utm_auto',
+            'original_string': projstr,
+            'lon0': lon0,
+            'lat0': lat0,
+            'epsg_code': utm_crs_list[0].code,
+            'zone_info': utm_crs_list[0]
+        }
+        
+        return proj, proj_info
+    
+    def _transform_coordinates(self, proj, Vertex, proj_info):
+        """Execute coordinate transformation"""
+        from pyproj import Transformer
+        
+        # Create transformer, force longitude-latitude order
+        transformer = Transformer.from_proj(
+            proj, 
+            proj.to_latlong(), 
+            always_xy=True  # Ensure output is (longitude, latitude) order
+        )
+        
+        # Execute coordinate transformation
+        lon, lat = transformer.transform(Vertex.x.values, Vertex.y.values)
+        
+        # Depth conversion (meters to kilometers, negative values for depth)
+        depth = -Vertex.z.values / 1000.0
+        
+        # Create longitude/latitude coordinate array
+        Vertices_ll = np.vstack((lon, lat, depth)).T
+        
+        # Convert to UTM coordinates
+        x, y = self.ll2xy(lon, lat)
+        
+        # Update Vertex DataFrame
+        Vertex.x = x
+        Vertex.y = y
+        Vertex.z = depth
+        
+        # Create UTM coordinate array
+        Vertices = np.vstack((x, y, depth)).T
+        
+        return Vertices_ll, Vertices, proj_info
+    
+    def _handle_lonlat_input(self, Vertex):
+        """Handle longitude/latitude format input data"""
+        lon, lat = Vertex.x.values, Vertex.y.values
+        depth = -Vertex.z.values / 1000.0
+        
+        Vertices_ll = np.vstack((lon, lat, depth)).T
+        
+        x, y = self.ll2xy(lon, lat)
+        Vertex.x = x
+        Vertex.y = y
+        Vertex.z = depth
+        
+        Vertices = np.vstack((x, y, depth)).T
+        
+        proj_info = {'type': 'lonlat', 'string': 'Geographic coordinates'}
+        
+        return Vertices_ll, Vertices, proj_info
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -1086,7 +1195,8 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def writeFourEdges2File(self, filename=None, dirname='.', top_tolerance=0.1, bottom_tolerance=0.1):
+    def writeFourEdges2File(self, filename=None, dirname='.', top_tolerance=0.1, 
+                            bottom_tolerance=0.1, method='hybrid', merge_threshold=0.02):
         '''
         Write the four edges of the patches to a file.
 
@@ -1101,7 +1211,8 @@ class TriangularPatches(Fault):
         '''
         if not os.path.exists(dirname):
             os.makedirs(dirname)
-        self.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
+        self.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance,
+                                           refind=True, method=method, merge_threshold=merge_threshold)
 
         # Write edges to four edges file
         edge_names = ['top', 'bottom', 'left', 'right']
@@ -1129,6 +1240,305 @@ class TriangularPatches(Fault):
 
         # All Done
         return four_edges
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def interpolate_curve_at_depth(self, target_depth, variable_axis='auto', ascending=True, 
+                                  depth_tolerance=0.1, output_file=None, verbose=True,
+                                  interpolation_method='linear', num_points='auto',
+                                  top_tolerance=0.01, bottom_tolerance=0.01, 
+                                  method='hybrid', merge_threshold=0.5):
+        """
+        Interpolate a curve at specified depth using triangular mesh edge vertices
+        
+        This method first finds the four edge vertices of the fault, then interpolates
+        a curve at the target depth based on the left and right boundary vertices.
+        
+        Parameters:
+        -----------
+        target_depth : float
+            Target depth for curve generation (positive value, in km)
+        variable_axis : str, optional
+            Independent variable axis ('x', 'y', or 'auto'). Default: 'auto'
+            - 'x': Use X-coordinate as independent variable
+            - 'y': Use Y-coordinate as independent variable  
+            - 'auto': Automatically choose best axis based on edge span
+        ascending : bool, optional
+            Sort order for the independent variable (default: True)
+        depth_tolerance : float, optional
+            Tolerance for interpolating at target depth (default: 0.1 km)
+        output_file : str, optional
+            Output GMT format file path (default: None, no file output)
+        verbose : bool, optional
+            Enable detailed output messages (default: True)
+        interpolation_method : str, optional
+            Interpolation method for griddata ('linear', 'nearest', 'cubic'). Default: 'linear'
+        num_points : int or str, optional
+            Number of points to generate in the curve (default: 'auto')
+            If 'auto', interpolates between top and bottom edge point counts
+        top_tolerance : float, optional
+            Tolerance for finding top edge vertices (default: 0.01 km)
+        bottom_tolerance : float, optional
+            Tolerance for finding bottom edge vertices (default: 0.01 km)
+        method : str, optional
+            Method for edge reconstruction (default: 'hybrid')
+        merge_threshold : float, optional
+            Threshold for merging duplicate vertices (default: 0.5)
+            
+        Returns:
+        --------
+        curve_lonlat : ndarray
+            Interpolated curve points (N, 3) in [longitude, latitude, depth] format
+        curve_info : dict
+            Dictionary containing interpolation information
+        """
+        from scipy.interpolate import griddata
+        
+        if verbose:
+            print(f"Interpolating curve at depth {target_depth:.2f} km for triangular fault {self.name}")
+        
+        target_depth = abs(target_depth)  # Ensure positive depth
+        
+        # First, find the four edge vertices if not already found
+        if not hasattr(self, 'edge_vertices') or not hasattr(self, 'edge_vertex_indices'):
+            if verbose:
+                print("Finding fault four edge vertices...")
+            self.find_fault_fouredge_vertices(
+                top_tolerance=top_tolerance, 
+                bottom_tolerance=bottom_tolerance,
+                refind=True, 
+                method=method, 
+                merge_threshold=merge_threshold
+            )
+        
+        # Get the four edge vertices
+        left_vertices = self.edge_vertices['left']
+        right_vertices = self.edge_vertices['right']
+        top_vertices = self.edge_vertices['top']
+        bottom_vertices = self.edge_vertices['bottom']
+        
+        if verbose:
+            print(f"Found edge vertices:")
+            print(f"  Left edge: {len(left_vertices)} vertices")
+            print(f"  Right edge: {len(right_vertices)} vertices")
+            print(f"  Top edge: {len(top_vertices)} vertices")
+            print(f"  Bottom edge: {len(bottom_vertices)} vertices")
+        
+        # Determine variable axis based on edge span
+        if variable_axis == 'auto':
+            x_range_top = np.max(top_vertices[:, 0]) - np.min(top_vertices[:, 0])
+            x_range_bottom = np.max(bottom_vertices[:, 0]) - np.min(bottom_vertices[:, 0])
+            y_range_top = np.max(top_vertices[:, 1]) - np.min(top_vertices[:, 1])
+            y_range_bottom = np.max(bottom_vertices[:, 1]) - np.min(bottom_vertices[:, 1])
+
+            x_range_avg = (x_range_top + x_range_bottom) / 2
+            y_range_avg = (y_range_top + y_range_bottom) / 2
+
+            variable_axis = 'x' if x_range_avg >= y_range_avg else 'y'
+
+            if verbose:
+                print(f"Auto-selected variable axis: {variable_axis}")
+                print(f"Average X span: {x_range_avg:.2f} km, Average Y span: {y_range_avg:.2f} km")
+
+        axis_idx = 0 if variable_axis.lower() == 'x' else 1
+        other_idx = 1 if variable_axis.lower() == 'x' else 0
+        
+        # Determine number of points based on top and bottom edge counts
+        if num_points == 'auto':
+            top_count = len(top_vertices)
+            bottom_count = len(bottom_vertices)
+            
+            # Get depths for interpolation
+            top_depth = np.mean(np.abs(top_vertices[:, 2]))
+            bottom_depth = np.mean(np.abs(bottom_vertices[:, 2]))
+            
+            # Linear interpolation of point count based on depth
+            if bottom_depth > top_depth:
+                depth_factor = (target_depth - top_depth) / (bottom_depth - top_depth)
+                depth_factor = max(0, min(1, depth_factor))  # Clamp to [0, 1]
+                num_points = int(top_count + depth_factor * (bottom_count - top_count))
+            else:
+                num_points = top_count
+            
+            num_points = max(10, num_points)  # Minimum 10 points
+            
+            if verbose:
+                print(f"Interpolated point count: {num_points} (top: {top_count}, bottom: {bottom_count})")
+        
+        # Find boundary coordinates at target depth by interpolating left and right edges
+        # Interpolate left boundary
+        left_depths = np.abs(left_vertices[:, 2])
+        if len(left_vertices) > 1:
+            left_boundary_coord = np.interp(target_depth, left_depths, left_vertices[:, axis_idx])
+            left_other_coord = np.interp(target_depth, left_depths, left_vertices[:, other_idx])
+        else:
+            left_boundary_coord = left_vertices[0, axis_idx]
+            left_other_coord = left_vertices[0, other_idx]
+        
+        # Interpolate right boundary
+        right_depths = np.abs(right_vertices[:, 2])
+        if len(right_vertices) > 1:
+            right_boundary_coord = np.interp(target_depth, right_depths, right_vertices[:, axis_idx])
+            right_other_coord = np.interp(target_depth, right_depths, right_vertices[:, other_idx])
+        else:
+            right_boundary_coord = right_vertices[0, axis_idx]
+            right_other_coord = right_vertices[0, other_idx]
+        
+        if verbose:
+            coord_name = 'X' if variable_axis.lower() == 'x' else 'Y'
+            print(f"Boundary {coord_name} coordinates at depth {target_depth:.2f} km:")
+            print(f"  Left boundary: {left_boundary_coord:.3f}")
+            print(f"  Right boundary: {right_boundary_coord:.3f}")
+        
+        # Generate interpolation points along the independent axis
+        if ascending:
+            target_coords = np.linspace(left_boundary_coord, right_boundary_coord, num_points)
+        else:
+            target_coords = np.linspace(right_boundary_coord, left_boundary_coord, num_points)
+        
+        # Collect all vertices for interpolation
+        all_vertices = np.vstack([left_vertices, right_vertices, top_vertices, bottom_vertices])
+        # Remove duplicates based on coordinates
+        unique_vertices = []
+        tolerance = merge_threshold
+        for vertex in all_vertices:
+            is_duplicate = False
+            for unique_vertex in unique_vertices:
+                if np.linalg.norm(vertex - unique_vertex) < tolerance:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_vertices.append(vertex)
+        
+        all_vertices = np.array(unique_vertices)
+        
+        if verbose:
+            print(f"Using {len(all_vertices)} unique vertices for interpolation")
+        
+        # Perform 2D interpolation to get the other coordinate
+        points = np.column_stack([all_vertices[:, axis_idx], all_vertices[:, 2]])  # (variable_axis, depth)
+        values = all_vertices[:, other_idx]  # other coordinate values
+        
+        # Create target points for interpolation
+        target_points = np.column_stack([target_coords, np.full(num_points, target_depth)])
+        
+        # Interpolate the other coordinate
+        try:
+            target_other_coords = griddata(points, values, target_points, method=interpolation_method)
+            
+            # Handle NaN values by using nearest neighbor interpolation as fallback
+            nan_mask = np.isnan(target_other_coords)
+            if np.any(nan_mask):
+                if verbose:
+                    print(f"Found {np.sum(nan_mask)} NaN values, using nearest neighbor fallback")
+                target_other_coords[nan_mask] = griddata(points, values, target_points[nan_mask], method='nearest')
+            
+        except Exception as e:
+            if verbose:
+                print(f"Interpolation failed: {e}, using linear interpolation between boundaries")
+            # Fallback: linear interpolation between left and right boundaries
+            target_other_coords = np.linspace(left_other_coord, right_other_coord, num_points)
+        
+        # Create curve points
+        if variable_axis.lower() == 'x':
+            curve_points = np.column_stack([target_coords, target_other_coords, np.full(num_points, target_depth)])
+        else:
+            curve_points = np.column_stack([target_other_coords, target_coords, np.full(num_points, target_depth)])
+        
+        # Remove any remaining NaN values
+        valid_mask = ~np.isnan(curve_points).any(axis=1)
+        curve_points = curve_points[valid_mask]
+        
+        if len(curve_points) == 0:
+            raise ValueError("Interpolation failed - no valid points generated")
+        
+        if verbose:
+            print(f"Generated {len(curve_points)} valid curve points")
+            print(f"Depth range: {curve_points[:, 2].min():.3f} - {curve_points[:, 2].max():.3f} km")
+        
+        # Convert to longitude/latitude coordinates
+        x_coords = curve_points[:, 0]
+        y_coords = curve_points[:, 1]
+        depths = curve_points[:, 2]
+        
+        lon_coords, lat_coords = self.xy2ll(x_coords, y_coords)
+        curve_lonlat = np.column_stack([lon_coords, lat_coords, depths])
+        
+        if verbose:
+            print(f"Coordinate conversion completed")
+            print(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
+            print(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
+        
+        # Create curve info
+        curve_info = {
+            'method': f'edge_based_{interpolation_method}',
+            'edge_vertices_used': {
+                'left': len(left_vertices),
+                'right': len(right_vertices), 
+                'top': len(top_vertices),
+                'bottom': len(bottom_vertices)
+            },
+            'variable_axis': variable_axis,
+            'point_count': len(curve_points),
+            'depth_range': [curve_points[:, 2].min(), curve_points[:, 2].max()],
+            'target_depth': target_depth,
+            'interpolation_method': interpolation_method,
+            'coordinate_system': 'longitude_latitude',
+            'fault_name': self.name,
+            'boundary_coords': {
+                'left': left_boundary_coord,
+                'right': right_boundary_coord
+            },
+            'lon_range': [lon_coords.min(), lon_coords.max()],
+            'lat_range': [lat_coords.min(), lat_coords.max()]
+        }
+        
+        # Output to GMT file if requested
+        if output_file is not None:
+            self._write_curve_lonlat_to_gmt(curve_lonlat, output_file, curve_info, verbose)
+        
+        return curve_lonlat, curve_info
+    
+    def _write_curve_lonlat_to_gmt(self, curve_lonlat, output_file, curve_info, verbose):
+        """
+        Write longitude/latitude curve to GMT format file for triangular patches
+        """
+        import os
+        
+        try:
+            # Create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            with open(output_file, 'w') as f:
+                # Write comprehensive header
+                f.write(f"# Interpolated triangular mesh curve for {self.name}\n")
+                f.write(f"# Target depth: {curve_info['target_depth']:.2f} km\n")
+                f.write(f"# Actual depth range: {curve_info['depth_range'][0]:.3f} - {curve_info['depth_range'][1]:.3f} km\n")
+                f.write(f"# Interpolation method: {curve_info['method']}\n")
+                # f.write(f"# Source vertices: {curve_info['source_vertices']}\n")
+                f.write(f"# Variable axis: {curve_info['variable_axis']}\n")
+                f.write(f"# Point count: {curve_info['point_count']}\n")
+                # f.write(f"# Depth tolerance: {curve_info['depth_tolerance']:.3f} km\n")
+                f.write(f"# Longitude range: {curve_info['lon_range'][0]:.6f} to {curve_info['lon_range'][1]:.6f}\n")
+                f.write(f"# Latitude range: {curve_info['lat_range'][0]:.6f} to {curve_info['lat_range'][1]:.6f}\n")
+                f.write(f"# Format: Longitude Latitude Depth\n")
+                f.write(f"# Coordinate system: WGS84\n")
+                f.write(f"# Mesh type: Triangular patches\n")
+                f.write(f">\n")  # GMT segment separator
+                
+                # Write data points
+                for point in curve_lonlat:
+                    f.write(f"{point[0]:.8f} {point[1]:.8f} {point[2]:.3f}\n")
+            
+            if verbose:
+                print(f"Triangular mesh curve written to GMT file: {output_file}")
+                print(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
+                
+        except Exception as e:
+            print(f"Error writing GMT file: {e}")
+            raise
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -2085,7 +2495,7 @@ class TriangularPatches(Fault):
             * None
         '''
 
-        from .findTriFaultEdges  import find_adjacent_triangles
+        from .edge_utils.mesh_edge_finder  import find_adjacent_triangles
 
         if verbose:
             print("------------------------------------------")
@@ -2192,7 +2602,7 @@ class TriangularPatches(Fault):
             bottom_tolerance: A float specifying the tolerance for determining the bottom boundary of the mesh.
             remove_corner: A boolean specifying whether to remove the corner triangles from the boundary triangles.
         '''
-        from .findTriFaultEdges import find_boundary_and_corner_triangles
+        from .edge_utils.mesh_edge_finder import find_boundary_and_corner_triangles
 
         # Cache the vertices and faces arrays
         vertex_indices = self.Faces.astype(np.int_)
@@ -2215,7 +2625,7 @@ class TriangularPatches(Fault):
         # All done
         return
 
-    def find_fault_edge_vertices(self, top_tolerance=0.01, bottom_tolerance=0.01, refind=False):
+    def find_fault_edge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False):
         '''
         Left: In West, Right: In East
         '''
@@ -2257,8 +2667,9 @@ class TriangularPatches(Fault):
         # All Done
         return
     
-    def find_fault_fouredge_vertices(self, top_tolerance=0.01, bottom_tolerance=0.01, refind=False):
-        from .findTriFaultEdges import find_left_or_right_edgeline_points
+    def find_fault_fouredge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, 
+                                     refind=False, method='hybrid', merge_threshold=0.02):
+        from .edge_utils.mesh_edge_finder import find_left_or_right_edgeline_points
         if not hasattr(self, 'edge_triangles_indices') or refind:
             self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
 
@@ -2272,14 +2683,14 @@ class TriangularPatches(Fault):
         top_depth = np.min(top_pnts[:, -1])
         bottom_depth = np.max(bottom_pnts[:, -1])
     
-        top_flag = np.where(top_pnts[:, -1] <= top_depth + top_tolerance)[0]
+        top_flag = np.where(np.abs(top_pnts[:, -1] - top_depth) <= top_tolerance)[0]
         top_inds = top_inds[top_flag]
         top_pnts = top_pnts[top_flag]
         top_sortinds = np.argsort(top_pnts[:, 0])
         top_inds = top_inds[top_sortinds]
         top_pnts = top_pnts[top_sortinds]
     
-        bottom_flag = np.where(bottom_pnts[:, -1] >= bottom_depth - bottom_tolerance)[0]
+        bottom_flag = np.where(np.abs(bottom_pnts[:, -1] - bottom_depth) <= bottom_tolerance)[0]
         bottom_inds = bottom_inds[bottom_flag]
         bottom_pnts = bottom_pnts[bottom_flag]
         bottom_sortinds = np.argsort(bottom_pnts[:, 0])
@@ -2298,10 +2709,12 @@ class TriangularPatches(Fault):
             'left': left_pnts, 
             'right': right_pnts
         }
-    
-        top_edge, top_inds = self.find_ordered_edge_vertices('top', top_tolerance=0.1, bottom_tolerance=0.1, return_indices=True)
-        bottom_edge, bottom_inds = self.find_ordered_edge_vertices('bottom', top_tolerance=0.1, bottom_tolerance=0.1, return_indices=True)
-    
+
+        top_edge, top_inds = self.find_ordered_edge_vertices('top', top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, return_indices=True,
+                                                              method=method, merge_threshold=merge_threshold)
+        bottom_edge, bottom_inds = self.find_ordered_edge_vertices('bottom', top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, return_indices=True,
+                                                              method=method, merge_threshold=merge_threshold)
+
         self.edge_vertex_indices['top'] = top_inds
         self.edge_vertex_indices['bottom'] = bottom_inds
         self.edge_vertices['top'] = top_edge
@@ -3389,7 +3802,7 @@ class TriangularPatches(Fault):
 
     def find_ordered_edge_vertices(self, edge='top', depth=None, buffer_depth=0.1, 
                                    top_tolerance=0.1, bottom_tolerance=0.1, refind=True,
-                                   return_indices=False):
+                                   return_indices=False, merge_threshold=0.5, method='hybrid'):
         """
         Find the ordered edge vertices from the edge triangles.
     
@@ -3409,7 +3822,11 @@ class TriangularPatches(Fault):
             Whether to refind the edge vertices. Default is True.
         return_indices : bool, optional
             Whether to return the indices of the ordered vertices. Default is False.
-    
+        merge_threshold : float, optional
+            The threshold for merging vertices. Default is 0.5.
+        method : str, optional
+            The method to use for reconstruction. Default is 'hybrid'.
+
         Returns:
         --------
         ordered_vertices : list
@@ -3425,13 +3842,11 @@ class TriangularPatches(Fault):
             self.depth = np.max(self.Vertices[:, 2])
             depth = self.top if edge == 'top' else self.depth
     
-        edge_faces = self.Faces[self.edge_dict[edge]]
+        edge_faces = self.Faces[self.edge_triangles_indices[edge]]
         vertices = self.Vertices[edge_faces]
     
         # Select points within depth and buffer depth
-        min_depth = depth - buffer_depth
-        max_depth = depth + buffer_depth
-        edge_points_mask = (vertices[:, :, 2] >= min_depth) & (vertices[:, :, 2] <= max_depth)
+        edge_points_mask = np.abs(vertices[:, :, 2] - depth) <= buffer_depth
         edge_points_index = set(edge_faces[edge_points_mask])
     
         # Create a dictionary to count occurrences of each vertex
@@ -3443,7 +3858,31 @@ class TriangularPatches(Fault):
                         vertex_count[vertex] += 1
                     else:
                         vertex_count[vertex] = 1
-    
+
+        # Count how many vertices have count=1
+        count_ones = sum(1 for count in vertex_count.values() if count == 1)
+
+        # If more than 2 vertices have count=1, use CurveReconstructor
+        if count_ones > 2:
+            # print(f"Found {count_ones} vertices with count=1, using CurveReconstructor...")
+            
+            from .edge_utils.fault_edge_reconstruction import CurveReconstructor
+            
+            vertex_indices = list(vertex_count.keys())
+            vertex_positions = self.Vertices[vertex_indices]
+            
+            reconstructor = CurveReconstructor(vertex_positions, merge_threshold=merge_threshold)
+            _, _, original_path = reconstructor.reconstruct(method=method, optimize=False)
+            
+            # Map back to original vertex indices
+            ordered_vertices = [vertex_indices[i] for i in original_path]
+            ordered_edge_points = self.Vertices[ordered_vertices]
+
+            if return_indices:
+                return ordered_edge_points, ordered_vertices
+            else:
+                return ordered_edge_points
+
         # Find the starting vertex (vertex with only one occurrence)
         start_vertex = None
         for vertex, count in vertex_count.items():
@@ -3480,7 +3919,8 @@ class TriangularPatches(Fault):
         else:
             return ordered_edge_points
 
-    def getfaultEdgeTriangles_and_EdgeLines(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False):
+    def getfaultEdgeTriangles_and_EdgeLines(self, top_tolerance=0.1, bottom_tolerance=0.1, 
+                                            refind=False, method='hybrid', merge_threshold=0.5):
         '''
         Left: In West, Right: In East
         Left: In North, Right: In South if the left/right can not be determined from west/east
@@ -3496,8 +3936,9 @@ class TriangularPatches(Fault):
             fault.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
     
         if not hasattr(fault, 'edge_vertex_indices') or refind:
-            fault.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=True)
-    
+            fault.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance,
+                                               refind=True, method=method, merge_threshold=merge_threshold)
+
         def sort_edge_triangles(edge):
             edge_tri_sort = []
             for a_ind, b_ind in np.repeat(self.edge_vertex_indices[edge], 2)[1:-1].reshape(-1, 2):

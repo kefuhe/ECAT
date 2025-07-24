@@ -96,7 +96,7 @@ def parse_update(config, n_datasets, param_name="update", dataset_names=None):
 
 
 def parse_initial_values(config, n_datasets, param_name="initial_value", default_value=0.0, 
-                        min_value=None, dataset_names=None):
+                        min_value=None, dataset_names=None, print_name=None):
     """
     Parse initial values from configuration with enhanced flexibility and validation.
     
@@ -108,6 +108,8 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
         Number of datasets
     param_name : str, optional
         Name of the parameter being parsed. Default is "initial_value"
+    print_name : str, optional
+        Name to use for printing in error messages. If None, uses param_name.
     default_value : float, optional
         Default value to use if parameter is missing. Default is 0.0
     min_value : float, optional
@@ -124,6 +126,9 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     ---------
     >>> parse_initial_values({"initial_value": 0.05}, 3)
     [0.05, 0.05, 0.05]
+
+    >>> parse_initial_values({"initial_value": [0.01]}, 3)
+    [0.01, 0.01, 0.01]
     
     >>> parse_initial_values({"initial_value": [0.01, 0.02, 0.015]}, 3)
     [0.01, 0.02, 0.015]
@@ -142,6 +147,9 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     [0.01, 0.0, 0.02]
     """
     initial_value = config.get(param_name)
+
+    if print_name is None:
+        print_name = param_name
     
     # Handle missing parameter
     if initial_value is None:
@@ -153,14 +161,17 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     
     # Handle list of values
     elif isinstance(initial_value, list):
+        if len(initial_value) == 1:
+            # Single value in list, expand it
+            return [float(initial_value[0])] * n_datasets
         if len(initial_value) != n_datasets:
-            raise ValueError(f"Length of '{param_name}' list ({len(initial_value)}) does not match number of datasets ({n_datasets})")
+            raise ValueError(f"Length of '{print_name}' list ({len(initial_value)}) does not match number of datasets ({n_datasets})")
         
         # Convert all values to float
         processed_values = []
         for i, val in enumerate(initial_value):
             if not isinstance(val, (int, float)):
-                raise ValueError(f"All values in '{param_name}' must be numbers, got {type(val)} at index {i}")
+                raise ValueError(f"All values in '{print_name}' must be numbers, got {type(val)} at index {i}")
             processed_values.append(float(val))
         
         return processed_values
@@ -168,14 +179,14 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     # Handle dictionary format (dataset names to values mapping)
     elif isinstance(initial_value, dict):
         if dataset_names is None:
-            raise ValueError(f"Dataset names must be provided when using dictionary format for '{param_name}'")
+            raise ValueError(f"Dataset names must be provided when using dictionary format for '{print_name}'")
         
         processed_values = []
         for i, dataset_name in enumerate(dataset_names):
             if dataset_name in initial_value:
                 val = initial_value[dataset_name]
                 if not isinstance(val, (int, float)):
-                    raise ValueError(f"Value for dataset '{dataset_name}' in '{param_name}' must be a number, got {type(val)}")
+                    raise ValueError(f"Value for dataset '{dataset_name}' in '{print_name}' must be a number, got {type(val)}")
                 processed_values.append(float(val))
             else:
                 # Use default value for datasets not specified in dictionary

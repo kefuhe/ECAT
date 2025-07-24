@@ -6,4 +6,4 @@ setup(name = 'csi',
     author_email = 'romain.jolivet@ens.fr',
     url = 'http://www.geologie.ens.fr/~jolivet/csi/index.html',
     description = 'CSI stands for Classic Slip Inversion',
-    packages=['csi'])
+    packages=['csi', 'csi.edge_utils'],)

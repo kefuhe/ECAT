@@ -90,6 +90,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         --------
         None
         """
+        from .config_utils import parse_initial_values
+
         # Ensure data_weight and sigma are either both None or only one is provided
         if (data_weight is not None) and (sigma is not None):
             raise ValueError("data_weight and sigma must either both be None or only one is provided.")
@@ -108,13 +110,34 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             if data_log_scaled:
                 sigma = np.power(10, sigma)
             data_weight = 1.0 / sigma
+
+            print(f'Using formula: data_weight = 1.0 / sigma, with sigma = {sigma}')
         else:
+            n_datasets = len(self.config.geodata.get('data', []))
+            data_names = [d.name for d in self.config.geodata.get('data', [])]
+
+            wgt_dict = {'initial_value': data_weight}
+            data_weight = parse_initial_values(wgt_dict, n_datasets=n_datasets,
+                                                param_name='initial_value',  # initial_value or 'values'
+                                                dataset_names=data_names,
+                                                print_name='data_weight')
             data_weight = np.array(data_weight)
+            print(f"Parsed data_weight: {data_weight}")
     
         # Handle penalty weights
         if penalty_weight is None:
             if alpha is None:
                 alpha = self.config.alpha['initial_value']
+                print('alpha is from config:', alpha)
+            else:
+                n_faults = len(self.faults)
+                fault_names = [fault.name for fault in self.faults]
+                alpha = parse_initial_values({'initial_value': alpha},
+                                                n_datasets=n_faults,
+                                                param_name='initial_value',  # initial_value or 'values'
+                                                dataset_names=fault_names,
+                                                print_name='alpha')
+                print('alpha is from input:', alpha)
             alpha = np.array(alpha)
             fault_index = self.config.alpha['faults_index']
             alpha = alpha[fault_index]
@@ -124,14 +147,19 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 penalty_weight = 1.0 / np.power(10, alpha)
             else:
                 penalty_weight = 1.0 / alpha
+            print(f'Using formula: penalty_weight = 1.0 / alpha, with alpha = {alpha} and fault_index = {fault_index}')
         else:
-            if isinstance(penalty_weight, (int, float)):
-                penalty_weight = np.ones(len(self.faults)) * penalty_weight
-            elif isinstance(penalty_weight, (list, np.ndarray)):
-                penalty_weight = np.array(penalty_weight)
-                assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
-            else:
-                raise ValueError("penalty_weight should be a scalar or a list of scalars.")
+            n_faults = len(self.faults)
+            fault_names = [fault.name for fault in self.faults]
+            penalty_weight = parse_initial_values({'initial_value': penalty_weight},
+                                                  n_datasets=n_faults,
+                                                  param_name='initial_value',  # initial_value or 'values'
+                                                  dataset_names=fault_names,
+                                                  print_name='penalty_weight')
+            fault_index = self.config.alpha['faults_index']
+            penalty_weight = penalty_weight[fault_index]
+            penalty_weight = np.array(penalty_weight)
+            print(f"Parsed penalty_weight: {penalty_weight} with fault_index: {fault_index}")
     
         # Handle smoothing constraints
         if smoothing_constraints is not None:
@@ -347,19 +375,22 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             if isinstance(penalty_weight, (int, float)):
                 penalty_weight = np.ones(len(self.faults)) * penalty_weight
             elif isinstance(penalty_weight, (list, np.ndarray)):
-                assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
+                if len(penalty_weight) == 1:
+                    # Single value in list, expand it
+                    penalty_weight = np.ones(len(self.faults)) * penalty_weight[0]
+                assert len(penalty_weight) == len(self.faults) or len(penalty_weight) == 1, "The length of penalty_weight should be equal to the number of faults or a single value."
             else:
                 raise ValueError("penalty_weight should be a scalar or a list of scalars.")
         else:
-            penalty_weight = np.array(self.config.alpha['initial_value'])
+            alpha = np.array(self.config.alpha['initial_value'])
             fault_index = self.config.alpha['faults_index']
-            penalty_weight = penalty_weight[fault_index]
-            assert len(penalty_weight) == len(self.faults), "The length of penalty_weight should be equal to the number of faults."
+            alpha = alpha[fault_index]
+            assert len(alpha) == len(self.faults), "The length of alpha should be equal to the number of faults."
             if self.config.alpha['log_scaled']:
-                penalty_weight = 1.0 / np.power(10, penalty_weight)
+                penalty_weight = 1.0 / np.power(10, alpha)
             else:
-                penalty_weight = 1.0 / penalty_weight
-    
+                penalty_weight = 1.0 / alpha
+
         if GL_combined is None:
             GL_combined_poly = []
             for fault, ipenalty_weight in zip(self.faults, penalty_weight):
