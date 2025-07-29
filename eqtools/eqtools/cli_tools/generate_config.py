@@ -86,7 +86,7 @@ geodata:
 alpha:
   enabled: true  # Whether to enable smoothing
   update: true  # Whether to update alpha during inversion
-  initial_value: [-2.0]  # Initial value for alpha
+  initial_value: -2.0  # Initial value for alpha. Optional: (float, list of floats with same length as alpha['faults'], or a single float list)
   log_scaled: true  # Whether alpha is log-scaled
   faults: null  # List of fault names for smoothing
 

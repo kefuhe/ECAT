@@ -111,7 +111,10 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 sigma = np.power(10, sigma)
             data_weight = 1.0 / sigma
 
-            print(f'Using formula: data_weight = 1.0 / sigma, with sigma = {sigma}')
+            # if data_log_scaled:
+            #     print(f'Using formula: data_weight = 1.0 / 10^sigma, with sigma = {sigma}')
+            # else:
+            #     print(f'Using formula: data_weight = 1.0 / sigma, with sigma = {sigma}')
         else:
             n_datasets = len(self.config.geodata.get('data', []))
             data_names = [d.name for d in self.config.geodata.get('data', [])]
@@ -122,13 +125,13 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 dataset_names=data_names,
                                                 print_name='data_weight')
             data_weight = np.array(data_weight)
-            print(f"Parsed data_weight: {data_weight}")
+            # print(f"Parsed data_weight: {data_weight}")
     
         # Handle penalty weights
         if penalty_weight is None:
             if alpha is None:
                 alpha = self.config.alpha['initial_value']
-                print('alpha is from config:', alpha)
+                # print('alpha is from config:', alpha)
             else:
                 n_faults = len(self.faults)
                 fault_names = [fault.name for fault in self.faults]
@@ -137,7 +140,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 param_name='initial_value',  # initial_value or 'values'
                                                 dataset_names=fault_names,
                                                 print_name='alpha')
-                print('alpha is from input:', alpha)
+                # print('alpha is from input:', alpha)
             alpha = np.array(alpha)
             fault_index = self.config.alpha['faults_index']
             alpha = alpha[fault_index]
@@ -147,7 +150,10 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 penalty_weight = 1.0 / np.power(10, alpha)
             else:
                 penalty_weight = 1.0 / alpha
-            print(f'Using formula: penalty_weight = 1.0 / alpha, with alpha = {alpha} and fault_index = {fault_index}')
+            # if penalty_log_scaled:
+            #     print(f'Using formula: penalty_weight = 1.0 / 10^alpha, with alpha = {alpha} and fault_index = {fault_index}')
+            # else:
+            #     print(f'Using formula: penalty_weight = 1.0 / alpha, with alpha = {alpha} and fault_index = {fault_index}')
         else:
             n_faults = len(self.faults)
             fault_names = [fault.name for fault in self.faults]
@@ -157,9 +163,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                   dataset_names=fault_names,
                                                   print_name='penalty_weight')
             fault_index = self.config.alpha['faults_index']
-            penalty_weight = penalty_weight[fault_index]
             penalty_weight = np.array(penalty_weight)
-            print(f"Parsed penalty_weight: {penalty_weight} with fault_index: {fault_index}")
+            penalty_weight = penalty_weight[fault_index]
+            # print(f"Parsed penalty_weight: {penalty_weight} with fault_index: {fault_index}")
     
         # Handle smoothing constraints
         if smoothing_constraints is not None:
@@ -193,7 +199,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
             self.combine_GL_poly(penalty_weight=penalty_weight)
     
-    def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True):
+    def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True, equal_aspect=False):
         """
         Run the inversion for a range of penalty weights.
     
@@ -209,6 +215,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             The unit for RMS. Default is 'm'. If set to other values, RMS will be scaled accordingly.
         verbose : bool, optional
             Whether to print the results of the inversion. Default is True.
+        equal_aspect : bool, optional
+            If True, set equal aspect ratio for the plot. Default is False.
         """
         results = []
     
@@ -233,7 +241,11 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 'VR': vr
             }
             results.append(result)
-            output = f'Penalty_weight: {ipenalty:.1f}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
+            # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
+            penalty_str = f'{ipenalty:.4f}'.rstrip('0')
+            if penalty_str.endswith('.'):
+                penalty_str += '0'
+            output = f'Penalty_weight: {penalty_str}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
             print(output)
     
         # Convert results to DataFrame
@@ -244,11 +256,12 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             df.to_csv(output_file, index=False)
     
         # Default plot
-        self.plot_roughness_vs_rms(df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=preferred_penalty_weight, rms_unit=rms_unit)
-    
+        self.plot_roughness_vs_rms(df, output_file='Roughness_vs_RMS.png', show=True, 
+                                   preferred_penalty_weight=preferred_penalty_weight, rms_unit=rms_unit, equal_aspect=equal_aspect)
+
         return df
     
-    def plot_roughness_vs_rms(self, df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=None, rms_unit='m'):
+    def plot_roughness_vs_rms(self, df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=None, rms_unit='m', equal_aspect=False):
         """
         Plot Roughness vs RMS and save the plot to a file.
     
@@ -264,6 +277,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
         rms_unit : str, optional
             The unit for RMS. Default is 'm'. If set to other values, RMS will be scaled accordingly.
+        equal_aspect : bool, optional
+            If True, set equal aspect ratio for the plot. Default is False.
         """
         # Scale RMS values if necessary
         rms_values = df.RMS.values
@@ -276,7 +291,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 raise ValueError(f"Unsupported RMS unit: {rms_unit}")
     
         with sci_plot_style():
-            plt.plot(df.Roughness.values[1:], rms_values[1:], marker='o', linestyle='-', label='L-Curve')
+            plt.plot(df.Roughness.values[:], rms_values[:], marker='o', linestyle='-', label='L-Curve')
             
             # Highlight the preferred penalty weight point if specified
             if preferred_penalty_weight is not None:
@@ -288,6 +303,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             plt.ylabel(f'RMS ({rms_unit})')
             plt.legend()
             plt.grid(True)
+            if equal_aspect:
+                plt.gca().set_aspect('equal', adjustable='box')
             plt.savefig(output_file, dpi=600)
             if show:
                 plt.show()

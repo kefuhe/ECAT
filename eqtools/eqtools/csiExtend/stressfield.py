@@ -4,6 +4,7 @@ A class that deals with StressField data.
 Written by R. Jolivet, Feb 2014.
 
 Modified by kfhe, at 10/24/2022
+Modified by kfhe, at 07/29/2025
 '''
 
 # Externals

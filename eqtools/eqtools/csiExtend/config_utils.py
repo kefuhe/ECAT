@@ -179,7 +179,8 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     # Handle dictionary format (dataset names to values mapping)
     elif isinstance(initial_value, dict):
         if dataset_names is None:
-            raise ValueError(f"Dataset names must be provided when using dictionary format for '{print_name}'")
+            # raise ValueError(f"Dataset names must be provided when using dictionary format for '{print_name}'")
+            raise ValueError(f'Not be supported when using dictionary format for {print_name}')
         
         processed_values = []
         for i, dataset_name in enumerate(dataset_names):
@@ -197,6 +198,190 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     else:
         raise ValueError(f"'{param_name}' must be a number, list of numbers, or dictionary mapping dataset names to numbers, got {type(initial_value)}")
 
+def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_name="dataFaults"):
+    """
+    Parse dataFaults configuration with enhanced flexibility.
+    
+    Parameters:
+    -----------
+    data_faults_config : None, list, or dict
+        Configuration for data faults
+    all_faultnames : list
+        List of all available fault names
+    all_datanames : list
+        List of all data names
+    param_name : str, optional
+        Name of the parameter for error messages
+        
+    Returns:
+    --------
+    list
+        List of fault name lists for each dataset
+        
+    Examples:
+    ---------
+    >>> parse_data_faults(None, ["f1", "f2"], ["d1", "d2"])
+    [["f1", "f2"], ["f1", "f2"]]
+    
+    >>> parse_data_faults([None, ["f1"]], ["f1", "f2"], ["d1", "d2"])
+    [["f1", "f2"], ["f1"]]
+    
+    >>> parse_data_faults({"d1": "f1", "d2": None}, ["f1", "f2"], ["d1", "d2"])
+    [["f1"], ["f1", "f2"]]
+    """
+    
+    def _normalize_fault_item(item, all_faultnames, param_name):
+        """Normalize a single fault item to a list of fault names"""
+        if item is None:
+            return all_faultnames.copy()
+        elif isinstance(item, str):
+            if item not in all_faultnames:
+                raise ValueError(f"Fault name '{item}' in {param_name} not found in all_faultnames")
+            return [item]
+        elif isinstance(item, list):
+            # Check if it's exactly all_faultnames
+            if set(item) == set(all_faultnames):
+                return all_faultnames.copy()
+            # Check if it's a subset
+            elif set(item).issubset(set(all_faultnames)):
+                return item.copy()
+            else:
+                invalid_names = set(item) - set(all_faultnames)
+                raise ValueError(f"Invalid fault names in {param_name}: {invalid_names}")
+        else:
+            raise ValueError(f"Invalid fault specification in {param_name}: {item}")
+    
+    # Case 1: None - expand to all_faultnames for all datasets
+    if data_faults_config is None:
+        return [all_faultnames.copy() for _ in all_datanames]
+    
+    # Case 2: List format
+    elif isinstance(data_faults_config, list):
+        if len(data_faults_config) != len(all_datanames):
+            raise ValueError(f"Length of {param_name} ({len(data_faults_config)}) must equal "
+                           f"number of datasets ({len(all_datanames)})")
+        
+        result = []
+        for i, item in enumerate(data_faults_config):
+            try:
+                normalized = _normalize_fault_item(item, all_faultnames, f"{param_name}[{i}]")
+                result.append(normalized)
+            except ValueError as e:
+                raise ValueError(f"Error in {param_name}[{i}] for dataset '{all_datanames[i]}': {str(e)}")
+        
+        return result
+    
+    # Case 3: Dictionary format
+    elif isinstance(data_faults_config, dict):
+        result = []
+        
+        for dataname in all_datanames:
+            if dataname in data_faults_config:
+                try:
+                    normalized = _normalize_fault_item(data_faults_config[dataname], 
+                                                     all_faultnames, 
+                                                     f"{param_name}['{dataname}']")
+                    result.append(normalized)
+                except ValueError as e:
+                    raise ValueError(f"Error in {param_name}['{dataname}']: {str(e)}")
+            else:
+                # Default to all_faultnames for unspecified datasets
+                result.append(all_faultnames.copy())
+        
+        # Check for invalid dataset names in config
+        invalid_datasets = set(data_faults_config.keys()) - set(all_datanames)
+        if invalid_datasets:
+            raise ValueError(f"Invalid dataset names in {param_name}: {invalid_datasets}")
+        
+        return result
+    
+    else:
+        raise ValueError(f"{param_name} must be None, a list, or a dictionary")
+
+
+def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFaults"):
+    """
+    Parse alphaFaults configuration with enhanced flexibility.
+    
+    Parameters:
+    -----------
+    alpha_faults_config : None, or list
+        Configuration for alpha faults
+    all_faultnames : list
+        List of all available fault names
+    param_name : str, optional
+        Name of the parameter for error messages
+        
+    Returns:
+    --------
+    list
+        List of fault name lists for each alpha
+        
+    Examples:
+    ---------
+    >>> parse_alpha_faults(None, ["f1", "f2"])
+    [["f1", "f2"]]
+    
+    >>> parse_alpha_faults([None], ["f1", "f2"])
+    [["f1", "f2"]]
+
+    >>> parse_alpha_faults([["f1"], ["f2"]], ["f1", "f2"])
+    [["f1"], ["f2"]]
+    """
+    
+    def _normalize_fault_subset(item, all_faultnames, param_name):
+        """Normalize a fault subset item"""
+        if isinstance(item, str):
+            if item not in all_faultnames:
+                raise ValueError(f"Fault name '{item}' in {param_name} not found in all_faultnames")
+            return [item]
+        elif isinstance(item, list):
+            if not set(item).issubset(set(all_faultnames)):
+                invalid_names = set(item) - set(all_faultnames)
+                raise ValueError(f"Invalid fault names in {param_name}: {invalid_names}")
+            return item.copy()
+        else:
+            raise ValueError(f"Invalid fault specification in {param_name}: {item}")
+    
+    # Case 1: None or [None] - single alpha case
+    if alpha_faults_config is None or (isinstance(alpha_faults_config, list) and 
+                                      len(alpha_faults_config) == 1 and 
+                                      alpha_faults_config[0] is None):
+        return [all_faultnames.copy()]
+    
+    # Case 2: List format
+    elif isinstance(alpha_faults_config, list):
+        if len(alpha_faults_config) > len(all_faultnames):
+            raise ValueError(f"Length of {param_name} ({len(alpha_faults_config)}) must be less than or equal to "
+                           f"number of all faults ({len(all_faultnames)})")
+        
+        result = []
+        all_assigned_faults = set()
+        
+        for i, item in enumerate(alpha_faults_config):
+            try:
+                normalized = _normalize_fault_subset(item, all_faultnames, f"{param_name}[{i}]")
+                result.append(normalized)
+                
+                # Check for overlaps
+                item_set = set(normalized)
+                overlap = all_assigned_faults.intersection(item_set)
+                if overlap:
+                    raise ValueError(f"Fault names {overlap} appear in multiple alpha groups")
+                all_assigned_faults.update(item_set)
+                
+            except ValueError as e:
+                raise ValueError(f"Error in {param_name}[{i}]: {str(e)}")
+        
+        # Check for complete coverage
+        if all_assigned_faults != set(all_faultnames):
+            missing = set(all_faultnames) - all_assigned_faults
+            raise ValueError(f"{param_name} does not cover all fault names. Missing: {missing}")
+        
+        return result
+    
+    else:
+        raise ValueError(f"{param_name} must be None, or a list")
 
 def parse_bounds(bounds_config, param_names, param_type="parameter"):
     """

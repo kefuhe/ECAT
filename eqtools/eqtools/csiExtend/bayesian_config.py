@@ -10,13 +10,14 @@ from csi.insar import insar
 
 # Import utility functions for parsing configuration updates
 from .config_utils import parse_update, parse_initial_values
+from .config_utils import parse_alpha_faults, parse_data_faults
 
 
 class BaseBayesianConfig:
     def __init__(self, config_file='default_config.yml', geodata=None, encoding='utf-8', verbose=False, parallel_rank=None):
-        self.verbose = verbose
+        self.verbose = verbose and (parallel_rank is None or parallel_rank == 0)
         self.parallel_rank = parallel_rank # Rank for parallel processing, if applicable
-        if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+        if self.verbose:
             self._print_initialization_message()
 
         self.config_file = config_file
@@ -219,6 +220,8 @@ class explorefaultConfig(BaseBayesianConfig):
             dataset_names=data_names
         )
         self.geodata['sigmas']['values'] = parsed_initial_values
+        if self.verbose:
+            print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['values']}")
         # print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['values']}")
 
     def load_config(self, config_file, geodata=None):
@@ -388,26 +391,28 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         # Validate the polys
         self._validate_polys(polys)
 
-        # Parse initial values for alpha 
-        n_faults = len(self.faultnames)
-        parsed_initial_values = parse_initial_values(
-            self.alpha,
-            n_faults,
-            param_name='initial_value',  # initial_value or 'values'
-            default_value=0.0,
-            min_value=None,
-            dataset_names=self.faultnames
-        )
-        self.alpha['initial_value'] = parsed_initial_values
-        # print(f"Parsed initial values for alpha: {self.alpha}")
-
-        # Update the GFs parameters based on the geodata and verticals
-        self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
-
         # Set the dataFaults based on the data configuration
         self.set_data_faults(dataFaults)
         # Set the alphaFaults based on the alpha configuration
         self.set_alpha_faults(alphaFaults)
+
+        # Parse initial values for alpha 
+        # n_faults = len(self.faultnames)
+        n_alphas = len(self.alpha.get('faults', []))
+        parsed_initial_values = parse_initial_values(
+            self.alpha,
+            n_alphas,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.0,
+            min_value=None,
+            dataset_names=None
+        )
+        self.alpha['initial_value'] = parsed_initial_values
+        if self.verbose:
+            print(f"Parsed initial values for alpha: {self.alpha['initial_value']}")
+
+        # Update the GFs parameters based on the geodata and verticals
+        self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
 
         # Parse the 'update' parameter in sigmas
         # Added by kfhe at 07/11/2025
@@ -434,8 +439,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             self._initialize_faults_and_assemble_data()
         if multifaults is None:
             self._initialize_faults_and_assemble_data()
-            verbose = self.verbose and (self.parallel_rank is None or self.parallel_rank == 0)
-            multifaults = MyMultiFaultsInversion('myfault', self.faults_list, verbose=verbose)
+            multifaults = MyMultiFaultsInversion('myfault', self.faults_list, verbose=self.verbose)
             multifaults.assembleGFs() # assemble the Green's functions because the data is already assembled
             self.multifaults = multifaults
     
@@ -547,7 +551,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                 else:
                     raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
             elif 'rake_angle' in config_data:
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
     
         # Get the default parameters
@@ -593,20 +597,20 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             if fault_name not in self.faults:
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
     
         # Remove faults not in faultnames from config_data and self.faults
         for fault_name in list(config_data['faults'].keys()):
             if fault_name != 'defaults' and fault_name not in self.faultnames:
                 del config_data['faults'][fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
     
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
     
         # Set the attributes based on the key-value pairs in config_data
@@ -716,71 +720,21 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             }
 
     def set_data_faults(self, dataFaults=None):
-        if dataFaults is not None:
-            self.dataFaults = dataFaults
-        elif self.dataFaults is None:
-            self.dataFaults = [self.faultnames]*len(self.geodata['data'])
-        
-        # Check if self.dataFaults is a list
-        if not isinstance(self.dataFaults, list):
-            raise ValueError("self.dataFaults must be a list")
-        
-        # Check the length of self.dataFaults
-        if len(self.dataFaults) != len(self.geodata['data']):
-            raise ValueError("Length of self.dataFaults should be equal to the length of geodata")
-        
-        # Check contents of self.dataFaults
-        # flatten the list of lists to a single list if sublist is a list
-        self.validate_faults(check_dataFaults=True)
-
-    def validate_faults(self, check_dataFaults=False, check_alphaFaults=False):
-        """
-        Validate the dataFaults or alphaFaults.
-        """
-
-        if check_dataFaults:
-            # Flatten the list of lists to a single list if sublist is a list
-            flattened_dataFaults = [item for sublist in self.dataFaults for item in (sublist if isinstance(sublist, list) else [sublist])]
-            
-            # Check flattened_dataFaults is subset of self.faultnames
-            if not set(flattened_dataFaults).issubset(set(self.faultnames + [None])):
-                raise ValueError("The dataFaults must be a subset of the faultnames in self.multifaults")
-        
-        if check_alphaFaults:
-            # Check if self.alphaFaults does not contain None and all other items are lists
-            if None not in self.alphaFaults:
-                if not all(isinstance(item, list) for item in self.alphaFaults):
-                    raise ValueError("All items in self.alphaFaults must be lists")
-
-                # Flatten the list of lists
-                flattened_faults = [fault for sublist in self.alphaFaults for fault in sublist]
-                
-                # Check if self.alphaFaults contains duplicate items
-                if len(flattened_faults) != len(set(flattened_faults)):
-                    raise ValueError("self.alphaFaults cannot contain duplicate items")
-
-                # Check if the union of self.alphaFaults equals self.faultnames
-                if set(flattened_faults) != set(self.faultnames):
-                    raise ValueError("The union of self.alphaFaults must equal the items in self.faultnames")
+        all_faultnames = self.faultnames
+        all_datanames = [d.name for d in self.geodata['data']]
+        dataFaults = dataFaults if dataFaults is not None else self.dataFaults
+        result = parse_data_faults(dataFaults, all_faultnames, all_datanames, param_name='dataFaults')
+        self.dataFaults = result
+        self.geodata['faults'] = self.dataFaults
+        if self.verbose:
+            print(f"Data faults set to: {self.dataFaults}")
 
     def set_alpha_faults(self, alphaFaults=None):
-        if alphaFaults is not None:
-            self.alphaFaults = alphaFaults
-        elif self.alphaFaults is None:
-            self.alphaFaults = [None]
-
-        # Check if self.alphaFaults is a list
-        if not isinstance(self.alphaFaults, list):
-            raise ValueError("self.alphaFaults must be a list")
-
-        # Check if self.alphaFaults contains more than one None
-        if None in self.alphaFaults and len(self.alphaFaults) > 1:
-            raise ValueError("self.alphaFaults cannot contain None and other items simultaneously")
-
-        # Check if self.alphaFaults does not contain None and all other items are lists
-        self.validate_faults(check_alphaFaults=True)
-        
-        # 
+    
+        all_faultnames = self.faultnames
+        alphaFaults = alphaFaults if alphaFaults is not None else self.alphaFaults
+        result = parse_alpha_faults(alphaFaults, all_faultnames, param_name='alphaFaults')
+        self.alphaFaults = result
         self.alpha['faults'] = self.alphaFaults
         if None in self.alphaFaults:
             self.alphaFaultsIndex = [0] * len(self.faultnames)
@@ -790,6 +744,9 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             # Generate the alphaFaultsIndex based on the order of faultnames
             self.alphaFaultsIndex = [fault_index_map[fault] for fault in self.faultnames]
         self.alpha['faults_index'] = self.alphaFaultsIndex
+
+        if self.verbose:
+            print(f"Alpha faults set to: {self.alphaFaults} with indices {self.alphaFaultsIndex}")
 
     def _validate_fault_configurations(self):
         """
@@ -809,7 +766,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             # Handle null bounds - expand to ['free', 'free', 'free', 'free']
             if bounds is None:
                 laplacian_config['bounds'] = ['free', 'free', 'free', 'free']
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
             else:
                 # Validate bounds format
@@ -876,7 +833,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
             if max_pos == 0:
                 raise ValueError("Geometry sample positions must have n > 0 (at least position 0 and 1)")
             
-            if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+            if self.verbose:
                 print(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
                       f"sample positions [0, {max_pos+1}) complete")
 
@@ -941,26 +898,28 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         # Validate the Laplacian bounds
         self._validate_laplacian_bounds()
 
-        # Parse initial values for alpha 
-        n_faults = len(self.faultnames)
-        parsed_initial_values = parse_initial_values(
-            self.alpha,
-            n_faults,
-            param_name='initial_value',  # initial_value or 'values'
-            default_value=0.0,
-            min_value=None,
-            dataset_names=self.faultnames
-        )
-        self.alpha['initial_value'] = parsed_initial_values
-        # print(f"Parsed initial values for alpha: {self.alpha}")
-
-        # Update the GFs parameters based on the geodata and verticals
-        self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
-
         # Set the dataFaults based on the data configuration
         self.set_data_faults(dataFaults)
         # Set the alphaFaults based on the alpha configuration
         self.set_alpha_faults(alphaFaults)
+
+        # Parse initial values for alpha 
+        # n_faults = len(self.faultnames)
+        n_alphas = len(self.alpha.get('faults', []))
+        parsed_initial_values = parse_initial_values(
+            self.alpha,
+            n_alphas,
+            param_name='initial_value',  # initial_value or 'values'
+            default_value=0.0,
+            min_value=None,
+            dataset_names=None
+        )
+        self.alpha['initial_value'] = parsed_initial_values
+        if self.verbose:
+            print(f"Parsed initial values for alpha: {self.alpha['initial_value']}")
+
+        # Update the GFs parameters based on the geodata and verticals
+        self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'], self.geodata['faults'], gfmethods)
 
         # Parse the 'update' parameter in sigmas
         # Added by kfhe at 07/11/2025
@@ -981,7 +940,8 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             dataset_names=data_names
         )
         self.geodata['sigmas']['initial_value'] = parsed_initial_values
-        # print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['initial_value']}")
+        if self.verbose:
+            print(f"Parsed initial values for sigmas: {self.geodata['sigmas']['initial_value']}")
 
         if self.clipping_options.get('enabled', False):
             self._initialize_faults_and_assemble_data()
@@ -1042,7 +1002,7 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             # Handle null bounds - expand to ['free', 'free', 'free', 'free']
             if bounds is None:
                 laplacian_config['bounds'] = ['free', 'free', 'free', 'free']
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
             else:
                 # Validate bounds format
@@ -1122,20 +1082,20 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             if fault_name not in self.faults:
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
     
         # Remove faults not in faultnames from config_data and self.faults
         for fault_name in list(config_data['faults'].keys()):
             if fault_name != 'defaults' and fault_name not in self.faultnames:
                 del config_data['faults'][fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
 
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
-                if self.verbose and (self.parallel_rank is None or self.parallel_rank == 0):
+                if self.verbose:
                     print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
 
         self.set_attributes(**config_data)
@@ -1226,71 +1186,23 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             }
 
     def set_data_faults(self, dataFaults=None):
-        if dataFaults is not None:
-            self.dataFaults = dataFaults
-        elif self.dataFaults is None:
-            self.dataFaults = [self.faultnames]*len(self.geodata['data'])
-        
-        # Check if self.dataFaults is a list
-        if not isinstance(self.dataFaults, list):
-            raise ValueError("self.dataFaults must be a list")
-        
-        # Check the length of self.dataFaults
-        if len(self.dataFaults) != len(self.geodata['data']):
-            raise ValueError("Length of self.dataFaults should be equal to the length of geodata")
-        
-        # Check contents of self.dataFaults
-        # flatten the list of lists to a single list if sublist is a list
-        self.validate_faults(check_dataFaults=True)
 
-    def validate_faults(self, check_dataFaults=False, check_alphaFaults=False):
-        """
-        Validate the dataFaults or alphaFaults.
-        """
+        all_faultnames = self.faultnames
+        all_datanames = [d.name for d in self.geodata['data']]
+        dataFaults = dataFaults if dataFaults is not None else self.dataFaults
+        result = parse_data_faults(dataFaults, all_faultnames, all_datanames, param_name='dataFaults')
+        self.dataFaults = result
+        self.geodata['faults'] = self.dataFaults
 
-        if check_dataFaults:
-            # Flatten the list of lists to a single list if sublist is a list
-            flattened_dataFaults = [item for sublist in self.dataFaults for item in (sublist if isinstance(sublist, list) else [sublist])]
-            
-            # Check flattened_dataFaults is subset of self.faultnames
-            if not set(flattened_dataFaults).issubset(set(self.faultnames + [None])):
-                raise ValueError("The dataFaults must be a subset of the faultnames in self.multifaults")
-        
-        if check_alphaFaults:
-            # Check if self.alphaFaults does not contain None and all other items are lists
-            if None not in self.alphaFaults:
-                if not all(isinstance(item, list) for item in self.alphaFaults):
-                    raise ValueError("All items in self.alphaFaults must be lists")
-
-                # Flatten the list of lists
-                flattened_faults = [fault for sublist in self.alphaFaults for fault in sublist]
-                
-                # Check if self.alphaFaults contains duplicate items
-                if len(flattened_faults) != len(set(flattened_faults)):
-                    raise ValueError("self.alphaFaults cannot contain duplicate items")
-
-                # Check if the union of self.alphaFaults equals self.faultnames
-                if set(flattened_faults) != set(self.faultnames):
-                    raise ValueError("The union of self.alphaFaults must equal the items in self.faultnames")
+        if self.verbose:
+            print(f"Data faults set to: {self.dataFaults}")
 
     def set_alpha_faults(self, alphaFaults=None):
-        if alphaFaults is not None:
-            self.alphaFaults = alphaFaults
-        elif self.alphaFaults is None:
-            self.alphaFaults = [None]
 
-        # Check if self.alphaFaults is a list
-        if not isinstance(self.alphaFaults, list):
-            raise ValueError("self.alphaFaults must be a list")
-
-        # Check if self.alphaFaults contains more than one None
-        if None in self.alphaFaults and len(self.alphaFaults) > 1:
-            raise ValueError("self.alphaFaults cannot contain None and other items simultaneously")
-
-        # Check if self.alphaFaults does not contain None and all other items are lists
-        self.validate_faults(check_alphaFaults=True)
-        
-        # 
+        all_faultnames = self.faultnames
+        alphaFaults = alphaFaults if alphaFaults is not None else self.alphaFaults
+        result = parse_alpha_faults(alphaFaults, all_faultnames, param_name='alphaFaults')
+        self.alphaFaults = result
         self.alpha['faults'] = self.alphaFaults
         if None in self.alphaFaults:
             self.alphaFaultsIndex = [0] * len(self.faultnames)
@@ -1300,4 +1212,7 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
             # Generate the alphaFaultsIndex based on the order of faultnames
             self.alphaFaultsIndex = [fault_index_map[fault] for fault in self.faultnames]
         self.alpha['faults_index'] = self.alphaFaultsIndex
+
+        if self.verbose:
+            print(f"Alpha faults set to: {self.alphaFaults} with indices {self.alphaFaultsIndex}")
 
