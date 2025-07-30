@@ -351,26 +351,70 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         if mpost is not None:
             self.mpost = mpost_backup
         
-        # Predict the data
-        for idata, ivert in zip(self.config.geodata['data'], self.config.geodata['verticals']):
-            idata.buildsynth(self.faults, direction='sd', poly='include', vertical=ivert)
-            if idata.dtype in ('gps', 'insar'):
-                if idata.dtype == 'insar':
-                    id = idata.vel
-                    isynth = idata.synth
-                else:
-                    if ivert:
-                        id = np.vstack((idata.vel_enu[:, 0], idata.vel_enu[:, 1], idata.vel_enu[:, 2]))
-                        isynth = np.vstack((idata.synth[:, 0], idata.synth[:, 1], idata.synth[:, 2]))
-                    else:
-                        id = np.vstack((idata.vel_enu[:, 0], idata.vel_enu[:, 1]))
-                        isynth = np.vstack((idata.synth[:, 0], idata.synth[:, 1]))
-            elif idata.dtype in ('opticorr', 'optical'):
-                id = np.hstack((idata.east, idata.north))
-                isynth = np.hstack((idata.east_synth, idata.north_synth))
-            irms = np.sqrt(np.mean((isynth - id)**2))
-            ivr = (1 - np.sum((isynth - id)**2) / np.sum(id**2)) * 100
-            print(f'{idata.name} RMS: {irms:.4f}, VR: {ivr:.2f}%')
+        # Calculate and print fit statistics
+        self.calculate_and_print_fit_statistics()
+
+    def calculate_data_fit_metrics(self, data, vertical=True):
+        """
+        Calculate RMS and VR for different data types.
+        
+        Parameters:
+        -----------
+        data : csi data object
+            GPS, InSAR, or optical correlation data object
+        vertical : bool
+            Whether to include vertical component (for GPS data)
+            
+        Returns:
+        --------
+        tuple : (rms, vr)
+            Root Mean Square error and Variance Reduction percentage
+        """
+        if data.dtype == 'insar':
+            observed = data.vel
+            synthetic = data.synth
+        elif data.dtype == 'gps':
+            if vertical:
+                observed = data.vel_enu.flatten()  # Flatten all components
+                synthetic = data.synth.flatten()
+            else:
+                observed = data.vel_enu[:, :-1].flatten()  # Only E-N components
+                synthetic = data.synth[:, :-1].flatten()
+        elif data.dtype in ('opticorr', 'optical'):
+            observed = np.hstack((data.east, data.north))
+            synthetic = np.hstack((data.east_synth, data.north_synth))
+        else:
+            raise ValueError(f"Unsupported data type: {data.dtype}")
+        
+        # Calculate RMS
+        residuals = synthetic - observed
+        rms = np.sqrt(np.mean(residuals**2))
+        
+        # Calculate Variance Reduction
+        ss_res = np.sum(residuals**2)  # Sum of squares of residuals
+        ss_tot = np.sum(observed**2)   # Total sum of squares
+        vr = (1 - ss_res / ss_tot) * 100 if ss_tot != 0 else 0.0
+        
+        return rms, vr
+    
+    def calculate_and_print_fit_statistics(self):
+        """
+        Calculate and print fit statistics for all datasets.
+        """
+        
+        print("\n" + "="*70)
+        print(f"Data Fit Statistics (BLSE model)")
+        print("="*70)
+        
+        # Build synthetics and calculate statistics for each dataset
+        for idata, ivert, ipoly in zip(self.config.geodata['data'], self.config.geodata['verticals'], self.config.geodata['polys']):
+            ipoly = ipoly if ipoly is None else 'include'
+            idata.buildsynth(self.faults, direction='sd', poly=ipoly, vertical=ivert)
+            # Calculate RMS and VR using the helper method
+            rms, vr = self.calculate_data_fit_metrics(idata, ivert)
+            print(f"{idata.name:<15} | RMS: {rms:8.4f} | VR: {vr:6.2f}%")
+
+        print("="*70)
 
     def combine_GL_poly(self, GL_combined=None, penalty_weight=None):
         """

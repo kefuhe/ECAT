@@ -602,7 +602,7 @@ class explorefault(SourceInv):
         # All done
         return
 
-    def returnModels(self, model='median'):
+    def returnModel(self, model='median', print_stats=True):
         '''
         Returns a list of faults corresponding to the desired model.
     
@@ -642,10 +642,15 @@ class explorefault(SourceInv):
             specs[fault_name] = ispecs
 
             fault = self.faults[fault_name]
-            fault.buildPatches(ispecs['lon'], ispecs['lat'], 
-                               ispecs['depth'], ispecs['strike'],
-                               ispecs['dip'], ispecs['length'],
-                               ispecs['width'], 1, 1, verbose=False)
+            if model not in ['STD', 'std', 'Std']:
+                # Build the fault patches
+                # Use the parameters from the samples
+                fault.buildPatches(ispecs['lon'], ispecs['lat'], 
+                                ispecs['depth'], ispecs['strike'],
+                                ispecs['dip'], ispecs['length'],
+                                ispecs['width'], 1, 1, verbose=False)
+            else:
+                fault.slip = np.zeros((1, 2), dtype=np.float64)  # Empty slip for STD model
             
             # Set slip values
             if self.mode == 'mag_rake':
@@ -659,19 +664,20 @@ class explorefault(SourceInv):
             faults.append(fault)
         
         # Build Green's functions for the data based on self.dataFaults
-        for idf, idataFaults in enumerate(self.dataFaults):
-            if idataFaults is None:
-                self.dataFaults[idf] = self.faultnames
-        for fault_name in self.faultnames:
-            fault = self.faults[fault_name]
-            for ilike in self.Likelihoods:
-                # Build the green's functions
-                fault.buildGFs(ilike[0], slipdir='sd', verbose=False, vertical=ilike[-1])
-        # Build different set between self.faultnames and self.dataFaults
-        for idataFaults, ilike in zip(self.dataFaults, self.Likelihoods):
-            for fault_name in set(self.faultnames).difference(idataFaults):
+        if model not in ['STD', 'std', 'Std']:
+            for idf, idataFaults in enumerate(self.dataFaults):
+                if idataFaults is None:
+                    self.dataFaults[idf] = self.faultnames
+            for fault_name in self.faultnames:
                 fault = self.faults[fault_name]
-                fault.buildGFs(ilike[0], slipdir='sd', verbose=False, method='empty', vertical=ilike[-1])
+                for ilike in self.Likelihoods:
+                    # Build the green's functions
+                    fault.buildGFs(ilike[0], slipdir='sd', verbose=False, vertical=ilike[-1])
+            # Build different set between self.faultnames and self.dataFaults
+            for idataFaults, ilike in zip(self.dataFaults, self.Likelihoods):
+                for fault_name in set(self.faultnames).difference(idataFaults):
+                    fault = self.faults[fault_name]
+                    fault.buildGFs(ilike[0], slipdir='sd', verbose=False, method='empty', vertical=ilike[-1])
         
         # Extract the reference values
         if 'reference' in self.param_keys:
@@ -687,12 +693,129 @@ class explorefault(SourceInv):
         self.model_dict[model] = specs
         self.model = samples
 
+        # If model is not 'std', build synthetics
+        if model not in ['STD', 'std', 'Std']:
+            # Build Synthetics
+            cogps_vertical_list = []
+            cosar_list = []
+            for data, vertical in zip(self.datas, self.verticals):
+                if data.dtype == 'gps':
+                    cogps_vertical_list.append([data, vertical])
+                elif data.dtype == 'insar':
+                    cosar_list.append(data)
+            
+            ## Build synthetics for GPS data
+            for cogps, vertical in cogps_vertical_list:
+                cogps.buildsynth(faults, vertical=vertical)
+            
+            ## Build synthetics for InSAR data
+            for cosar in cosar_list:
+                cosar.buildsynth(faults, vertical=True)
+                # Add reference if exists
+                if hasattr(cosar, 'refnumber') and '{}'.format(cosar.name) in self.keys:
+                    cosar.synth += self.model[cosar.refnumber]
+            
+            # Calculate and print fit statistics
+            if print_stats:
+                self.calculate_and_print_fit_statistics(model=model)
+
         # All done
         return faults
-    
-    def save_model_to_file(self, filename=None, model='median', recalculate=False, output_to_screen=False):
+
+    def calculate_data_fit_metrics(self, data, vertical=True):
         """
-        Output the model parameters to a file and/or screen.
+        Calculate RMS and VR for different data types.
+        
+        Parameters:
+        -----------
+        data : csi data object
+            GPS, InSAR, or optical correlation data object
+        vertical : bool
+            Whether to include vertical component (for GPS data)
+            
+        Returns:
+        --------
+        tuple : (rms, vr)
+            Root Mean Square error and Variance Reduction percentage
+        """
+        if data.dtype == 'insar':
+            observed = data.vel
+            synthetic = data.synth
+        elif data.dtype == 'gps':
+            if vertical:
+                observed = data.vel_enu.flatten()  # Flatten all components
+                synthetic = data.synth.flatten()
+            else:
+                observed = data.vel_enu[:, :-1].flatten()  # Only E-N components
+                synthetic = data.synth[:, :-1].flatten()
+        elif data.dtype in ('opticorr', 'optical'):
+            observed = np.hstack((data.east, data.north))
+            synthetic = np.hstack((data.east_synth, data.north_synth))
+        else:
+            raise ValueError(f"Unsupported data type: {data.dtype}")
+        
+        # Calculate RMS
+        residuals = synthetic - observed
+        rms = np.sqrt(np.mean(residuals**2))
+        
+        # Calculate Variance Reduction
+        ss_res = np.sum(residuals**2)  # Sum of squares of residuals
+        ss_tot = np.sum(observed**2)   # Total sum of squares
+        vr = (1 - ss_res / ss_tot) * 100 if ss_tot != 0 else 0.0
+        
+        return rms, vr
+    
+    def calculate_and_print_fit_statistics(self, model='median'):
+        """
+        Calculate and print fit statistics for all datasets.
+        
+        Parameters:
+        -----------
+        model : str
+            Model type to use ('median', 'mean', 'MAP', etc.)
+        """
+        # Ensure we have the model
+        if model not in self.model_dict:
+            faults = self.returnModel(model=model, print_stats=False)
+        
+        print("\n" + "="*60)
+        print(f"Data Fit Statistics ({model.upper()} model)")
+        print("="*60)
+        
+        # Build synthetics for all data
+        cogps_vertical_list = []
+        cosar_list = []
+        for data, vertical in zip(self.datas, self.verticals):
+            if data.dtype == 'gps':
+                cogps_vertical_list.append([data, vertical])
+            elif data.dtype == 'insar':
+                cosar_list.append(data)
+        
+        # Calculate and print statistics
+        total_rms = 0
+        total_vr = 0
+        data_count = 0
+        
+        for data, vertical in zip(self.datas, self.verticals):
+            try:
+                rms, vr = self.calculate_data_fit_metrics(data, vertical)
+                print(f"{data.name:<15} | RMS: {rms:8.4f} | VR: {vr:6.2f}%")
+                total_rms += rms
+                total_vr += vr
+                data_count += 1
+            except Exception as e:
+                print(f"{data.name:<15} | Error calculating metrics: {str(e)}")
+        
+        if data_count > 0:
+            print("-"*60)
+            print(f"{'Average':<15} | RMS: {total_rms/data_count:8.4f} | VR: {total_vr/data_count:6.2f}%")
+        
+        print("="*60)
+    
+    def save_model_to_file(self, filename=None, model='median', recalculate=False, output_to_screen=True,
+                           include_std=True, include_samples=True, decimal_places=6):
+        """
+        Output the model parameters to a file and/or screen in a beautiful format.
     
         Args:
             * filename  : The name of the file to write the model parameters to (default is None)
@@ -700,40 +823,26 @@ class explorefault(SourceInv):
         Kwargs:
             * model     : 'mean', 'median', 'std', 'MAP'
             * recalculate: True/False
-            * output_to_screen: True/False, whether to output to screen (default is False)
+            * output_to_screen: True/False, whether to output to screen (default is True)
+            * include_std: True/False, whether to include std values (default is True)
+            * include_samples: True/False, whether to include raw samples array (default is True)
+            * decimal_places: int, number of decimal places for values (default is 6)
     
         Returns:
             * None
         """
+        from tabulate import tabulate
+    
+        # Get estimated parameters info
+        estimated_params = self.print_mcmc_parameter_positions(print_table=False)
+    
+        # Ensure we have the required models
         if model != 'std' and (not hasattr(self, 'model_dict') or 'std' not in self.model_dict):
-            self.returnModels(model='std')
+            self.returnModel(model='std', print_stats=False)
     
         if recalculate or model not in self.model_dict:
-            self.returnModels(model=model)
+            self.returnModel(model=model, print_stats=False)
     
-        output = []
-    
-        # Write the Fault parameters to the output
-        for fault_name, fault_params in self.model_dict[model].items():
-            if fault_name.startswith('fault_'):
-                output.append(f"Fault: {fault_name} ({model})")
-                for param, value in fault_params.items():
-                    output.append(f"  {param}: {value}")
-    
-        # Write the reference values if they are updated
-        if 'reference' in self.model_dict[model]:
-            output.append("Reference:")
-            for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict[model]['reference']):
-                output.append(f"  {ref_name}: {ref_value}")
-    
-        # Write the sigmas values if they are updated
-        if 'sigmas' in self.model_dict[model]:
-            output.append("Sigmas:")
-            for update_idx, sigma_value in zip(self.param_keys['sigmas'], self.model_dict[model]['sigmas']):
-                isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
-                output.append(f"  {isigma_name}: {sigma_value}")
-            output.append("")
-
         # Get the samples for the specified model
         if model in ('mean', 'Mean'):
             samples = self.sampler['allsamples'].mean(axis=0)
@@ -742,51 +851,169 @@ class explorefault(SourceInv):
         elif model in ('std', 'Std', 'STD'):
             samples = self.sampler['allsamples'].std(axis=0)
         elif model in ('MAP', 'map', 'Map'):
-            # Assuming 'logposterior' is the key for log posterior values
-            # Find the index of the maximum posterior value
             max_posterior_index = np.argmax(self.sampler['postval'])
             samples = self.sampler['allsamples'][max_posterior_index, :]
         else:
             raise ValueError(f"Unsupported model type: {model}")
     
-        # Add the samples as a list to the output
-        samples_fixedPrecision = [round(float(sample), 6) for sample in samples]
-        samples = np.array(samples_fixedPrecision)
-        samples_list_str = f"{model.upper()}: {samples.tolist()}"
-        output.append(samples_list_str)
-        output.append("")
-
-        # If model is not 'std', also write the 'std' model parameters
-        if model != 'std':
-            output.append("Standard Deviation (std):")
-            for fault_name, fault_params in self.model_dict['std'].items():
-                if fault_name.startswith('fault_'):
-                    output.append(f"Fault: {fault_name} (std)")
-                    for param, value in fault_params.items():
-                        output.append(f"  {param}: {value}")
+        # Prepare data for tabular display
+        table_data = []
+        index_counter = 0
     
-            if 'reference' in self.model_dict['std']:
-                output.append("Reference (std):")
-                for ref_name, ref_value in zip(self.param_keys['reference'], self.model_dict['std']['reference']):
-                    output.append(f"  {ref_name}: {ref_value}")
+        # Add fault parameters in the order defined by self.keys
+        for fault_name in self.faultnames:
+            fault_params = self.model_dict[model].get(fault_name, {})
+            std_params = self.model_dict.get('std', {}).get(fault_name, {}) if include_std else {}
+            fixed_params = self.fixed_params.get(fault_name, {})
+            
+            # Get estimated parameters for this fault
+            estimated_fault_params = estimated_params['fault'].get(fault_name, [])
+            
+            # Iterate through parameters in the fixed order (self.keys)
+            for param in self.keys:
+                if param in estimated_fault_params:
+                    # Estimated parameter (appears in MCMC)
+                    value = fault_params[param]
+                    std_value = std_params.get(param, 'N/A') if include_std else None
+                    param_name = param
+                    
+                    row = [
+                        index_counter,
+                        'Fault',
+                        fault_name,
+                        param_name,
+                        f"{value:.{decimal_places}f}" if isinstance(value, (int, float)) else str(value)
+                    ]
+                    
+                    if include_std and std_value != 'N/A':
+                        row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) else str(std_value))
+                    elif include_std:
+                        row.append('N/A')
+                    
+                    table_data.append(row)
+                    index_counter += 1
+                    
+                elif param in fixed_params:
+                    # Fixed parameter (does not appear in MCMC but exists in fixed_params)
+                    value = fixed_params[param]
+                    param_name = f"{param}*"  # Add star to indicate fixed parameter
+                    
+                    row = [
+                        'N/A',  # No index for fixed parameters
+                        'Fault',
+                        fault_name,
+                        param_name,
+                        f"{value:.{decimal_places}f}" if isinstance(value, (int, float)) else str(value)
+                    ]
+                    
+                    if include_std:
+                        row.append(f"{0:.{decimal_places}f}")  # Fixed parameters have std = 0
+                    
+                    table_data.append(row)
     
-            if 'sigmas' in self.model_dict['std']:
-                output.append("Sigmas (std):")
-                for update_idx, sigma_value in zip(self.param_keys['sigmas'], self.model_dict['std']['sigmas']):
-                    isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
-                    output.append(f"  {isigma_name}: {sigma_value}")
-                output.append("")
+        # Add reference parameters
+        if 'reference' in self.model_dict[model]:
+            ref_values = self.model_dict[model]['reference']
+            std_ref_values = self.model_dict.get('std', {}).get('reference', []) if include_std else []
+            
+            for i, (ref_name, ref_value) in enumerate(zip(self.param_keys['reference'], ref_values)):
+                std_value = std_ref_values[i] if i < len(std_ref_values) else 'N/A'
+                
+                row = [
+                    index_counter,
+                    'Reference',
+                    ref_name,
+                    'reference',
+                    f"{ref_value:.{decimal_places}f}" if isinstance(ref_value, (int, float)) else str(ref_value)
+                ]
+                
+                if include_std:
+                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value != 'N/A' else str(std_value))
+                
+                table_data.append(row)
+                index_counter += 1
     
-        # Output to screen if requested
+        # Add sigma parameters
+        if 'sigmas' in self.model_dict[model]:
+            sigma_values = self.model_dict[model]['sigmas']
+            std_sigma_values = self.model_dict.get('std', {}).get('sigmas', []) if include_std else []
+            
+            for i, (update_idx, sigma_value) in enumerate(zip(self.param_keys['sigmas'], sigma_values)):
+                isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
+                std_value = std_sigma_values[i] if i < len(std_sigma_values) else 'N/A'
+                
+                row = [
+                    index_counter,
+                    'Sigma',
+                    isigma_name,
+                    'sigma',
+                    f"{sigma_value:.{decimal_places}f}" if isinstance(sigma_value, (int, float)) else str(sigma_value)
+                ]
+                
+                if include_std:
+                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value != 'N/A' else str(std_value))
+                
+                table_data.append(row)
+                index_counter += 1
+    
+        # Prepare headers
+        headers = ['Index', 'Category', 'Name', 'Parameter', model.upper()]
+        if include_std and model.lower() != 'std':
+            headers.append('STD')
+    
+        # Generate table string
+        table_str = tabulate(table_data, headers=headers, tablefmt='grid', stralign='left', floatfmt=f'.{decimal_places}f')
+    
+        # Generate output
+        output_lines = []
+        
+        # Title
+        output_lines.append("=" * 80)
+        output_lines.append(f"MCMC Model Parameters Summary ({model.upper()})")
+        output_lines.append("=" * 80)
+        output_lines.append("")
+        output_lines.append("Note: Parameters marked with '*' are fixed values (not estimated)")
+        output_lines.append("      Fixed parameters have Index='N/A' and STD=0.000000")
+        output_lines.append("")
+    
+        # Beautiful table for screen output
         if output_to_screen:
-            for line in output:
-                print(line)
+            print("\n".join(output_lines))
+            print(table_str)
+            print(f"\nTotal estimated parameters: {index_counter}")
+            
+            if include_samples:
+                print(f"\nRaw samples array ({model.upper()}):")
+                samples_rounded = [round(float(sample), decimal_places) for sample in samples]
+                print(f"{samples_rounded}")
+            
+            print("=" * 80)
+    
+        # Add to output lines for file
+        output_lines.append(table_str)
+        output_lines.append("")
+        output_lines.append(f"Total parameters: {len(table_data)}")
+        output_lines.append("")
+    
+        if include_samples:
+            samples_rounded = [round(float(sample), decimal_places) for sample in samples]
+            output_lines.append(f"Raw samples array ({model.upper()}):")
+            output_lines.append(str(samples_rounded))
+            output_lines.append("")
+    
+        output_lines.append("=" * 80)
     
         # Output to file if filename is provided
         if filename:
             with open(filename, 'w', encoding='utf-8') as file:
-                for line in output:
+                for line in output_lines:
                     file.write(line + "\n")
+            
+            if output_to_screen:
+                print(f"\nModel parameters saved to: {filename}")
+    
+        # Return estimated parameters info for debugging
+        return estimated_params
     
     def plot(self, model='median', show=True, scale=2., legendscale=0.5, vertical=True):
         '''
@@ -814,7 +1041,7 @@ class explorefault(SourceInv):
             #plt.savefig('{}.png'.format(prior[0]))
 
         # Get the model
-        faults = self.returnModels(model=model)
+        faults = self.returnModel(model=model, print_stats=False)
 
         # Build predictions
         for fault in self.faults:
@@ -1084,7 +1311,7 @@ class explorefault(SourceInv):
 
         if rank == 0:
             self.load_samples_from_h5(filename=filename)
-            self.print_mcmc_parameter_positions()
+            self.print_mcmc_parameter_positions(print_table=False)
             
             # Plot Faults
             if plot_faults:
@@ -1098,10 +1325,11 @@ class explorefault(SourceInv):
                                     scatter=False, filename='kde_matrix_sigmas.png', figsize=sigmas_figsize)
             
             # Save the model results
+            faults = self.returnModel(model=model, print_stats=False)
             self.save_model_to_file(f'model_results_{model}.json', model=model, output_to_screen=True)
-            faults = self.returnModels(model=model)
+            self.calculate_and_print_fit_statistics(model=model)
 
-            # Build Synthetics
+            # Build synthetics for GPS and SAR data
             cogps_vertical_list = []
             cosar_list = []
             for data, vertical in zip(self.datas, self.verticals):
@@ -1109,14 +1337,7 @@ class explorefault(SourceInv):
                     cogps_vertical_list.append([data, vertical])
                 elif data.dtype == 'insar':
                     cosar_list.append(data)
-            ## Synth gps and insar data
-            for cogps, vertical in cogps_vertical_list:
-                cogps.buildsynth(faults, vertical=vertical)
-            for cosar in cosar_list:
-                cosar.buildsynth(faults, vertical=True)
-                if '{}'.format(cosar.name) in self.keys:
-                    cosar.synth += self.model[cosar.refnumber]
-            
+
             if save_data:
                 if not os.path.exists('Modeling'):
                     os.makedirs('Modeling')
@@ -1141,7 +1362,7 @@ class explorefault(SourceInv):
                 for fault in faults:
                     fault.color = 'b' # Set the color to blue
                 for cogps, vertical in cogps_vertical_list:
-                    cogps.buildsynth(faults, vertical=vertical)
+                    # cogps.buildsynth(faults, vertical=vertical)
                     box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
                     cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=0.2, legendscale=0.05, color=['k', 'r'],
                             seacolor='lightblue', box=box, titleyoffset=1.02)
@@ -1168,23 +1389,6 @@ class explorefault(SourceInv):
                                     cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
                         cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
                                         bbox_inches='tight', mapaxis=None)
-            
-            # import json
-            # def default_serializer(obj):
-            #     if isinstance(obj, np.ndarray):
-            #         return obj.tolist()
-            #     try:
-            #         return round(obj, 6)
-            #     except TypeError:
-            #         return str(obj)
-            
-            # print(f"Model ({model}):")
-            # print(json.dumps(self.model_dict[model], indent=2, ensure_ascii=False, separators=(',', ': '), default=default_serializer))
-            
-            # if 'std' not in model:
-            #     faults = self.returnModels(model='std')
-            #     print("Standard Deviation (std):")
-            #     print(json.dumps(self.model_dict['std'], indent=2, ensure_ascii=False, separators=(',', ': '), default=default_serializer))
 
     def save2h5(self, filename, datasets=None):
         '''
@@ -1247,23 +1451,65 @@ class explorefault(SourceInv):
         # Save the loaded samples
         self.sampler = samples
     
-    def print_mcmc_parameter_positions(self):
-        """Print the MCMC parameter positions."""
-        print("MCMC parameter positions:")
-        for ifault in self.faultnames:
-            print(f"Fault: {ifault}")
-            for ikey, key in enumerate(self.param_keys[ifault]):
-                print(f"  {key}: {self.param_index[ifault][ikey]}")
+    def print_mcmc_parameter_positions(self, print_table=True):
+        """Print the MCMC parameter positions and return estimated parameters info."""
+        from tabulate import tabulate
+        
+        # Collect all parameter information
+        all_params = []
+        estimated_params = {
+            'fault': {},  # {fault_name: [param_names]}
+            'reference': [],
+            'sigmas': []
+        }
+        
+        # Add fault parameters
+        for fault_name in self.faultnames:
+            estimated_params['fault'][fault_name] = []
+            for i, key in enumerate(self.param_keys[fault_name]):
+                all_params.append([
+                    'Fault',
+                    fault_name,
+                    key,
+                    self.param_index[fault_name][i]
+                ])
+                estimated_params['fault'][fault_name].append(key)
+        
+        # Add reference parameters
         if 'reference' in self.param_keys:
-            print('Reference:')
-            for ikey, key in enumerate(self.param_keys['reference']):
-                print(f"  {key}: {self.param_index['reference'][ikey]}")
+            for i, key in enumerate(self.param_keys['reference']):
+                all_params.append([
+                    'Reference',
+                    key,
+                    'reference',
+                    self.param_index['reference'][i]
+                ])
+                estimated_params['reference'].append(key)
+        
+        # Add sigma parameters
         if 'sigmas' in self.param_keys:
-            print('Sigmas:')
-            for ikey in self.param_keys['sigmas']:
+            for i, ikey in enumerate(self.param_keys['sigmas']):
                 idata = self._sigma_update_indices[ikey]
-                iname = 'data_{}'.format(idata) if self.datas is None else self.datas[idata].name
-                print(f"  {iname}: {self.param_index['sigmas'][ikey]}")
+                iname = f'data_{idata}' if self.datas is None else self.datas[idata].name
+                all_params.append([
+                    'Sigma',
+                    iname,
+                    'sigma',
+                    self.param_index['sigmas'][ikey]
+                ])
+                estimated_params['sigmas'].append(iname)
+        
+        # Sort by index
+        all_params.sort(key=lambda x: x[3])
+        
+        # Print beautiful table if requested
+        if print_table:
+            headers = ['Category', 'Name', 'Parameter', 'Index']
+            print("\nMCMC Parameter Positions:")
+            print(tabulate(all_params, headers=headers, tablefmt='grid', stralign='left'))
+            print(f"\nTotal parameters: {len(all_params)}")
+        
+        return estimated_params
 
     def guess_initial_dimensions_and_slip(self, magnitude, fault_type='SS'):
         """
