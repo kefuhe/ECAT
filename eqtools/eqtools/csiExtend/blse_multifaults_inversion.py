@@ -167,6 +167,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             penalty_weight = penalty_weight[fault_index]
             # print(f"Parsed penalty_weight: {penalty_weight} with fault_index: {fault_index}")
     
+        self.current_penalty_weight = penalty_weight
         # Handle smoothing constraints
         if smoothing_constraints is not None:
             if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
@@ -189,15 +190,17 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                             verbose=True)
         self.distributem()
 
-        if verbose:
-            # Caluculate RMS and VR for the solution and print the results
-            rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
-            vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
-            self.combine_GL_poly()
-            roughness = np.dot(self.GL_combined_poly, self.mpost)
-            roughness = np.sqrt(np.mean(roughness**2))
-            print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
-            self.combine_GL_poly(penalty_weight=penalty_weight)
+        # if verbose:
+        #     # Caluculate RMS and VR for the solution and print the results
+        #     rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
+        #     vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
+        #     self.combine_GL_poly()
+        #     roughness = np.dot(self.GL_combined_poly, self.mpost)
+        #     roughness = np.sqrt(np.mean(roughness**2))
+        #     self.returnModel()
+        #     print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
+        #     # self._print_fault_statistics()
+        #     self.combine_GL_poly(penalty_weight=penalty_weight)
     
     def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True, equal_aspect=False):
         """
@@ -224,9 +227,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         # penalty_weight = [1.0, 10.0, 30.0, 50.0, 80.0, 100.0, 125.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0]
         for ipenalty in penalty_weights:
             alpha = [np.log10(1.0/ipenalty)] * len(self.faults)
-            self.run(penalty_weight=None, alpha=alpha, verbose=False)
+            self.run(penalty_weight=None, alpha=alpha, verbose=True)
             if verbose:
-                self.returnModel()
+                self.returnModel(print_stat=True)
 
             # Calculate RMS and VR for the solution and print the results
             rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
@@ -241,12 +244,12 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 'VR': vr
             }
             results.append(result)
-            # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
-            penalty_str = f'{ipenalty:.4f}'.rstrip('0')
-            if penalty_str.endswith('.'):
-                penalty_str += '0'
-            output = f'Penalty_weight: {penalty_str}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
-            print(output)
+            # # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
+            # penalty_str = f'{ipenalty:.4f}'.rstrip('0')
+            # if penalty_str.endswith('.'):
+            #     penalty_str += '0'
+            # output = f'Penalty_weight: {penalty_str}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
+            # print(output)
     
         # Convert results to DataFrame
         df = pd.DataFrame(results)
@@ -343,7 +346,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
 
         self.d = faults[0].dassembled
 
-    def returnModel(self, mpost=None):
+    def returnModel(self, mpost=None, print_stat=True):
         if mpost is not None:
             mpost_backup = copy.deepcopy(self.mpost)
             self.mpost = mpost
@@ -352,7 +355,24 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             self.mpost = mpost_backup
         
         # Calculate and print fit statistics
-        self.calculate_and_print_fit_statistics()
+        if print_stat:
+            self.calculate_and_print_fit_statistics()
+
+        # Caluculate RMS and VR for the solution and print the results
+        rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
+        vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
+        self.combine_GL_poly()
+        roughness = np.dot(self.GL_combined_poly, self.mpost)
+        roughness = np.sqrt(np.mean(roughness**2))
+        self.combine_GL_poly(penalty_weight=self.current_penalty_weight)
+        if print_stat:
+            # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
+            penalty_str = [f'{ipenalty:.4f}'.rstrip('0') for ipenalty in self.current_penalty_weight]
+            penalty_str = [s + '0' if s.endswith('.') else s for s in penalty_str]
+            penalty_str = ', '.join(penalty_str)
+            output = f'Penalty_weight: {penalty_str}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
+            print(output)
+        return roughness, rms, vr
 
     def calculate_data_fit_metrics(self, data, vertical=True):
         """
@@ -475,7 +495,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                           file_type='png',
                                           remove_direction_labels=False,
                                           fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
-                                          data_poly=None
+                                          data_poly=None,
+                                          print_fit_statistics=True,
+                                          print_fault_statistics=True
                                           ):
         """
         Extract and plot the Bayesian results.
@@ -502,6 +524,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
         fault_cbaxis: colorbar axis position for fault plots (default is [0.15, 0.22, 0.15, 0.02])
         data_poly: whether to include polynomial constraints in the data (default is None), options are 'include' or None
+        print_fit_statistics: whether to print fit statistics (default is True)
+        print_fault_statistics: whether to print fault statistics (default is True)
         """
         if rank == 0:
             import cmcrameri
@@ -513,7 +537,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                 cmap_slip = slip_cmap
             if slip_cmap is None:
                 cmap_slip = get_cpt.get_cmap('precip3_16lev_change.cpt', method='list', N=15)
-            self.returnModel()
+            self.returnModel(print_stat=print_fit_statistics)
+            if print_fault_statistics:
+                self._print_fault_statistics()
     
             if plot_faults:
                 self.plot_multifaults_slip(slip='total', cmap=cmap_slip,
@@ -578,66 +604,5 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                     remove_direction_labels=remove_direction_labels)
                         cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
                                         bbox_inches='tight', mapaxis=None)
-
-
-    def print_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=1.0):
-        """
-        Calculate and print the moment magnitude for the given faults.
-    
-        This method computes the moment magnitude based on the slip and geometry of the faults.
-        It uses a specified shear modulus (mu) and an optional slip factor to scale the slip values.
-        The results are printed to the console.
-    
-        Parameters:
-        - faults (list, optional): List of faults to calculate the moment magnitude for. If None, uses all faults in the self.faults list.
-        - mu (float): Shear modulus used in the calculation (default is 3.e10).
-        - slip_factor (float): Factor to scale the slip values (default is 1.0).
-        """
-        import csi.faultpostproc as faultpp
-    
-        if faults is None:
-            faults = self.faults
-    
-        # Get the first fault's parameters
-        first_fault = faults[0]
-        lon0, lat0, utmzone = first_fault.lon0, first_fault.lat0, first_fault.utmzone
-    
-        # Combine the first fault
-        combined_fault = first_fault.duplicateFault()
-    
-        # Combine the remaining faults
-        for ifault in faults[1:]:
-            for patch, slip in zip(ifault.patch, ifault.slip):
-                combined_fault.N_slip = combined_fault.slip.shape[0] + 1
-                combined_fault.addpatch(patch, slip)
-    
-        # Combine the fault names
-        fault_names = [fault.name for fault in faults]
-        combined_name = '_'.join(fault_names)
-    
-        # Scale the slip
-        combined_fault.slip *= slip_factor
-    
-        # Patches 2 vertices
-        combined_fault.setVerticesFromPatches()
-        combined_fault.numpatch = len(combined_fault.patch)
-    
-        # Compute the triangle areas, moments, moment tensor, and magnitude
-        combined_fault.compute_patch_areas()
-        fault_processor = faultpp(combined_name, combined_fault, mu, lon0=lon0, lat0=lat0, utmzone=utmzone, verbose=False)
-        fault_processor.computeMoments()
-        fault_processor.computeMomentTensor()
-        fault_processor.computeMagnitude()
-    
-        # Print the moment magnitude
-        self.tripproc = fault_processor
-        
-        # Print results based on number of faults
-        if len(faults) == 1:
-            # Single fault
-            print(f'Seismic moment and magnitude of the fault {faults[0].name} is {fault_processor.Mo:.2e} Nm and {fault_processor.Mw:.2f}, respectively.')
-        else:
-            # Multiple faults
-            print(f'Combined seismic moment and magnitude of {len(faults)} faults ({", ".join(fault_names)}) is {fault_processor.Mo:.2e} Nm and {fault_processor.Mw:.2f}, respectively.')
 
 #EOF

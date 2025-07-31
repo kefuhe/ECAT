@@ -829,10 +829,6 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
                 raise ValueError(f"Geometry sample positions must form a complete sequence, "
                                f"missing positions: {sorted(missing_positions)}")
             
-            # Check if n > 0 (at least one position)
-            if max_pos == 0:
-                raise ValueError("Geometry sample positions must have n > 0 (at least position 0 and 1)")
-            
             if self.verbose:
                 print(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
                       f"sample positions [0, {max_pos+1}) complete")
