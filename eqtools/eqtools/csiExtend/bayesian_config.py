@@ -6,7 +6,7 @@ import numpy as np
 # Load csi and its extensions
 from csi.gps import gps
 from csi.insar import insar
-# from .bayesian_multifaults_inversion import MyMultiFaultsInversion
+from .multifaults_base import MyMultiFaultsInversion
 
 # Import utility functions for parsing configuration updates
 from .config_utils import parse_update, parse_initial_values
@@ -318,7 +318,7 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
         """
         Initialize the BayesianMultiFaultsInversionConfig object.
         """
-        from .bayesian_multifaults_inversion import MyMultiFaultsInversion
+        # from .multifaults_base import MyMultiFaultsInversion
 
         super().__init__(config_file, geodata=geodata, verbose=verbose, parallel_rank=parallel_rank)
         self.multifaults = multifaults # Multifaults object for the inversion
@@ -841,7 +841,7 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         """
         Initialize the BayesianMultiFaultsInversionConfig object.
         """
-        from .bayesian_multifaults_inversion import MyMultiFaultsInversion
+        # from .multifaults_base import MyMultiFaultsInversion
 
         super().__init__(config_file, geodata=geodata, verbose=verbose)
         self.multifaults = multifaults # Multifaults object for the inversion

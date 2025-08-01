@@ -813,7 +813,7 @@ class explorefault(SourceInv):
         print("="*60)
     
     def save_model_to_file(self, filename=None, model='median', recalculate=False, output_to_screen=True,
-                           include_std=True, include_samples=True, decimal_places=6):
+                           include_std=True, include_samples=True, decimal_places=6, file_format='txt'):
         """
         Output the model parameters to a file and/or screen in a beautiful format.
     
@@ -827,11 +827,15 @@ class explorefault(SourceInv):
             * include_std: True/False, whether to include std values (default is True)
             * include_samples: True/False, whether to include raw samples array (default is True)
             * decimal_places: int, number of decimal places for values (default is 6)
+            * file_format: str, output file format ('json', 'yaml', 'csv', 'txt') (default is 'json')
     
         Returns:
             * None
         """
         from tabulate import tabulate
+        import json
+        import yaml
+        import csv
     
         # Get estimated parameters info
         estimated_params = self.print_mcmc_parameter_positions(print_table=False)
@@ -856,11 +860,36 @@ class explorefault(SourceInv):
         else:
             raise ValueError(f"Unsupported model type: {model}")
     
-        # Prepare data for tabular display
+        # Prepare data for tabular display (for screen output)
         table_data = []
         index_counter = 0
     
-        # Add fault parameters in the order defined by self.keys
+        # Prepare structured data for file output
+        structured_data = {
+            'metadata': {
+                'model_type': model.upper(),
+                'total_estimated_parameters': 0,
+                'include_std': include_std,
+                'decimal_places': decimal_places,
+                'generation_info': {
+                    'fixed_parameters_note': "Parameters marked with '*' are fixed values (not estimated)",
+                    'fixed_parameters_index': "Fixed parameters have Index='N/A' and STD=0.000000"
+                }
+            },
+            'parameters': {
+                'faults': {},
+                'reference': {},
+                'sigmas': {}
+            }
+        }
+    
+        if include_samples:
+            structured_data['raw_samples'] = {
+                'description': f'Raw samples array ({model.upper()})',
+                'values': [round(float(sample), decimal_places) for sample in samples]
+            }
+    
+        # Add fault parameters
         for fault_name in self.faultnames:
             fault_params = self.model_dict[model].get(fault_name, {})
             std_params = self.model_dict.get('std', {}).get(fault_name, {}) if include_std else {}
@@ -869,24 +898,39 @@ class explorefault(SourceInv):
             # Get estimated parameters for this fault
             estimated_fault_params = estimated_params['fault'].get(fault_name, [])
             
+            structured_data['parameters']['faults'][fault_name] = {
+                'estimated': {},
+                'fixed': {}
+            }
+            
             # Iterate through parameters in the fixed order (self.keys)
             for param in self.keys:
                 if param in estimated_fault_params:
                     # Estimated parameter (appears in MCMC)
                     value = fault_params[param]
-                    std_value = std_params.get(param, 'N/A') if include_std else None
-                    param_name = param
+                    std_value = std_params.get(param, None) if include_std else None
                     
+                    param_data = {
+                        'index': index_counter,
+                        'value': round(float(value), decimal_places) if isinstance(value, (int, float)) else value
+                    }
+                    
+                    if include_std and std_value is not None:
+                        param_data['std'] = round(float(std_value), decimal_places) if isinstance(std_value, (int, float)) else std_value
+                    
+                    structured_data['parameters']['faults'][fault_name]['estimated'][param] = param_data
+                    
+                    # For screen display
                     row = [
                         index_counter,
                         'Fault',
                         fault_name,
-                        param_name,
+                        param,
                         f"{value:.{decimal_places}f}" if isinstance(value, (int, float)) else str(value)
                     ]
                     
-                    if include_std and std_value != 'N/A':
-                        row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) else str(std_value))
+                    if include_std and std_value is not None:
+                        row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) else 'N/A')
                     elif include_std:
                         row.append('N/A')
                     
@@ -894,12 +938,18 @@ class explorefault(SourceInv):
                     index_counter += 1
                     
                 elif param in fixed_params:
-                    # Fixed parameter (does not appear in MCMC but exists in fixed_params)
+                    # Fixed parameter
                     value = fixed_params[param]
-                    param_name = f"{param}*"  # Add star to indicate fixed parameter
                     
+                    structured_data['parameters']['faults'][fault_name]['fixed'][param] = {
+                        'value': round(float(value), decimal_places) if isinstance(value, (int, float)) else value,
+                        'std': 0.0 if include_std else None
+                    }
+                    
+                    # For screen display
+                    param_name = f"{param}*"
                     row = [
-                        'N/A',  # No index for fixed parameters
+                        'N/A',
                         'Fault',
                         fault_name,
                         param_name,
@@ -907,7 +957,7 @@ class explorefault(SourceInv):
                     ]
                     
                     if include_std:
-                        row.append(f"{0:.{decimal_places}f}")  # Fixed parameters have std = 0
+                        row.append(f"{0:.{decimal_places}f}")
                     
                     table_data.append(row)
     
@@ -917,8 +967,19 @@ class explorefault(SourceInv):
             std_ref_values = self.model_dict.get('std', {}).get('reference', []) if include_std else []
             
             for i, (ref_name, ref_value) in enumerate(zip(self.param_keys['reference'], ref_values)):
-                std_value = std_ref_values[i] if i < len(std_ref_values) else 'N/A'
+                std_value = std_ref_values[i] if i < len(std_ref_values) else None
                 
+                param_data = {
+                    'index': index_counter,
+                    'value': round(float(ref_value), decimal_places) if isinstance(ref_value, (int, float)) else ref_value
+                }
+                
+                if include_std and std_value is not None:
+                    param_data['std'] = round(float(std_value), decimal_places) if isinstance(std_value, (int, float)) else std_value
+                
+                structured_data['parameters']['reference'][ref_name] = param_data
+                
+                # For screen display
                 row = [
                     index_counter,
                     'Reference',
@@ -928,7 +989,7 @@ class explorefault(SourceInv):
                 ]
                 
                 if include_std:
-                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value != 'N/A' else str(std_value))
+                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value is not None else 'N/A')
                 
                 table_data.append(row)
                 index_counter += 1
@@ -940,8 +1001,20 @@ class explorefault(SourceInv):
             
             for i, (update_idx, sigma_value) in enumerate(zip(self.param_keys['sigmas'], sigma_values)):
                 isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
-                std_value = std_sigma_values[i] if i < len(std_sigma_values) else 'N/A'
+                std_value = std_sigma_values[i] if i < len(std_sigma_values) else None
                 
+                param_data = {
+                    'index': index_counter,
+                    'data_name': isigma_name,
+                    'value': round(float(sigma_value), decimal_places) if isinstance(sigma_value, (int, float)) else sigma_value
+                }
+                
+                if include_std and std_value is not None:
+                    param_data['std'] = round(float(std_value), decimal_places) if isinstance(std_value, (int, float)) else std_value
+                
+                structured_data['parameters']['sigmas'][f'sigma_{update_idx}'] = param_data
+                
+                # For screen display
                 row = [
                     index_counter,
                     'Sigma',
@@ -951,34 +1024,30 @@ class explorefault(SourceInv):
                 ]
                 
                 if include_std:
-                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value != 'N/A' else str(std_value))
+                    row.append(f"{std_value:.{decimal_places}f}" if isinstance(std_value, (int, float)) and std_value is not None else 'N/A')
                 
                 table_data.append(row)
                 index_counter += 1
     
-        # Prepare headers
-        headers = ['Index', 'Category', 'Name', 'Parameter', model.upper()]
-        if include_std and model.lower() != 'std':
-            headers.append('STD')
+        # Update metadata
+        structured_data['metadata']['total_estimated_parameters'] = index_counter
+        structured_data['metadata']['total_parameters'] = len(table_data)
     
-        # Generate table string
-        table_str = tabulate(table_data, headers=headers, tablefmt='grid', stralign='left', floatfmt=f'.{decimal_places}f')
-    
-        # Generate output
-        output_lines = []
-        
-        # Title
-        output_lines.append("=" * 80)
-        output_lines.append(f"MCMC Model Parameters Summary ({model.upper()})")
-        output_lines.append("=" * 80)
-        output_lines.append("")
-        output_lines.append("Note: Parameters marked with '*' are fixed values (not estimated)")
-        output_lines.append("      Fixed parameters have Index='N/A' and STD=0.000000")
-        output_lines.append("")
-    
-        # Beautiful table for screen output
+        # Screen output (unchanged)
         if output_to_screen:
-            print("\n".join(output_lines))
+            headers = ['Index', 'Category', 'Name', 'Parameter', model.upper()]
+            if include_std and model.lower() != 'std':
+                headers.append('STD')
+    
+            table_str = tabulate(table_data, headers=headers, tablefmt='grid', stralign='left', floatfmt=f'.{decimal_places}f')
+            
+            print("=" * 80)
+            print(f"MCMC Model Parameters Summary ({model.upper()})")
+            print("=" * 80)
+            print("")
+            print("Note: Parameters marked with '*' are fixed values (not estimated)")
+            print("      Fixed parameters have Index='N/A' and STD=0.000000")
+            print("")
             print(table_str)
             print(f"\nTotal estimated parameters: {index_counter}")
             
@@ -989,30 +1058,97 @@ class explorefault(SourceInv):
             
             print("=" * 80)
     
-        # Add to output lines for file
-        output_lines.append(table_str)
-        output_lines.append("")
-        output_lines.append(f"Total parameters: {len(table_data)}")
-        output_lines.append("")
-    
-        if include_samples:
-            samples_rounded = [round(float(sample), decimal_places) for sample in samples]
-            output_lines.append(f"Raw samples array ({model.upper()}):")
-            output_lines.append(str(samples_rounded))
-            output_lines.append("")
-    
-        output_lines.append("=" * 80)
-    
-        # Output to file if filename is provided
+        # File output with different formats
         if filename:
-            with open(filename, 'w', encoding='utf-8') as file:
-                for line in output_lines:
-                    file.write(line + "\n")
-            
-            if output_to_screen:
-                print(f"\nModel parameters saved to: {filename}")
+            # Determine file format from extension if not specified
+            if file_format == 'auto':
+                file_ext = filename.split('.')[-1].lower()
+                if file_ext in ['json']:
+                    file_format = 'json'
+                elif file_ext in ['yml', 'yaml']:
+                    file_format = 'yaml'
+                elif file_ext in ['csv']:
+                    file_format = 'csv'
+                else:
+                    file_format = 'txt'
     
-        # Return estimated parameters info for debugging
+            if file_format == 'json':
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(structured_data, f, indent=2, ensure_ascii=False)
+            
+            elif file_format == 'yaml':
+                with open(filename, 'w', encoding='utf-8') as f:
+                    yaml.dump(structured_data, f, default_flow_style=False, allow_unicode=True, indent=2)
+            
+            elif file_format == 'csv':
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    headers = ['Index', 'Category', 'Name', 'Parameter', model.upper()]
+                    if include_std and model.lower() != 'std':
+                        headers.append('STD')
+                    writer.writerow(headers)
+                    writer.writerows(table_data)
+            
+            elif file_format == 'txt':
+                # Simple text format for easy reading
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(f"MCMC Model Parameters Summary ({model.upper()})\n")
+                    f.write("=" * 60 + "\n\n")
+                    
+                    # Write fault parameters
+                    for fault_name in self.faultnames:
+                        f.write(f"Fault: {fault_name}\n")
+                        f.write("-" * 30 + "\n")
+                        
+                        fault_data = structured_data['parameters']['faults'][fault_name]
+                        
+                        if fault_data['estimated']:
+                            f.write("Estimated parameters:\n")
+                            for param, data in fault_data['estimated'].items():
+                                if include_std and 'std' in data:
+                                    f.write(f"  {param:<12}: {data['value']:<12.{decimal_places}f} ± {data['std']:.{decimal_places}f}\n")
+                                else:
+                                    f.write(f"  {param:<12}: {data['value']:.{decimal_places}f}\n")
+                        
+                        if fault_data['fixed']:
+                            f.write("Fixed parameters:\n")
+                            for param, data in fault_data['fixed'].items():
+                                f.write(f"  {param}*<11>: {data['value']:.{decimal_places}f}\n")
+                        
+                        f.write("\n")
+                    
+                    # Write reference parameters
+                    if structured_data['parameters']['reference']:
+                        f.write("Reference parameters:\n")
+                        f.write("-" * 30 + "\n")
+                        for ref_name, data in structured_data['parameters']['reference'].items():
+                            if include_std and 'std' in data:
+                                f.write(f"  {ref_name:<12}: {data['value']:<12.{decimal_places}f} ± {data['std']:.{decimal_places}f}\n")
+                            else:
+                                f.write(f"  {ref_name:<12}: {data['value']:.{decimal_places}f}\n")
+                        f.write("\n")
+                    
+                    # Write sigma parameters
+                    if structured_data['parameters']['sigmas']:
+                        f.write("Sigma parameters:\n")
+                        f.write("-" * 30 + "\n")
+                        for sigma_name, data in structured_data['parameters']['sigmas'].items():
+                            if include_std and 'std' in data:
+                                f.write(f"  {data['data_name']:<12}: {data['value']:<12.{decimal_places}f} ± {data['std']:.{decimal_places}f}\n")
+                            else:
+                                f.write(f"  {data['data_name']:<12}: {data['value']:.{decimal_places}f}\n")
+                        f.write("\n")
+                    
+                    # Write raw samples if requested
+                    if include_samples:
+                        f.write("Raw samples array:\n")
+                        f.write("-" * 30 + "\n")
+                        samples_str = str(structured_data['raw_samples']['values'])
+                        f.write(f"{samples_str}\n")
+    
+            if output_to_screen:
+                print(f"\nModel parameters saved to: {filename} (format: {file_format})")
+    
         return estimated_params
     
     def plot(self, model='median', show=True, scale=2., legendscale=0.5, vertical=True):
@@ -1326,7 +1462,7 @@ class explorefault(SourceInv):
             
             # Save the model results
             faults = self.returnModel(model=model, print_stats=False)
-            self.save_model_to_file(f'model_results_{model}.json', model=model, output_to_screen=True)
+            self.save_model_to_file(f'model_results_{model}.txt', model=model, output_to_screen=True)
             self.calculate_and_print_fit_statistics(model=model)
 
             # Build synthetics for GPS and SAR data
