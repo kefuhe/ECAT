@@ -3554,22 +3554,24 @@ class insar(SourceInv):
         return
 
 
-    def write2file(self, fname, data='data', outDir='./', write_los=False):
+    def write2file(self, fname, data='data', outDir='./', write_los=False, write_err=False, err_value=None):
         '''
         Write to an ascii file
-
+    
         Args:
             * fname     : Filename
-
+    
         Kwargs:
             * data      : can be 'data', 'synth' or 'resid'
             * outDir    : output Directory
             * write_los : write the los vector as well
-
+            * write_err : whether to write error column (default: False)
+            * err_value : if provided, use this value for all errors if self.err is None
+    
         Returns:
             * None
         '''
-
+    
         # Get variables
         x = self.lon
         y = self.lat
@@ -3581,17 +3583,27 @@ class insar(SourceInv):
             z = self.orbit
         elif data in ('res', 'resid', 'residuals'):
             z = self.vel - self.synth
-
-        # Write these to a file
+    
+        # Prepare error column if needed
+        if write_err:
+            if self.err is not None:
+                err = self.err
+            elif err_value is not None:
+                err = np.full_like(z, err_value, dtype=float)
+            else:
+                err = np.full_like(z, 1.0, dtype=float)
+    
+        # Write to file
         fout = open(os.path.join(outDir, fname), 'w')
-        if write_los:
-            for i in range(x.shape[0]):
-                fout.write('{} {} {} {} {} {} \n'.format(x[i], y[i], z[i], self.los[i,0], self.los[i,1], self.los[i,2]))
-        else:
-            for i in range(x.shape[0]):
-                fout.write('{} {} {} \n'.format(x[i], y[i], z[i]))
+        for i in range(x.shape[0]):
+            line = [x[i], y[i], z[i]]
+            if write_err:
+                line.append(err[i])
+            if write_los:
+                line.extend(self.los[i, :])
+            fout.write(' '.join(str(val) for val in line) + '\n')
         fout.close()
-
+    
         return
 
     def writeDecim2file(self, filename, data='data', outDir='./', triangular=None, write_los=False):

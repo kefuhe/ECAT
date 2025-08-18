@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csi"
+version = "1.0.0"
+description = "CSI stands for Classic Slip Inversion"
+authors = [
+    {name = "jolivet", email = "romain.jolivet@ens.fr"}
+]
+urls = {homepage = "http://www.geologie.ens.fr/~jolivet/csi/index.html"}
+dependencies = []

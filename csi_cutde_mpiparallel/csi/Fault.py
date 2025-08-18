@@ -23,8 +23,80 @@ from scipy.integrate import cumulative_trapezoid as cumtrapz
 from .SourceInv import SourceInv
 from .EDKSmp import sum_layered
 from .EDKSmp import dropSourcesInPatches as Patches2Sources
-from .PSGRNCmp import pscmpslip2dis
-from .PSGRNCmp import changePoints2pscmpfile
+from .psgrn_pscmp.PSGRNCmp import pscmpslip2dis
+from .edgrn_edcmp.EDGRNcmp import edcmpslip2dis
+from tqdm import tqdm
+
+def _pscmp_patch_task(args):
+    """
+    Module-level function for parallel PSCMP patch computation.
+    Automatically use fast version if available.
+    """
+    self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np = args
+
+    # First try fast version
+    # try:
+        # from .pscmp_fast import pscmpslip2dis_fast
+        # cx, cy, depth, width, length, strike, dip = self.getpatchgeometry(p)
+        # clon, clat = self.xy2ll(cx, cy)
+        # strike, dip = np.rad2deg(strike), np.rad2deg(dip)
+        # ss, ds, ts = pscmpslip2dis_fast(data, 
+        #                                 (clon, clat, depth, width, length, strike, dip), 
+        #                                 SLP, 
+        #                                 psgrn_dir, 
+        #                                 workdir)
+        # if verbose:
+        #     sys.stdout.write(f'\r Patch: {p+1} / {Np} (fast) ')
+        #     sys.stdout.flush()
+    # except (ImportError, Exception) as e:
+    # Fallback to original file version
+    patch_prefix = f'patch_{p}'
+    cx, cy, depth, width, length, strike, dip = self.getpatchgeometry(p, center=True)
+    clon, clat = self.xy2ll(cx, cy)
+    strike, dip = np.rad2deg(strike), np.rad2deg(dip)
+    ss, ds, ts = pscmpslip2dis(
+        data, (clon, clat, depth, width, length, strike, dip),
+        slip=SLP,
+        psgrndir=psgrn_dir,
+        output_dir=out_dir,
+        filename_suffix=patch_prefix,
+        workdir=workdir
+    )
+    
+    return p, ss, ds, ts
+
+
+def _edcmp_patch_task(args):
+    """
+    Helper function for parallel EDCMP patch computation.
+    """
+    self, p, SLP, data, workdir, grn_dir, edcmpgrns, verbose, Np, mean_x_km, mean_y_km = args
+    patch_prefix = f'patch_{p}'
+    cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = self.getpatchgeometry(p, center=True)
+    # Calclulate the TOP-LEFT corner coordinates
+    half_width_horz_km = width_km*np.cos(dip_rad) / 2.0
+    half_length_km = length_km / 2.0
+    dxy = (-half_length_km + 1.j*half_width_horz_km) * np.exp(1.j * (np.pi/2.0 - strike_rad))
+    # print(dxy)
+    x_top_left_km = cx_km + np.real(dxy)
+    y_top_left_km = cy_km + np.imag(dxy)
+    depth_top_left_km = depth_km - np.sin(dip_rad) * width_km/2.0
+    # lon, lat = self.xy2ll(x_top_left_km, y_top_left_km)
+    # print(f'The coordinate of the top-left of patch_{p}:', (lon, lat, depth_top_left_km))
+    strike_deg, dip_deg = np.rad2deg(strike_rad), np.rad2deg(dip_rad)
+    xs = (x_top_left_km-mean_x_km) * 1000.0  # Convert to meters
+    ys = (y_top_left_km-mean_y_km) * 1000.0  # Convert to meters
+    ss, ds, ts = edcmpslip2dis(
+        data, (xs, ys, depth_top_left_km*1000.0, width_km*1000.0, length_km*1000.0, strike_deg, dip_deg, mean_x_km, mean_y_km),
+        slip=SLP,
+        grn_dir=grn_dir,
+        output_dir=edcmpgrns,
+        filename_suffix=patch_prefix,
+        workdir=workdir
+    )
+    
+    return p, ss, ds, ts
+
 
 #class Fault
 class Fault(SourceInv):
@@ -997,7 +1069,9 @@ class Fault(SourceInv):
     # ----------------------------------------------------------------------
     def buildGFs(self, data, vertical=True, slipdir='sd',
                  method='homogeneous', verbose=True, convergence=None, 
-                 pscmpinp='pscmp_template.inp', psgrndir='psgrnfcts'):
+                 pscmpgrns='pscmpgrns', psgrndir='psgrnfcts', pscmp_workdir='pscmp_ecat', 
+                 edcmpgrns='edcmpgrns', edgrndir='edgrnfcts', edcmp_workdir='edcmp_ecat',
+                 n_jobs=None, cleanup_inp=True):
         '''
         Builds the Green's function matrix based on the discretized fault.
 
@@ -1064,7 +1138,12 @@ class Fault(SourceInv):
         elif method in ('edks', 'EDKS'):
             G = self.edksGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method in ('PSCMP', 'pscmp', 'PSGRN', 'psgrn'):
-            G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence, pscmpinp=pscmpinp, psgrndir=psgrndir)
+            n_jobs = int(n_jobs) if n_jobs is not None else max(os.cpu_count()//2, 4)
+            G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence, 
+                              pscmpgrns=pscmpgrns, psgrndir=psgrndir, workdir=pscmp_workdir, n_jobs=n_jobs, cleanup_inp=cleanup_inp)
+        elif method in ('EDCMP', 'edcmp', 'EDGRN', 'edgrn'):
+            G = self.edcmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, 
+                              edcmpgrns=edcmpgrns, grn_dir=edgrndir, workdir=edcmp_workdir, n_jobs=n_jobs, cleanup_inp=cleanup_inp)
         elif method in ('cutde', 'CUTDE'):
             G = self.cutdeGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method in ('empty',):
@@ -1696,29 +1775,59 @@ class Fault(SourceInv):
         return G
     # ----------------------------------------------------------------------
 
-    # ----------------------------------------------------------------------
-    def pscmpGFs(self, data, vertical=True, slipdir='sd', verbose=True, convergence=None, pscmpinp='pscmp_user.inp', psgrndir='psgrnfcts'):
-        # Check that we are not in this case
-        assert self.patchType != 'triangletent',\
-                'Need to run EDKS for that particular type of fault'
+    # ----------------------------------------------------------------------  
+    def pscmpGFs(self, data, vertical=True, slipdir='sd', verbose=True, convergence=None,
+                 workdir='pscmp_ecat', psgrndir='psgrnfcts', pscmpgrns='pscmpgrns', n_jobs=4, cleanup_inp=True):
+        """
+        Compute PSCMP Green's functions for all patches in parallel.
+        Each patch uses its own input/output files and directories under workdir.
+    
+        Parameters
+        ----------
+        data : object
+            Observation data, must have .lat and .lon attributes (array-like).
+        vertical : bool
+            If True, include vertical displacements for GPS.
+        slipdir : str
+            Slip directions, any combination of 's' (strike), 'd' (dip), 't' (tensile), 'c' (coupling).
+        verbose : bool
+            Print progress information.
+        convergence : list or None
+            Convergence azimuth and rate for coupling GFs.
+        workdir : str
+            Working directory for all intermediate and output files.
+        psgrndir : str
+            Directory for Green's functions, relative to workdir.
+        pscmpgrns : str
+            Directory for PSCMP outputs, relative to workdir.
+        n_jobs : int
+            Number of parallel workers.
+        cleanup_inp: bool
+            If True, clean up intermediate input files after processing.
 
-        # Print
-        if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print("Building Green's functions for the data set ")
-            print("{} of type {} in a layered elastic half-space".format(data.name,
-                                                                    data.dtype))
-
-        # Initialize the slip vector
+        Returns
+        -------
+        G : dict
+            Dictionary of Green's functions.
+        """
+        import numpy as np
+        import os
+        import glob
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+    
+        # Prepare directories
+        psgrn_dir = psgrndir
+        out_dir = pscmpgrns
+    
+        # Build slip vector
         SLP = []
-        if 's' in slipdir:              # If strike slip is aksed
+        if 's' in slipdir:
             SLP.append(1.0)
-        else:                           # Else
+        else:
             SLP.append(0.0)
-        if 'd' in slipdir:              # If dip slip is asked
+        if 'd' in slipdir:
             SLP.append(1.0)
-        else:                           # Else
+        else:
             SLP.append(0.0)
         if convergence is not None:
             SLP = [1.0, 1.0]
@@ -1726,47 +1835,158 @@ class Fault(SourceInv):
                 slipdir += 'c'
         if 'c' in slipdir:
             assert convergence is not None, 'No convergence azimuth and rate given'
-        if 't' in slipdir:              # If tensile is asked
+        if 't' in slipdir:
             SLP.append(1.0)
-        else:                           # Else
+        else:
             SLP.append(0.0)
-
-        # Create the dictionary
-        G = {'strikeslip':[], 'dipslip':[], 'tensile':[], 'coupling':[]}
-
-        # Create the matrices to hold the whole thing
-        Gss = np.zeros((3, len(data.x), len(self.patch)))
-        Gds = np.zeros((3, len(data.x), len(self.patch)))
-        Gts = np.zeros((3, len(data.x), len(self.patch)))
-
-        # Loop over each patch
-        for p in range(len(self.patch)):
-            if verbose:
-                sys.stdout.write('\r Patch: {} / {} '.format(p+1,len(self.patch)))
-                sys.stdout.flush()
-
-            # get the surface displacement corresponding to unit slip
-            # ss,ds,op will all have shape (Nd,3) for 3 components
-            # x, y, depth, width, length, strike, dip
-            x, y, depth, width, length, strike, dip = self.getpatchgeometry(p)
-            lon, lat = self.xy2ll(x, y)
-            strike, dip = np.rad2deg(strike), np.rad2deg(dip)
-            changePoints2pscmpfile(data, pscmpinp=pscmpinp)
-            ss, ds, ts = pscmpslip2dis(data, (lon, lat, depth, width, length, strike, dip), slip=SLP, pscmpinp=pscmpinp, psgrndir=psgrndir)
-
-            # Store them
-            Gss[:,:,p] = ss.T
-            Gds[:,:,p] = ds.T
-            Gts[:,:,p] = ts.T
-
+    
+        # Allocate result arrays
+        Nd = len(data.x)
+        Np = len(self.patch)
+        Gss = np.zeros((3, Nd, Np))
+        Gds = np.zeros((3, Nd, Np))
+        Gts = np.zeros((3, Nd, Np))
+    
+        # Prepare arguments for each patch
+        patch_args = [
+            (self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np)
+            for p in range(Np)
+        ]
+    
+        # Parallel execution
+        results = [None] * Np
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            futures = [pool.submit(_pscmp_patch_task, arg) for arg in patch_args]
+            for i, future in enumerate(tqdm(as_completed(futures), total=Np)):
+                p, ss, ds, ts = future.result()
+                Gss[:, :, p] = ss.T
+                Gds[:, :, p] = ds.T
+                Gts[:, :, p] = ts.T
+                results[p] = (ss, ds, ts)
+    
         if verbose:
-            print(' ')
+            print('')
 
-        # Build the dictionary
+        # Optionally clean up input files
+        if cleanup_inp:
+            inp_files = glob.glob(os.path.join(workdir, 'pscmp*.inp'))
+            for f in inp_files:
+                # Keep patch_1 input file for user reference
+                if 'patch_1.inp' in f:
+                    # print(f"[INFO] Keep input file for patch_1: {f}")
+                    continue
+                try:
+                    os.remove(f)
+                except Exception as e:
+                    print(f"Warning: failed to remove {f}: {e}")
+    
+        # Build Green's function dictionary
         G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
-                                convergence=convergence, vertical=vertical)
+                               convergence=convergence, vertical=vertical)
+        return G
+    # ----------------------------------------------------------------------
 
-        # All done
+    # ----------------------------------------------------------------------
+    def edcmpGFs(self, data, vertical=True, slipdir='sd', verbose=True,
+                 workdir='edcmp_ecat', grn_dir='edgrnfcts', edcmpgrns='edcmpgrns',
+                 n_jobs=4, cleanup_inp=False):
+        """
+        Compute EDCMP Green's functions for all patches in parallel.
+        Each patch uses its own input/output files and directories under workdir.
+    
+        Parameters
+        ----------
+        data : object
+            Observation data, must have .x and .y attributes (array-like, meters).
+        vertical : bool
+            If True, include vertical displacements.
+        slipdir : str
+            Slip directions, any combination of 's' (strike), 'd' (dip), 't' (tensile).
+        verbose : bool
+            Print progress information.
+        workdir : str
+            Working directory for all intermediate and output files.
+        grn_dir : str
+            Directory for Green's functions, relative to workdir.
+        edcmpgrns : str
+            Directory for EDCMP outputs, relative to workdir.
+        n_jobs : int
+            Number of parallel workers.
+        cleanup_inp: bool
+            If True, clean up intermediate input files after processing.
+    
+        Returns
+        -------
+        G : dict
+            Dictionary of Green's functions.
+        """
+        import numpy as np
+        import os
+        import glob
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+    
+        # Build slip vector
+        SLP = []
+        if 's' in slipdir:
+            SLP.append(1.0)
+        else:
+            SLP.append(0.0)
+        if 'd' in slipdir:
+            SLP.append(1.0)
+        else:
+            SLP.append(0.0)
+        if 't' in slipdir:
+            SLP.append(1.0)
+        else:
+            SLP.append(0.0)
+    
+        # Allocate result arrays
+        Nd = len(data.x)
+        Np = len(self.patch)
+        Gss = np.zeros((3, Nd, Np))
+        Gds = np.zeros((3, Nd, Np))
+        Gts = np.zeros((3, Nd, Np))
+
+        # mean the fault source xy coordinates
+        mean_x_km = np.mean([np.mean([p[i][0] for i in range(4)]) for p in self.patch])
+        mean_y_km = np.mean([np.mean([p[i][1] for i in range(4)]) for p in self.patch])
+
+        # Prepare arguments for each patch
+        patch_args = [
+            (self, p, SLP, data, workdir, grn_dir, edcmpgrns, verbose, Np, mean_x_km, mean_y_km)
+            for p in range(Np)
+        ]
+    
+        # Parallel execution
+        results = [None] * Np
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            futures = [pool.submit(_edcmp_patch_task, arg) for arg in patch_args]
+            for i, future in enumerate(tqdm(as_completed(futures), total=Np)):
+                p, ss, ds, ts = future.result()
+                Gss[:, :, p] = ss.T
+                Gds[:, :, p] = ds.T
+                Gts[:, :, p] = ts.T
+                results[p] = (ss, ds, ts)
+    
+        if verbose:
+            print('')
+    
+        # Optionally clean up input files
+        if cleanup_inp:
+            inp_files = glob.glob(os.path.join(workdir, 'edcmp*.inp'))
+            for f in inp_files:
+                # Keep patch_1 input file for user reference
+                if 'patch_1.inp' in f:
+                    # print(f"[INFO] Keep input file for patch_1: {f}")
+                    continue
+                try:
+                    os.remove(f)
+                except Exception as e:
+                    print(f"Warning: failed to remove {f}: {e}")
+    
+        # Build Green's function dictionary
+        G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
+                               convergence=None, vertical=vertical)
         return G
     # ----------------------------------------------------------------------
 

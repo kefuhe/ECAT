@@ -689,29 +689,49 @@ class BayesianMultiFaultsInversionConfig(BaseBayesianConfig):
     def update_GFs_parameters(self, geodata, verticals, dataFaults=None, gfmethods=None):
         """
         Update the update_GFs method parameters for all faults.
+        Ensures method is valid and, if None, selects default based on fault patchType.
         """
+        allowed_methods = (
+            'okada', 'Okada', 'OKADA', 'ok92', 'meade', 'Meade', 'MEADE',
+            'edks', 'EDKS',
+            'PSCMP', 'pscmp', 'PSGRN', 'psgrn',
+            'EDCMP', 'edcmp', 'EDGRN', 'edgrn',
+            'cutde', 'CUTDE',
+            'empty'
+        )
+    
         if len(geodata) != len(verticals):
             raise ValueError("Length of geodata and verticals should be the same.")
-        
+    
         if gfmethods is not None and len(self.faultnames) != len(gfmethods):
             raise ValueError("Length of faultnames and gfmethods should be the same.")
-        
+    
         for i, fault_name in enumerate(self.faultnames):
             fault_parameters = self.faults[fault_name]
             method = gfmethods[i] if gfmethods is not None else None
-            
+    
+            # If method is None, try to get from config or use default by patchType
             if method is None:
                 ifault = self.faults_list[i]
                 method = fault_parameters['method_parameters']['update_GFs'].get('method')
-                
                 if method is None:
-                    if ifault.patchType == 'triangle':
-                        method = 'cutde'
-                    elif ifault.patchType == 'rectangle':
-                        method = 'okada'
+                    if hasattr(ifault, 'patchType'):
+                        if ifault.patchType == 'triangle':
+                            method = 'cutde'
+                        elif ifault.patchType == 'rectangle':
+                            method = 'okada'
+                        else:
+                            raise ValueError(f"Unknown patchType '{ifault.patchType}' for fault '{fault_name}'")
                     else:
-                        raise ValueError("Unknown patchType")
-            
+                        raise ValueError(f"Cannot determine default method for fault '{fault_name}' (missing patchType)")
+    
+            # Check whether the method is allowed
+            if method not in allowed_methods:
+                raise ValueError(
+                    f"Invalid Green's function method '{method}' for fault '{fault_name}'. "
+                    f"Allowed methods are: {allowed_methods}"
+                )
+    
             fault_parameters['method_parameters']['update_GFs'] = {
                 'geodata': geodata,
                 'verticals': verticals,
@@ -1152,6 +1172,15 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
         """
         Update the update_GFs method parameters for all faults.
         """
+        allowed_methods = (
+            'okada', 'Okada', 'OKADA', 'ok92', 'meade', 'Meade', 'MEADE',
+            'edks', 'EDKS',
+            'PSCMP', 'pscmp', 'PSGRN', 'psgrn',
+            'EDCMP', 'edcmp', 'EDGRN', 'edgrn',
+            'cutde', 'CUTDE',
+            'empty'
+        )
+    
         if len(geodata) != len(verticals):
             raise ValueError("Length of geodata and verticals should be the same.")
         
@@ -1174,6 +1203,13 @@ class BoundLSEInversionConfig(BaseBayesianConfig):
                     else:
                         raise ValueError("Unknown patchType")
             
+            # Check whether the method is allowed or not
+            if method not in allowed_methods:
+                raise ValueError(
+                    f"Invalid Green's function method '{method}' for fault '{fault_name}'. "
+                    f"Allowed methods are: {allowed_methods}"
+                )
+    
             fault_parameters['method_parameters']['update_GFs'] = {
                 'geodata': geodata,
                 'verticals': verticals,

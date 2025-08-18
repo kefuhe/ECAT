@@ -51,11 +51,10 @@ geodata:
   
   # Polynomial correction configuration - multiple formats supported:
   # 1. null: No polynomial correction for any dataset
-  # 2. Boolean: true (enable default order) or false (disable for all)
-  # 3. Integer: Same polynomial order for all datasets
-  # 4. List of values: [3, null, 1] (per-dataset polynomial orders)
-  # 5. String: polynomial order as string (for compatibility)
-  # 
+  # 2. Integer: Same polynomial order for all datasets
+  # 3. List of values: [3, null, 1] (per-dataset polynomial orders)
+  # 4. String: polynomial order as string (for compatibility)
+  #
   # Recommended values by data type:
   # - InSAR (SAR): 3 (removes orbital ramps and atmospheric effects)
   # - GPS: null (high precision, no polynomial needed)
@@ -66,7 +65,6 @@ geodata:
   # polys: null                    # No correction for all datasets
   # polys: 3                       # Order-3 polynomial for all datasets
   # polys: [3, null, 1]           # Mixed: SAR=3, GPS=null, Optical=1
-  # polys: true                    # Enable with auto-selected order
   polys: null  # Default: no polynomial correction
   
   faults: null  # List of fault names, optional: (null, list of fault name list)
@@ -109,6 +107,7 @@ faults:
         verbose: 0  # Gmsh verbosity level
         show: false  # Whether to show Gmsh GUI
       update_GFs:
+        method: null
         geodata: null
         verticals: null
       update_Laplacian:
