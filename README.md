@@ -16,6 +16,7 @@
 
 ***ECAT*** supports layered Green's function calculations for both rectangular and triangular elements, utilizing `edcmp` and `pscmp`.
 For more details and configuration instructions, see the `README` file in the `csi` subdirectory.
+![1755592869693](image/README/1755592869693.png)
 
 **A set of tools related to the forward and inverse *earthquake cycle*.**
 
