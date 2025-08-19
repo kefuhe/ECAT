@@ -12,6 +12,12 @@ _Pythonic Version with Layered and Triangular Green's Function Support_
 
 ## ✨ Features
 
+### Forward Modeling Engines
+
+***ECAT*** supports layered Green's function calculations for both rectangular and triangular elements, utilizing `edcmp` and `pscmp`.
+For more details and configuration instructions, see the `README` file in the `csi` subdirectory.
+![1755595546938](image/README/1755595546938.png)
+
 - **🟩 Green's Function Calculation**
   - 🚀 Parallel computation of triangular dislocation element Green's functions using [cutde](https://github.com/cutde-org/cutde).
   - 🏗️ Layered Green's function calculation via EDCMP ([original repo](https://github.com/RongjiangWang/EDGRN_EDCMP_2.0)) and PSCMP ([original repo](https://github.com/RongjiangWang/PSGRN-PSCMP_2020)).
