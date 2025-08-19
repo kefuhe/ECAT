@@ -36,6 +36,7 @@ def edcmpslip2dis(
     output_dir='edcmpgrns',
     filename_suffix='',
     workdir='edcmp_ecat',
+    layered_model=True
 ):
     """
     Generate EDCMP input file and call EDCMP to compute Green's functions for a single rectangular fault.
@@ -57,6 +58,8 @@ def edcmpslip2dis(
         Suffix for output files to avoid name conflicts
     workdir : str
         Working directory for all intermediate and output files
+    layered_model : bool
+        Use layered model for Green's functions
     Returns
     -------
     ss, ds, ts : np.ndarray
@@ -83,7 +86,7 @@ def edcmpslip2dis(
         )
 
     # Prepare observation points
-    layered_model=True
+    layered_model=layered_model
     grn_files=('edgrnhs.ss', 'edgrnhs.ds', 'edgrnhs.cl')
     output_flags = (1, 0, 0, 0)
     output_files = ('edcmp.disp', 'edcmp.strn', 'edcmp.strss', 'edcmp.tilt')
@@ -106,13 +109,19 @@ def edcmpslip2dis(
         slip_total = 1.0
         rake = 0.0
         # swap x and y for edcmp
-        params.sources = [RectangularSource(source_id=1, slip=slip_total,
-                                            xs=ys, ys=xs, zs=zs,
-                                            width=width, length=length,
-                                            strike=strike, dip=dip, rake=rake)]
-        params.output_files = (f'edcmp_ss_{filename_suffix}.disp', 
-                            f'edcmp_ss_{filename_suffix}.strn', 
-                            f'edcmp_ss_{filename_suffix}.strss', 
+        if isinstance(xs, (list, tuple, np.ndarray)):
+            params.sources = [RectangularSource(source_id=i+1, slip=slip_total,
+                                                xs=ys[i], ys=xs[i], zs=zs[i],
+                                                width=width, length=length,
+                                                strike=strike, dip=dip, rake=rake) for i in range(len(xs))]
+        else:
+            params.sources = [RectangularSource(source_id=1, slip=slip_total,
+                                                xs=ys, ys=xs, zs=zs,
+                                                width=width, length=length,
+                                                strike=strike, dip=dip, rake=rake)]
+        params.output_files = (f'edcmp_ss_{filename_suffix}.disp',
+                            f'edcmp_ss_{filename_suffix}.strn',
+                            f'edcmp_ss_{filename_suffix}.strss',
                             f'edcmp_ss_{filename_suffix}.tilt')
         # Write input file
         inp_ss = os.path.join(os.path.basename(workdir), f'edcmp_ss_{filename_suffix}.inp')
@@ -143,16 +152,23 @@ def edcmpslip2dis(
                 print(f"[EDCMP ERROR] Working directory: {workdir}")
                 print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
                 print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
+                raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
 
     # Compute dip-slip Green's function
     if slip[1] == 1.0:
         slip_total = 1.0
         rake = 90.0
         # Swap xs and ys for edcmp
-        params.sources = [RectangularSource(source_id=1, slip=slip_total,
-                                            xs=ys, ys=xs, zs=zs,
-                                            width=width, length=length,
-                                            strike=strike, dip=dip, rake=rake)]
+        if isinstance(xs, (list, tuple, np.ndarray)):
+            params.sources = [RectangularSource(source_id=i+1, slip=slip_total,
+                                                xs=ys[i], ys=xs[i], zs=zs[i],
+                                                width=width, length=length,
+                                                strike=strike, dip=dip, rake=rake) for i in range(len(xs))]
+        else:
+            params.sources = [RectangularSource(source_id=1, slip=slip_total,
+                                                xs=ys, ys=xs, zs=zs,
+                                                width=width, length=length,
+                                                strike=strike, dip=dip, rake=rake)]
         params.output_files = (f'edcmp_ds_{filename_suffix}.disp',
                             f'edcmp_ds_{filename_suffix}.strn',
                             f'edcmp_ds_{filename_suffix}.strss',
@@ -171,7 +187,14 @@ def edcmpslip2dis(
             stderr=subprocess.DEVNULL,
             shell=(sys.platform == "win32")
         ) as proc:
-            proc.wait()
+            out, err = proc.communicate()
+            if proc.returncode != 0:
+                print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
+                print(f"[EDCMP ERROR] Return code: {proc.returncode}")
+                print(f"[EDCMP ERROR] Working directory: {workdir}")
+                print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
+                print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
+                raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
 
 
     # Read outputs

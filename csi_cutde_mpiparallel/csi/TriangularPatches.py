@@ -16,11 +16,26 @@ from scipy.linalg import block_diag
 import copy
 import sys
 import os
+from numba import jit
 
 # Personals
 from .Fault import Fault
 from .geodeticplot import geodeticplot as geoplot
 from .gps import gps as gpsclass
+
+
+@jit(nopython=True)
+def calculate_triangle_areas(vertices, faces):
+    v1 = vertices[faces[:, 0]]
+    v2 = vertices[faces[:, 1]]
+    v3 = vertices[faces[:, 2]]
+    a = np.sqrt(np.sum((v2 - v1)**2, axis=1))
+    b = np.sqrt(np.sum((v3 - v2)**2, axis=1))
+    c = np.sqrt(np.sum((v1 - v3)**2, axis=1))
+    s = (a + b + c) / 2
+    areas = np.sqrt(s * (s - a) * (s - b) * (s - c))
+    return areas
+
 
 class TriangularPatches(Fault):
     '''
@@ -118,6 +133,14 @@ class TriangularPatches(Fault):
         # All Done
         return area
     # ----------------------------------------------------------------------
+
+    def compute_triangle_areas(self):
+        self.area = calculate_triangle_areas(self.Vertices, self.Faces)
+        return self.area
+    
+    def compute_patch_areas(self):
+        self.area = calculate_triangle_areas(self.Vertices, self.Faces)
+        return self.area
 
     # ----------------------------------------------------------------------
     def splitPatch(self, patch):

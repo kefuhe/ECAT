@@ -102,26 +102,43 @@ def pscmpslip2dis(
 
     # Prepare FaultSource
     lon, lat, depth, width, length, strike, dip = p
-    fault = FaultSource(
-        fault_id=1,
-        o_lat=lat,
-        o_lon=lon,
-        o_depth=depth,
-        length=length,
-        width=width,
-        strike=strike,
-        dip=dip,
-        np_st=1,
-        np_di=1,
-        start_time=0.0
-    )
+    if not isinstance(lon, (list, tuple, np.ndarray)):
+        fault = FaultSource(
+            fault_id=1,
+            o_lat=lat,
+            o_lon=lon,
+            o_depth=depth,
+            length=length,
+            width=width,
+            strike=strike,
+            dip=dip,
+            np_st=1,
+            np_di=1,
+            start_time=0.0
+        )
+        fault_sources = [fault]
+    else:
+        # Unpack source parameters
+        fault_sources = [FaultSource(
+            fault_id=i,
+            o_lat=lat[i],
+            o_lon=lon[i],
+            o_depth=depth[i],
+            length=length,
+            width=width,
+            strike=strike,
+            dip=dip,
+            np_st=1,
+            np_di=1,
+            start_time=0.0
+        ) for i in range(len(lon))]
 
     # Prepare PSCMP parameters
     params = PSCMPParameters(
         iposrec=0,
         output_dir=rel_out_dir + os.sep,
         grn_dir=rel_psgrn_dir + os.sep,
-        fault_sources=[fault]
+        fault_sources=fault_sources
     )
     params.load_observation_points_from_dataframe(obs_df)
 
@@ -129,13 +146,14 @@ def pscmpslip2dis(
     # Prepare input file paths
     inp_ss = os.path.join(os.path.basename(workdir), f'pscmp_ss_{filename_suffix}.inp')
     if slip[0] == 1.0:
-        fault.patches = [{
-            'pos_s': 0.0,
-            'pos_d': 0.0,
-            'slip_strike': 1.0,
-            'slip_downdip': 0.0,
+        for ifault in fault_sources:
+            ifault.patches = [{
+                'pos_s': 0.0,
+                'pos_d': 0.0,
+                'slip_strike': 1.0,
+                'slip_downdip': 0.0,
             'opening': 0.0
-        }]
+            }]
         params.snapshots = [{
             'time': 0.00,
             'filename': f'snapshot_coseism_ss1_{filename_suffix}.dat',
@@ -147,25 +165,32 @@ def pscmpslip2dis(
         exe_path = os.path.join(BIN_PSCMP_PATH, 'fomosto_pscmp2008a' + ('.exe' if sys.platform.startswith('win') else ''))
         cmd = [exe_path, os.path.join('.', f'pscmp_ss_{filename_suffix}.inp')]
         with subprocess.Popen(
-            cmd,
-            cwd=workdir,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            shell=(sys.platform == "win32")
-        ) as proc:
-            proc.wait()
+                cmd,
+                cwd=workdir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=(sys.platform == "win32")
+            ) as proc:
+            out, err = proc.communicate()
+            if proc.returncode != 0:
+                print(f"[PSCMP ERROR] Command failed: {' '.join(cmd)}")
+                print(f"[PSCMP ERROR] Return code: {proc.returncode}")
+                print(f"[PSCMP ERROR] Working directory: {workdir}")
+                print(f"[PSCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
+                print(f"[PSCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
 
     # Compute dip-slip Green's function
     # Prepare input file path
     inp_ds = os.path.join(os.path.basename(workdir), f'pscmp_ds_{filename_suffix}.inp')
     if slip[1] == 1.0:
-        fault.patches = [{
-            'pos_s': 0.0,
-            'pos_d': 0.0,
-            'slip_strike': 0.0,
-            'slip_downdip': -1.0,
+        for ifault in fault_sources:
+            ifault.patches = [{
+                'pos_s': 0.0,
+                'pos_d': 0.0,
+                'slip_strike': 0.0,
+                'slip_downdip': -1.0,
             'opening': 0.0
-        }]
+            }]
         params.snapshots = [{
             'time': 0.00,
             'filename': f'snapshot_coseism_ds1_{filename_suffix}.dat',
@@ -193,11 +218,11 @@ def pscmpslip2dis(
             ) as proc:
             out, err = proc.communicate()
             if proc.returncode != 0:
-                print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
-                print(f"[EDCMP ERROR] Return code: {proc.returncode}")
-                print(f"[EDCMP ERROR] Working directory: {workdir}")
-                print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
-                print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
+                print(f"[PSCMP ERROR] Command failed: {' '.join(cmd)}")
+                print(f"[PSCMP ERROR] Return code: {proc.returncode}")
+                print(f"[PSCMP ERROR] Working directory: {workdir}")
+                print(f"[PSCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
+                print(f"[PSCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
 
     # Read outputs
     ds_file = os.path.join(out_dir, f'snapshot_coseism_ds1_{filename_suffix}.dat')

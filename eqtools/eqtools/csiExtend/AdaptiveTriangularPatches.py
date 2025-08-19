@@ -2700,13 +2700,13 @@ class AdaptiveTriangularPatches(TriangularPatches):
 
         return areas
 
-    def compute_triangle_areas(self):
-        self.area = calculate_triangle_areas(self.Vertices, self.Faces)
-        return self.area
+    # def compute_triangle_areas(self):
+    #     self.area = calculate_triangle_areas(self.Vertices, self.Faces)
+    #     return self.area
     
-    def compute_patch_areas(self):
-        self.area = calculate_triangle_areas(self.Vertices, self.Faces)
-        return self.area
+    # def compute_patch_areas(self):
+    #     self.area = calculate_triangle_areas(self.Vertices, self.Faces)
+    #     return self.area
 
     def calculate_triangle_normals(self):
         return compute_triangle_normals(self.Vertices, self.Faces)

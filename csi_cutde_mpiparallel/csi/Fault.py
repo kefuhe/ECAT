@@ -25,9 +25,10 @@ from .EDKSmp import sum_layered
 from .EDKSmp import dropSourcesInPatches as Patches2Sources
 from .psgrn_pscmp.PSGRNCmp import pscmpslip2dis
 from .edgrn_edcmp.EDGRNcmp import edcmpslip2dis
+from .edgrn_edcmp.tri2rectpoints import patch_local2d_inv, patch_local2d, triangle_to_rectangles
 from tqdm import tqdm
 
-def _pscmp_patch_task(args):
+def _pscmp_patch_task_rect(args):
     """
     Module-level function for parallel PSCMP patch computation.
     Automatically use fast version if available.
@@ -65,12 +66,11 @@ def _pscmp_patch_task(args):
     
     return p, ss, ds, ts
 
-
-def _edcmp_patch_task(args):
+def _edcmp_patch_task_rect(args):
     """
     Helper function for parallel EDCMP patch computation.
     """
-    self, p, SLP, data, workdir, grn_dir, edcmpgrns, verbose, Np, mean_x_km, mean_y_km = args
+    self, p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np, mean_x_km, mean_y_km = args
     patch_prefix = f'patch_{p}'
     cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = self.getpatchgeometry(p, center=True)
     # Calclulate the TOP-LEFT corner coordinates
@@ -92,9 +92,125 @@ def _edcmp_patch_task(args):
         grn_dir=grn_dir,
         output_dir=edcmpgrns,
         filename_suffix=patch_prefix,
-        workdir=workdir
+        workdir=workdir,
+        layered_model=layered_model
     )
     
+    return p, ss, ds, ts
+
+def _pscmp_patch_task(args):
+    """
+    Module-level function for parallel PSCMP patch computation.
+    Automatically use fast version if available.
+    """
+    self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np, mean_x_km, mean_y_km, p_vertices, p_vertices_ll, patchType, sourceparameters = args
+    patch_prefix = f'patch_{p}'
+    cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = sourceparameters
+    clon = np.mean(p_vertices_ll[:, 0])
+    clat = np.mean(p_vertices_ll[:, 1])
+    strike_deg, dip_deg = np.rad2deg(strike_rad), np.rad2deg(dip_rad)
+    if patchType == 'rectangle':
+        ss, ds, ts = pscmpslip2dis(
+            data, (clon, clat, depth_km, width_km, length_km, strike_deg, dip_deg),
+            slip=SLP,
+            psgrndir=psgrn_dir,
+            output_dir=out_dir,
+            filename_suffix=patch_prefix,
+            workdir=workdir
+        )
+    elif patchType == 'triangle':
+        vertices = p_vertices  # 3x3 array
+        xyz = patch_local2d(vertices, cx_km, cy_km, depth_km, strike_rad, dip_rad)
+
+        dx_km = 0.1  # 100m
+        dy_km = 0.1  # 100m
+        _, rect_corners = triangle_to_rectangles(xyz[:, :2], dx_km, dy_km)
+
+        # Recover to original 3D coordinates
+        rect_corners_3d = [
+            patch_local2d_inv(
+                np.column_stack([c, np.zeros((c.shape[0], 1))]),
+                cx_km, cy_km, depth_km, strike_rad, dip_rad
+            )
+            for c in rect_corners
+        ]
+        xs_center_km = np.array([np.mean(c[:, 0]) for c in rect_corners_3d])
+        ys_center_km = np.array([np.mean(c[:, 1]) for c in rect_corners_3d])
+        depth_center_km = np.array([np.mean(c[:, 2]) for c in rect_corners_3d])
+        xs_clon, xs_clat = self.xy2ll(xs_center_km, ys_center_km)
+        ss, ds, ts = pscmpslip2dis(
+            data, (xs_clon, xs_clat, depth_center_km, dy_km, dx_km, strike_deg, dip_deg),
+            slip=SLP,
+            psgrndir=psgrn_dir,
+            output_dir=out_dir,
+            filename_suffix=patch_prefix,
+            workdir=workdir
+        )
+
+    return p, ss, ds, ts
+
+def _edcmp_patch_task(args):
+    """
+    Helper function for parallel EDCMP patch computation.
+    """
+    p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np, mean_x_km, mean_y_km, p_vertices, patchType, sourceparameters = args
+    patch_prefix = f'patch_{p}'
+    cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = sourceparameters
+    strike_deg, dip_deg = np.rad2deg(strike_rad), np.rad2deg(dip_rad)
+
+    if patchType == 'rectangle':
+        # Calclulate the TOP-LEFT corner coordinates
+        half_width_horz_km = width_km*np.cos(dip_rad) / 2.0
+        half_length_km = length_km / 2.0
+        dxy = (-half_length_km + 1.j*half_width_horz_km) * np.exp(1.j * (np.pi/2.0 - strike_rad))
+        # print(dxy)
+        x_top_left_km = cx_km + np.real(dxy)
+        y_top_left_km = cy_km + np.imag(dxy)
+        depth_top_left_km = depth_km - np.sin(dip_rad) * width_km/2.0
+        # lon, lat = self.xy2ll(x_top_left_km, y_top_left_km)
+        # print(f'The coordinate of the top-left of patch_{p}:', (lon, lat, depth_top_left_km))
+        xs = (x_top_left_km-mean_x_km) * 1000.0  # Convert to meters
+        ys = (y_top_left_km-mean_y_km) * 1000.0  # Convert to meters
+        ss, ds, ts = edcmpslip2dis(
+            data, (xs, ys, depth_top_left_km*1000.0, width_km*1000.0, length_km*1000.0, strike_deg, dip_deg, mean_x_km, mean_y_km),
+            slip=SLP,
+            grn_dir=grn_dir,
+            output_dir=edcmpgrns,
+            filename_suffix=patch_prefix,
+            workdir=workdir,
+            layered_model=layered_model
+        )
+    elif patchType == 'triangle':
+        vertices = p_vertices  # 3x3 array
+        xyz = patch_local2d(vertices, cx_km, cy_km, depth_km, strike_rad, dip_rad)
+
+        dx_km = 0.1  # 100m
+        dy_km = 0.1  # 100m
+        _, rect_corners = triangle_to_rectangles(xyz[:, :2], dx_km, dy_km)
+
+        # Recover to original 3D coordinates
+        rect_corners_3d = [
+            patch_local2d_inv(
+                np.column_stack([c, np.zeros((c.shape[0], 1))]),
+                cx_km, cy_km, depth_km, strike_rad, dip_rad
+            )
+            for c in rect_corners
+        ]
+        xs_top_left_km = np.array([c[-1][0] for c in rect_corners_3d])
+        ys_top_left_km = np.array([c[-1][1] for c in rect_corners_3d])
+        depth_top_left_km = np.array([c[-1][2] for c in rect_corners_3d])
+        xs = (xs_top_left_km-mean_x_km) * 1000.0  # Convert to meters
+        ys = (ys_top_left_km-mean_y_km) * 1000.0  # Convert to meters
+        ss, ds, ts = edcmpslip2dis(
+            data, (xs, ys, depth_top_left_km*1000.0, dy_km*1000.0, dx_km*1000.0, strike_deg, dip_deg, mean_x_km, mean_y_km),
+            slip=SLP,
+            grn_dir=grn_dir,
+            output_dir=edcmpgrns,
+            filename_suffix=patch_prefix,
+            workdir=workdir,
+            layered_model=layered_model
+        )
+
     return p, ss, ds, ts
 
 
@@ -1071,7 +1187,7 @@ class Fault(SourceInv):
                  method='homogeneous', verbose=True, convergence=None, 
                  pscmpgrns='pscmpgrns', psgrndir='psgrnfcts', pscmp_workdir='pscmp_ecat', 
                  edcmpgrns='edcmpgrns', edgrndir='edgrnfcts', edcmp_workdir='edcmp_ecat',
-                 n_jobs=None, cleanup_inp=True):
+                 edcmp_layered_model=True, n_jobs=None, cleanup_inp=True):
         '''
         Builds the Green's function matrix based on the discretized fault.
 
@@ -1143,7 +1259,8 @@ class Fault(SourceInv):
                               pscmpgrns=pscmpgrns, psgrndir=psgrndir, workdir=pscmp_workdir, n_jobs=n_jobs, cleanup_inp=cleanup_inp)
         elif method in ('EDCMP', 'edcmp', 'EDGRN', 'edgrn'):
             G = self.edcmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, 
-                              edcmpgrns=edcmpgrns, grn_dir=edgrndir, workdir=edcmp_workdir, n_jobs=n_jobs, cleanup_inp=cleanup_inp)
+                              edcmpgrns=edcmpgrns, grn_dir=edgrndir, workdir=edcmp_workdir, 
+                              layered_model=edcmp_layered_model, n_jobs=n_jobs, cleanup_inp=cleanup_inp)
         elif method in ('cutde', 'CUTDE'):
             G = self.cutdeGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method in ('empty',):
@@ -1847,11 +1964,17 @@ class Fault(SourceInv):
         Gds = np.zeros((3, Nd, Np))
         Gts = np.zeros((3, Nd, Np))
     
+        # mean the fault source xy coordinates
+        mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
+        mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
+
+        # if self.patchType == 'triangle':
         # Prepare arguments for each patch
-        patch_args = [
-            (self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np)
-            for p in range(Np)
-        ]
+        patch_args = []
+        for p in range(Np):
+            cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = self.getpatchgeometry(p, center=True)
+            patch_args.append((self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np, mean_x_km, mean_y_km,
+                            self.patch[p], self.patchll[p], self.patchType, [cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad]))
     
         # Parallel execution
         results = [None] * Np
@@ -1889,7 +2012,7 @@ class Fault(SourceInv):
     # ----------------------------------------------------------------------
     def edcmpGFs(self, data, vertical=True, slipdir='sd', verbose=True,
                  workdir='edcmp_ecat', grn_dir='edgrnfcts', edcmpgrns='edcmpgrns',
-                 n_jobs=4, cleanup_inp=False):
+                 layered_model=True, n_jobs=4, cleanup_inp=False):
         """
         Compute EDCMP Green's functions for all patches in parallel.
         Each patch uses its own input/output files and directories under workdir.
@@ -1910,6 +2033,8 @@ class Fault(SourceInv):
             Directory for Green's functions, relative to workdir.
         edcmpgrns : str
             Directory for EDCMP outputs, relative to workdir.
+        layered_model : bool
+            Use layered model for Green's functions.
         n_jobs : int
             Number of parallel workers.
         cleanup_inp: bool
@@ -1948,15 +2073,17 @@ class Fault(SourceInv):
         Gts = np.zeros((3, Nd, Np))
 
         # mean the fault source xy coordinates
-        mean_x_km = np.mean([np.mean([p[i][0] for i in range(4)]) for p in self.patch])
-        mean_y_km = np.mean([np.mean([p[i][1] for i in range(4)]) for p in self.patch])
+        mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
+        mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
 
+        # if self.patchType == 'triangle':
         # Prepare arguments for each patch
-        patch_args = [
-            (self, p, SLP, data, workdir, grn_dir, edcmpgrns, verbose, Np, mean_x_km, mean_y_km)
-            for p in range(Np)
-        ]
-    
+        patch_args = []
+        for p in range(Np):
+            cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = self.getpatchgeometry(p, center=True)
+            patch_args.append((p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np, mean_x_km, mean_y_km,
+                            self.patch[p], self.patchType, [cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad]))
+
         # Parallel execution
         results = [None] * Np
         with ProcessPoolExecutor(max_workers=n_jobs) as pool:
@@ -1967,7 +2094,20 @@ class Fault(SourceInv):
                 Gds[:, :, p] = ds.T
                 Gts[:, :, p] = ts.T
                 results[p] = (ss, ds, ts)
-    
+        # elif self.patchType == 'rectangle':
+        #     # Prepare arguments for each patch
+        #     patch_args = [(self, p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np, mean_x_km, mean_y_km) for p in range(Np)]
+        #     # Parallel execution
+        #     results = [None] * Np
+        #     with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+        #         futures = [pool.submit(_edcmp_patch_task_rect, arg) for arg in patch_args]
+        #         for i, future in enumerate(tqdm(as_completed(futures), total=Np)):
+        #             p, ss, ds, ts = future.result()
+        #             Gss[:, :, p] = ss.T
+        #             Gds[:, :, p] = ds.T
+        #             Gts[:, :, p] = ts.T
+        #             results[p] = (ss, ds, ts)
+
         if verbose:
             print('')
     

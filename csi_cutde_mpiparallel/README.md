@@ -18,6 +18,7 @@ _Pythonic Version with Layered and Triangular Green's Function Support_
   - 📦 EDCMP and PSCMP binaries are pre-packaged in `csi/bin`:
     - 🪟 Windows: `.exe` files.
     - 🐧 Linux: binaries compiled under Ubuntu 20.04 (other Linux distributions may require manual compilation; see below).
+  > ⚠️ **Note:** The `fomosto_psgrn2008a.exe` and `fomosto_pscmp2008a.exe` binaries currently provided in `csi/bin` are **not functional**. This means that the PSCMP-mode Green's function calculation is **not available on Windows** at this time.
 
 ---
 
