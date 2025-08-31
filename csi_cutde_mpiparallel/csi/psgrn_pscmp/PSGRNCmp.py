@@ -39,7 +39,10 @@ def pscmpslip2dis(
     psgrndir='psgrnfcts',
     output_dir='pscmpgrns',
     filename_suffix='',
-    workdir='pscmp_ecat'
+    workdir='pscmp_ecat',
+    force_recompute=True,
+    faultname='',
+    dataname=''
 ):
     """
     Generate PSCMP input file and compute Green's functions for a single patch using PSCMPConfig.
@@ -67,6 +70,13 @@ def pscmpslip2dis(
         Suffix for output files to avoid name conflicts.
     workdir : str
         Working directory for all intermediate and output files.
+    force_recompute : bool
+        If True, recompute Green's functions even if they already exist.
+    faultname : str
+        Name of the fault.
+    dataname : str
+        Name of the data.
+
     Returns
     -------
     ss, ds, ts : np.ndarray
@@ -142,9 +152,40 @@ def pscmpslip2dis(
     )
     params.load_observation_points_from_dataframe(obs_df)
 
+    # Prepare output file paths
+    faultname = faultname.replace(' ', '_')
+    dataname = dataname.replace(' ', '_')
+    ds_data_basename = f'snapshot_coseism_ds_{faultname}_{dataname}_{filename_suffix}.dat'
+    ds_file = os.path.join(out_dir, ds_data_basename)
+    ss_data_basename = f'snapshot_coseism_ss_{faultname}_{dataname}_{filename_suffix}.dat'
+    ss_file = os.path.join(out_dir, ss_data_basename)
+    Nd = len(data.lat)
+    ds = np.zeros((Nd, 3))
+    ss = np.zeros((Nd, 3))
+
+    # Directly read existing files if not forcing recompute
+    if (not force_recompute) and os.path.exists(ds_file) and os.path.exists(ss_file):
+        # Skip the header and read (2, 3, 4)
+        ds_arr = np.loadtxt(ds_file, skiprows=1, usecols=(2, 3, 4))
+        # Uy->dx, Ux->dy, Uz->dz
+        ds = np.empty_like(ds_arr)
+        ds[:, 0] = ds_arr[:, 1]  # dx = Uy
+        ds[:, 1] = ds_arr[:, 0]  # dy = Ux
+        ds[:, 2] = -ds_arr[:, 2] # dz = -Uz
+    
+        ss_arr = np.loadtxt(ss_file, skiprows=1, usecols=(2, 3, 4))
+        ss = np.empty_like(ss_arr)
+        ss[:, 0] = ss_arr[:, 1]
+        ss[:, 1] = ss_arr[:, 0]
+        ss[:, 2] = -ss_arr[:, 2]
+    
+        ts = np.zeros_like(ss)
+        return ss, ds, ts
+
     # Compute strike-slip Green's function
     # Prepare input file paths
-    inp_ss = os.path.join(os.path.basename(workdir), f'pscmp_ss_{filename_suffix}.inp')
+    inp_ss_basename = f'pscmp_ss_{faultname}_{dataname}_{filename_suffix}.inp'
+    inp_ss = os.path.join(os.path.basename(workdir), inp_ss_basename)
     if slip[0] == 1.0:
         for ifault in fault_sources:
             ifault.patches = [{
@@ -156,14 +197,14 @@ def pscmpslip2dis(
             }]
         params.snapshots = [{
             'time': 0.00,
-            'filename': f'snapshot_coseism_ss1_{filename_suffix}.dat',
+            'filename': ss_data_basename,
             'comment': '0 co-seismic'
         }]
         config = PSCMPConfig(params)
         config.write_config_file(inp_ss, verbose=False)
         # Run PSCMP in workdir (cross-platform)
         exe_path = os.path.join(BIN_PSCMP_PATH, 'fomosto_pscmp2008a' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', f'pscmp_ss_{filename_suffix}.inp')]
+        cmd = [exe_path, os.path.join('.', inp_ss_basename)]
         with subprocess.Popen(
                 cmd,
                 cwd=workdir,
@@ -181,7 +222,8 @@ def pscmpslip2dis(
 
     # Compute dip-slip Green's function
     # Prepare input file path
-    inp_ds = os.path.join(os.path.basename(workdir), f'pscmp_ds_{filename_suffix}.inp')
+    inp_ds_basename = f'pscmp_ds_{faultname}_{dataname}_{filename_suffix}.inp'
+    inp_ds = os.path.join(os.path.basename(workdir), inp_ds_basename)
     if slip[1] == 1.0:
         for ifault in fault_sources:
             ifault.patches = [{
@@ -193,22 +235,14 @@ def pscmpslip2dis(
             }]
         params.snapshots = [{
             'time': 0.00,
-            'filename': f'snapshot_coseism_ds1_{filename_suffix}.dat',
+            'filename': ds_data_basename,
             'comment': '0 co-seismic'
         }]
         config = PSCMPConfig(params)
         config.write_config_file(inp_ds, verbose=False)
         # Run PSCMP in workdir (cross-platform)
         exe_path = os.path.join(BIN_PSCMP_PATH, 'fomosto_pscmp2008a' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', f'pscmp_ds_{filename_suffix}.inp')]
-        # with subprocess.Popen(
-        #     cmd,
-        #     cwd=workdir,
-        #     stdout=subprocess.DEVNULL,
-        #     stderr=subprocess.DEVNULL,
-        #     shell=(sys.platform == "win32")
-        # ) as proc:
-        #     proc.wait()
+        cmd = [exe_path, os.path.join('.', inp_ds_basename)]
         with subprocess.Popen(
                 cmd,
                 cwd=workdir,
@@ -225,23 +259,21 @@ def pscmpslip2dis(
                 print(f"[PSCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
 
     # Read outputs
-    ds_file = os.path.join(out_dir, f'snapshot_coseism_ds1_{filename_suffix}.dat')
-    ss_file = os.path.join(out_dir, f'snapshot_coseism_ss1_{filename_suffix}.dat')
-    Nd = len(data.lat)
-    ds = np.zeros((Nd, 3))
-    ss = np.zeros((Nd, 3))
-    if os.path.exists(ds_file):
-        data_ds = pd.read_csv(ds_file, sep=r'\s+')
-        ds = data_ds[['Ux', 'Uy', 'Uz']].copy()
-        ds = ds.rename({'Uy': 'dx', 'Ux': 'dy', 'Uz': 'dz'}, axis=1)
-        ds['dz'] *= -1
-        ds = ds[['dx', 'dy', 'dz']].values
-    if os.path.exists(ss_file):
-        data_ss = pd.read_csv(ss_file, sep=r'\s+')
-        ss = data_ss[['Ux', 'Uy', 'Uz']].copy()
-        ss = ss.rename({'Uy': 'dx', 'Ux': 'dy', 'Uz': 'dz'}, axis=1)
-        ss['dz'] *= -1
-        ss = ss[['dx', 'dy', 'dz']].values
+    # Directly read existing files if not forcing recompute
+    if os.path.exists(ds_file) and os.path.exists(ss_file):
+        # Skip the header and read (2, 3, 4)
+        ds_arr = np.loadtxt(ds_file, skiprows=1, usecols=(2, 3, 4))
+        # Uy->dx, Ux->dy, Uz->dz
+        ds = np.empty_like(ds_arr)
+        ds[:, 0] = ds_arr[:, 1]  # dx = Uy
+        ds[:, 1] = ds_arr[:, 0]  # dy = Ux
+        ds[:, 2] = -ds_arr[:, 2] # dz = -Uz
+    
+        ss_arr = np.loadtxt(ss_file, skiprows=1, usecols=(2, 3, 4))
+        ss = np.empty_like(ss_arr)
+        ss[:, 0] = ss_arr[:, 1]
+        ss[:, 1] = ss_arr[:, 0]
+        ss[:, 2] = -ss_arr[:, 2]
 
     ts = np.zeros_like(ss)
     return ss, ds, ts

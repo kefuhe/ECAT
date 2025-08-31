@@ -1,9 +1,10 @@
 from ruamel.yaml import YAML
 import os
 
-def generate_default_config(output_path):
+def generate_default_config(output_path, gf_method=None):
     """
     Generate a default configuration file for Bayesian inversion with comments.
+    If gf_method is 'pscmp' or 'edcmp', specific options will be included.
     """
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -133,6 +134,31 @@ faults:
         disct_z: 8
 """)
 
+    # Set Green's function method and options if provided
+    if gf_method is not None:
+        config['faults']['defaults']['method_parameters']['update_GFs']['method'] = gf_method
+        if gf_method.lower() == "pscmp":
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = {
+                "pscmpgrns": "pscmpgrns",
+                "psgrndir": "psgrnfcts",
+                "pscmp_workdir": "pscmp_ecat",
+                "n_jobs": 4,
+                "cleanup_inp": True,
+                "force_recompute": True
+            }
+        elif gf_method.lower() == "edcmp":
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = {
+                "edcmpgrns": "edcmpgrns",
+                "edgrndir": "edgrnfcts",
+                "edcmp_workdir": "edcmp_ecat",
+                "edcmp_layered_model": True,
+                "n_jobs": 8,
+                "cleanup_inp": True,
+                "force_recompute": False
+            }
+        else:
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = None
+
     # Write the configuration to the output file
     with open(output_path, "w") as file:
         yaml.dump(config, file)
@@ -149,10 +175,16 @@ def main():
         default="default_config.yml",
         help="Output path for the configuration file (default: default_config.yml)"
     )
+    parser.add_argument(
+        "--gf-method",
+        type=str,
+        default=None,
+        help="Green's function calculation method (e.g. pscmp, edcmp, okada, cutde, homogeneous, etc.)"
+    )
     args = parser.parse_args()
 
     output_path = os.path.abspath(args.output)
-    generate_default_config(output_path)
+    generate_default_config(output_path, gf_method=args.gf_method)
 
 if __name__ == "__main__":
     main()

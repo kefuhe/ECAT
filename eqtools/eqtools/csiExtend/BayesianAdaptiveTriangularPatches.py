@@ -1114,9 +1114,10 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.VertFace2csifault(vertices, faces)
 
     def generate_and_deform_mesh(self, top_coords=None, bottom_coords=None, top_size=None, bottom_size=None, num_segments=30, 
-                                         disct_z=10, rotation_angle: float = None, bottom_norm_offset=None, show=False, 
-                                         verbose=0, remap=False, bias=None, min_dz=None, projection=None, 
-                                         field_size_dict={'min_dx': 3, 'bias': 1.05}, mesh_func=None, tolerance=1e-6, debug_plot=False):
+                                 disct_z=10, rotation_angle: float = None, bottom_norm_offset=None, show=False, 
+                                 verbose=0, remap=False, bias=None, min_dz=None, projection=None, 
+                                 field_size_dict={'min_dx': 3, 'bias': 1.05}, mesh_func=None, tolerance=1e-6, debug_plot=False,
+                                 use_current_mesh=False):
         """
         Generate and deform mesh.
     
@@ -1143,6 +1144,7 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         - remap (bool): Whether to remap Gmsh vertices to grid. Default is False.
         - tolerance (float): Tolerance for remapping. Default is 1e-6.
         - debug_plot (bool): Whether to show debug plots. Default is False.
+        - use_current_mesh (bool): Whether to use current vertices and faces instead of generating Gmsh mesh. Default is False.
         
         Other Parameters:
         - show (bool): Whether to show the mesh. Default is False.
@@ -1155,36 +1157,79 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         top_coords = top_coords if top_coords is not None else self.top_coords
         bottom_coords = bottom_coords if bottom_coords is not None else self.bottom_coords
     
-        # Only generate Gmsh mesh and remap if param_coords is None or remap is True
-        if self.mesh_generator.param_coords is None or remap:
+        if use_current_mesh:
+            # Use existing vertices and faces instead of generating Gmsh mesh
+            print("Using existing mesh (self.Vertices and self.Faces)")
+            gmsh_verts = self.Vertices
+            gmsh_faces = self.Faces
+            
+            # Apply bottom coordinate perturbation if specified
             if bottom_norm_offset is not None:
                 self.perturb_bottom_coords_along_fixed_direction([bottom_norm_offset])
             top_coords, bottom_coords = self.top_coords, self.bottom_coords
-            # Update coordinates in mesh_generator
-            self.mesh_generator.set_coordinates(top_coords, bottom_coords)
-            # Generate Gmsh mesh
-            gmsh_verts, gmsh_faces = self.mesh_generator.generate_gmsh_mesh(top_size=top_size, bottom_size=bottom_size, 
-                                                                            show=show, verbose=verbose, save_in_self=True, 
-                                                                            field_size_dict=field_size_dict, mesh_func=mesh_func)
             
+            # Update coordinates in mesh_generator for grid generation
+            self.mesh_generator.set_coordinates(top_coords, bottom_coords)
+            
+            # Store mesh data in mesh_generator for consistency
+            self.mesh_generator.gmsh_verts = gmsh_verts
+            self.mesh_generator.gmsh_faces = gmsh_faces
+
             # Discretize bottom and top coordinates
             sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
             sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
             # Update top and bottom coordinates in mesh_generator
             self.mesh_generator.set_coordinates(sep_top_coords, sep_bottom_coords)
             
-            # Generate grid coordinates
+            # Generate grid coordinates for deformation
             mesh_coords = self.mesh_generator.generate_grid_coordinates(top_coords=self.mesh_generator.top_coords, 
                                                                         bottom_coords=self.mesh_generator.bottom_coords, 
                                                                         disct_z=disct_z, bias=bias, min_dz=min_dz)
             
             # Map Gmsh vertices to grid
-            self.mesh_generator.map_gmsh_vertices_to_grid(gmsh_verts, mesh_coords, rotation_angle=rotation_angle, projection=projection, tolerance=tolerance, debug_plot=debug_plot)
+            self.mesh_generator.map_gmsh_vertices_to_grid(gmsh_verts, mesh_coords, 
+                                                            rotation_angle=rotation_angle, 
+                                                            projection=projection, 
+                                                            tolerance=tolerance, 
+                                                            debug_plot=debug_plot)
+            
         else:
-            # Assume gmsh_verts and gmsh_faces are already available
-            gmsh_verts = self.mesh_generator.gmsh_verts
-            gmsh_faces = self.mesh_generator.gmsh_faces
+            # Original Gmsh mesh generation path
+            # Only generate Gmsh mesh and remap if param_coords is None or remap is True
+            if self.mesh_generator.param_coords is None or remap:
+                if bottom_norm_offset is not None:
+                    self.perturb_bottom_coords_along_fixed_direction([bottom_norm_offset])
+                top_coords, bottom_coords = self.top_coords, self.bottom_coords
+                # Update coordinates in mesh_generator
+                self.mesh_generator.set_coordinates(top_coords, bottom_coords)
+                # Generate Gmsh mesh
+                gmsh_verts, gmsh_faces = self.mesh_generator.generate_gmsh_mesh(top_size=top_size, bottom_size=bottom_size, 
+                                                                                show=show, verbose=verbose, save_in_self=True, 
+                                                                                field_size_dict=field_size_dict, mesh_func=mesh_func)
+                
+                # Discretize bottom and top coordinates
+                sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
+                sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
+                # Update top and bottom coordinates in mesh_generator
+                self.mesh_generator.set_coordinates(sep_top_coords, sep_bottom_coords)
+                
+                # Generate grid coordinates
+                mesh_coords = self.mesh_generator.generate_grid_coordinates(top_coords=self.mesh_generator.top_coords, 
+                                                                            bottom_coords=self.mesh_generator.bottom_coords, 
+                                                                            disct_z=disct_z, bias=bias, min_dz=min_dz)
+                
+                # Map Gmsh vertices to grid
+                self.mesh_generator.map_gmsh_vertices_to_grid(gmsh_verts, mesh_coords, 
+                                                              rotation_angle=rotation_angle, 
+                                                              projection=projection, 
+                                                              tolerance=tolerance, 
+                                                              debug_plot=debug_plot)
+            else:
+                # Assume gmsh_verts and gmsh_faces are already available
+                gmsh_verts = self.mesh_generator.gmsh_verts
+                gmsh_faces = self.mesh_generator.gmsh_faces
         
+        # Common deformation path for both cases
         # Discretize bottom and top coordinates again
         sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
         sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
@@ -1195,6 +1240,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         
         # Generate new Gmsh vertices and faces
         self.VertFace2csifault(new_gmsh_verts, gmsh_faces)
+        
+        return new_gmsh_verts, gmsh_faces
     
     def rebuild_simple_mesh(self, disct_z=None, bias=None, min_dz=None, segs=5, top_tolerance=0.1, bottom_tolerance=0.1, lonlat=True, buffer_depth=0.1, sort_axis=0, sort_order='ascend', use_trace=False, discretized=False):
         """

@@ -29,7 +29,7 @@ from csi import SourceInv
 from csi import planarfault
 from csi import gps, insar
 from .SMC_MPI import SMC_samples_parallel_mpi
-from .bayesian_config import explorefaultConfig
+from .config import explorefaultConfig
 from numba import njit
 from collections import namedtuple
 import yaml
@@ -170,10 +170,19 @@ class explorefault(SourceInv):
         self.slip_sampling_mode = self.config.slip_sampling_mode
 
         # Initialize sigma values
-        self._sigma_update_mask = np.array(self.sigmas['update']) # mask for which sigmas to update
-        self._sigma_initial = np.array(self.sigmas['values'], dtype=np.float64) # initial sigma values
+        self._sigma_update_mask = self.config.sigmas['update'][self.config.sigmas['dataset_param_indices']] # mask for which sigmas to update
+        self._sigma_initial = self.config.sigmas['values'][self.config.sigmas['dataset_param_indices']] # initial sigma values
         self._sigma_update_indices = np.where(self._sigma_update_mask)[0] # indices of sigma to be updated
-        self._sigma_update_flag = np.any(self._sigma_update_mask) # whether any sigma is to be updated
+        self._sigma_update_positions = self.config.sigmas['updatable_param_indices'][self.config.sigmas['dataset_param_indices']] # positions of sigma to be updated in the full parameter vector
+        self._sigma_update_positions = self._sigma_update_positions[self._sigma_update_indices]
+        self._sigma_update_flag = np.any(self.config.sigmas['update']) # whether any sigma is to be updated
+        
+        # Debug
+        # print("Sigma Update Mask:", self._sigma_update_mask)
+        # print("Sigma Initial Values:", self._sigma_initial)
+        # print("Sigma Update Indices:", self._sigma_update_indices)
+        # print("Sigma Update Positions:", self._sigma_update_positions)
+        # print("Sigma Update Flag:", self._sigma_update_flag)
 
     def build_fault_params(self, samples, fault_name):
         '''
@@ -353,13 +362,24 @@ class explorefault(SourceInv):
             self.param_keys['sigmas'] = []
             self.param_index['sigmas'] = []
             ndatas = self.sigmas['ndatas']
-            self.sigmas_index = [len(self.Priors)+i for i in range(len(self._sigma_update_indices))] # ?
-            self.sigmas_keys = ['sigma_{}'.format(i) for i in self._sigma_update_indices]
-            for i in range(len(self._sigma_update_indices)): # range(ndatas)
+            self.sigmas_index = [len(self.Priors)+i for i in range(self.config.sigmas['updatable_params'])] # ?
+            self.sigmas_keys = ['sigma_{}'.format(i) for i in range(self.config.sigmas['updatable_params'])]
+            self.sigmas_keys_alias = []
+            datanames = [data.name for data in self.geodata.get('data', [])]
+            updatable_datanames = [datanames[i] for i in range(len(datanames)) if self._sigma_update_mask[i]]
+            for i in range(self.config.sigmas['updatable_params']):
+                if self.config.sigmas['mode'] == 'single':
+                    self.sigmas_keys_alias.append('sigma_all')
+                elif self.config.sigmas['mode'] == 'individual':
+                    self.sigmas_keys_alias.append(f'sigma_{updatable_datanames[i]}')
+                elif self.config.sigmas['mode'] == 'grouped':
+                    group_keys = list(self.config.sigmas['groups'].keys())
+                    self.sigmas_keys_alias.append(f'sigma_{group_keys[i]}')
+            for i in range(self.config.sigmas['updatable_params']): # range(ndatas)
                 self.param_keys['sigmas'].append(i)
                 self.param_index['sigmas'].append(len(self.Priors)+i)
             bound = self.sigmas['bounds']
-            for i in range(len(self._sigma_update_indices)): # range(ndatas)
+            for i in range(self.config.sigmas['updatable_params']): # range(ndatas)
                 ibound = bound['defaults'] if self.sigmas_keys[i] not in bound else bound[self.sigmas_keys[i]]
                 if ibound[0] == 'Normal':
                     # Use scipy's normal distribution instead of numpy's
@@ -372,8 +392,7 @@ class explorefault(SourceInv):
                 args = ibound[1:]
                 pm_func = function(*args)
                 self.Priors.append(pm_func)
-                # ikey = f'sigma_{i}'
-                ikey = f'sigma_{self._sigma_update_indices[i]}'
+                ikey = f'sigma_{i}'
                 initialSample.setdefault(ikey, pm_func.rvs())  # draw a sample for the initial sample
                 initSampleVec.append(initialSample[ikey])
                 # initSampleVec.append(pm_func.rvs())
@@ -531,8 +550,8 @@ class explorefault(SourceInv):
                     sigmas = self._sigma_initial
                 else:
                     sigmas = self._sigma_initial.astype(np.float64, copy=True)
-                    sigmas[self._sigma_update_indices] = samples[self.sigmas_index]
-                # print(f"sigmas: {sigmas}, sigmas_position: {self.sigmas_index}, _sigma_update_indices: {self._sigma_update_indices}")
+                    sigmas[self._sigma_update_indices] = samples[self.sigmas_index][self._sigma_update_positions]
+                # print(f"sigmas: {sigmas}, sigmas_position: {self.sigmas_index}, _sigma_update_indices: {self._sigma_update_indices}, _sigma_update_positions: {self._sigma_update_positions}")
                 # If log_scaled, convert sigmas to log scale
                 sigmas = np.power(10, np.array(sigmas)) if self.sigmas['log_scaled'] else np.array(sigmas)
                 for i, (data, dobs, Cd_inv, logCd_det, vertical) in enumerate(self.Likelihoods):
@@ -1000,7 +1019,14 @@ class explorefault(SourceInv):
             std_sigma_values = self.model_dict.get('std', {}).get('sigmas', []) if include_std else []
             
             for i, (update_idx, sigma_value) in enumerate(zip(self.param_keys['sigmas'], sigma_values)):
-                isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
+                if self.config.sigmas['mode'] == 'individual':
+                    isigma_name = self.datas[self._sigma_update_indices[update_idx]].name
+                elif self.config.sigmas['mode'] == 'single':
+                    isigma_name = 'All data'
+                elif self.config.sigmas['mode'] == 'grouped':
+                    i_index = np.where(self.config.sigmas['update'])[0][update_idx]
+                    ikey = list(self.config.sigmas["groups"].keys())[i_index]
+                    isigma_name = f'{ikey}' + ' (' + ', '.join(self.config.sigmas["groups"][ikey]) + ')'
                 std_value = std_sigma_values[i] if i < len(std_sigma_values) else None
                 
                 param_data = {
@@ -1239,7 +1265,8 @@ class explorefault(SourceInv):
                         style='white', fill=True, scatter=False, scatter_size=15, 
                         plot_sigmas=False, plot_faults=True, faults=None, axis_labels=None,
                         wspace=None, hspace=None, center_lon_lat=False,
-                        xtick_rotation=None, ytick_rotation=None, lonlat_decimal=3):
+                        xtick_rotation=None, ytick_rotation=None, lonlat_decimal=3,
+                        use_sigma_alias=True):
         """
         Plot a KDE matrix of the SMC samples.
     
@@ -1308,7 +1335,29 @@ class explorefault(SourceInv):
                 index += self.param_index[faults]
         
         if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
-            keys += self.sigmas_keys
+            # Convert sigma keys to LaTeX format for better display
+            if use_sigma_alias:
+                sigma_keys = []
+                for key in self.sigmas_keys_alias:
+                    if key.startswith('sigma_'):
+                        # Convert sigma_xxx to $\sigma_{xxx}$
+                        subscript = key.replace('sigma_', '')
+                        latex_key = f'$\\sigma_{{{subscript}}}$'
+                        sigma_keys.append(latex_key)
+                    else:
+                        sigma_keys.append(key)
+            else:
+                sigma_keys = []
+                for key in self.sigmas_keys:
+                    if key.startswith('sigma_'):
+                        # Convert sigma_xxx to $\sigma_{xxx}$
+                        subscript = key.replace('sigma_', '')
+                        latex_key = f'$\\sigma_{{{subscript}}}$'
+                        sigma_keys.append(latex_key)
+                    else:
+                        sigma_keys.append(key)
+            
+            keys += sigma_keys
             index += self.sigmas_index
         
         # Convert the SMC chains to a DataFrame

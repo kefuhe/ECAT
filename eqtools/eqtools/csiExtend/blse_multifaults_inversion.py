@@ -5,18 +5,49 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from .multifaults_base import MyMultiFaultsInversion
-from .bayesian_config import BoundLSEInversionConfig
+from .config.blse_config import BoundLSEInversionConfig
 from ..plottools import sci_plot_style
 
 class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
     def __init__(self, name, faults_list, geodata=None, config='default_config_BLSE.yml', encoding='utf-8',
                  gfmethods=None, bounds_config='bounds_config.yml', rake_limits=None,
-                 extra_parameters=None, verbose=True):
+                 extra_parameters=None, verbose=True, des_enabled=False, des_config=None):
+        """
+        Initialize BoundLSEMultiFaultsInversion with DES support.
+        
+        Parameters:
+        -----------
+        name : str
+            Name of the inversion
+        faults_list : list
+            List of fault objects
+        geodata : object, optional
+            Geodetic data object
+        config : str or object, optional
+            Configuration file path or config object (default: 'default_config_BLSE.yml')
+        encoding : str, optional
+            File encoding (default: 'utf-8')
+        gfmethods : dict, optional
+            Green's function methods
+        bounds_config : str, optional
+            Bounds configuration file (default: 'bounds_config.yml')
+        rake_limits : dict, optional
+            Rake angle limits
+        extra_parameters : dict, optional
+            Additional parameters for the solver
+        verbose : bool, optional
+            Enable verbose output (default: True)
+        des_enabled : bool, optional
+            Whether to enable Depth-Equalized Smoothing (DES) (default: False)
+        des_config : dict, optional
+            DES configuration parameters (default: None)
+        """
         # Initialize the faults ahead of the configuration
         self.faults = faults_list
         self.faults_dict = {fault.name: fault for fault in self.faults}
         # To order the G matrix based on the order of the faults
         self.faultnames = [fault.name for fault in self.faults]
+        
         # Initialize BoundLSEInversionConfig first
         if isinstance(config, str):
             assert geodata is not None, "geodata must be provided when config is a file"
@@ -29,11 +60,13 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         else:
             self.config = config
 
-        # Initialize MyMultiFaultsInversion
+        # Initialize MyMultiFaultsInversion with DES support
         super(BoundLSEMultiFaultsInversion, self).__init__(name, 
                                                            faults_list, 
                                                            extra_parameters=extra_parameters, 
-                                                           verbose=verbose)
+                                                           verbose=verbose,
+                                                           des_enabled=des_enabled,
+                                                           des_config=des_config)
 
         self.assembleGFs() # assemble the Green's functions because the data is already assembled
         self.update_config(self.config)
@@ -53,15 +86,21 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
 
     def _update_faults(self):
         # Update the faults based on the configuration parameters and method parameters for each fault 
+        datanames = [d.name for d in self.config.geodata.get('data', [])]
+        Nd = len(datanames)
+        faultnames = self.faultnames
         for fault_name, fault_config in self.config.faults.items():
             if fault_name != 'default':
                 # Update Green's functions
-                self.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
+                dataFaults = self.config.dataFaults
+                # Check if dataFaults is a list of lists, each equal to faultnames
+                if not (isinstance(dataFaults, list) and len(dataFaults) == Nd and all(fault_name in flist for flist in dataFaults)):
+                    self.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
                 # Update Laplacian
                 self.update_Laplacian(fault_names=[fault_name], **fault_config['method_parameters']['update_Laplacian'])
     
     def run(self, penalty_weight=None, smoothing_constraints=None, data_weight=None, data_log_scaled=None, 
-            penalty_log_scaled=None, sigma=None, alpha=None, verbose=True):
+            penalty_log_scaled=None, sigma=None, alpha=None, verbose=True, des_enabled=None):
         """
         Start the boundary-constrained least squares process.
     
@@ -85,12 +124,14 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             Smoothing standard deviations. If None, the function will use the initial values from the configuration.
         verbose : bool, optional
             Whether to print the results of the inversion. Default is True.
+        des_enabled : bool, optional
+            Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
     
         Returns:
         --------
         None
         """
-        from .config_utils import parse_initial_values
+        from .config.config_utils import parse_initial_values
 
         # Ensure data_weight and sigma are either both None or only one is provided
         if (data_weight is not None) and (sigma is not None):
@@ -101,72 +142,73 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             raise ValueError("penalty_weight and alpha must either both be None or only one is provided.")
     
         # Handle data weights
+        n_datasets = len(self.config.sigmas['update'])
+        if self.config.sigmas['mode'] == 'single':
+            data_names = ['All_data']
+        elif self.config.sigmas['mode'] == 'individual':
+            data_names = [d.name for d in self.config.geodata.get('data', [])]
+        elif self.config.sigmas['mode'] == 'grouped':
+            data_names = list(self.config.sigmas['groups'].keys())
+        data_indices = self.config.sigmas['dataset_param_indices']
         if data_weight is None:
             if sigma is None:
                 sigma = self.config.sigmas['initial_value']
+            else:
+                sigma = parse_initial_values({'initial_value': sigma},
+                                                n_datasets=n_datasets,
+                                                param_name='initial_value',  # initial_value or 'values'
+                                                dataset_names=data_names,
+                                                print_name='sigma')
             sigma = np.array(sigma)
             if data_log_scaled is None:
                 data_log_scaled = self.config.sigmas['log_scaled']
             if data_log_scaled:
                 sigma = np.power(10, sigma)
             data_weight = 1.0 / sigma
-
-            # if data_log_scaled:
-            #     print(f'Using formula: data_weight = 1.0 / 10^sigma, with sigma = {sigma}')
-            # else:
-            #     print(f'Using formula: data_weight = 1.0 / sigma, with sigma = {sigma}')
         else:
-            n_datasets = len(self.config.geodata.get('data', []))
-            data_names = [d.name for d in self.config.geodata.get('data', [])]
-
             wgt_dict = {'initial_value': data_weight}
             data_weight = parse_initial_values(wgt_dict, n_datasets=n_datasets,
                                                 param_name='initial_value',  # initial_value or 'values'
                                                 dataset_names=data_names,
                                                 print_name='data_weight')
             data_weight = np.array(data_weight)
-            # print(f"Parsed data_weight: {data_weight}")
-    
+        data_weight = data_weight[data_indices]
+
         # Handle penalty weights
+        n_faults = len(self.config.alpha['update'])
+        if self.config.alpha['mode'] == 'single':
+            fault_names = ['All_faults']
+        elif self.config.alpha['mode'] == 'individual':
+            fault_names = [fault.name for fault in self.faults]
+        elif self.config.alpha['mode'] == 'grouped':
+            fault_names = [f'Event_{i}' for i in range(n_faults)]
+        fault_indices = self.config.alpha['faults_index']
+
         if penalty_weight is None:
             if alpha is None:
                 alpha = self.config.alpha['initial_value']
                 # print('alpha is from config:', alpha)
             else:
-                n_faults = len(self.faults)
-                fault_names = [fault.name for fault in self.faults]
                 alpha = parse_initial_values({'initial_value': alpha},
                                                 n_datasets=n_faults,
                                                 param_name='initial_value',  # initial_value or 'values'
                                                 dataset_names=fault_names,
                                                 print_name='alpha')
-                # print('alpha is from input:', alpha)
             alpha = np.array(alpha)
-            fault_index = self.config.alpha['faults_index']
-            alpha = alpha[fault_index]
             if penalty_log_scaled is None:
                 penalty_log_scaled = self.config.alpha['log_scaled']
             if penalty_log_scaled:
-                penalty_weight = 1.0 / np.power(10, alpha)
-            else:
-                penalty_weight = 1.0 / alpha
-            # if penalty_log_scaled:
-            #     print(f'Using formula: penalty_weight = 1.0 / 10^alpha, with alpha = {alpha} and fault_index = {fault_index}')
-            # else:
-            #     print(f'Using formula: penalty_weight = 1.0 / alpha, with alpha = {alpha} and fault_index = {fault_index}')
+                alpha = np.power(10, alpha)
+            penalty_weight = 1.0 / alpha
         else:
-            n_faults = len(self.faults)
-            fault_names = [fault.name for fault in self.faults]
             penalty_weight = parse_initial_values({'initial_value': penalty_weight},
                                                   n_datasets=n_faults,
                                                   param_name='initial_value',  # initial_value or 'values'
                                                   dataset_names=fault_names,
                                                   print_name='penalty_weight')
-            fault_index = self.config.alpha['faults_index']
             penalty_weight = np.array(penalty_weight)
-            penalty_weight = penalty_weight[fault_index]
-            # print(f"Parsed penalty_weight: {penalty_weight} with fault_index: {fault_index}")
-    
+        penalty_weight = penalty_weight[fault_indices]
+
         self.current_penalty_weight = penalty_weight
         # Handle smoothing constraints
         if smoothing_constraints is not None:
@@ -181,26 +223,218 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             self.ConstrainedLeastSquareSoln(penalty_weight=penalty_weight, 
                                             smoothing_constraints=smoothing_constraints, 
                                             data_weight=data_weight,
+                                            des_enabled=des_enabled,
                                             verbose=True)
         else:
             self.combine_GL_poly(penalty_weight=penalty_weight)
             self.ConstrainedLeastSquareSoln(penalty_weight=penalty_weight, 
                                             smoothing_matrix=self.GL_combined_poly,
                                             data_weight=data_weight,
+                                            des_enabled=des_enabled,
                                             verbose=True)
         self.distributem()
 
-        # if verbose:
-        #     # Caluculate RMS and VR for the solution and print the results
-        #     rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
-        #     vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
-        #     self.combine_GL_poly()
-        #     roughness = np.dot(self.GL_combined_poly, self.mpost)
-        #     roughness = np.sqrt(np.mean(roughness**2))
-        #     self.returnModel()
-        #     print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
-        #     # self._print_fault_statistics()
-        #     self.combine_GL_poly(penalty_weight=penalty_weight)
+    def run_simple_vce(self, smoothing_constraints=None, verbose=True, max_iter=20, tol=1e-4, 
+                       des_enabled=None, sigma_mode=None, sigma_groups=None, sigma_update=None, sigma_values=None,
+                       smooth_mode=None, smooth_groups=None, smooth_update=None, smooth_values=None):
+        """
+        Run Simple Variance Component Estimation (VCE) for multi-fault inversion.
+    
+        This method automatically determines optimal weights between data fitting and
+        regularization components using iterative VCE approach with lsqlin solver.
+        No manual penalty weights are needed - they are estimated through VCE iterations.
+    
+        Parameters
+        ----------
+        smoothing_constraints : tuple or dict, optional
+            Smoothing constraints to apply during the least squares process. If None,
+            the function will use the combined Green's functions matrix.
+            If a tuple, it should be a 4-tuple. If a dict, the keys should be fault
+            names and the values should be 4-tuples.
+            (top, bottom, left, right) for the smoothing constraints.
+        verbose : bool, optional
+            Whether to print detailed progress information. Default is True.
+        max_iter : int, optional
+            Maximum number of VCE iterations. Default is 10.
+        tol : float, optional
+            Convergence tolerance for VCE. Default is 1e-4.
+        des_enabled : bool, optional
+            Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
+        sigma_mode : str, optional
+            Mode for data variance components: 'single', 'individual', or 'grouped'.
+        sigma_groups : dict, optional
+            Custom grouping for data variance components when sigma_mode='grouped'.
+        sigma_update : list of bool, optional
+            Whether to update each sigma group (same order as sigma groups)
+        sigma_values : list of float, optional
+            Initial/fixed values for each sigma group (same order as sigma groups)
+        smooth_mode : str, optional
+            Mode for smoothing variance components: 'single', 'individual', or 'grouped'.
+        smooth_groups : dict, optional
+            Custom grouping for smoothing variance components when smooth_mode='grouped'.
+        smooth_update : list of bool, optional
+            Whether to update each smoothing group (same order as smoothing groups)
+        smooth_values : list of float, optional
+            Initial/fixed values for each smoothing group (same order as smoothing groups)
+    
+        Returns
+        -------
+        dict
+            VCE results containing:
+            - 'm': estimated parameters
+            - 'var_d': data variance components
+            - 'var_alpha': regularization variance components
+            - 'weights': final weight ratios
+            - 'converged': convergence flag
+            - 'iterations': number of iterations
+        """
+        sigma_mode = self.config.sigmas.get('mode', 'individual') if sigma_mode is None else sigma_mode
+        sigma_groups = self.config.sigmas.get('groups', None) if sigma_groups is None else sigma_groups
+        sigma_update = self.config.sigmas['update'] if sigma_update is None else sigma_update
+        sigma_values = self.config.sigmas['initial_value'] if sigma_values is None else sigma_values
+        if self.config.sigmas['log_scaled']:
+            sigma_values = np.power(10, sigma_values)**2
+        else:
+            sigma_values = np.array(sigma_values)**2
+        # print(sigma_mode, sigma_groups, sigma_update, sigma_values)
+
+        alphaFaults = self.config.alphaFaults
+        if len(alphaFaults) == 1:
+            smooth_mode = 'single'
+            smooth_groups = {'Event_all': alphaFaults[0]}
+            smooth_values = [self.config.alpha['initial_value'][0]]
+            smooth_update = [True]
+        else:
+            smooth_mode = 'grouped'
+            smooth_groups = {f'Event_{i}': alphaFaults[i] for i in range(len(alphaFaults))}
+            smooth_values = self.config.alpha['initial_value']
+            smooth_update = self.config.alpha['update']
+        if self.config.alpha['log_scaled']:
+            smooth_values = np.power(10, smooth_values)**2
+        else:
+            smooth_values = np.array(smooth_values)**2
+        # print(smooth_mode, smooth_groups, smooth_update, smooth_values)
+        if verbose:
+            print("="*70)
+            print("Starting Simple VCE for Multi-Fault Inversion")
+            print("Automatically determining optimal regularization weights...")
+            print(f"Number of faults: {len(self.faults)}")
+            print(f"Data variance mode: {sigma_mode}")
+            print(f"Smoothing variance mode: {smooth_mode}")
+            if des_enabled is None:
+                des_enabled = getattr(self, 'des_enabled', False)
+            print(f"DES enabled: {des_enabled}")
+            print("="*70)
+    
+        # Ensure bounds are set
+        if not hasattr(self, 'lb') or not hasattr(self, 'ub'):
+            raise ValueError("Bounds must be set before running VCE. Use set_bounds_from_config() or set_bounds().")
+    
+        if hasattr(self, 'lb') and hasattr(self, 'ub'):
+            if np.any(np.isnan(self.lb)) or np.any(np.isnan(self.ub)):
+                raise ValueError("Some bounds are not set (NaN values found). Please set all bounds first.")
+    
+        # Handle smoothing constraints
+        if smoothing_constraints is not None:
+            if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
+                smoothing_constraints = {fault_name: smoothing_constraints for fault_name in self.faultnames}
+            elif isinstance(smoothing_constraints, dict):
+                missing_faults = set(self.faultnames) - set(smoothing_constraints.keys())
+                if missing_faults:
+                    if verbose:
+                        print(f"Warning: Smoothing constraints not specified for faults: {missing_faults}")
+                        print("Using default constraints (None, None, None, None) for these faults.")
+                    for fault_name in missing_faults:
+                        smoothing_constraints[fault_name] = (None, None, None, None)
+            else:
+                raise ValueError("smoothing_constraints should be a 4-tuple or a dictionary with fault names as keys and 4-tuples as values.")
+    
+        # Prepare smoothing matrix if using custom constraints
+        if smoothing_constraints is not None:
+            if verbose:
+                print("Using custom smoothing constraints...")
+                for fault_name, constraints in smoothing_constraints.items():
+                    if all(c is not None for c in constraints):
+                        print(f"  {fault_name}: top={constraints[0]}, bottom={constraints[1]}, left={constraints[2]}, right={constraints[3]} km")
+                    else:
+                        print(f"  {fault_name}: using default constraints")
+    
+            vce_result = self.simple_vce(
+                smoothing_matrix=None,
+                smoothing_constraints=smoothing_constraints,
+                method='mudpy',
+                verbose=verbose,
+                max_iter=max_iter,
+                tol=tol,
+                des_enabled=des_enabled,
+                sigma_mode=sigma_mode,
+                sigma_groups=sigma_groups,
+                sigma_update=sigma_update,
+                sigma_values=sigma_values,
+                smooth_mode=smooth_mode,
+                smooth_groups=smooth_groups,
+                smooth_update=smooth_update,
+                smooth_values=smooth_values
+            )
+        else:
+            if verbose:
+                print("Using default Laplacian smoothing matrix...")
+    
+            self.combine_GL_poly(penalty_weight=1.0)
+    
+            vce_result = self.simple_vce(
+                smoothing_matrix=self.GL_combined_poly,
+                smoothing_constraints=None,
+                method='mudpy',
+                verbose=verbose,
+                max_iter=max_iter,
+                tol=tol,
+                des_enabled=des_enabled,
+                sigma_mode=sigma_mode,
+                sigma_groups=sigma_groups,
+                sigma_update=sigma_update,
+                sigma_values=sigma_values,
+                smooth_mode=smooth_mode,
+                smooth_groups=smooth_groups,
+                smooth_update=smooth_update,
+                smooth_values=smooth_values
+            )
+    
+        self.distributem()
+        penalty_weight = 1.0/np.sqrt(vce_result.get('var_alpha', None))
+        if isinstance(penalty_weight, (float,)):
+            penalty_weight = np.array([penalty_weight])
+        else:
+            penalty_weight = np.array(penalty_weight)
+        self.current_penalty_weight = penalty_weight[self.config.alpha['faults_index']]
+    
+        if verbose:
+            print("\n" + "="*70)
+            print("VCE Results Summary:")
+            print(f"Converged: {vce_result['converged']}")
+            print(f"Iterations: {vce_result['iterations']}")
+    
+            print("\nVariance Components:")
+            if isinstance(vce_result['var_d'], dict):
+                for group, var in vce_result['var_d'].items():
+                    print(f"  Data variance [{group}]: {var:.6e}")
+            else:
+                print(f"  Data variance: {vce_result['var_d']:.6e}")
+    
+            if isinstance(vce_result['var_alpha'], dict):
+                for group, var in vce_result['var_alpha'].items():
+                    print(f"  Regularization variance [{group}]: {var:.6e}")
+            else:
+                print(f"  Regularization variance: {vce_result['var_alpha']:.6e}")
+    
+            # print(f"\nEffective penalty weights: {[f'{w:.4e}' for w in self.vce_penalty_weights]}")
+    
+            print("\nFinal Model Statistics:")
+            self.returnModel(print_stat=True)
+    
+            print("="*70)
+
+        return vce_result
     
     def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True, equal_aspect=False):
         """

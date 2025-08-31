@@ -52,7 +52,7 @@ class MyMultiFaultsInversion(multifaultsolve):
         # Update the mesh of the specified faults
         self.update_fault(method, fault_names=fault_names, verbose=verbose, show=show, **kwargs)
 
-    def update_GFs(self, geodata=None, verticals=None, fault_names=None, dataFaults=None, method=None):
+    def update_GFs(self, geodata=None, verticals=None, fault_names=None, dataFaults=None, method=None, options=None):
         # Update the Green's functions of the specified faults
         def func(fault):
             # get the good indexes
@@ -62,7 +62,7 @@ class MyMultiFaultsInversion(multifaultsolve):
                 # Determine method based on fault presence in dataFault
                 gfmethod = 'empty' if dataFault is not None and fault.name not in dataFault else method
                 # print(f"Method for {fault.name}: {gfmethod}")
-                fault.buildGFs(obsdata, vertical=vertical, slipdir=fault.slipdir, method=gfmethod, verbose=False)
+                fault.buildGFs(obsdata, vertical=vertical, slipdir=fault.slipdir, method=gfmethod, verbose=False, **(options or {}))
                 st = 0
                 for sp in sliplist:
                     Nclocal = fault.G[obsdata.name][sp].shape[1]

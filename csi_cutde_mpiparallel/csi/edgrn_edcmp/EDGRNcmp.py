@@ -4,6 +4,7 @@ import subprocess
 import numpy as np
 import pandas as pd
 from .edcmp_config import EDCMPConfig, EDCMPParameters, RectangularSource
+from .tri2rectpoints import patch_local2d_inv, patch_local2d, triangle_to_rectangles
 
 def get_edcmp_bin():
     """
@@ -29,6 +30,32 @@ def get_edcmp_bin():
         raise RuntimeError('Unsupported platform: ' + sys.platform)
     return bin_dir
 
+def read_disp_bin(filename, nrec, ncol):
+    with open(filename, 'rb') as f:
+        # Read nrec
+        f.read(4)
+        nrec_bin = np.fromfile(f, dtype=np.int32, count=1)[0]
+        f.read(4)
+        # Read xrec
+        f.read(4)
+        xrec = np.fromfile(f, dtype=np.float64, count=nrec_bin)
+        f.read(4)
+        # Read yrec
+        f.read(4)
+        yrec = np.fromfile(f, dtype=np.float64, count=nrec_bin)
+        f.read(4)
+        # Read disp
+        f.read(4)
+        disp = np.fromfile(f, dtype=np.float64, count=nrec_bin*ncol)
+        f.read(4)
+        disp = disp.reshape((nrec_bin, ncol), order='F')
+
+        disp_arr = np.empty_like(disp)
+        disp_arr[:, 0] = disp[:, 1]
+        disp_arr[:, 1] = disp[:, 0]
+        disp_arr[:, 2] = -disp[:, 2]
+    return disp_arr
+
 def edcmpslip2dis(
     data, source_params, slip,
     BIN_EDCMP=None,
@@ -36,14 +63,17 @@ def edcmpslip2dis(
     output_dir='edcmpgrns',
     filename_suffix='',
     workdir='edcmp_ecat',
-    layered_model=True
+    layered_model=True,
+    force_recompute=True,
+    faultname='',
+    dataname=''
 ):
     """
     Generate EDCMP input file and call EDCMP to compute Green's functions for a single rectangular fault.
     Parameters
     ----------
     data : object
-        Observation points object, must have .x, .y attributes (unit: meters)
+        Observation points object, must have .x, .y attributes (unit: kilo-meters)
     source_params : dict
         Parameters required by RectangularSource
     slip : list or tuple
@@ -60,6 +90,13 @@ def edcmpslip2dis(
         Working directory for all intermediate and output files
     layered_model : bool
         Use layered model for Green's functions
+    force_recompute : bool
+        If True, recompute Green's functions even if they already exist.
+    faultname : str
+        Name of the fault.
+    dataname : str
+        Name of the data.
+
     Returns
     -------
     ss, ds, ts : np.ndarray
@@ -104,6 +141,35 @@ def edcmpslip2dis(
     )
     params.set_irregular_observation_points([tuple(pt) for pt in obs_coords])
 
+    # Read outputs
+    ds_data_basename = f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.disp'
+    ds_file = os.path.join(out_dir, ds_data_basename)
+    ss_data_basename = f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.disp'
+    ss_file = os.path.join(out_dir, ss_data_basename)
+    Nd = len(data.x)
+    ds = np.zeros((Nd, 3))
+    ss = np.zeros((Nd, 3))
+    if (not force_recompute) and os.path.exists(ds_file) and os.path.exists(ss_file):
+        # # Skip the comment line and read (2, 3, 4)
+        # ds_arr = np.loadtxt(ds_file, comments='#', usecols=(2, 3, 4))
+        # ds = np.empty_like(ds_arr)
+        # ds[:, 0] = ds_arr[:, 1]  # dx = Uy_m
+        # ds[:, 1] = ds_arr[:, 0]  # dy = Ux_m
+        # ds[:, 2] = -ds_arr[:, 2] # dz = -Uz_m
+    
+        # ss_arr = np.loadtxt(ss_file, comments='#', usecols=(2, 3, 4))
+        # ss = np.empty_like(ss_arr)
+        # ss[:, 0] = ss_arr[:, 1]
+        # ss[:, 1] = ss_arr[:, 0]
+        # ss[:, 2] = -ss_arr[:, 2]
+    
+        # ts = np.zeros_like(ss)
+
+        ds = read_disp_bin(ds_file, Nd, 3)
+        ss = read_disp_bin(ss_file, Nd, 3)
+        ts = np.zeros_like(ss)  # Tensile slip Green's function is not computed
+        return ss, ds, ts
+
     # Compute strike-slip Green's function
     if slip[0] == 1.0:
         slip_total = 1.0
@@ -119,25 +185,18 @@ def edcmpslip2dis(
                                                 xs=ys, ys=xs, zs=zs,
                                                 width=width, length=length,
                                                 strike=strike, dip=dip, rake=rake)]
-        params.output_files = (f'edcmp_ss_{filename_suffix}.disp',
-                            f'edcmp_ss_{filename_suffix}.strn',
-                            f'edcmp_ss_{filename_suffix}.strss',
-                            f'edcmp_ss_{filename_suffix}.tilt')
+        params.output_files = (ss_data_basename,
+                            f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.strn',
+                            f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.strss',
+                            f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.tilt')
         # Write input file
-        inp_ss = os.path.join(os.path.basename(workdir), f'edcmp_ss_{filename_suffix}.inp')
+        inp_ss_basename = f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.inp'
+        inp_ss = os.path.join(os.path.basename(workdir), inp_ss_basename)
         config = EDCMPConfig(params)
         config.write_config_file(inp_ss, verbose=False)
         # Call edcmp
         exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', f'edcmp_ss_{filename_suffix}.inp')]
-        # with subprocess.Popen(
-        #     cmd,
-        #     cwd=workdir,
-        #     stdout=subprocess.DEVNULL,
-        #     stderr=subprocess.DEVNULL,
-        #     shell=(sys.platform == "win32")
-        # ) as proc:
-        #     proc.wait()
+        cmd = [exe_path, os.path.join('.', inp_ss_basename)]
         with subprocess.Popen(
                 cmd,
                 cwd=workdir,
@@ -169,17 +228,18 @@ def edcmpslip2dis(
                                                 xs=ys, ys=xs, zs=zs,
                                                 width=width, length=length,
                                                 strike=strike, dip=dip, rake=rake)]
-        params.output_files = (f'edcmp_ds_{filename_suffix}.disp',
-                            f'edcmp_ds_{filename_suffix}.strn',
-                            f'edcmp_ds_{filename_suffix}.strss',
-                            f'edcmp_ds_{filename_suffix}.tilt')
+        params.output_files = (ds_data_basename,
+                            f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.strn',
+                            f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.strss',
+                            f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.tilt')
         # Write input file
-        inp_ds = os.path.join(os.path.basename(workdir), f'edcmp_ds_{filename_suffix}.inp')
+        inp_ds_basename = f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.inp'
+        inp_ds = os.path.join(os.path.basename(workdir), inp_ds_basename)
         config = EDCMPConfig(params)
         config.write_config_file(inp_ds, verbose=False)
         # Call edcmp
         exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', f'edcmp_ds_{filename_suffix}.inp')]
+        cmd = [exe_path, os.path.join('.', inp_ds_basename)]
         with subprocess.Popen(
             cmd,
             cwd=workdir,
@@ -198,25 +258,24 @@ def edcmpslip2dis(
 
 
     # Read outputs
-    ds_file = os.path.join(out_dir, f'edcmp_ds_{filename_suffix}.disp')
-    ss_file = os.path.join(out_dir, f'edcmp_ss_{filename_suffix}.disp')
-    Nd = len(data.x)
-    ds = np.zeros((Nd, 3))
-    ss = np.zeros((Nd, 3))
-    if os.path.exists(ds_file):
-        data_ds = pd.read_csv(ds_file, sep=r'\s+', comment='#', names=['X_m', 'Y_m', 'Ux_m', 'Uy_m', 'Uz_m'])
-        ds = data_ds[['Ux_m', 'Uy_m', 'Uz_m']].copy()
-        ds = ds.rename({'Uy_m': 'dx', 'Ux_m': 'dy', 'Uz_m': 'dz'}, axis=1)
-        ds['dz'] *= -1
-        ds = ds[['dx', 'dy', 'dz']].values
-    if os.path.exists(ss_file):
-        data_ss = pd.read_csv(ss_file, sep=r'\s+', comment='#', names=['X_m', 'Y_m', 'Ux_m', 'Uy_m', 'Uz_m'])
-        ss = data_ss[['Ux_m', 'Uy_m', 'Uz_m']].copy()
-        ss = ss.rename({'Uy_m': 'dx', 'Ux_m': 'dy', 'Uz_m': 'dz'}, axis=1)
-        ss['dz'] *= -1
-        ss = ss[['dx', 'dy', 'dz']].values
-
-    ts = np.zeros_like(ss)
+    if os.path.exists(ds_file) and os.path.exists(ss_file):
+        # Skip the comment line and read (2, 3, 4)
+        # ds_arr = np.loadtxt(ds_file, comments='#', usecols=(2, 3, 4))
+        # ds = np.empty_like(ds_arr)
+        # ds[:, 0] = ds_arr[:, 1]  # dx = Uy_m
+        # ds[:, 1] = ds_arr[:, 0]  # dy = Ux_m
+        # ds[:, 2] = -ds_arr[:, 2] # dz = -Uz_m
+    
+        # ss_arr = np.loadtxt(ss_file, comments='#', usecols=(2, 3, 4))
+        # ss = np.empty_like(ss_arr)
+        # ss[:, 0] = ss_arr[:, 1]
+        # ss[:, 1] = ss_arr[:, 0]
+        # ss[:, 2] = -ss_arr[:, 2]
+    
+        # ts = np.zeros_like(ss)
+        ds = read_disp_bin(ds_file, Nd, 3)
+        ss = read_disp_bin(ss_file, Nd, 3)
+        ts = np.zeros_like(ss)
     return ss, ds, ts
 
 # Example usage

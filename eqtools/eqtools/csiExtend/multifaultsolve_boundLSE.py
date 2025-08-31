@@ -27,7 +27,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         4. Add a constrained least squares inversion function
     '''
     
-    def __init__(self, name, faults, verbose=True, extra_parameters=None):
+    def __init__(self, name, faults, verbose=True, extra_parameters=None, des_enabled=False, des_config=None):
         super(multifaultsolve_boundLSE, self).__init__(name,
                                                 faults,
                                                 verbose=verbose)
@@ -59,6 +59,22 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             self.ramp_switch = len(extra_parameters)
         else:
             self.ramp_switch = 0
+        
+        # DES (Depth-Equalized Smoothing) parameters
+        self.des_enabled = des_enabled
+        depth_lists = [np.array(fault.getcenters(), dtype=float)[:, 2] for fault in self.faults]
+        # Duplicate each fault's depth array once for strike-slip and dip-slip components estimation
+        self.depths = np.unique(np.concatenate([np.tile(depth_list, 2) for depth_list in depth_lists]))
+        self.des_config = des_config if des_config is not None else {
+            'mode': 'per_column',
+            'G_norm': 'l2',
+            'depth_grouping_config': {
+                'strategy': 'uniform',
+                'depths': self.depths,
+                'interval': 1.0
+                }
+        }
+        
         return
     
     def calculate_Icovd_chol(self):
@@ -276,9 +292,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         return
 
     def ConstrainedLeastSquareSoln(self, penalty_weight=1., smoothing_matrix=None, data_weight=1.,
-                                   smoothing_constraints=None, method='mudpy', Aueq=None, bueq=None, 
-                                   Aeq=None, beq=None, verbose=False, extra_parameters=None,
-                                   iterations=1000, tolerance=None, maxfun=100000):
+                                smoothing_constraints=None, method='mudpy', Aueq=None, bueq=None, 
+                                Aeq=None, beq=None, verbose=False, extra_parameters=None,
+                                iterations=1000, tolerance=None, maxfun=100000, des_enabled=None):
         '''
         Perform a constrained least squares solution with optional smoothing.
 
@@ -297,12 +313,19 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         - Aueq, bueq: Matrices for external inequality constraints (Aueq*x <= bueq).
         - Aeq, beq: Matrices for equality constraints (Aeq*x = beq).
         - verbose: Enable verbose output.
+        - des_enabled: Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
 
         Note:
         If smoothing_matrix is provided, smoothing_constraints will be ignored, as the smoothing_matrix directly
         incorporates smoothing into the solution.
         '''
-    
+
+        # Import DES utilities
+        from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
+
+        # Determine if DES should be used
+        use_des = des_enabled if des_enabled is not None else self.des_enabled
+
         # Get the faults
         faults = self.faults
 
@@ -365,8 +388,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             d_lap = np.zeros((G_lap.shape[0], ))
         self.G_lap = G_lap
 
-        G_lap2I = G_lap
-
         # ----------------------------Data weight-----------------------------#
         if isinstance(data_weight, (int, float)):
             data_weight = np.ones(d.shape[0]) * data_weight
@@ -389,16 +410,12 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         W = Icovd_chol
         self.dataweight = W
-        d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
 
-        G2I = np.vstack((np.dot(W, G), G_lap2I)) 
-
-        # ----------------------------Inverse using lsqlin-----------------------------#
-        # Set constraint
+        # ----------------------------Set constraints-----------------------------#
         A_ueq, b_ueq = self.A_ueq, self.b_ueq
         if Aueq is not None and bueq is not None:
             A_ueq = np.vstack((A_ueq, Aueq)) if A_ueq is not None else Aueq
-            b_ueq = np.hstack((b_ueq, Aueq)) if b_ueq is not None else bueq
+            b_ueq = np.hstack((b_ueq, bueq)) if b_ueq is not None else bueq
         # Set the un-equality constraints for rake angle, with the form of A_ueq*x <= b_ueq
         self.A_ueq, self.b_ueq = A_ueq, b_ueq
 
@@ -411,18 +428,376 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if any(np.isnan(lb)) or any(np.isnan(ub)):
             raise ValueError("You should assemble the upper/lower bounds first")
 
+        # ----------------------------Apply DES transformation if enabled-----------------------------#
+        if use_des:
+            if verbose:
+                print("Applying Depth-Equalized Smoothing (DES) transformation...")
+            
+            # Get polynomial positions
+            poly_positions = get_poly_positions_from_multifaults(self)
+            
+            # Apply DES transformation to the original Green's function matrix G
+            des_result = apply_des_transformation(
+                G=G,  # Use original G matrix for DES parameter calculation
+                D=G_lap,
+                A_ineq=A_ueq,
+                b_ineq=b_ueq,
+                A_eq=self.Aeq,
+                b_eq=self.beq,
+                lb=lb,
+                ub=ub,
+                poly_positions=poly_positions,
+                mode=self.des_config.get('mode', 'per_column'),
+                groups=self.des_config.get('groups', None),
+                G_norm=self.des_config.get('G_norm', 'l2'),
+                depth_grouping_config=self.des_config.get('depth_grouping_config', None)
+            )
+            
+            # Apply DES scaling to get G_prime
+            G_prime = des_result['G_prime']
+            
+            # Now construct the augmented system with DES-scaled matrices
+            d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
+            G2I = np.vstack((np.dot(W, G_prime), des_result['D_prime']))
+            
+            # Update constraints with DES-transformed versions
+            A_ueq_prime = des_result.get('A_ineq_prime', A_ueq)
+            b_ueq_prime = des_result.get('b_ineq', b_ueq)
+            Aeq_prime = des_result.get('A_eq_prime', self.Aeq)
+            beq_prime = des_result.get('b_eq', self.beq)
+            lb_prime = des_result['lb_prime']
+            ub_prime = des_result['ub_prime']
+            
+            # Store DES information for recovery
+            self.des_result = des_result
+            
+            if verbose:
+                print(f"DES applied: {len(des_result['fault_indices'])} fault parameters scaled")
+                print(f"Scaling factor range: [{des_result['scale_factors'].min():.3f}, {des_result['scale_factors'].max():.3f}]")
+        else:
+            # No DES transformation - use original matrices
+            d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
+            G2I = np.vstack((np.dot(W, G), G_lap))
+            
+            A_ueq_prime, b_ueq_prime = A_ueq, b_ueq
+            Aeq_prime, beq_prime = self.Aeq, self.beq
+            lb_prime, ub_prime = lb, ub
+
+        # ----------------------------Inverse using lsqlin-----------------------------#
         # Compute using lsqlin
         opts = {'show_progress': False}
         try:
-            ret = lsqlin.lsqlin(G2I, d2I, 0, self.A_ueq, self.b_ueq, self.Aeq, self.beq, lb, ub, None, opts)
+            ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, Aeq_prime, beq_prime, lb_prime, ub_prime, None, opts)
         except:
-            ret = lsqlin.lsqlin(G2I, d2I, 0, self.A_ueq, self.b_ueq, None, None, lb, ub, None, opts)
-        mpost = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
+            ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, None, None, lb_prime, ub_prime, None, opts)
+        mpost_prime = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
+        
+        # ----------------------------Recover solution if DES was used-----------------------------#
+        if use_des:
+            if verbose:
+                print("Recovering solution from DES transformation...")
+            
+            # Recover the final solution
+            mpost = recover_sf_with_poly(
+                mpost_prime, 
+                des_result['alpha'], 
+                des_result['norm2_fault'], 
+                des_result['fault_indices']
+            )
+            
+            if verbose:
+                print("DES recovery completed")
+        else:
+            mpost = mpost_prime
+        
         # Store mpost
         self.mpost = mpost
 
         # All done
         return
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def simple_vce(self, smoothing_matrix=None, smoothing_constraints=None, method='mudpy',
+                   verbose=False, max_iter=10, tol=1e-4, des_enabled=None,
+                   sigma_mode='individual', sigma_groups=None, sigma_update=None, sigma_values=None,
+                   smooth_mode='single', smooth_groups=None, smooth_update=None, smooth_values=None):
+        """
+        Perform Simple Variance Component Estimation (VCE) for multi-fault inversion.
+
+        This method iteratively estimates optimal weights between data fitting and
+        regularization components using a simplified VCE approach with lsqlin solver.
+        The penalty weights are automatically determined through VCE iterations.
+
+        Parameters
+        ----------
+        smoothing_matrix : array, optional
+            Pre-computed smoothing matrix (if None, will build Laplacian)
+        smoothing_constraints : tuple or dict, optional
+            Smoothing constraints for Laplacian construction
+        method : str
+            Method for building Laplacian ('mudpy')
+        verbose : bool
+            Enable verbose output
+        max_iter : int
+            Maximum VCE iterations
+        tol : float
+            Convergence tolerance
+        des_enabled : bool, optional
+            Whether to use DES (if None, uses self.des_enabled)
+        sigma_mode : str
+            'single', 'individual', or 'grouped' for data variance components
+        sigma_groups : dict, optional
+            Custom grouping for data variance components
+        sigma_update : list of bool, optional
+            Whether to update each sigma group (same order as sigma groups)
+        sigma_values : list of float, optional
+            Initial/fixed values for each sigma group (same order as sigma groups)
+        smooth_mode : str
+            'single', 'individual', or 'grouped' for smoothing variance components
+        smooth_groups : dict, optional
+            Custom grouping for smoothing variance components
+        smooth_update : list of bool, optional
+            Whether to update each smoothing group (same order as smoothing groups)
+        smooth_values : list of float, optional
+            Initial/fixed values for each smoothing group (same order as smoothing groups)
+
+        Returns
+        -------
+        dict with keys:
+            - 'm': estimated parameters
+            - 'var_d': data variance components
+            - 'var_alpha': regularization variance components
+            - 'weights': final weight ratios
+            - 'converged': convergence flag
+            - 'iterations': number of iterations
+        """
+
+        from .simple_vce import simplified_vce
+        from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
+
+        use_des = des_enabled if des_enabled is not None else self.des_enabled
+
+        if verbose:
+            print("="*60)
+            print("Starting Simple VCE for Multi-Fault Inversion")
+            print(f"Number of faults: {len(self.faults)}")
+            print(f"DES enabled: {use_des}")
+            print(f"Sigma mode: {sigma_mode}")
+            print(f"Smooth mode: {smooth_mode}")
+            print("="*60)
+
+        # Get basic matrices
+        G = self.G
+        d = self.d
+        Cd_inv = np.linalg.inv(self.Cd)
+        # Icovd_chol = np.linalg.cholesky(Cd_inv)
+
+        # Set bounds
+        lb, ub = self.lb, self.ub
+        if any(np.isnan(lb)) or any(np.isnan(ub)):
+            raise ValueError("You should set bounds first using set_bounds() method")
+
+        # Setup data ranges
+        data_ranges = {}
+        start = 0
+        for dataname in self.faults[0].datanames:
+            idata = self.faults[0].d[dataname]
+            end = start + idata.shape[0]
+            data_ranges[dataname] = (start, end)
+            start = end
+
+        # Setup fault ranges
+        fault_ranges = {}
+        for fault in self.faults:
+            start, end = self.slip_positions[fault.name]
+            fault_ranges[fault.name] = (start, end)
+
+        # Build smoothing matrix if not provided
+        if smoothing_matrix is None:
+            if verbose:
+                print("Building smoothing matrix...")
+
+            faults = self.faults
+            Np = G.shape[1]
+            Ns = 0
+            Ns_st = []
+            Ns_se = []
+
+            for fault in faults:
+                Ns_st.append(Ns)
+                Ns += int(fault.slip.shape[0] * len(fault.slipdir))
+                Ns_se.append(Ns)
+
+            G_lap = np.zeros((Ns, Np))
+
+            faultnames = [ifault.name for ifault in faults]
+            if smoothing_constraints is not None:
+                if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
+                    smoothing_constraints = {fault_name: smoothing_constraints for fault_name in faultnames}
+                elif isinstance(smoothing_constraints, dict):
+                    assert all(fault_name in smoothing_constraints for fault_name in faultnames), \
+                        "All fault names must be in smoothing_constraints"
+            else:
+                smoothing_constraints = {fault_name: (None, None, None, None) for fault_name in faultnames}
+
+            for ii, fault in enumerate(faults):
+                st = self.fault_indexes[fault.name][0]
+                ismoothing_constraints = smoothing_constraints[fault.name]
+
+                if fault.type == 'Fault':
+                    lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
+                    from scipy.linalg import block_diag as blkdiag
+                    lap_sd = blkdiag(lap, lap)
+                    Nsd = len(fault.slipdir)
+                    if Nsd == 1:
+                        lap_sd = lap
+                    se = st + Nsd * lap.shape[0]
+                    G_lap[Ns_st[ii]:Ns_se[ii], st:se] = lap_sd
+
+            smoothing_matrix = G_lap
+
+            if verbose:
+                print(f"Smoothing matrix built: {smoothing_matrix.shape}")
+
+        # Prepare constraint matrices
+        A_ueq = self.A_ueq
+        b_ueq = self.b_ueq
+        Aeq = self.Aeq
+        beq = self.beq
+
+        # Prepare for DES transformation if enabled
+        if use_des:
+            if verbose:
+                print("Preparing DES transformation...")
+
+            poly_positions = get_poly_positions_from_multifaults(self)
+
+            des_result = apply_des_transformation(
+                G=G,
+                D=smoothing_matrix,
+                A_ineq=A_ueq,
+                b_ineq=b_ueq,
+                A_eq=Aeq,
+                b_eq=beq,
+                lb=lb,
+                ub=ub,
+                poly_positions=poly_positions,
+                mode=self.des_config.get('mode', 'per_column'),
+                groups=self.des_config.get('groups', None),
+                G_norm=self.des_config.get('G_norm', 'l2'),
+                depth_grouping_config=self.des_config.get('depth_grouping_config', None)
+            )
+
+            G_vce = des_result['G_prime']
+            L_vce = des_result['D_prime']
+            lb_vce = des_result['lb_prime']
+            ub_vce = des_result['ub_prime']
+            A_ueq_vce = des_result.get('A_ineq_prime', A_ueq)
+            b_ueq_vce = des_result.get('b_ineq', b_ueq)
+            Aeq_vce = des_result.get('A_eq_prime', Aeq)
+            beq_vce = des_result.get('b_eq', beq)
+            fault_ranges_vce = fault_ranges  # Keep original for now
+
+            self.des_result = des_result
+
+            if verbose:
+                print(f"DES applied: scaling factor range [{des_result['scale_factors'].min():.3f}, {des_result['scale_factors'].max():.3f}]")
+        else:
+            G_vce = G
+            L_vce = smoothing_matrix
+            lb_vce = lb
+            ub_vce = ub
+            A_ueq_vce = A_ueq
+            b_ueq_vce = b_ueq
+            Aeq_vce = Aeq
+            beq_vce = beq
+            fault_ranges_vce = fault_ranges
+
+        # Run Simple VCE with lsqlin solver
+        if verbose:
+            print(f"Running Simple VCE with lsqlin solver (max_iter={max_iter}, tol={tol})...")
+
+        vce_result = simplified_vce(
+            Cd_inv=Cd_inv,
+            d=d,
+            G=G_vce,
+            L=L_vce,
+            bounds=(lb_vce, ub_vce),
+            data_ranges=data_ranges,
+            fault_ranges=fault_ranges_vce,
+            sigma_mode=sigma_mode,
+            sigma_groups=sigma_groups,
+            sigma_update=sigma_update,
+            sigma_values=sigma_values,
+            smooth_mode=smooth_mode,
+            smooth_groups=smooth_groups,
+            smooth_update=smooth_update,
+            smooth_values=smooth_values,
+            A_ueq=A_ueq_vce,
+            b_ueq=b_ueq_vce,
+            Aeq=Aeq_vce,
+            beq=beq_vce,
+            max_iter=max_iter,
+            tol=tol,
+            verbose=verbose
+        )
+
+        # Recover solution if DES was used
+        if use_des:
+            if verbose:
+                print("Recovering solution from DES transformation...")
+
+            m_prime = vce_result['m']
+            m_recovered = recover_sf_with_poly(
+                m_prime,
+                des_result['alpha'],
+                des_result['norm2_fault'],
+                des_result['fault_indices']
+            )
+
+            vce_result['m'] = m_recovered
+
+            if verbose:
+                print("DES recovery completed")
+
+        # Store results
+        self.mpost = vce_result['m']
+        self.vce_result = vce_result
+
+        if verbose:
+            print(f"VCE completed in {vce_result['iterations']} iterations")
+            print(f"Converged: {vce_result['converged']}")
+
+            if isinstance(vce_result['var_d'], dict):
+                for group, var in vce_result['var_d'].items():
+                    print(f"Data variance [{group}]: {var:.6f}")
+            else:
+                print(f"Data variance: {vce_result['var_d']:.6f}")
+
+            if isinstance(vce_result['var_alpha'], dict):
+                for group, var in vce_result['var_alpha'].items():
+                    print(f"Regularization variance [{group}]: {var:.6f}")
+            else:
+                print(f"Regularization variance: {vce_result['var_alpha']:.6f}")
+
+            if 'weights' in vce_result:
+                print(f"\nFinal weights:")
+                weights = vce_result['weights']
+                if isinstance(weights, dict):
+                    if any(isinstance(v, dict) for v in weights.values()):
+                        for d_group, w_dict in weights.items():
+                            for alpha_group, weight in w_dict.items():
+                                print(f"  weight[{d_group}][{alpha_group}]: {weight:.6f}")
+                    else:
+                        for group, weight in weights.items():
+                            print(f"  weight[{group}]: {weight:.6f}")
+                else:
+                    print(f"  weight: {weights:.6f}")
+
+            print("="*60)
+
+        return vce_result
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -714,5 +1089,30 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # All done
         return
     # ----------------------------------------------------------------------
+
+if __name__ == "__main__":
+    solver = multifaultsolve_boundLSE()
+    # 设置边界约束
+    solver.set_bounds(lb=-10, ub=10)
+    solver.set_bounds(strikeslip_limits={'main_fault': (-5, 5)})
+    
+    # 运行VCE - 每个数据集和断层都有独立的方差分量
+    result = solver.simple_vce(
+        sigma_mode='individual',    # 每个数据集独立sigma
+        smooth_mode='individual',   # 每个断层独立alpha
+        verbose=True
+    )
+    
+    # 或者使用分组模式
+    result = solver.simple_vce(
+        sigma_mode='grouped',
+        sigma_groups={'sar': ['insar1', 'insar2'], 'gnss': ['gps']},
+        smooth_mode='grouped', 
+        smooth_groups={'main': ['main_fault'], 'secondary': ['branch_fault', 'background']},
+        verbose=True
+    )
+    
+    # 分发结果
+    solver.distributem()
 
 # EOF
