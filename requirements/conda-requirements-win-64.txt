@@ -1,8 +1,11 @@
 # This file may be used to create an environment using:
 # $ conda create --name <env> --file <this file>
 # platform: win-64
+arviz=0.18.0=pyhd8ed1ab_0
 cached-property=1.5.2=hd8ed1ab_1
+cachetools=5.3.3=pyhd8ed1ab_0
 cartopy=0.22.0=py310hecd3228_1
+cloudpickle=3.0.0=pyhd8ed1ab_0
 cmcrameri=1.8=pyhd8ed1ab_0
 curl=8.4.0=he2ea4bf_1
 cutde=23.6.25=py310hecd3228_1
@@ -19,6 +22,7 @@ mpi4py=3.1.5=py310h1af2bfe_0
 numba=0.58.1=py310hd77b12b_0
 openpyxl=3.1.2=py310h8d17308_1
 pymc=5.13.1=hd8ed1ab_0
+pytensor-base=2.20.0=py310hecd3228_0
 python=3.10.13=he1021f5_0
 python-kaleido=0.2.1=pyhd8ed1ab_0
 scienceplots=2.1.1=pyhd8ed1ab_0

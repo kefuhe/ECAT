@@ -1,13 +1,16 @@
 # This file may be used to create an environment using:
 # $ conda create --name <env> --file <this file>
 # platform: linux-64
+brotli-python=1.0.9=py310hd8f1fbe_8
 cartopy=0.21.1=py310h1176785_0
 cmcrameri=1.8=pyhd8ed1ab_0
 cutde=23.6.25=py310hcc13569_1
 cvxopt=1.3.2=py310h14a12bf_1
-gdal=3.6.2=py310h0daa840_5
+geopandas=0.14.4=pyhd8ed1ab_0
+h2=4.3.0=pyhcf101f3_0
 intel-openmp=2023.1.0=hdb19cb5_46305
 ipython=8.15.0=py310h06a4308_0
+libgfortran=3.0.0=1
 matplotlib=3.8.0=py310h06a4308_0
 meshio=5.3.4=pyhd8ed1ab_0
 mkl_fft=1.3.8=py310h88d2f6f_0
@@ -16,10 +19,11 @@ mpi4py=3.1.4=py310hfc96bbd_0
 numba=0.58.1=py310h7dc5dd1_0
 pcre=8.45=h295c915_0
 pymc=5.13.1=hd8ed1ab_0
+pysocks=1.7.1=pyha55dd90_7
 python=3.10.13=h955ad1f_0
 python-kaleido=0.2.1=py310h06a4308_0
 pyyaml=6.0.1=py310h5eee18b_0
-scikit-learn=1.3.0=py310h1128e8f_0
 seaborn=0.13.2=hd8ed1ab_0
 tenacity=8.2.2=py310h06a4308_0
 tqdm=4.65.0=py310h2f386ee_0
+zstandard=0.23.0=py310h7c4b9e2_3
