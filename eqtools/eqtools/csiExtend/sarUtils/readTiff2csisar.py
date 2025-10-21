@@ -84,6 +84,9 @@ class TiffsarReader(ReadBase2csisar):
             mesh_lat, mesh_lon = utm_to_latlon(mesh_lon_x.flatten(), mesh_lat_y.flatten(), im_proj)
             mesh_lat = mesh_lat.reshape(im_height, im_width)
             mesh_lon = mesh_lon.reshape(im_height, im_width)
+        else:
+            mesh_lon = mesh_lon_x
+            mesh_lat = mesh_lat_y
     
         if zero2nan:
             vel[vel == 0] = np.nan

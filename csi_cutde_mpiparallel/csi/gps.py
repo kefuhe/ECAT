@@ -2110,9 +2110,9 @@ class gps(SourceInv):
             # Helmert Transform
             if itransformation == 'full':
                 if self.obs_per_station==3:
-                    Npo = 7                    # 3D Helmert transform is 7 parameters
+                    tmpNpo = 7                    # 3D Helmert transform is 7 parameters
                 else:
-                    Npo = 4                    # 2D Helmert transform is 4 parameters
+                    tmpNpo = 4                    # 2D Helmert transform is 4 parameters
             # Full Strain (Translation + Strain + Rotation)
             elif itransformation == 'strain':
                 tmpNpo = 6
@@ -2172,7 +2172,7 @@ class gps(SourceInv):
         if type(transformation) is list:
             transformation = transformation # [0]
         
-        if transformation.__class__ in (str, type(None), int):
+        if isinstance(transformation, (str, type(None), int, np.integer)):
             transformation = [transformation]
 
         orb = np.empty((self.obs_per_station*self.station.shape[0], 0))
@@ -2444,7 +2444,7 @@ class gps(SourceInv):
         # For the awkward case where there is only verticals
         if np.isnan(self.vel_enu[:,:2]).any():
             Hout = Hout[-ns:,-1].reshape((ns, 1))
-
+        # print('H shape for the 2D strain estimation: {}'.format(Hout.shape))
         # All done
         return Hout
 
@@ -2895,20 +2895,201 @@ class gps(SourceInv):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def calEulerPole(self, fault):
+    def calEulerPole(self, fault, factor=1.0, units='radians'):
         '''
-        这里考虑多transform的情况
+        Calculate Euler pole parameters from fault solution
+        
+        This function extracts the Euler rotation vector from the fault's polynomial solution
+        and computes the corresponding Euler pole parameters (longitude, latitude, angular velocity).
+        
+        Parameters:
+        -----------
+        fault : Fault object
+            Fault object containing polynomial solution with Euler rotation parameters
+        factor : float, optional
+            Scaling factor to convert angular velocity to desired units (default is 1.0)
+        units : str, optional
+            Units for angular velocity output ('degrees' or 'radians', default is 'degrees')
+            
+        Returns:
+        --------
+        lam : float
+            Euler pole longitude (degrees)
+        phi : float  
+            Euler pole latitude (degrees)
+        omega : float
+            Angular velocity magnitude (degrees/time_unit or rad/time_unit depending on units)
+            
+        Notes:
+        ------
+        **Forward Calculation (Rotation vector → Euler pole)**
+        From Euler rotation vector vec = [ωx, ωy, ωz]:
+        - omega = ||vec|| = sqrt(ωx² + ωy² + ωz²)    # Angular velocity magnitude
+        - phi = arcsin(ωz/omega) * 180/π              # Euler pole latitude
+        - lam = arctan2(ωy, ωx) * 180/π               # Euler pole longitude
+        
+        **Important: Euler Pole Equivalence**
+        
+        Due to the inherent symmetry of Euler rotations, one rotation can be represented 
+        in two equivalent ways:
+        
+        Original pole:    (λ, φ, ω)
+        Equivalent pole:  (λ + 180°, -φ, -ω)
+        
+        Both representations describe exactly the same rotation:
+        - Counterclockwise rotation ω around axis (λ, φ)
+        - Equivalent to clockwise rotation ω around axis (λ + 180°, -φ)
+        
+        Conversion formulas:
+        - lam_equiv = lam + 180°  (handle longitude range [-180°, 180°])
+        - phi_equiv = -phi
+        - omega_equiv = -omega
+        
+        In practice, choose northern hemisphere poles (φ > 0) or specific longitude 
+        ranges for consistency and easier interpretation.
+        
+        Example:
+        --------
+        >>> # Forward calculation
+        >>> lam, phi, omega = gps.calEulerPole(fault, units='degrees')
+        >>> print(f"Euler pole: lon={lam:.2f}°, lat={phi:.2f}°, omega={omega:.6f}°/time")
+        >>> 
+        >>> # Get equivalent pole
+        >>> lam_eq, phi_eq, omega_eq = gps.getEquivalentEulerPole(lam, phi, omega)
+        >>> print(f"Equivalent: lon={lam_eq:.2f}°, lat={phi_eq:.2f}°, omega={omega_eq:.6f}°/time")
         '''
+        # Extract Euler rotation parameters from fault solution
         st, se = self.eulerrotationIndex
         vec = fault.polysol[self.name][st: se+1]
-
-        # Calculating the Euler Pole and rotation value
-        omega = np.linalg.norm(vec)
-        phi = np.rad2deg(np.arcsin(vec[2]/omega))
-        lam = np.rad2deg(np.arctan2(vec[1], vec[0]))
-
-        # All done
+    
+        # Calculate Euler pole parameters
+        omega_mag = np.linalg.norm(vec) * factor       # Angular velocity magnitude (rad)
+        phi = np.rad2deg(np.arcsin(vec[2]/omega_mag))  # Euler pole latitude (degrees)
+        lam = np.rad2deg(np.arctan2(vec[1], vec[0]))   # Euler pole longitude (degrees)
+        
+        # Convert omega to requested units
+        if units.lower() == 'degrees':
+            omega = np.rad2deg(omega_mag)
+        elif units.lower() == 'radians':
+            omega = omega_mag
+        else:
+            raise ValueError("units must be 'degrees' or 'radians'")
+    
         return lam, phi, omega
+    
+    def getEquivalentEulerPole(self, lam, phi, omega):
+        """
+        Calculate equivalent Euler pole parameters
+        
+        Args:
+            lam : Original Euler pole longitude (degrees)
+            phi : Original Euler pole latitude (degrees)  
+            omega : Original angular velocity (same units as input)
+            
+        Returns:
+            lam_equiv, phi_equiv, omega_equiv : Equivalent Euler pole parameters
+            
+        Note:
+            The equivalent pole describes the same rotation but with opposite 
+            axis direction and rotation sense.
+        """
+        lam_equiv = lam + 180.0
+        
+        # Handle longitude range [-180°, 180°]
+        if lam_equiv > 180.0:
+            lam_equiv -= 360.0
+        elif lam_equiv < -180.0:
+            lam_equiv += 360.0
+            
+        phi_equiv = -phi
+        omega_equiv = -omega
+        
+        return lam_equiv, phi_equiv, omega_equiv
+    
+    def eulerPole2RotationVector(self, lam, phi, omega, units='radians'):
+        """
+        **Inverse Calculation (Euler pole → Rotation vector)**
+        
+        Convert Euler pole parameters back to rotation vector
+        
+        Args:
+            lam : Euler pole longitude (degrees)
+            phi : Euler pole latitude (degrees)
+            omega : Angular velocity magnitude 
+            units : str, units of omega ('degrees' or 'radians')
+            
+        Returns:
+            vec : np.array([ωx, ωy, ωz])
+                Rotation vector in Cartesian coordinates (rad/time_unit)
+                
+        Notes:
+        ------
+        Inverse formulas:
+        - Convert omega to radians if needed
+        - ωx = omega * cos(φ) * cos(λ)
+        - ωy = omega * cos(φ) * sin(λ)  
+        - ωz = omega * sin(φ)
+        
+        Example:
+        --------
+        >>> # Forward then inverse
+        >>> lam, phi, omega_deg = gps.calEulerPole(fault, units='degrees')
+        >>> vec_recovered = gps.eulerPole2RotationVector(lam, phi, omega_deg, units='degrees')
+        >>> # vec_recovered should match original fault.polysol[self.name][st:se+1]
+        """
+        # Convert angles to radians
+        lam_rad = np.deg2rad(lam)
+        phi_rad = np.deg2rad(phi)
+        
+        # Convert omega to radians if needed
+        if units.lower() == 'degrees':
+            omega_rad = np.deg2rad(omega)
+        elif units.lower() == 'radians':
+            omega_rad = omega
+        else:
+            raise ValueError("units must be 'degrees' or 'radians'")
+        
+        # Calculate rotation vector components
+        wx = omega_rad * np.cos(phi_rad) * np.cos(lam_rad)
+        wy = omega_rad * np.cos(phi_rad) * np.sin(lam_rad)
+        wz = omega_rad * np.sin(phi_rad)
+        
+        return np.array([wx, wy, wz])
+    
+    def validateEulerPoleConversion(self, fault, units='degrees', tolerance=1e-10):
+        """
+        Validate forward and inverse Euler pole calculations
+        
+        Args:
+            fault : Fault object
+            units : str, units for omega ('degrees' or 'radians')
+            tolerance : float, tolerance for comparison
+            
+        Returns:
+            is_valid : bool, True if conversion is accurate within tolerance
+            max_error : float, maximum error in rotation vector components
+            
+        Example:
+        --------
+        >>> is_valid, error = gps.validateEulerPoleConversion(fault, units='degrees')
+        >>> print(f"Conversion valid: {is_valid}, max error: {error:.2e}")
+        """
+        # Get original rotation vector
+        st, se = self.eulerrotationIndex
+        vec_original = fault.polysol[self.name][st: se+1]
+        
+        # Forward calculation
+        lam, phi, omega = self.calEulerPole(fault, units=units)
+        
+        # Inverse calculation
+        vec_recovered = self.eulerPole2RotationVector(lam, phi, omega, units=units)
+        
+        # Compare
+        error = np.abs(vec_original - vec_recovered)
+        max_error = np.max(error)
+        is_valid = max_error < tolerance
+        
+        return is_valid, max_error
     # ----------------------------------------------------------------------
 
     def computeHelmertTransform(self, fault, verbose=False):
@@ -3345,7 +3526,7 @@ class gps(SourceInv):
                 if (self.name in fault.poly.keys()):
                     gpsref = fault.poly[self.name]
                     if type(gpsref) is str:
-                        if gpsref in ('strain', 'strainonly', 'strainnorotation', 'strainnotranslation'):
+                        if gpsref in ('strain', 'strainonly', 'strainnorotation', 'strainnotranslation', 'translation', 'translationrotation'):
                             self.compute2Dstrain(fault, computeNormFact=computeNormFact) # , computeNormFact=True, computeIntStrainNormFact=True
                             self.synth = self.synth + self.Strain
                         elif gpsref == 'full':

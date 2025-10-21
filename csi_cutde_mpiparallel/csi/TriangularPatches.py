@@ -3120,6 +3120,141 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def compute_surface_displacement(
+        self, box=None, disk=None, npoints=10, lonlat=None, profile=None,
+        slipVec=None, nu=0.25, data=None, method='cutde', **kwargs
+    ):
+        """
+        Compute surface displacement for triangular fault using selected method ('cutde' or 'edcmp').
+        Supports arbitrary observation points (box, disk, lonlat, profile, or data object) and user-defined slip.
+    
+        Parameters
+        ----------
+        box : list, optional
+            [minlon, maxlon, minlat, maxlat], grid sampling.
+        disk : list, optional
+            [lon_center, lat_center, radius_km, n], random sampling in disk.
+        npoints : int, optional
+            Number of points per axis (for grid).
+        lonlat : tuple of arrays, optional
+            (lon, lat) arrays for custom sampling.
+        profile : dict, optional
+            {'start': (lon1, lat1), 'end': (lon2, lat2), 'n': N}, sample along profile.
+        slipVec : np.ndarray, optional
+            (n_patch, 3) slip for each patch [strike, dip, tensile].
+        nu : float, optional
+            Poisson's ratio.
+        data : object, optional
+            Custom data object with .x, .y, .z attributes (z optional, default 0).
+        method : str, optional
+            'cutde' or 'edcmp', selects calculation backend.
+    
+        Returns
+        -------
+        obs_pts : np.ndarray
+            Observation points (N, 3).
+        disp_total : np.ndarray
+            Surface displacement at each observation point (N, 3).
+        """
+    
+        obs_pts = self._prepare_observation_points(
+            box=box, disk=disk, npoints=npoints, lonlat=lonlat, profile=profile, data=data
+        )
+    
+        # Prepare slip vector
+        if slipVec is not None:
+            slips = slipVec
+        else:
+            slips = self.slip
+    
+        # Prepare source triangles
+        src_tris = self.Vertices[self.Faces, :]
+        src_tris = np.copy(src_tris)
+        src_tris[:, :, -1] *= -1  # cutde requires z-up
+    
+        if method == 'cutde':
+            from cutde.halfspace import disp, disp_free, disp_matrix
+            if obs_pts.shape[0] < 10000:
+                disp_total = disp_free(obs_pts, src_tris, slips, nu)
+            else:
+                # The output disp_mat is a (N_OBS_PTS, 3, N_SRC_TRIS, 3) array. 
+                disp_mat = disp_matrix(obs_pts, src_tris, nu)
+                disp_total = np.einsum('ijkl,kl->ij', disp_mat, slips)
+        elif method == 'edcmp':
+            # You can implement edcmp backend here, e.g.:
+            disp_total = self._edcmp_surface_displacement(obs_pts, src_tris, slips, nu, **kwargs)
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    
+        return obs_pts, disp_total
+    
+    def _prepare_observation_points(self, box=None, disk=None, npoints=10, lonlat=None, profile=None, data=None):
+        """
+        Prepare observation points for surface displacement calculation.
+        Returns (N, 3) array.
+        """
+        import numpy as np
+        if data is not None and hasattr(data, 'x') and hasattr(data, 'y'):
+            x = np.asarray(data.x)
+            y = np.asarray(data.y)
+            if hasattr(data, 'z'):
+                z = np.asarray(data.z)
+            else:
+                z = np.zeros_like(x)
+            obs_pts = np.column_stack([x, y, z])
+        elif lonlat is not None:
+            lon = np.array(lonlat[0])
+            lat = np.array(lonlat[1])
+            x, y = self.ll2xy(lon, lat)
+            obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        elif box is not None:
+            lon = np.linspace(box[0], box[1], npoints)
+            lat = np.linspace(box[2], box[3], npoints)
+            lon, lat = np.meshgrid(lon, lat)
+            lon = lon.flatten()
+            lat = lat.flatten()
+            x, y = self.ll2xy(lon, lat)
+            obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        elif disk is not None:
+            lon, lat = [], []
+            from random import uniform
+            xc, yc = disk[0], disk[1]
+            r = disk[2]
+            n = disk[3]
+            while len(lon) < n:
+                theta = uniform(0, 2*np.pi)
+                rad = r * np.sqrt(uniform(0, 1))
+                dx = rad * np.cos(theta)
+                dy = rad * np.sin(theta)
+                x, y = self.ll2xy(xc, yc)
+                x_new, y_new = x + dx, y + dy
+                lon_new, lat_new = self.xy2ll(x_new, y_new)
+                lon.append(lon_new)
+                lat.append(lat_new)
+            lon = np.array(lon)
+            lat = np.array(lat)
+            x, y = self.ll2xy(lon, lat)
+            obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        elif profile is not None:
+            lon1, lat1 = profile['start']
+            lon2, lat2 = profile['end']
+            n = profile['n']
+            lon = np.linspace(lon1, lon2, n)
+            lat = np.linspace(lat1, lat2, n)
+            x, y = self.ll2xy(lon, lat)
+            obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        else:
+            lon = np.linspace(self.lon.min(), self.lon.max(), npoints)
+            lat = np.linspace(self.lat.min(), self.lat.max(), npoints)
+            lon, lat = np.meshgrid(lon, lat)
+            lon = lon.flatten()
+            lat = lat.flatten()
+            x, y = self.ll2xy(lon, lat)
+            obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        return np.ascontiguousarray(obs_pts)
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def cumdistance(self, discretized=False):
         '''
         Computes the distance between the first point of the fault and every other

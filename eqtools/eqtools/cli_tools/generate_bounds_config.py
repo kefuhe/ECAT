@@ -28,12 +28,14 @@ def generate_bounds_config(output_path, faultnames=None):
 #      - rake_angle
 #      - strikeslip
 #      - dipslip
+#      - Euler constraints (if applicable)
 #
 # 2. FULLSMC Mode:
 #    - Supports 'ss_ds', 'magnitude_rake', and 'rake_fixed' slip sampling modes.
 #    - Slip constraints:
-#      - 'ss_ds': rake_angle, strikeslip, dipslip
+#      - 'ss_ds': strikeslip, dipslip
 #      - 'magnitude_rake': slip_magnitude, rake_angle
+#      - 'rake_fixed': slip_magnitude
 #
 # 3. BLSE Mode:
 #    - Default to 'ss_ds' slip inversion mode.

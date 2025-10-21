@@ -722,16 +722,21 @@ class FaultAnalysisMixin:
             target_faults = self._get_faults()
 
         if len(target_faults) > 1:
-            # Combine faults if there are more than one
-            combined_fault = target_faults[0].duplicateFault()
-            combined_fault.name = 'Combined Fault'
-            for fault in target_faults[1:]:
-                for ipatch, islip in zip(fault.patch, fault.slip):
-                    combined_fault.N_slip = combined_fault.slip.shape[0] + 1
-                    combined_fault.addpatch(ipatch, islip)
-            combined_fault.setTrace(0.1)
-            mfault = combined_fault
-            add_faults = target_faults
+            # 是要判断所有fault的patchType是一样的，可选triangle或rectangle
+            if all(fault.patchType == target_faults[0].patchType for fault in target_faults):
+                # Combine faults if there are more than one
+                combined_fault = target_faults[0].duplicateFault()
+                combined_fault.name = 'Combined Fault'
+                for fault in target_faults[1:]:
+                    for ipatch, islip in zip(fault.patch, fault.slip):
+                        combined_fault.N_slip = combined_fault.slip.shape[0] + 1
+                        combined_fault.addpatch(ipatch, islip)
+                combined_fault.setTrace(0.1)
+                mfault = combined_fault
+                add_faults = target_faults
+            else:
+                mfault = target_faults
+                add_faults = target_faults
         else:
             # Directly plot if there is only one fault
             mfault = target_faults[0]

@@ -6,6 +6,10 @@ import pandas as pd
 
 from .multifaults_base import MyMultiFaultsInversion
 from .config.blse_config import BoundLSEInversionConfig
+from .constraint_manager_blse import ConstraintManager
+from .euler_inequality_constraints import (
+    apply_euler_inequality_constraints,
+    validate_euler_inequality_config)
 from ..plottools import sci_plot_style
 
 class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
@@ -68,20 +72,24 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                            des_enabled=des_enabled,
                                                            des_config=des_config)
 
-        self.assembleGFs() # assemble the Green's functions because the data is already assembled
+        self.assembleGFs()
+        
         self.update_config(self.config)
-        if self.config.use_bounds_constraints:
-            self.set_bounds_from_config(bounds_config, encoding=encoding)
-        if self.config.use_rake_angle_constraints:
-            if rake_limits is not None:
-                self.set_inequality_constraints_for_rake_angle(rake_limits)
-            elif self.config.use_bounds_constraints:
-                self.set_inequality_constraints_for_rake_angle(self.bounds_config['rake_angle']) 
-            else:
-                assert False, "Rake angle constraints can only be set when bounds constraints are used or rake_limits is provided."
+        
+        # Apply all constraints using the constraint manager
+        self.constraint_manager.apply_all_constraints_from_config(
+            bounds_config_file=bounds_config,
+            rake_limits=rake_limits,
+            encoding=encoding
+        )
+        
+        # Sync constraints to solver for backward compatibility
+        self.constraint_manager.sync_to_solver()
 
     def update_config(self, config):
         self.config = config
+        if hasattr(self, 'constraint_manager'):
+            self.constraint_manager.config = config
         self._update_faults()
 
     def _update_faults(self):
@@ -98,7 +106,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     self.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
                 # Update Laplacian
                 self.update_Laplacian(fault_names=[fault_name], **fault_config['method_parameters']['update_Laplacian'])
-    
+
     def run(self, penalty_weight=None, smoothing_constraints=None, data_weight=None, data_log_scaled=None, 
             penalty_log_scaled=None, sigma=None, alpha=None, verbose=True, des_enabled=None):
         """
@@ -749,13 +757,14 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             for fault in faults:
                 if fault.lon is None or fault.lat is None:
                     fault.setTrace(0.1)
-                fault.color = 'b' # Set the color to blue
+                fault.color = 'k' # Set the color to black
+                fault.linewidth = 2.0 # Set the line width to 2.0
             for cogps, vertical in cogps_vertical_list:
                 cogps.buildsynth(faults, vertical=vertical, poly=data_poly)
                 if plot_data:
                     box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
                     cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], 
-                                scale=gps_scale, legendscale=gps_legendscale, color=['k', 'r'],
+                                scale=gps_scale, legendscale=gps_legendscale, color=['#e33e1c', '#2e5b99'],
                                 seacolor='lightblue', box=box, titleyoffset=1.02, title=gps_title, figsize=gps_figsize,
                                 remove_direction_labels=remove_direction_labels)
                     cogps.fig.savefig(f'gps_{cogps.name}', ftype=file_type, dpi=600, 
@@ -784,5 +793,458 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                     remove_direction_labels=remove_direction_labels)
                         cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
                                         bbox_inches='tight', mapaxis=None)
+
+    def calculate_tectonic_loading_rate(self, fault_name, euler_params1=None, euler_params2=None):
+        """
+        Calculate tectonic loading rate on fault due to Euler motion difference (strike-slip component).
+        
+        Parameters:
+        -----------
+        fault_name : str
+            Name of the fault
+        euler_params1 : np.ndarray or list, optional
+            First block's Euler parameters [wx, wy, wz] (rad/year)
+            If None, will extract from inversion results based on config
+        euler_params2 : np.ndarray or list, optional
+            Second block's Euler parameters [wx, wy, wz] (rad/year)
+            If None, will extract from inversion results based on config
+            
+        Returns:
+        --------
+        loading_rate : np.ndarray
+            Long-term tectonic loading rate (m/year)
+        """
+        
+        # Get fault object
+        fault = None
+        for f in self.faults:
+            if f.name == fault_name:
+                fault = f
+                break
+        
+        if fault is None:
+            raise ValueError(f"Fault '{fault_name}' not found in solver")
+        
+        # Get Euler configuration
+        euler_config = getattr(self.config, 'euler_constraints', {})
+        if not euler_config.get('enabled', False):
+            raise ValueError("Euler constraints are not enabled in configuration")
+        
+        if fault_name not in euler_config['faults']:
+            raise ValueError(f"Fault '{fault_name}' not found in euler_config")
+        
+        params = euler_config['faults'][fault_name]
+        
+        # Extract Euler parameters if not provided
+        if euler_params1 is None or euler_params2 is None:
+            if not hasattr(self, 'mpost') or self.mpost is None:
+                raise ValueError("No inversion results found and no Euler parameters provided. "
+                               "Run inversion first or provide euler_params1 and euler_params2.")
+            
+            # Get transform indices
+            transform_indices = {}
+            if hasattr(self.faults[0], 'transform_indices'):
+                transform_indices = self.faults[0].transform_indices
+            elif hasattr(self, 'transform_indices'):
+                transform_indices = self.transform_indices
+            else:
+                raise ValueError("No transform_indices found for extracting Euler parameters")
+            
+            block_types = params['block_types']
+            blocks_standard = params['blocks_standard']
+            
+            extracted_params = []
+            for block_idx, (block_type, block_data) in enumerate(zip(block_types, blocks_standard)):
+                if block_type == 'dataset':
+                    # Extract from inversion results
+                    dataset_name = block_data
+                    if dataset_name not in transform_indices:
+                        raise ValueError(f"Dataset '{dataset_name}' not found in transform_indices")
+                    
+                    euler_indices = transform_indices[dataset_name].get('eulerrotation')
+                    if euler_indices is None:
+                        raise ValueError(f"No Euler parameters found for dataset '{dataset_name}'")
+                    
+                    start_idx, end_idx = euler_indices
+                    if end_idx - start_idx != 3:
+                        raise ValueError(f"Expected 3 Euler parameters for dataset '{dataset_name}', "
+                                       f"got {end_idx - start_idx}")
+                    
+                    euler_params = self.mpost[start_idx:end_idx]
+                    extracted_params.append(euler_params)
+                    
+                elif block_type == 'euler_pole':
+                    # Convert Euler pole to vector
+                    from .euler_inequality_constraints import convert_euler_pole_to_vector
+                    lon_pole, lat_pole, omega = block_data
+                    euler_vector = convert_euler_pole_to_vector(lat_pole, lon_pole, omega)
+                    extracted_params.append(euler_vector)
+                    
+                elif block_type == 'euler_vector':
+                    # Use directly
+                    extracted_params.append(np.array(block_data))
+                
+                else:
+                    raise ValueError(f"Unknown block_type: {block_type}")
+            
+            if len(extracted_params) != 2:
+                raise ValueError(f"Expected exactly 2 blocks for fault '{fault_name}', "
+                               f"got {len(extracted_params)}")
+            
+            if euler_params1 is None:
+                euler_params1 = extracted_params[0]
+            if euler_params2 is None:
+                euler_params2 = extracted_params[1]
+        
+        # Get patch indices to apply constraints
+        apply_patches = None # params.get('apply_to_patches', None)
+        if apply_patches is None:
+            patch_indices = list(range(len(fault.patch)))
+        else:
+            patch_indices = apply_patches
+        
+        # Get patch centers
+        centers = np.array(fault.getcenters())[patch_indices]
+        xc, yc = centers[:, 0], centers[:, 1]
+        lonc, latc = fault.xy2ll(xc, yc)
+        lonc, latc = np.radians(lonc), np.radians(latc)
+        # Calculate Euler matrix
+        from .euler_inequality_constraints import calculate_euler_matrix_for_points, project_euler_to_strike
+        euler_mat = calculate_euler_matrix_for_points(lonc, latc)
+        
+        # Get reference strike
+        reference_strike_deg = params.get('reference_strike', 0.0)
+        
+        # Calculate strike-slip projection matrix
+        euler_strike = project_euler_to_strike(euler_mat, fault, patch_indices, 
+                                             reference_strike_deg, len(patch_indices))
+        
+        # Convert to numpy arrays
+        euler_params1 = np.array(euler_params1)
+        euler_params2 = np.array(euler_params2)
+        
+        # Calculate velocity for each block
+        vel1 = np.sum(euler_strike * euler_params1[None, :], axis=1)
+        vel2 = np.sum(euler_strike * euler_params2[None, :], axis=1)
+        
+        # Calculate loading rate: block1 - block2
+        loading_rate_selected = vel1 - vel2
+        
+        # Extend to all patches (unconstrained patches set to 0)
+        loading_rate = np.zeros(len(fault.patch))
+        loading_rate[patch_indices] = loading_rate_selected
+        
+        # Store in fault attributes (optional)
+        if not hasattr(fault, 'tectonic_loading_rate'):
+            fault.tectonic_loading_rate = loading_rate
+        else:
+            fault.tectonic_loading_rate = loading_rate
+        
+        return loading_rate
+    
+    
+    def calculate_locking_degree(self, fault_name, euler_params1=None, euler_params2=None, 
+                               method='absolute', slip_component='strikeslip'):
+        """
+        Calculate fault locking degree.
+        
+        Parameters:
+        -----------
+        fault_name : str
+            Name of the fault
+        euler_params1, euler_params2 : np.ndarray or list, optional
+            Two blocks' Euler parameters [wx, wy, wz] (rad/year)
+            If None, will extract from inversion results based on config
+        method : str
+            Calculation method: 'absolute' or 'relative'
+            - 'absolute': long-term rate + inverted slip
+            - 'relative': (long-term rate + inverted slip) / long-term rate
+        slip_component : str
+            Slip component: 'strikeslip', 'dipslip', or 'total'
+            
+        Returns:
+        --------
+        locking_degree : np.ndarray
+            Locking degree
+        """
+        
+        # Get fault object
+        fault = None
+        fault_idx = None
+        for i, f in enumerate(self.faults):
+            if f.name == fault_name:
+                fault = f
+                fault_idx = i
+                break
+        
+        if fault is None:
+            raise ValueError(f"Fault '{fault_name}' not found in solver")
+        
+        # Calculate long-term tectonic loading rate
+        loading_rate = self.calculate_tectonic_loading_rate(fault_name, euler_params1, euler_params2)
+        
+        # Get inverted slip
+        if not hasattr(self, 'mpost') or self.mpost is None:
+            raise ValueError("No inversion results found. Run inversion first.")
+        
+        # Get fault parameter indices
+        fault_start, fault_end = self.fault_indexes[fault_name]
+        fault_params = self.mpost[fault_start:fault_end]
+        npatches = len(fault.patch)
+        # Extract slip component
+        if slip_component == 'strikeslip':
+            slip_index = 0
+        elif slip_component == 'dipslip':
+            slip_index = npatches
+        elif slip_component == 'total':
+            slip_index = None
+        else:
+            raise ValueError(f"Invalid slip_component: {slip_component}")
+        
+        if slip_index is not None:
+            # Single slip component
+            inverted_slip = fault_params[slip_index:slip_index+npatches]
+        else:
+            # Total slip magnitude
+            ss_slip = fault_params[0:npatches]
+            ds_slip = fault_params[npatches:npatches+npatches]
+            inverted_slip = np.sqrt(ss_slip**2 + ds_slip**2)
+            # For total slip, use absolute loading rate as reference
+            # abs_loading_rate = np.abs(loading_rate)
+        
+        # Ensure array lengths match
+        if len(inverted_slip) != len(loading_rate):
+            raise ValueError(f"Slip array length ({len(inverted_slip)}) doesn't match "
+                            f"loading rate array length ({len(loading_rate)})")
+        
+        # Calculate locking degree
+        if method == 'absolute':
+            # Absolute locking degree: long-term rate + inverted slip (note: inverted slip is usually negative)
+            locking_degree = loading_rate + inverted_slip
+            
+        elif method == 'relative':
+            # Relative locking degree: (long-term rate + inverted slip) / long-term rate
+            # Avoid division by zero
+            loading_rate_safe = np.where(np.abs(loading_rate) < 1e-12, 1e-12, loading_rate)
+            locking_degree = np.abs(loading_rate + inverted_slip) / np.abs(loading_rate_safe)
+            
+            # Handle special case: when long-term rate is zero, set locking degree to 0
+            locking_degree = np.where(np.abs(loading_rate) < 1e-12, 0.0, locking_degree)
+            
+        else:
+            raise ValueError(f"Invalid method: {method}. Use 'absolute' or 'relative'")
+        
+        # Store results in fault attributes
+        fault.locking_degree = locking_degree
+        
+        return locking_degree
+    
+    
+    def analyze_fault_kinematics(self, fault_name, euler_params1=None, euler_params2=None,
+                                slip_component='strikeslip', save_results=True):
+        """
+        Comprehensive analysis of fault kinematics: long-term loading, inverted slip, locking degree.
+        
+        Parameters:
+        -----------
+        fault_name : str
+            Name of the fault
+        euler_params1, euler_params2 : np.ndarray or list, optional
+            Two blocks' Euler parameters
+            If None, will extract from inversion results based on config
+        slip_component : str
+            Slip component to analyze
+        save_results : bool
+            Whether to save results to fault attributes
+            
+        Returns:
+        --------
+        analysis : dict
+            Analysis results dictionary
+        """
+        
+        # Calculate long-term tectonic loading rate
+        loading_rate = self.calculate_tectonic_loading_rate(fault_name, euler_params1, euler_params2)
+        
+        # Calculate two types of locking degree
+        locking_abs = self.calculate_locking_degree(fault_name, euler_params1, euler_params2,
+                                                  method='absolute', slip_component=slip_component)
+        
+        locking_rel = self.calculate_locking_degree(fault_name, euler_params1, euler_params2, 
+                                                  method='relative', slip_component=slip_component)
+        
+        # Get inverted slip
+        fault_start, fault_end = self.fault_indexes[fault_name]
+        fault_params = self.mpost[fault_start:fault_end]
+        
+        fault = None
+        for f in self.faults:
+            if f.name == fault_name:
+                fault = f
+                break
+        
+        npatches = len(fault.patch)
+        if slip_component == 'strikeslip':
+            inverted_slip = fault_params[0:npatches]
+        elif slip_component == 'dipslip':
+            inverted_slip = fault_params[npatches:npatches+npatches]
+        else:
+            ss_slip = fault_params[0:npatches]
+            ds_slip = fault_params[npatches:npatches+npatches]
+            inverted_slip = np.sqrt(ss_slip**2 + ds_slip**2)
+        
+        # Compile analysis results
+        analysis = {
+            'fault_name': fault_name,
+            'slip_component': slip_component,
+            'num_patches': len(fault.patch),
+            'loading_rate': {
+                'values': loading_rate,
+                'stats': {
+                    'min': np.min(loading_rate),
+                    'max': np.max(loading_rate), 
+                    'mean': np.mean(loading_rate),
+                    'std': np.std(loading_rate),
+                    'median': np.median(loading_rate)
+                }
+            },
+            'inverted_slip': {
+                'values': inverted_slip,
+                'stats': {
+                    'min': np.min(inverted_slip),
+                    'max': np.max(inverted_slip),
+                    'mean': np.mean(inverted_slip),
+                    'std': np.std(inverted_slip),
+                    'median': np.median(inverted_slip)
+                }
+            },
+            'locking_degree_absolute': {
+                'values': locking_abs,
+                'stats': {
+                    'min': np.min(locking_abs),
+                    'max': np.max(locking_abs),
+                    'mean': np.mean(locking_abs),
+                    'std': np.std(locking_abs),
+                    'median': np.median(locking_abs)
+                }
+            },
+            'locking_degree_relative': {
+                'values': locking_rel,
+                'stats': {
+                    'min': np.min(locking_rel),
+                    'max': np.max(locking_rel),
+                    'mean': np.mean(locking_rel),
+                    'std': np.std(locking_rel),
+                    'median': np.median(locking_rel)
+                }
+            }
+        }
+        
+        return analysis
+    
+    
+    def plot_fault_kinematics(self, fault_name, euler_params1=None, euler_params2=None,
+                             slip_component='strikeslip', plot_type='all', save_path=None):
+        """
+        Plot fault kinematics analysis results.
+        
+        Parameters:
+        -----------
+        fault_name : str
+            Name of the fault
+        euler_params1, euler_params2 : array-like, optional
+            Euler parameters
+            If None, will extract from inversion results based on config
+        slip_component : str
+            Slip component
+        plot_type : str
+            Plot type: 'loading', 'slip', 'locking_abs', 'locking_rel', 'all'
+        save_path : str, optional
+            Save path
+        """
+        
+        import matplotlib.pyplot as plt
+        
+        # Get fault object
+        fault = None
+        for f in self.faults:
+            if f.name == fault_name:
+                fault = f
+                break
+        
+        if plot_type == 'all':
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+            axes = axes.ravel()
+            
+            # 1. Long-term tectonic loading rate
+            loading_rate = self.calculate_tectonic_loading_rate(fault_name, euler_params1, euler_params2)
+            # Temporarily assign for plotting
+            original_slip = fault.slip.copy()
+            fault.slip[:, 0] = loading_rate
+            fault.plot(slip='strikeslip', ax=axes[0], colorbar=True)
+            axes[0].set_title(f'Tectonic Loading Rate\n{fault_name}')
+            
+            # 2. Inverted slip
+            fault.slip = original_slip  # Restore original slip
+            fault.plot(slip=slip_component, ax=axes[1], colorbar=True)
+            axes[1].set_title(f'Inverted {slip_component.title()}\n{fault_name}')
+            
+            # 3. Absolute locking degree
+            locking_abs = self.calculate_locking_degree(fault_name, euler_params1, euler_params2,
+                                                      method='absolute', slip_component=slip_component)
+            fault.slip[:, 0] = locking_abs
+            fault.plot(slip='strikeslip', ax=axes[2], colorbar=True)
+            axes[2].set_title(f'Absolute Locking Degree\n{fault_name}')
+            
+            # 4. Relative locking degree  
+            locking_rel = self.calculate_locking_degree(fault_name, euler_params1, euler_params2,
+                                                      method='relative', slip_component=slip_component)
+            fault.slip[:, 0] = locking_rel
+            fault.plot(slip='strikeslip', ax=axes[3], colorbar=True)
+            axes[3].set_title(f'Relative Locking Degree\n{fault_name}')
+            
+            # Restore original slip
+            fault.slip = original_slip
+            
+        else:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            
+            original_slip = fault.slip.copy()
+            
+            if plot_type == 'loading':
+                loading_rate = self.calculate_tectonic_loading_rate(fault_name, euler_params1, euler_params2)
+                fault.slip[:, 0] = loading_rate
+                fault.plot(slip='strikeslip', ax=ax, colorbar=True)
+                ax.set_title(f'Tectonic Loading Rate - {fault_name}')
+                
+            elif plot_type == 'slip':
+                fault.plot(slip=slip_component, ax=ax, colorbar=True)
+                ax.set_title(f'Inverted {slip_component.title()} - {fault_name}')
+                
+            elif plot_type == 'locking_abs':
+                locking_abs = self.calculate_locking_degree(fault_name, euler_params1, euler_params2,
+                                                          method='absolute', slip_component=slip_component)
+                fault.slip[:, 0] = locking_abs
+                fault.plot(slip='strikeslip', ax=ax, colorbar=True)
+                ax.set_title(f'Absolute Locking Degree - {fault_name}')
+                
+            elif plot_type == 'locking_rel':
+                locking_rel = self.calculate_locking_degree(fault_name, euler_params1, euler_params2,
+                                                          method='relative', slip_component=slip_component)
+                fault.slip[:, 0] = locking_rel
+                fault.plot(slip='strikeslip', ax=ax, colorbar=True)
+                ax.set_title(f'Relative Locking Degree - {fault_name}')
+            
+            fault.slip = original_slip
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+        
+        plt.show()
+        
+        return fig
 
 #EOF

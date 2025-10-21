@@ -1480,7 +1480,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             xydip, 
             is_utm=False, 
             discretization_interval=None,
-            interpolation_axis='x', 
+            interpolation_axis='auto',  # Modified default value to 'auto'
             save_to_file=False, 
             calculate_strike_along_trace=True,
             method='min_mse',  # optimal: min_use, ols, theil_sen, ransac, huber, lasso, ridge, elasticnet, quantile
@@ -1499,7 +1499,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         xydip_file: Path to a file containing x, y coordinates and dip angles.
         is_utm: If True, the x and y coordinates are in UTM. Otherwise, they are in geographic coordinates.
         discretization_interval: Interval for discretizing the trace.
-        interpolation_axis: Axis used for interpolation, can be 'x' or 'y'.
+        interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
+            'auto' automatically selects the best interpolation direction using PCA.
         save_to_file: If True, save the results to a file.
         calculate_strike_along_trace: If True, calculate the strike along the fault trace.
         method: Method to select dips if multiple methods are available. Default is 'min_mse'.
@@ -1524,17 +1525,19 @@ class AdaptiveTriangularPatches(TriangularPatches):
         
         # Read coordinates and dips using the read_coordinates_and_dips function
         xydip = self.read_coordinates_and_dips(xydip, is_utm, method, profiles_to_keep, profiles_to_remove)
-        # print('xydip:', xydip)
-        # print('buffer_nodes:', buffer_nodes)
-        # print('buffer_radius:', buffer_radius)
-        # print('interpolation_axis:', interpolation_axis)
+        
+        # Automatically select optimal interpolation axis - determine before handle_buffer_nodes
+        if interpolation_axis == 'auto':
+            interpolation_axis = self._determine_optimal_interpolation_axis(self.top_coords[:, 0], self.top_coords[:, 1])
+            print(f"Auto-selected interpolation axis: {interpolation_axis}")
+        
         # Handle buffer nodes and update self.xydip_ref
         xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis, update_ref=update_xydip_ref or not hasattr(self, 'xydip_ref'))
         
         # Save to csv file
         if save_to_file:
             xydip.to_csv(f'{self.name}_used.csv', index=False, header=True, float_format='%.6f')
-
+    
         # Interpolation
         if interpolation_axis == 'x':
             x_values = xydip.x.values
@@ -1551,7 +1554,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         end_dip_fill = xydip.loc[indices[-1], 'dip']
     
         # Create interpolation function
-        interpolation_function = interp1d(sorted_x_values, sorted_dip_values, fill_value=(start_dip_fill, end_dip_fill), bounds_error=False)
+        interpolation_function = interp1d(sorted_x_values, sorted_dip_values, 
+                                        fill_value=(start_dip_fill, end_dip_fill), bounds_error=False)
         interpolated_dip = interpolation_function(interpolated_x)
     
         # Calculate strike
@@ -1573,6 +1577,51 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
         # All Done
         return interpolated_main
+    
+    def _determine_optimal_interpolation_axis(self, x, y):
+        """
+        Use PCA to determine the optimal interpolation direction
+        
+        Parameters:
+        -----------
+        x : array-like
+            X coordinates
+        y : array-like
+            Y coordinates
+            
+        Returns:
+        --------
+        str
+            Selected interpolation axis ('x' or 'y')
+        """
+        from sklearn.decomposition import PCA
+        import numpy as np
+        
+        # Extract coordinate data
+        coords = np.column_stack([x, y])
+        
+        # PCA principal component analysis with only 1 component
+        pca = PCA(n_components=1)
+        pca.fit(coords)
+        
+        # Get the first principal component direction
+        principal_direction = pca.components_[0]
+        explained_variance_ratio = pca.explained_variance_ratio_[0]
+        
+        # Determine whether the principal component direction is closer to x-axis or y-axis
+        abs_x_component = abs(principal_direction[0])
+        abs_y_component = abs(principal_direction[1])
+        
+        if abs_x_component > abs_y_component:
+            selected_axis = 'x'
+            if self.verbose:
+                print(f"PCA principal component aligns more with x-axis direction (explained variance: {explained_variance_ratio:.3f})")
+        else:
+            selected_axis = 'y'
+            if self.verbose:
+                print(f"PCA principal component aligns more with y-axis direction (explained variance: {explained_variance_ratio:.3f})")
+    
+        return selected_axis
 
     def interpolate_isocurve_dip_from_relocated_profile(
             self, 
@@ -1871,7 +1920,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             update_self=True,
             is_utm=False,
             discretization_interval=None,
-            interpolation_axis='x', 
+            interpolation_axis='auto',  # Modified default value to 'auto'
             calculate_strike_along_trace=True,
             method='min_mse',  
             buffer_nodes=None,
@@ -1889,7 +1938,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         This function mainly includes two steps:
         1. interpolate_dip_from_relocated_profile: Interpolate segment dip angles to trace densification points.
         2. make_bottom_from_reloc_dips: Translate to determine the bottom edge.
-
+    
         Parameters:
         * xydip (str, np.ndarray, pd.DataFrame): str is the path to a file containing x, y coordinates and dip angles. 
             (np.ndarray, pd.DataFrame) is the array or DataFrame containing the coordinates and dips.
@@ -1898,7 +1947,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         * update_self: Whether to update the instance variables with the calculated coordinates. Default is True.
         * discretization_interval: Interval for discretizing the trace.
         * is_utm: If True, the x and y coordinates are in UTM. Otherwise, they are in geographic coordinates.
-        * interpolation_axis: Axis used for interpolation, can be 'x' or 'y'.
+        * interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
+            'auto' automatically selects the best interpolation direction using PCA.
         * calculate_strike_along_trace: If True, calculate the strike along the fault trace.
         * method: Method to select dips if multiple methods are available. Default is 'min_mse'.
         * buffer_nodes: Coordinates of buffer nodes used to segment the top_coords, then adaptively interpolate the dip for each segment.
@@ -1910,7 +1960,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         * average_strike_source: Source of average strike direction, can be 'pca' or 'user'. Default is 'pca'.
         * user_direction_angle: User input direction angle in degrees. Default is None.
         * verbose: Whether to print verbose output. Default is False.
-
+    
         Returns:
         None. However, the function updates the following instance variables:
         * bottom_coords: UTM coordinates of the bottom.
@@ -1969,7 +2019,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             if not hasattr(self, 'top_dip') or self.top_dip is None:
                 raise ValueError("The attribute 'top_dip' is not set. Please set 'top_dip' before calling this function.")
     
-            # 从self.top_coords_ll, self.top_strike和self.top_dip中提取数据
+            # Extract data from self.top_coords_ll, self.top_strike and self.top_dip
             lon, lat = self.top_coords_ll[:, 0], self.top_coords_ll[:, 1]
             strike, dip = self.top_strike, self.top_dip
             dip_info = pd.DataFrame(np.vstack((lon, lat, strike, dip)).T, columns='lon lat strike dip'.split())
@@ -2018,8 +2068,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         dip_info.loc[:, 'strike_rad'] = np.mod(dip_info['strike_rad'], 2 * np.pi)
         dip_info.loc[:, 'strike'] = np.rad2deg(dip_info['strike_rad'])
         strike_rad = dip_info.strike_rad.values
-
-        # update bottom_coords
+    
+        # Update bottom_coords
         dip_rad = dip_info.dip_rad.values
         width = ((fault_depth - self.top)/sin(dip_rad)).reshape(-1, 1)
         old_coords = np.vstack((x, y, np.ones_like(y)*self.top)).T 
@@ -2028,7 +2078,14 @@ class AdaptiveTriangularPatches(TriangularPatches):
         dip_z = sin(dip_rad)
         dip_vector = np.vstack((dip_x, dip_y, dip_z)).T 
         bottom_coords = old_coords + dip_vector*width
-
+    
+        # Automatically select optimal interpolation axis for sorting if needed
+        if interpolation_axis == 'auto':
+            # Use x, y coordinates directly
+            interpolation_axis = self._determine_optimal_interpolation_axis(self.top_coords[:, 0], self.top_coords[:, 1])
+            if verbose:
+                print(f"Auto-selected interpolation axis for sorting: {interpolation_axis}")
+    
         sort_order = np.argsort(bottom_coords[:, 0] if interpolation_axis == 'x' else bottom_coords[:, 1])
         bottom_coords = bottom_coords[sort_order, :]
         if np.dot([bottom_coords[-1, 0]-bottom_coords[0, 0], bottom_coords[-1, 1]-bottom_coords[0, 1]], strike_direction) < 0:

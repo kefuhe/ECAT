@@ -24,7 +24,7 @@ from .SourceInv import SourceInv
 from .EDKSmp import sum_layered
 from .EDKSmp import dropSourcesInPatches as Patches2Sources
 from .psgrn_pscmp.PSGRNCmp import pscmpslip2dis
-from .edgrn_edcmp.EDGRNcmp import edcmpslip2dis
+from .edgrn_edcmp.EDGRNcmp import edcmpslip2dis, edcmpslip2dis_forward
 from .edgrn_edcmp.tri2rectpoints import patch_local2d_inv, patch_local2d, triangle_to_rectangles
 from tqdm import tqdm
 
@@ -177,6 +177,20 @@ def _edcmp_patch_task(args):
 
     return p, ss, ds, ts
 
+def _single_patch_forward(args):
+    p, sourceparams, slip, data, grn_dir, output_dir, workdir, layered_model, force_recompute, faultname = args
+    return edcmpslip2dis_forward(
+        data, sourceparams,
+        slip=slip,
+        grn_dir=grn_dir,
+        output_dir=output_dir,
+        filename_suffix=f'surface_p{p}',
+        workdir=workdir,
+        layered_model=layered_model,
+        force_recompute=force_recompute,
+        faultname=faultname,
+        dataname=data.name
+    )
 
 #class Fault
 class Fault(SourceInv):
@@ -721,32 +735,6 @@ class Fault(SourceInv):
         # All done
         return
 
-    # def discretize_trace(self, every):
-    #     x, y = self.xf, self.yf
-    #     # 计算曲线的长度
-    #     dx = np.diff(x)
-    #     dy = np.diff(y)
-    #     dr = np.sqrt(dx*dx + dy*dy)
-    #     r = np.insert(cumtrapz(dr, initial=0), 0, 0)  # 曲线的长度
-
-    #     # 创建插值函数
-    #     fx = interp1d(r, x, kind='linear')
-    #     fy = interp1d(r, y, kind='linear')
-
-    #     # 在曲线长度上进行等间隔的划分
-    #     num_points = int(np.ceil(r[-1] / every))
-    #     r_new = np.linspace(0, r[-1], num_points)
-
-    #     # 计算新的 x 和 y 值
-    #     x_new = fx(r_new)
-    #     y_new = fy(r_new)
-
-    #     self.xi, self.yi = x_new, y_new
-    #     # Compute the lon/lat
-    #     self.loni, self.lati = self.xy2ll(self.xi, self.yi)
-
-    #     return
-
     def discretize_trace(self, every, threshold=2):
         """
         Discretize the fault trace at regular intervals.
@@ -792,6 +780,176 @@ class Fault(SourceInv):
         self.loni, self.lati = self.xy2ll(self.xi, self.yi)
     
         return
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def getPatchesInRange(self, method='buffer', **kwargs):
+        """
+        Get patch indices within specified range.
+        
+        Parameters
+        ----------
+        method : str
+            Method to select patches:
+            - 'buffer': Select patches within buffer distance perpendicular to fault trace between two points
+            - 'box': Select patches within longitude/latitude bounding box
+            
+        **kwargs : dict
+            For 'buffer' method:
+                point1 : tuple or list
+                    First reference point (lon, lat) or (x, y) depending on coord_system
+                point2 : tuple or list  
+                    Second reference point (lon, lat) or (x, y) depending on coord_system
+                buffer_distance : float
+                    Buffer distance in km (perpendicular to fault trace)
+                coord_system : str, default='lonlat'
+                    Coordinate system of input point ('lonlat' or 'xy')
+                depth_range : tuple, optional
+                    Depth range (min_depth, max_depth) in km. If None, all depths included.
+                    
+            For 'box' method:
+                lon_range : tuple
+                    Longitude range (min_lon, max_lon) in degrees
+                lat_range : tuple  
+                    Latitude range (min_lat, max_lat) in degrees
+                depth_range : tuple, optional
+                    Depth range (min_depth, max_depth) in km. If None, all depths included.
+        
+        Returns
+        -------
+        patch_indices : list
+            List of patch indices within the specified range
+            
+        Examples
+        --------
+        # Buffer method - select patches between two points with perpendicular buffer
+        >>> indices = fault.getPatchesInRange(
+        ...     method='buffer',
+        ...     point1=(120.5, 24.2),
+        ...     point2=(121.0, 24.8),
+        ...     buffer_distance=10.0,
+        ...     coord_system='lonlat',
+        ...     depth_range=(0, 20)
+        ... )
+        
+        # Box method - select patches within lon/lat bounding box
+        >>> indices = fault.getPatchesInRange(
+        ...     method='box', 
+        ...     lon_range=(120.0, 121.0),
+        ...     lat_range=(24.0, 25.0),
+        ...     depth_range=(0, 15)
+        ... )
+        """
+        
+        import numpy as np
+        from shapely.geometry import LineString, Point
+        from shapely.ops import nearest_points
+        
+        # Get patch centers
+        centers = self.getcenters()  # Returns [(x, y, z), ...]
+        patch_indices = []
+        
+        if method == 'buffer':
+            # Extract required parameters
+            point1 = kwargs.get('point1')
+            point2 = kwargs.get('point2')
+            buffer_distance = kwargs.get('buffer_distance')
+            coord_system = kwargs.get('coord_system', 'lonlat')
+            depth_range = kwargs.get('depth_range', None)
+            
+            if point1 is None or point2 is None or buffer_distance is None:
+                raise ValueError("For 'buffer' method, 'point1', 'point2' and 'buffer_distance' are required")
+            
+            # Convert point coordinates to xy if necessary
+            if coord_system == 'lonlat':
+                point1_x, point1_y = self.ll2xy(point1[0], point1[1])
+                point2_x, point2_y = self.ll2xy(point2[0], point2[1])
+            else:
+                point1_x, point1_y = point1[0], point1[1]
+                point2_x, point2_y = point2[0], point2[1]
+            
+            # Create fault trace LineString
+            if not hasattr(self, 'xi') or self.xi is None:
+                # Use original fault trace if discretized trace doesn't exist
+                trace_x, trace_y = self.xf, self.yf
+            else:
+                # Use discretized fault trace
+                trace_x, trace_y = self.xi, self.yi
+                
+            if trace_x is None or trace_y is None:
+                raise ValueError("Fault trace is not defined. Please set fault trace first.")
+            
+            # Create LineString from fault trace
+            trace_coords = list(zip(trace_x, trace_y))
+            fault_linestring = LineString(trace_coords)
+            
+            # Find the nearest points on fault trace for both input points
+            query_point1 = Point(point1_x, point1_y)
+            query_point2 = Point(point2_x, point2_y)
+            nearest_point1_on_trace = nearest_points(fault_linestring, query_point1)[0]
+            nearest_point2_on_trace = nearest_points(fault_linestring, query_point2)[0]
+            
+            # Get the positions along the fault trace
+            pos1 = fault_linestring.project(nearest_point1_on_trace)
+            pos2 = fault_linestring.project(nearest_point2_on_trace)
+            
+            # Ensure pos1 < pos2
+            if pos1 > pos2:
+                pos1, pos2 = pos2, pos1
+            
+            # Calculate perpendicular distance from each patch center to fault trace
+            # and check if it's along the specified segment
+            for i, (cx, cy, cz) in enumerate(centers):
+                patch_point = Point(cx, cy)
+                nearest_point_on_trace = nearest_points(fault_linestring, patch_point)[0]
+                
+                # Get position along fault trace
+                patch_pos = fault_linestring.project(nearest_point_on_trace)
+                
+                # Check if patch is within the along-strike range
+                if pos1 <= patch_pos <= pos2:
+                    # Distance from patch center to nearest point on fault trace
+                    distance_to_trace = np.sqrt((cx - nearest_point_on_trace.x)**2 + 
+                                              (cy - nearest_point_on_trace.y)**2)
+                    
+                    # Check if within buffer distance
+                    if distance_to_trace <= buffer_distance:
+                        # Check depth range if specified
+                        if depth_range is not None:
+                            if depth_range[0] <= cz <= depth_range[1]:
+                                patch_indices.append(i)
+                        else:
+                            patch_indices.append(i)
+        
+        elif method == 'box':
+            # Extract required parameters
+            lon_range = kwargs.get('lon_range')
+            lat_range = kwargs.get('lat_range')
+            depth_range = kwargs.get('depth_range', None)
+            
+            if lon_range is None or lat_range is None:
+                raise ValueError("For 'box' method, 'lon_range' and 'lat_range' are required")
+            
+            # Convert patch centers to lon/lat
+            for i, (cx, cy, cz) in enumerate(centers):
+                lon, lat = self.xy2ll(cx, cy)
+                
+                # Check if within lon/lat bounds
+                if (lon_range[0] <= lon <= lon_range[1] and 
+                    lat_range[0] <= lat <= lat_range[1]):
+                    
+                    # Check depth range if specified
+                    if depth_range is not None:
+                        if depth_range[0] <= cz <= depth_range[1]:
+                            patch_indices.append(i)
+                    else:
+                        patch_indices.append(i)
+        
+        else:
+            raise ValueError(f"Unknown method '{method}'. Use 'buffer' or 'box'")
+        
+        return patch_indices
+
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -1575,6 +1733,76 @@ class Fault(SourceInv):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def _edcmp_displacement_forward(self, obs_pts, slipVec,
+                                   grn_dir='edgrnfcts', output_dir='edcmpgrns',
+                                   workdir='edcmp_ecat', layered_model=True,
+                                   force_recompute=True, faultname='', dataname='', verbose=False,
+                                   n_jobs=4):
+        """
+        Forward calculation of surface displacement using EDCMP for all patches (parallel).
+        Each patch is processed in parallel, using physical slip vector [ss, ds, ts].
+        Patch geometry is prepared via _prepare_patch_source_wrapper.
+    
+        Parameters
+        ----------
+        obs_pts : np.ndarray
+            Observation points, shape (N, 3), in fault/projected coordinates (meters).
+        slipVec : np.ndarray
+            Physical slip vector for each patch, shape (n_patch, 3) [strike-slip, dip-slip, tensile-slip].
+        grn_dir, output_dir, workdir, layered_model, force_recompute, faultname, dataname, verbose
+            Same as edcmpGFs.
+        n_jobs : int
+            Number of parallel workers.
+    
+        Returns
+        -------
+        disp_total : np.ndarray
+            Surface displacement at each observation point, shape (N, 3).
+        """
+        import numpy as np
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+    
+        N_obs = obs_pts.shape[0]
+        N_patch = slipVec.shape[0]
+        disp_total = np.zeros((N_obs, 3))
+    
+        # Prepare a fake data object for EDCMP (with .x, .y, .name)
+        class SimpleData:
+            pass
+        data = SimpleData()
+        data.x = obs_pts[:, 0]
+        data.y = obs_pts[:, 1]
+        data.name = dataname if dataname else 'surface'
+    
+        # --- Prepare patch geometry and source parameters ---
+        mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
+        mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
+        patch_geometries = [self.getpatchgeometry(p, center=True) for p in range(N_patch)]
+        patchType = self.patchType
+        patch_args_geom = [(p, patchType, patch_geometries[p], self.patch[p], mean_x_km, mean_y_km) for p in range(N_patch)]
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            results = list(pool.map(_prepare_patch_source_wrapper, patch_args_geom))
+        # Keep the order same as patch_args
+        results.sort(key=lambda x: x[0])
+        self.patch_source_for_edcmp = [sourceparams for p, sourceparams in results]
+        # print('patch_source_for_edcmp has been calculated again!')
+
+        # --- Step 3: Prepare arguments for parallel computation ---
+        patch_args = []
+        for p in range(N_patch):
+            patch_args.append((p, self.patch_source_for_edcmp[p], slipVec[p], data, grn_dir, 
+                               output_dir, workdir, layered_model, force_recompute, faultname))
+
+        # --- Parallel execution ---
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            futures = [pool.submit(_single_patch_forward, arg) for arg in patch_args]
+            for future in as_completed(futures):
+                disp_total += future.result()
+    
+        return disp_total
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def writePointSources2Pickle(self, filename):
         '''
         Writes the point sources to a pickle file.
@@ -2056,7 +2284,6 @@ class Fault(SourceInv):
             patch_args = [(p, patchType, patch_geometries[p], self.patch[p], mean_x_km, mean_y_km) for p in range(Np)]
             with ProcessPoolExecutor(max_workers=n_jobs) as pool:
                 results = list(pool.map(_prepare_patch_source_wrapper, patch_args))
-
             # Keep the order same as patch_args
             results.sort(key=lambda x: x[0])
             self.patch_source_for_edcmp = [sourceparams for p, sourceparams in results]
@@ -2141,8 +2368,11 @@ class Fault(SourceInv):
 
         # Using list comprehension and numpy's transpose function to transpose each dimension of disp_mat.
         # Here, 'i' varies from 0 to 2, corresponding to each element of the last dimension of disp_mat.
-        # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
+        # The argument (1, 0, 2) for the transpose function represents the new order of the axes, 
+        # where the original second axis becomes the first, the original first axis becomes the second, 
+        # and the third axis remains unchanged.
         # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
+        # Gss.shape = (3, Nd, Np), where Nd is number of data points, Np is number of patches
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
 
         if verbose:
@@ -2459,7 +2689,7 @@ class Fault(SourceInv):
 
     # ----------------------------------------------------------------------
     def assembleGFs(self, datas, polys=None, slipdir='sdt', verbose=True,
-                                 custom=False, computeNormFact=True, computeIntStrainNormFact=True):
+                                custom=False, computeNormFact=True, computeIntStrainNormFact=True):
         '''
         Assemble the Green's functions corresponding to the data in datas.
         This method allows to specify which transformation is going
@@ -2473,19 +2703,21 @@ class Fault(SourceInv):
         Kwargs:
             * polys : None, nothing additional is estimated
 
-                 - For InSAR, Optical, GPS:
-                       - 1: estimate a constant offset
-                       - 3: estimate z = ax + by + c
-                       - 4: estimate z = axy + bx + cy + d
+                - For InSAR, Optical, GPS:
+                    - 1: estimate a constant offset
+                    - 3: estimate z = ax + by + c
+                    - 4: estimate z = axy + bx + cy + d
 
-                 - For GPS only:
-                       - 'full'      : Estimates a rotation, translation and scaling (Helmert transform).
-                       - 'strain'    : Estimates the full strain tensor (Rotation + Translation + Internal strain)
-                       - 'strainnorotation'   : Estimates the strain tensor and a translation
-                       - 'strainonly'    : Estimates the strain tensor
-                       - 'strainnotranslation'   : Estimates the strain tensor and a rotation
-                       - 'translation'   : Estimates the translation
-                       - 'translationrotation    : Estimates the translation and a rotation
+                - For GPS only:
+                    - 'full'      : Estimates a rotation, translation and scaling (Helmert transform).
+                    - 'strain'    : Estimates the full strain tensor (Rotation + Translation + Internal strain)
+                    - 'strainnorotation'   : Estimates the strain tensor and a translation
+                    - 'strainonly'    : Estimates the strain tensor
+                    - 'strainnotranslation'   : Estimates the strain tensor and a rotation
+                    - 'translation'   : Estimates the translation
+                    - 'translationrotation' : Estimates the translation and a rotation
+                    - 'eulerrotation' : Estimates a rotation only (for tectonic plate motion)
+                    - 'internalstrain' : Estimates the internal strain only (no rotation, no translation)
 
             * slipdir   : Directions of slip to include. Can be any combination of s (strike slip), d (dip slip), t (tensile), c (coupling)
 
@@ -2511,8 +2743,12 @@ class Fault(SourceInv):
         # Store the assembled slip directions
         self.slipdir = slipdir
 
-        # Create a dictionary to keep track of the orbital froms
+        # Create a dictionary to keep track of the orbital forms
         self.poly = {}
+        self.numberofpolys = {}
+        
+        # NEW: Track transformation parameter indices
+        self.transform_indices = {}
 
         # Set poly right
         if polys.__class__ is not list:
@@ -2538,13 +2774,47 @@ class Fault(SourceInv):
             self.N_slip = self.slip.shape[0]
         Nps = self.N_slip*len(slipdir)
         Npo = 0
+        global_transform_start = Nps  # Transform parameters start after slip parameters
+        
         for data in datas :
             transformation = self.poly[data.name]
             if type(transformation) in (str, list):
                 tmpNpo = data.getNumberOfTransformParameters(self.poly[data.name])
+                self.numberofpolys[data.name] = tmpNpo
+                
+                # NEW: Track parameter indices for this dataset
+                data_transform_dict = {}
+                current_pos = 0
+                
+                # Handle transformation list
+                if isinstance(transformation, list):
+                    for i, trans in enumerate(transformation):
+                        if isinstance(trans, str):
+                            # String transformation
+                            trans_params = data.getNumberOfTransformParameters(trans)
+                            data_transform_dict[trans] = (current_pos, current_pos + trans_params)
+                            current_pos += trans_params
+                        elif isinstance(trans, (int, np.integer)):
+                            # Integer transformation (polynomial)
+                            data_transform_dict[f'polynomial_{i}'] = (current_pos, current_pos + trans)
+                            current_pos += trans
+                elif isinstance(transformation, str):
+                    # Single string transformation
+                    data_transform_dict[transformation] = (0, tmpNpo)
+                
+                # Convert to global indices
+                global_transform_dict = {}
+                for trans_name, (start, end) in data_transform_dict.items():
+                    global_start = global_transform_start + Npo + start
+                    global_end = global_transform_start + Npo + end
+                    global_transform_dict[trans_name] = (global_start, global_end)
+                
+                self.transform_indices[data.name] = global_transform_dict
                 Npo += tmpNpo
+                
                 if type(transformation) is str:
-                    if transformation in ('full'):
+                    # If poly is a string, store it in the right attribute
+                    if transformation in ('full', 'helmert'):
                         self.helmert[data.name] = tmpNpo
                     elif transformation in ('strain', 'strainonly',
                                             'strainnorotation', 'strainnotranslation',
@@ -2556,9 +2826,16 @@ class Fault(SourceInv):
                     elif transformation in ('internalstrain'):
                         self.intstrain[data.name] = tmpNpo
                 else:
+                    # If poly is a list, store it in transformation
                     self.transformation[data.name] = tmpNpo
             elif transformation is not None:
+                # 1 or 3 only represent ramp correction, not a real transformation
+                self.transform_indices[data.name] = {
+                    'polynomial': (global_transform_start + Npo, global_transform_start + Npo + transformation)
+                }
                 Npo += transformation
+                self.numberofpolys[data.name] = transformation
+                
         Np = Nps + Npo
 
         # Save extra Parameters
@@ -2567,13 +2844,32 @@ class Fault(SourceInv):
         # Custom?
         if custom:
             Npc = 0
+            custom_start = Np
             for data in datas:
                 if 'custom' in self.G[data.name].keys():
-                    Npc += self.G[data.name]['custom'].shape[1]
+                    custom_params = self.G[data.name]['custom'].shape[1]
+                    if data.name not in self.transform_indices:
+                        self.transform_indices[data.name] = {}
+                    self.transform_indices[data.name]['custom'] = (custom_start + Npc, custom_start + Npc + custom_params)
+                    Npc += custom_params
             Np += Npc
             self.NumberCustom = Npc
         else:
             Npc = 0
+
+        if verbose:
+            print(f"Parameter summary:")
+            print(f"  Slip parameters: {Nps} (indices 0-{Nps-1})")
+            print(f"  Transform parameters: {Npo} (indices {Nps}-{Nps+Npo-1})")
+            if custom:
+                print(f"  Custom parameters: {Npc} (indices {Nps+Npo}-{Np-1})")
+            print(f"  Total parameters: {Np}")
+            
+            # Display transformation parameter positions for each dataset
+            for data_name, transform_dict in self.transform_indices.items():
+                print(f"  {data_name} transforms:")
+                for trans_name, (start, end) in transform_dict.items():
+                    print(f"    {trans_name}: indices {start}-{end-1}")
 
         # Get the number of data
         Nd = 0

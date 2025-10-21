@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from collections import OrderedDict
+import argparse
 
 from csi import RectangularPatches as RectFault
 from eqtools.csiExtend.BayesianAdaptiveTriangularPatches import (
@@ -9,12 +10,12 @@ from eqtools.csiExtend.BayesianAdaptiveTriangularPatches import (
 from csi import gps, insar
 
 # Bayesian inversion
-from eqtools.csiExtend.bayesian_multifaults_inversion import (
-        BayesianMultiFaultsInversionConfig,
-        BayesianMultiFaultsInversion,
-        MyMultiFaultsInversion,
-        NT1, NT2
-        )
+# from eqtools.csiExtend.bayesian_multifaults_inversion import (
+        # BayesianMultiFaultsInversionConfig,
+        # BayesianMultiFaultsInversion,
+        # MyMultiFaultsInversion,
+        # NT1, NT2
+        # )
 
 import os
 # using the C++ backend
@@ -40,6 +41,13 @@ Steps:
 
 
 if __name__ == '__main__':
+    # -----------------------------------Parse Arguments---------------------------------------------#
+    parser = argparse.ArgumentParser(description='BLSE Inversion Script')
+    
+    # Main execution mode
+    parser.add_argument('--mode', choices=['single', 'loop'], default='single',
+                       help='Execution mode: single run or penalty weight loop (default: single)')
+    args = parser.parse_args()
     # -----------------------------------MPI Init---------------------------------------------#
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -90,7 +98,6 @@ if __name__ == '__main__':
     # for sardata in insardata:
     #     sardata.reject_pixels_fault(1.0, trifaults_list)
 
-
     # --------------------------Build MultiFaults BLSE Inversion-------------------#
     # Way 1
     # from eqtools.csiExtend.bayesian_config import BoundLSEInversionConfig as BoundLSEConfig
@@ -108,49 +115,75 @@ if __name__ == '__main__':
     from eqtools.csiExtend.blse_multifaults_inversion import BoundLSEMultiFaultsInversion
     inversion = BoundLSEMultiFaultsInversion('inv', trifaults_list, geodata, verbose=True,
                                              config='default_config_BLSE_CovDiag.yml', bounds_config='bounds_config.yml')
-    inversion.run(penalty_weight=None, alpha=[np.log10(1/100.0)])
-    inversion.returnModel()
+    if args.mode == 'single':
+        inversion.run(penalty_weight=None, alpha=[np.log10(1/100.0)])
+        inversion.returnModel(print_stat=False)
 
-    if rank == 0:
-        from csi.faultpostproc import faultpostproc
-        myfaultpostproc = faultpostproc('postproc', fault_em1, Mu=3.0e10, lon0=lon0, lat0=lat0, verbose=True)
-        myfaultpostproc.computeMomentTensor()
-        mw = myfaultpostproc.computeMagnitude()
-        print(f'Magnitude of the fault is {mw:.2f}')
-    # ---------------------------------Plot Results---------------------------------------------#
-    if rank == 0:
-        import cmcrameri
-        from eqtools.getcpt import get_cpt 
-        slip_cmap = None
-        if slip_cmap is not None and slip_cmap.endswith('.cpt'):
-            cmap_slip = get_cpt.get_cmap(slip_cmap, method='list', N=15)
-        else:
-            cmap_slip = slip_cmap
-        if slip_cmap is None: # precip3_16lev_change.cpt
-            cmap_slip = get_cpt.get_cmap('precip3_16lev_change.cpt', method='list', N=8) #, method='list', N=15 cmap_slip
-        inversion.plot_multifaults_slip(slip='total', cmap='cmc.roma_r', # norm=[0, 7.6],
-                                    drawCoastlines=False, cblabel='Slip (m)',
-                                    savefig=True, style=['notebook'], cbaxis=[0.15, 0.22, 0.15, 0.02],
-                                    xtickpad=5, ytickpad=10, ztickpad=5,
-                                    xlabelpad=15, ylabelpad=25, zlabelpad=15,
-                                    shape=(1.0, 2.0, 0.8), elevation=54, azimuth=24,
-                                    depth=18, zticks=[-12, -6, 0], fault_expand=0.0,
-                                    plot_faultEdges=False, suffix='mean')
+    elif args.mode == 'loop':
+        # ---------------------------------Loop Penalty Weight---------------------------------------------#
+        penalty_weight = [1.0, 5.0, 10.0, 30.0, 50.0, 80.0, 100.0, 125.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0]
+        # for ipenalty in penalty_weight:
+        #     alpha = [np.log10(1.0/ipenalty)]
+        #     print(f'penalty_weight: {ipenalty:.1f},', end=' ')
+        #     inversion.run(penalty_weight=None, alpha=alpha)
+        inversion.simple_run_loop(penalty_weight, preferred_penalty_weight=10.0, output_file='run_loop_covdiag.dat', verbose=True)
 
-    # Write Slip and Slip Direction to File
-    for i, trifault in enumerate(trifaults_list):
-        if not os.path.exists('output'):
-            os.makedirs('output')
-        trifault.writePatches2File(f'output/slip_{trifault.name}.gmt', add_slip='total')
-        if i == 0:
-            trifault.writeSlipDirection2File(filename=f'output/slipdir_{trifault.name}.txt', scale='total', 
-                                             factor=0.4, reference_strike=190.0, threshold=0)
-        else:
-            trifault.writeSlipDirection2File(filename=f'output/slipdir_{trifault.name}.txt', scale='total', factor=0.4, threshold=0)
-    
-    # Write Decimated Data to File
-    for i, sardata in enumerate(insardata):
-        if not os.path.exists('Modeling'):
-            os.makedirs('Modeling')
-        for itype in ['data', 'synth', 'resid']:
-            sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=False)
+    if args.mode == 'single':
+        # ---------------------------------Plot Data and Slip Distribution---------------------------------------------#
+        inversion.extract_and_plot_blse_results(rank=rank, plot_faults=True, plot_data=True, 
+                                                gps_figsize=(3.5, 2.7), gps_scale=0.05, gps_legendscale=0.2, file_type='pdf',
+                                                axis_shape=(1.0, 1.0, 0.25), elevation=56, azimuth=-70, gps_title=False,
+                                                depth_range=25, z_ticks=[-20, -10, 0], remove_direction_labels=True,
+                                                fault_cbaxis=[0.45, 0.32, 0.15, 0.02])
+        # ---------------------------------Plot Results---------------------------------------------#
+        # if rank == 0:
+        #     import cmcrameri
+        #     from eqtools.getcpt import get_cpt 
+        #     slip_cmap = None
+        #     if slip_cmap is not None and slip_cmap.endswith('.cpt'):
+        #         cmap_slip = get_cpt.get_cmap(slip_cmap, method='list', N=15)
+        #     else:
+        #         cmap_slip = slip_cmap
+        #     if slip_cmap is None: # precip3_16lev_change.cpt
+        #         cmap_slip = get_cpt.get_cmap('precip3_16lev_change.cpt', method='list', N=8) #, method='list', N=15 cmap_slip
+        #     inversion.plot_multifaults_slip(slip='total', cmap='cmc.roma_r', # norm=[0, 7.6],
+        #                                 drawCoastlines=False, cblabel='Slip (m)',
+        #                                 savefig=True, style=['notebook'], cbaxis=[0.15, 0.22, 0.15, 0.02],
+        #                                 xtickpad=5, ytickpad=10, ztickpad=5,
+        #                                 xlabelpad=15, ylabelpad=25, zlabelpad=15,
+        #                                 shape=(1.0, 2.0, 0.8), elevation=54, azimuth=24,
+        #                                 depth=18, zticks=[-12, -6, 0], fault_expand=0.0,
+        #                                 plot_faultEdges=False, suffix='mean')
+
+        # ---------------------------------Write Results to File---------------------------------------------#
+        if rank == 0:
+            for i, trifault in enumerate(trifaults_list):
+                four = trifault.writeFourEdges2File(dirname=r'output/stat_infos')
+                trifault.writePatches2File(f'output/slip_{trifault.name}.gmt', add_slip='total')
+                trifault.writeSlipDirection2File(filename=f'output/slipdir_{trifault.name}.txt', 
+                                                scale='total', factor=0.4) # reference_strike=None, threshold=0.0
+
+        # ---------------------------------Write Data to File---------------------------------------------#
+        if rank == 0:
+            verticals = inversion.config.geodata['verticals']
+            geodata = inversion.config.geodata['data']
+            # Recalculate the synthetic data
+            for idata, ivert in zip(geodata, verticals):
+                idata.buildsynth(trifaults_list, direction='sd', poly='include', vertical=ivert)
+            # Write the InSAR data to file
+            if not os.path.exists('Modeling'):
+                os.mkdir('Modeling')
+            for i, sardata in enumerate(insardata):
+                if sardata.dtype == 'opticorr':
+                    for itype in ['data', 'synth', 'res']:
+                        for idir in ['east', 'north']:
+                            itypedir = f'{itype}{idir}'
+                            sardata.writeDecim2file(f'{sardata.name}_{itypedir}.txt', itypedir, outDir='Modeling', triangular=True)
+                else:
+                    for itype in ['data', 'synth', 'resid']:
+                        sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=True)
+            
+            # Write the GPS data to file
+            for i, gpsdata in enumerate(gpsdata):
+                for itype in ['data', 'synth', 'resid']:
+                    gpsdata.write2file(f'{gpsdata.name}_{itype}.txt', itype, outDir='Modeling')

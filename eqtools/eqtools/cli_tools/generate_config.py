@@ -1,16 +1,17 @@
 from ruamel.yaml import YAML
 import os
 
-def generate_default_config(output_path, gf_method=None):
+def generate_default_config(output_path, gf_method=None, include_euler_constraints=False):
     """
     Generate a default configuration file for Bayesian inversion with comments.
     If gf_method is 'pscmp' or 'edcmp', specific options will be included.
+    If include_euler_constraints is True, Euler pole constraints configuration will be added.
     """
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
 
-    # Define the configuration with comments
-    config = yaml.load("""
+    # Define the basic configuration with comments
+    config_text = """
 # ----------- General Parameters ----------- #
 # General settings for the Bayesian inversion process
 GLs: null  # Custom Green's functions
@@ -29,6 +30,7 @@ nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain
 use_bounds_constraints: true  # Whether to use bounds constraints
 use_rake_angle_constraints: true  # Whether to use rake angle constraints
+use_euler_constraints: false  # Whether to use Euler pole constraints
 
 # ----------- Data Clipping Parameters ----------- #
 # Parameters for data clipping
@@ -87,7 +89,54 @@ alpha:
   update: true  # Whether to update alpha during inversion
   initial_value: -2.0  # Initial value for alpha. Optional: (float, list of floats with same length as alpha['faults'], or a single float list)
   log_scaled: true  # Whether alpha is log-scaled
-  faults: null  # List of fault names for smoothing
+  faults: null  # List of fault names for smoothing"""
+
+    # Add Euler constraints configuration if requested
+    if include_euler_constraints:
+        config_text += """
+
+# ----------- Euler Pole Constraints ----------- #
+# Configuration for Euler pole constraints as linear constraints in Ax<b system
+# Each fault represents boundary between two tectonic blocks
+euler_constraints:
+  enabled: false  # Enable/disable Euler pole constraints
+  # Global default settings for all faults
+  defaults:
+    block_types: [dataset, dataset]  # Default to two datasets, optional euler_vector or euler_pole
+    # Default units for Euler pole parameters [latitude, longitude, angular_velocity]
+    # Available latitude/longitude units: 'degrees' (default), 'radians'
+    # Available angular_velocity units: 'degrees_per_myr' (default), 'radians_per_year', 'radians_per_myr', 'degrees_per_year'
+    euler_pole_units: [degrees, degrees, degrees_per_myr]
+    # Default units for Euler vector parameters [wx, wy, wz]
+    # Available units: 'radians_per_year' (default), 'radians_per_myr', 'radians_per_second', 'degrees_per_year', 'degrees_per_myr'
+    euler_vector_units: [radians_per_year, radians_per_year, radians_per_year]
+    # Reference block setting: null (use relative motion), 0 (fix first block), 1 (fix second block)
+    fix_reference_block: null
+    # Patch application: null (all patches), or list of indices [0, 1, 2, ...]
+    apply_to_patches: null
+    # Constraint processing settings
+    normalization: false     # Normalize constraint equations for numerical stability
+    regularization: 0.01    # Regularization factor to avoid singularities
+  # Fault-specific configurations
+  faults:
+    ExampleFault:
+      # Block types: 'dataset' (use observed data), 'euler_pole' ([lon, lat, omega]), 'euler_vector' ([wx, wy, wz])
+      block_types: [dataset, euler_pole]
+      # Block values: dataset names OR parameter arrays corresponding to block_types
+      blocks: [GPS_data, [100.2, 25.5, 0.45]]
+      # Optional: descriptive names for output/logging (if not provided, uses fault_name + _blockA/B)
+      block_names: [South_China_Block, North_Burma_Block]
+      # Override defaults if needed
+      fix_reference_block: null  # Use relative motion between blocks
+      apply_to_patches: null     # Apply to all patches
+      reference_strike: 0.0 # Reference strike for motion sense, unit: degrees; The first block at right side of strike direction and the second block at left side
+      motion_sense: dextral  # 'dextral' or 'sinistral'
+      # Custom units (optional, overrides defaults)
+      units:
+        euler_pole_units: [degrees, degrees, degrees_per_myr]"""
+
+    # Continue with fault parameters
+    config_text += """
 
 # ----------- Fault Parameters ----------- #
 # Parameters for fault geometry and mesh generation
@@ -132,7 +181,10 @@ faults:
         bottom_size: 3.0
         num_segments: 12
         disct_z: 8
-""")
+"""
+
+    # Load the configuration
+    config = yaml.load(config_text)
 
     # Set Green's function method and options if provided
     if gf_method is not None:
@@ -164,6 +216,8 @@ faults:
         yaml.dump(config, file)
 
     print(f"Default configuration file generated at: {output_path}")
+    if include_euler_constraints:
+        print("Euler pole constraints configuration included.")
 
 def main():
     import argparse
@@ -181,10 +235,16 @@ def main():
         default=None,
         help="Green's function calculation method (e.g. pscmp, edcmp, okada, cutde, homogeneous, etc.)"
     )
+    parser.add_argument(
+        "--include-euler-constraints",
+        action="store_true",
+        help="Include Euler pole constraints configuration in the generated file"
+    )
     args = parser.parse_args()
 
     output_path = os.path.abspath(args.output)
-    generate_default_config(output_path, gf_method=args.gf_method)
+    generate_default_config(output_path, gf_method=args.gf_method, 
+                          include_euler_constraints=args.include_euler_constraints)
 
 if __name__ == "__main__":
     main()

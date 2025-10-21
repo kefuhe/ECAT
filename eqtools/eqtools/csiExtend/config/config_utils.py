@@ -964,3 +964,315 @@ def merge_with_defaults(specific_config, default_config):
             merged[key] = value
             
     return merged
+
+# ---------------------------------Euler config parsing---------------------------------#
+def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None):
+    """
+    Parse Euler pole constraints configuration for tectonic block motion modeling.
+    
+    Parameters:
+    -----------
+    euler_config : dict
+        Euler constraints configuration dictionary
+    faultnames : list
+        List of fault names in the problem
+    dataset_names : list, optional
+        List of dataset names (required if any fault uses 'dataset' block type)
+        
+    Returns:
+    --------
+    dict
+        Parsed Euler constraints configuration with validated parameters
+        
+    Examples:
+    ---------
+    # Basic configuration with reference strike
+    euler_config = {
+        'enabled': True,
+        'defaults': {
+            'reference_strike': 45.0,  # degrees, reference direction for projection
+            'motion_sense': 'dextral'  # or 'sinistral' for motion sense
+        },
+        'faults': {
+            'HH_Main': {
+                'blocks': ['GPS_data_A', 'GPS_data_B'],
+                'block_names': ['South_China_Block', 'North_Burma_Block'],
+                'reference_strike': 30.0,  # fault-specific reference strike
+                'motion_sense': 'sinistral'  # left-lateral motion sense
+            }
+        }
+    }
+    """
+    
+    if not euler_config.get('enabled', False):
+        return {
+            'enabled': False,
+            'faults': {},
+            'defaults': {}
+        }
+    
+    # Define default values
+    default_defaults = {
+        'euler_pole_units': ['degrees', 'degrees', 'degrees_per_myr'],
+        'euler_vector_units': ['radians_per_year', 'radians_per_year', 'radians_per_year'],
+        'fix_reference_block': None,
+        'apply_to_patches': None,
+        'normalization': True,
+        'regularization': 0.01,
+        'block_types': ['dataset', 'dataset'],  # Default to two datasets
+        'reference_strike': 0.0,  # degrees, reference direction for projection
+        'motion_sense': 'dextral'  # default motion sense
+    }
+    
+    # Valid units and parameters for validation
+    valid_angle_units = ['degrees', 'radians']
+    valid_angular_velocity_units = [
+        'degrees_per_myr', 'radians_per_year', 'radians_per_myr', 
+        'degrees_per_year', 'radians_per_second'
+    ]
+    valid_block_types = ['dataset', 'euler_pole', 'euler_vector']
+    valid_motion_senses = ['dextral', 'sinistral', 'right_lateral', 'left_lateral']
+    
+    # Parse defaults
+    defaults = merge_with_defaults(
+        euler_config.get('defaults', {}), 
+        default_defaults
+    )
+    
+    # Validate default units
+    def validate_units(units, unit_type):
+        if unit_type == 'euler_pole':
+            if len(units) != 3:
+                raise ValueError(f"euler_pole_units must have 3 elements [lat, lon, omega], got {len(units)}")
+            if units[0] not in valid_angle_units or units[1] not in valid_angle_units:
+                raise ValueError(f"Invalid angle units in euler_pole_units: {units[:2]}")
+            if units[2] not in valid_angular_velocity_units:
+                raise ValueError(f"Invalid angular velocity unit in euler_pole_units: {units[2]}")
+        elif unit_type == 'euler_vector':
+            if len(units) != 3:
+                raise ValueError(f"euler_vector_units must have 3 elements [wx, wy, wz], got {len(units)}")
+            if not all(u in valid_angular_velocity_units for u in units):
+                raise ValueError(f"Invalid angular velocity units in euler_vector_units: {units}")
+    
+    def validate_reference_strike(strike, context):
+        """Validate reference strike angle"""
+        if not isinstance(strike, (int, float)):
+            raise ValueError(f"reference_strike in {context} must be a number")
+        # Normalize to [0, 360) range
+        return float(strike % 360)
+    
+    def validate_motion_sense(motion_sense, context):
+        """Validate motion sense"""
+        if motion_sense not in valid_motion_senses:
+            raise ValueError(f"Invalid motion_sense '{motion_sense}' in {context}. "
+                           f"Valid options: {valid_motion_senses}")
+        return motion_sense
+    
+    validate_units(defaults['euler_pole_units'], 'euler_pole')
+    validate_units(defaults['euler_vector_units'], 'euler_vector')
+    
+    # Validate defaults
+    defaults['reference_strike'] = validate_reference_strike(defaults['reference_strike'], 'defaults')
+    defaults['motion_sense'] = validate_motion_sense(defaults['motion_sense'], 'defaults')
+    
+    # Parse fault-specific configurations
+    fault_configs = {}
+    faults_config = euler_config.get('faults', {})
+    
+    for fault_name in faultnames:
+        if fault_name not in faults_config:
+            # Skip faults not configured for Euler constraints
+            continue
+            
+        fault_config = faults_config[fault_name]
+        
+        # Validate required parameters
+        if 'blocks' not in fault_config:
+            raise ValueError(f"Missing 'blocks' for fault '{fault_name}'")
+            
+        blocks = fault_config['blocks']
+        
+        # Use default block_types if not provided
+        block_types = fault_config.get('block_types', defaults['block_types'])
+        
+        # Validate block_types and blocks consistency
+        if len(block_types) != 2:
+            raise ValueError(f"Fault '{fault_name}' must have exactly 2 block_types, got {len(block_types)}")
+        if len(blocks) != 2:
+            raise ValueError(f"Fault '{fault_name}' must have exactly 2 blocks, got {len(blocks)}")
+            
+        for block_type in block_types:
+            if block_type not in valid_block_types:
+                raise ValueError(f"Invalid block_type '{block_type}' for fault '{fault_name}'")
+        
+        # Validate blocks based on block_types
+        for i, (block_type, block) in enumerate(zip(block_types, blocks)):
+            if block_type == 'dataset':
+                if not isinstance(block, str):
+                    raise ValueError(f"Block {i} for fault '{fault_name}' with type 'dataset' must be a string")
+                if dataset_names and block not in dataset_names:
+                    raise ValueError(f"Dataset '{block}' for fault '{fault_name}' not found in dataset_names")
+            elif block_type in ['euler_pole', 'euler_vector']:
+                if not isinstance(block, (list, tuple)) or len(block) != 3:
+                    raise ValueError(f"Block {i} for fault '{fault_name}' with type '{block_type}' must be a 3-element array")
+                if not all(isinstance(x, (int, float)) for x in block):
+                    raise ValueError(f"Block {i} for fault '{fault_name}' must contain numeric values")
+        
+        # Merge with defaults
+        merged_config = merge_with_defaults(fault_config, {
+            'block_types': block_types,  # Use the resolved block_types
+            'fix_reference_block': defaults['fix_reference_block'],
+            'apply_to_patches': defaults['apply_to_patches'],
+            'reference_strike': defaults['reference_strike'],
+            'motion_sense': defaults['motion_sense'],
+            'units': {
+                'euler_pole_units': defaults['euler_pole_units'],
+                'euler_vector_units': defaults['euler_vector_units']
+            }
+        })
+        
+        # Validate fault-specific parameters
+        if 'reference_strike' in fault_config:
+            merged_config['reference_strike'] = validate_reference_strike(
+                fault_config['reference_strike'], 
+                f"fault '{fault_name}'"
+            )
+        
+        if 'motion_sense' in fault_config:
+            merged_config['motion_sense'] = validate_motion_sense(
+                fault_config['motion_sense'],
+                f"fault '{fault_name}'"
+            )
+        
+        # Generate default block names if not provided
+        if 'block_names' not in merged_config:
+            merged_config['block_names'] = [f"{fault_name}_blockA", f"{fault_name}_blockB"]
+        elif len(merged_config['block_names']) != 2:
+            raise ValueError(f"Fault '{fault_name}' must have exactly 2 block_names if provided")
+        
+        # Convert units to standard format and store conversion factors
+        if 'units' in fault_config:
+            fault_units = fault_config['units']
+            if 'euler_pole_units' in fault_units:
+                validate_units(fault_units['euler_pole_units'], 'euler_pole')
+            if 'euler_vector_units' in fault_units:
+                validate_units(fault_units['euler_vector_units'], 'euler_vector')
+        
+        # Convert blocks to standard units (store both original and standardized)
+        blocks_standard = []
+        for i, (block_type, block) in enumerate(zip(block_types, blocks)):
+            if block_type == 'dataset':
+                blocks_standard.append(block)  # Dataset name, no conversion needed
+            elif block_type in ['euler_pole', 'euler_vector']:
+                # Convert to standard units
+                if block_type == 'euler_pole':
+                    units_config = merged_config['units']['euler_pole_units']
+                    unit_info = parse_euler_units(units_config, 'euler_pole')
+                else:  # euler_vector
+                    units_config = merged_config['units']['euler_vector_units']
+                    unit_info = parse_euler_units(units_config, 'euler_vector')
+                
+                # Apply unit conversions
+                converted_block = [
+                    block[j] * unit_info['conversion_factors'][j] 
+                    for j in range(3)
+                ]
+                blocks_standard.append(converted_block)
+        
+        merged_config['blocks_standard'] = blocks_standard
+        
+        # Validate fix_reference_block
+        fix_ref = merged_config['fix_reference_block']
+        if fix_ref is not None and fix_ref not in [0, 1]:
+            raise ValueError(f"fix_reference_block for fault '{fault_name}' must be None, 0, or 1")
+        
+        # Validate apply_to_patches
+        apply_patches = merged_config['apply_to_patches']
+        if apply_patches is not None:
+            if not isinstance(apply_patches, (list, tuple)):
+                raise ValueError(f"apply_to_patches for fault '{fault_name}' must be a list or None")
+            if not all(isinstance(x, int) and x >= 0 for x in apply_patches):
+                raise ValueError(f"apply_to_patches for fault '{fault_name}' must contain non-negative integers")
+        
+        fault_configs[fault_name] = merged_config
+    
+    return {
+        'enabled': True,
+        'defaults': defaults,
+        'faults': fault_configs,
+        'configured_faults': list(fault_configs.keys())
+    }
+
+
+def parse_euler_units(units_config, unit_type):
+    """
+    Parse and validate Euler pole/vector units configuration.
+    
+    Parameters:
+    -----------
+    units_config : list
+        List of unit strings
+    unit_type : str
+        Either 'euler_pole' or 'euler_vector'
+        
+    Returns:
+    --------
+    dict
+        Dictionary with parsed unit information and conversion factors
+    """
+    
+    # Conversion factors to standard units (radians and radians/year)
+    angle_conversions = {
+        'degrees': np.pi / 180.0,
+        'radians': 1.0
+    }
+    
+    angular_velocity_conversions = {
+        'radians_per_year': 1.0,
+        'radians_per_myr': 1.0e-6,
+        'radians_per_second': 365.25 * 24 * 3600,  # Convert to per year
+        'degrees_per_year': np.pi / 180.0,
+        'degrees_per_myr': np.pi / 180.0 * 1.0e-6
+    }
+    
+    if unit_type == 'euler_pole':
+        if len(units_config) != 3:
+            raise ValueError("Euler pole units must have 3 elements: [latitude, longitude, angular_velocity]")
+        
+        lat_factor = angle_conversions.get(units_config[0])
+        lon_factor = angle_conversions.get(units_config[1])
+        omega_factor = angular_velocity_conversions.get(units_config[2])
+        
+        if lat_factor is None:
+            raise ValueError(f"Invalid latitude unit: {units_config[0]}")
+        if lon_factor is None:
+            raise ValueError(f"Invalid longitude unit: {units_config[1]}")
+        if omega_factor is None:
+            raise ValueError(f"Invalid angular velocity unit: {units_config[2]}")
+            
+        return {
+            'units': units_config,
+            'conversion_factors': [lat_factor, lon_factor, omega_factor],
+            'standard_units': ['radians', 'radians', 'radians_per_year']
+        }
+    
+    elif unit_type == 'euler_vector':
+        if len(units_config) != 3:
+            raise ValueError("Euler vector units must have 3 elements: [wx, wy, wz]")
+        
+        conversion_factors = []
+        for unit in units_config:
+            factor = angular_velocity_conversions.get(unit)
+            if factor is None:
+                raise ValueError(f"Invalid angular velocity unit: {unit}")
+            conversion_factors.append(factor)
+            
+        return {
+            'units': units_config,
+            'conversion_factors': conversion_factors,
+            'standard_units': ['radians_per_year'] * 3
+        }
+    
+    else:
+        raise ValueError(f"Invalid unit_type: {unit_type}")
+# --------------------------------------------------------------------------------------#

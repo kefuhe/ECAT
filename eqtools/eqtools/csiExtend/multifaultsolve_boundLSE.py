@@ -10,6 +10,7 @@ from scipy.linalg import block_diag as blkdiag
 from . import lsqlin
 from ..plottools import sci_plot_style, DegreeFormatter
 from .fault_analysis_mixin import FaultAnalysisMixin
+from .constraint_manager_blse import ConstraintManager
 
 # Plot
 from eqtools.getcpt import get_cpt
@@ -20,11 +21,14 @@ import cmcrameri # cmc.devon_r cmc.lajolla_r cmc.batlow
 
 class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
     '''
-    Invert for slip distribution and orbital parameters
-        1. Add Laplace smoothing constraints
-        2. Construct a new function to generate boundary constraints
-        3. Write a function to assemble the smoothing matrix and corresponding data objects
-        4. Add a constrained least squares inversion function
+    Enhanced multi-fault solver with unified constraint management.
+    
+    Features:
+    - Unified constraint and bounds management via ConstraintManager
+    - Laplace smoothing constraints
+    - Depth-Equalized Smoothing (DES) support
+    - Simple Variance Component Estimation (VCE)
+    - Multiple solver backends (lsqlin, fnnls)
     '''
     
     def __init__(self, name, faults, verbose=True, extra_parameters=None, des_enabled=False, des_config=None):
@@ -35,26 +39,21 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Calculate the covariance matrix and the inverse of the covariance matrix
         self.calculate_Icovd_chol()
         self.calculate_slip_and_poly_positions()
-        self.lb = np.ones(self.lsq_parameters) * np.nan
-        self.ub = np.ones(self.lsq_parameters) * np.nan
+        
+        # Initialize storage for bounds and constraints
+        self._lb = None
+        self._ub = None
+        self._A_ueq = None
+        self._b_ueq = None
+        self._Aeq = None
+        self._beq = None
 
-        # Set the un-equality constraints for rake angle, with the form of A*x <= b
-        self.A_ueq = None
-        self.b_ueq = None
-
-        # Set the equality constraints for fixed rake angle, with the form of Aeq*x = beq
-        self.Aeq = None
-        self.beq = None
-
-        self.bounds = {
-            'lb': None,
-            'ub': None,
-            'strikeslip': None,
-            'dipslip': None,
-            'poly': None,
-            'rake_angle': None
-        }
-
+        # Initialize unified constraint manager
+        self.constraint_manager = ConstraintManager(solver=self, verbose=verbose)
+        
+        # Initialize parameter count
+        self.lsq_parameters = self._calculate_total_parameters()
+        
         if extra_parameters is not None:
             self.ramp_switch = len(extra_parameters)
         else:
@@ -75,7 +74,20 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 }
         }
         
+        if verbose:
+            print(f"🔧 Enhanced multifaultsolve_boundLSE initialized with unified constraint management")
+        
         return
+    
+    def _calculate_total_parameters(self):
+        """Calculate total number of parameters for all faults."""
+        total = 0
+        for fault in self.faults:
+            npatches = len(fault.patch)
+            num_slip_samples = len(fault.slipdir) * npatches
+            num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
+            total += num_slip_samples + num_poly_samples
+        return total
     
     def calculate_Icovd_chol(self):
         '''
@@ -90,235 +102,235 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self.poly_positions = {}
         start_position = 0
         for fault in self.faults:
-            # npatches = fault.Faces.shape[0]
             npatches = len(fault.patch)
             num_slip_samples = len(fault.slipdir)*npatches
-            num_poly_samples = np.sum([npoly for npoly in fault.poly.values() if npoly is not None], dtype=int)
+            num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
             self.slip_positions[fault.name] = (start_position, start_position + num_slip_samples)
             self.poly_positions[fault.name] = (start_position + num_slip_samples, start_position + num_slip_samples + num_poly_samples)
             start_position += num_slip_samples + num_poly_samples
         self.lsq_parameters = start_position
-    
-    def set_inequality_constraints_for_rake_angle(self, rake_limits):
-        '''
-        Generate linear constraints (A, b) for the rake angle range based on strike-slip and dip-slip components.
-        Satify the following constraints:
-         A * x <= b, where b = 0 vector
-        rake_limits: (dict) {fault_name: (lower_bound, upper_bound)}, unit: degree
-        rake: (-180, 180) or (0, 360), anti-clockwise is positive
-        rake_ub - rake_lb <= 180
-        '''
 
-        npatch = 0
-        Nsd = 0
-        Np = self.lsq_parameters # self.G.shape[1]
-        for ifault in self.faults:
-            inpatch = len(ifault.patch)
-            npatch += inpatch
-            Nsd += int(inpatch*len(ifault.slipdir))
-        A = np.zeros((Nsd, Np))
-        b = np.zeros((Nsd,))
-
-        patch_count = 0
-        for ifault in self.faults:
-            inpatch = len(ifault.patch)
-            start = self.fault_indexes[ifault.name][0]
-            half = start + inpatch
-            # Get the rake angle bounds
-            rake_start, rake_end = rake_limits[ifault.name]
-            # Generate the linear constraints
-            for i in range(inpatch):
-                # cross product of slip and rake,
-                # x: (ss, ds), y: (cos, sin) of rake with x.cross(y) = z, z = (ss*sin(rake) - ds*cos(rake)) < 0
-                A[patch_count + i, start+i] = np.sin(np.deg2rad(rake_start))
-                A[patch_count + i, half+i] = -np.cos(np.deg2rad(rake_start))
-                # x: (ss, ds), y: (cos, sin) of rake with x.cross(y) = z, z = (ss*sin(rake) - ds*cos(rake)) > 0
-                A[patch_count + inpatch+i, start+i] = -np.sin(np.deg2rad(rake_end))
-                A[patch_count + inpatch+i, half+i] =   np.cos(np.deg2rad(rake_end))
-            patch_count += inpatch
-
-        self.A_ueq = A
-        self.b_ueq = b
-        return
-    
-    def set_equality_constraints_for_fixed_rake(self, fixed_rake):
-        '''
-        Generate equality constraints (Aeq, beq) for the fixed rake angle based on strike-slip and dip-slip components.
-        Satify the following constraints:
-         Aeq * x = beq, where beq = 0 vector
-        fixed_rake: (dict) {fault_name: rake_angle}, unit: degree
-        rake: -180 <= rake <= 180, anti-clockwise is positive
-        '''
-        npatch = 0
-        Nsd = 0
-        Np = self.lsq_parameters
-        for fault in self.faults:
-            npatch += fault.slip.shape[0]
-            Nsd += int(fault.slip.shape[0]*len(fault.slipdir))
-        Aeq = np.zeros((npatch, Np))
-        beq = np.zeros((npatch,))
-        patch_count = 0
-        for fault in self.faults:
-            irake = fixed_rake[fault.name]
-            inpatch = fault.slip.shape[0]
-            start = self.fault_indexes[fault.name][0]
-            half = start + inpatch
-            rake_angle = np.deg2rad(irake)
-            # cross product
-            for i in range(inpatch):
-                # cross product of slip and rake,
-                # x: (ss, ds), y: (cos, sin) of rake with x.cross(y) = z, z = (ss*sin(rake) - ds*cos(rake)) = 0
-                Aeq[patch_count+i, start+i] = np.sin(rake_angle)
-                Aeq[patch_count+i, half+i] = -np.cos(rake_angle)
-            patch_count += inpatch
-
-        self.Aeq = Aeq
-        self.beq = beq
-        return
-    
     def set_bounds(self, lb=None, ub=None, strikeslip_limits=None, dipslip_limits=None, poly_limits=None):
-        '''
-        strikeslip_limits: (dict) {fault_name: (lower_bound, upper_bound)}
-        dipslip_limits: (dict) {fault_name: (lower_bound, upper_bound)}
-        poly_limits: (dict) {fault_name: (lower_bound, upper_bound)}
-        '''
-        # Set the bounds for the whole model
-        self.update_global_bounds(lb, ub)
-        # Set the bounds for each fault's strike-slip and dip-slip
-        for fault in self.faults:
-            # Strike-slip limits
-            if strikeslip_limits is not None and strikeslip_limits.get(fault.name) is not None:
-                self.update_slip_bounds(fault.name, strikeslip_limits[fault.name], None)
-            # Dip-slip limits
-            if dipslip_limits is not None and dipslip_limits.get(fault.name) is not None:
-                self.update_slip_bounds(fault.name, None, dipslip_limits[fault.name])
-            # Polynomial limits
-            if poly_limits is not None and poly_limits.get(fault.name) is not None:
-                self.update_bounds_for_poly(fault.name, poly_limits[fault.name])
-        return
-    
+        """Set bounds using constraint manager."""
+        # Set global bounds
+        if lb is not None or ub is not None:
+            self.constraint_manager.set_global_bounds(lb, ub, source="manual")
+        
+        # Set fault-specific bounds
+        if strikeslip_limits or dipslip_limits:
+            for fault in self.faults:
+                ss_bounds = strikeslip_limits.get(fault.name) if strikeslip_limits else None
+                ds_bounds = dipslip_limits.get(fault.name) if dipslip_limits else None
+                if ss_bounds or ds_bounds:
+                    self.constraint_manager.set_fault_slip_bounds(fault.name, ss_bounds, ds_bounds, source="manual")
+        
+        # Set polynomial bounds
+        if poly_limits:
+            for fault in self.faults:
+                if fault.name in poly_limits:
+                    self.constraint_manager.set_fault_poly_bounds(fault.name, poly_limits[fault.name], source="manual")
+        
+        # Sync to solver
+        self.constraint_manager.sync_to_solver()
+
+    # Legacy properties for backward compatibility
+    @property
+    def lb(self):
+        """Lower bounds for backward compatibility."""
+        return self._lb
+
+    @lb.setter
+    def lb(self, value):
+        """Set lower bounds."""
+        self._lb = value
+
+    @property 
+    def ub(self):
+        """Upper bounds for backward compatibility."""
+        return self._ub
+
+    @ub.setter
+    def ub(self, value):
+        """Set upper bounds."""
+        self._ub = value
+
+    @property
+    def A_ueq(self):
+        """Combined inequality constraint matrix for backward compatibility."""
+        if self._A_ueq is not None:
+            return self._A_ueq
+        # Fallback to constraint manager
+        A, _ = self.constraint_manager.get_combined_inequality_constraints()
+        return A
+
+    @A_ueq.setter
+    def A_ueq(self, value):
+        """Set inequality constraint matrix."""
+        self._A_ueq = value
+
+    @property
+    def b_ueq(self):
+        """Combined inequality constraint vector for backward compatibility."""
+        if self._b_ueq is not None:
+            return self._b_ueq
+        # Fallback to constraint manager
+        _, b = self.constraint_manager.get_combined_inequality_constraints()
+        return b
+
+    @b_ueq.setter
+    def b_ueq(self, value):
+        """Set inequality constraint vector."""
+        self._b_ueq = value
+
+    @property
+    def Aeq(self):
+        """Combined equality constraint matrix for backward compatibility."""
+        if self._Aeq is not None:
+            return self._Aeq
+        # Fallback to constraint manager
+        A, _ = self.constraint_manager.get_combined_equality_constraints()
+        return A
+
+    @Aeq.setter
+    def Aeq(self, value):
+        """Set equality constraint matrix."""
+        self._Aeq = value
+
+    @property
+    def beq(self):
+        """Combined equality constraint vector for backward compatibility."""
+        if self._beq is not None:
+            return self._beq
+        # Fallback to constraint manager
+        _, b = self.constraint_manager.get_combined_equality_constraints()
+        return b
+
+    @beq.setter
+    def beq(self, value):
+        """Set equality constraint vector."""
+        self._beq = value
+
+    @property
+    def inequality_constraints(self):
+        """Inequality constraints for backward compatibility."""
+        return self.constraint_manager._inequality_constraints
+
+    @property
+    def equality_constraints(self):
+        """Equality constraints for backward compatibility."""
+        return self.constraint_manager._equality_constraints
+
+    @property
+    def inequality_constraints(self):
+        """Inequality constraints for backward compatibility."""
+        return self.constraint_manager.inequality_constraints
+
+    @property
+    def equality_constraints(self):
+        """Equality constraints for backward compatibility."""
+        return self.constraint_manager.equality_constraints
+
+    def add_inequality_constraint(self, A, b, name=None, source=None):
+        """Add inequality constraint using constraint manager."""
+        if name is None:
+            name = f"ineq_{len(self.constraint_manager._inequality_constraints) + 1}"
+        self.constraint_manager.add_inequality_constraint(A, b, name, source or "external")
+        # Sync back to solver
+        self.constraint_manager.sync_to_solver()
+
+    def add_equality_constraint(self, A, b, name=None, source=None):
+        """Add equality constraint using constraint manager."""
+        if name is None:
+            name = f"eq_{len(self.constraint_manager._equality_constraints) + 1}"
+        self.constraint_manager.add_equality_constraint(A, b, name, source or "external")
+        # Sync back to solver
+        self.constraint_manager.sync_to_solver()
+
     def set_bounds_from_config(self, config_file, encoding='utf-8'):
-        """
-        Set parameter bounds from a configuration file.
-        """
-        if config_file is not None:
-            try:
-                with open(config_file, 'r', encoding=encoding) as file:
-                    self.bounds_config = yaml.safe_load(file)
-            except FileNotFoundError:
-                print(f"Configuration file {config_file} not found.")
-                return
-            except yaml.YAMLError as e:
-                print(f"Error parsing configuration file: {e}")
-                return
-    
-        lb = self.bounds_config.get('lb', None)
-        ub = self.bounds_config.get('ub', None)
-        self.update_global_bounds(lb, ub)
+        """Load and apply bounds from config file using constraint manager."""
+        self.constraint_manager.load_bounds_config(config_file, encoding)
+        self.constraint_manager.apply_bounds_from_config()
+        self.constraint_manager.sync_to_solver()
 
-        strikeslip = self.bounds_config.get('strikeslip', None)
-        dipslip = self.bounds_config.get('dipslip', None)
-        poly = self.bounds_config.get('poly', None)
-
-        for fault in self.faults:
-            fault_name = fault.name
-            if strikeslip is not None or dipslip is not None:
-                istrikeslip = strikeslip.get(fault_name, None) if strikeslip is not None else None
-                idipslip = dipslip.get(fault_name, None) if dipslip is not None else None
-                if istrikeslip is not None or idipslip is not None:
-                    self.update_slip_bounds(fault_name, istrikeslip, idipslip)
+    def set_inequality_constraints_for_rake_angle(self, rake_limits):
+        """Set rake angle constraints using constraint manager."""
+        self.constraint_manager.set_rake_angle_constraints(rake_limits, source="manual")
+        self.constraint_manager.sync_to_solver()
         
-            if poly is not None and poly.get(fault_name, None) is not None:
-                self.update_bounds_for_poly(fault_name, poly[fault_name])
-    
-    def update_global_bounds(self, lb=None, ub=None):
-        """
-        Update the global bounds for the model.
-        """
-        if lb is not None and ub is not None and lb > ub:
-            print("Global lower bound should be less than upper bound.")
-            return
-        self.bounds['lb'] = lb if lb is not None else self.bounds.get('lb', None)
-        self.bounds['ub'] = ub if ub is not None else self.bounds.get('ub', None)
-        
-        if lb is not None:
-            self.lb[np.isnan(self.lb)] = lb
-        if ub is not None:
-            self.ub[np.isnan(self.ub)] = ub
-        return
+    def set_equality_constraints_for_fixed_rake(self, fixed_rake):
+        """Set fixed rake angle constraints using constraint manager."""
+        self.constraint_manager.set_fixed_rake_constraints(fixed_rake, source="manual")
+        self.constraint_manager.sync_to_solver()
 
-    def update_slip_bounds(self, fault_name, strikeslip=None, dipslip=None):
-        """
-        Update the bounds for the strike-slip and dip-slip components of a fault.
-        """
-        fault_names = [fault.name for fault in self.faults]
-        if fault_name in fault_names:
-            st, se = self.slip_positions[fault_name]
-            half = (st + se) // 2
-            if strikeslip is not None:
-                slb, sub = strikeslip
-                self.lb[st:half] = slb
-                self.ub[st:half] = sub
-                if self.bounds['strikeslip'] is None:
-                    self.bounds['strikeslip'] = {}
-                self.bounds['strikeslip'][fault_name] = strikeslip
-            if dipslip is not None:
-                st = half
-                dlb, dub = dipslip
-                self.lb[st:se] = dlb
-                self.ub[st:se] = dub
-                if self.bounds['dipslip'] is None:
-                    self.bounds['dipslip'] = {}
-                self.bounds['dipslip'][fault_name] = dipslip
+    def print_constraint_summary(self):
+        """Print constraint summary using constraint manager."""
+        self.constraint_manager.print_summary()
+
+    @property
+    def bounds(self):
+        """Bounds dict for backward compatibility."""
+        return {
+            'lb': self.constraint_manager._bounds['global']['lb'],
+            'ub': self.constraint_manager._bounds['global']['ub'], 
+            'strikeslip': self.constraint_manager._bounds['strikeslip'],
+            'dipslip': self.constraint_manager._bounds['dipslip'],
+            'poly': self.constraint_manager._bounds['poly']
+        }
+
+    # Convenience methods (delegate to constraint manager)
+    def add_parameter_equality(self, indices, name=None):
+        """Convenience method for adding parameter equality constraints."""
+        self.add_equality_constraint(indices=indices, name=name)
+
+    def add_linear_combination_constraint(self, coefficients, indices, value, constraint_type='equality', name=None):
+        """Convenience method for adding linear combination constraints."""
+        coefficients = np.array(coefficients)
+        indices = np.array(indices)
+        
+        if len(coefficients) != len(indices):
+            raise ValueError("Coefficients and indices arrays must have the same length")
+        
+        A = np.zeros((1, self.lsq_parameters))
+        A[0, indices] = coefficients
+        b = np.array([value])
+        
+        if constraint_type == 'equality':
+            self.add_equality_constraint(A=A, b=b, name=name)
+        elif constraint_type == 'inequality':
+            self.add_inequality_constraint(A, b, name=name)
         else:
-            print(f"Fault {fault_name} not found.")
-        return
-    
-    def update_bounds_for_poly(self, fault_name, poly_bounds):
-        """
-        Update the bounds for the polynomial parameters of a fault.
-        """
-        fault_names = [fault.name for fault in self.faults]
-        if fault_name in fault_names:
-            st, se = self.poly_positions[fault_name]
-            plb, pub = poly_bounds
-            self.lb[st:se] = plb
-            self.ub[st:se] = pub
-            if self.bounds['poly'] is None:
-                self.bounds['poly'] = {}
-            self.bounds['poly'][fault_name] = poly_bounds
-        else:
-            print(f"Fault {fault_name} not found.")
-        return
+            raise ValueError("constraint_type must be 'equality' or 'inequality'")
 
     def ConstrainedLeastSquareSoln(self, penalty_weight=1., smoothing_matrix=None, data_weight=1.,
                                 smoothing_constraints=None, method='mudpy', Aueq=None, bueq=None, 
                                 Aeq=None, beq=None, verbose=False, extra_parameters=None,
-                                iterations=1000, tolerance=None, maxfun=100000, des_enabled=None):
+                                iterations=1000, tolerance=None, maxfun=100000, des_enabled=None,
+                                validate_constraints=True):
         '''
-        Perform a constrained least squares solution with optional smoothing.
-
-        Parameters:
-        - extra_parameters: Additional parameters for the solver.
-        - penalty_weight: Weight for the smoothing matrix penalty.
-        - iterations: Maximum number of iterations for the solver.
-        - tolerance: Tolerance for the solver convergence.
-        - maxfun: Maximum number of function evaluations.
-        - smoothing_matrix: Matrix used for smoothing (Laplacian if provided).
-        - smoothing_constraints : tuple or dict, optional. Ignored if smoothing_matrix is provided.
-            Smoothing constraints to apply during the least squares process. If None, the function will use the combined Green's functions matrix.
-            If a tuple, it should be a 4-tuple. If a dict, the keys should be fault names and the values should be 4-tuples.
-            (top, bottom, left, right) for the smoothing constraints.
-        - method: Solver method to use.
-        - Aueq, bueq: Matrices for external inequality constraints (Aueq*x <= bueq).
-        - Aeq, beq: Matrices for equality constraints (Aeq*x = beq).
-        - verbose: Enable verbose output.
-        - des_enabled: Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
-
-        Note:
-        If smoothing_matrix is provided, smoothing_constraints will be ignored, as the smoothing_matrix directly
-        incorporates smoothing into the solution.
+        Enhanced constrained least squares solution with unified constraint management.
         '''
+
+        # Validate constraints using constraint manager
+        if validate_constraints:
+            validation = self.constraint_manager.validate_constraints()
+            if not validation['valid']:
+                print("❌ Constraint validation failed:")
+                for error in validation['errors']:
+                    print(f"   Error: {error}")
+                raise ValueError("Invalid constraints detected")
+            
+            if validation['warnings'] and verbose:
+                print("⚠️  Constraint validation warnings:")
+                for warning in validation['warnings']:
+                    print(f"   Warning: {warning}")
+
+        if verbose:
+            print("\n🚀 Starting constrained least squares with unified constraint management:")
+            if not self.constraint_manager.verbose:
+                self.constraint_manager.print_summary()
+
+        # Ensure constraints are synced
+        self.constraint_manager.sync_to_solver()
 
         # Import DES utilities
         from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
@@ -382,8 +394,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     se = st + Nsd*lap.shape[0]
                     G_lap[Ns_st[ii]:Ns_se[ii], st:se] = lap_sd * ipenalty_weight
         else:
-            # G_lap = np.zeros((smoothing_matrix.shape[0], Np))
-            # G_lap[:, :Ns] = smoothing_matrix
             G_lap = smoothing_matrix
             d_lap = np.zeros((G_lap.shape[0], ))
         self.G_lap = G_lap
@@ -396,8 +406,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             data_weight = np.array(data_weight)
         else:
             raise ValueError("data_weight should be a scalar or a list of scalars.")
-        # Icovd = np.linalg.inv(Cd)
-        # Icovd_chol = np.linalg.cholesky(Icovd)
+        
         Icovd_chol = self.Icovd_chol.copy()
         st = 0
         ed = 0
@@ -411,22 +420,29 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         W = Icovd_chol
         self.dataweight = W
 
-        # ----------------------------Set constraints-----------------------------#
-        A_ueq, b_ueq = self.A_ueq, self.b_ueq
+        # ----------------------------Set constraints using constraint manager-----------------------------#
+        # Get constraints from constraint manager
+        A_ueq_cm, b_ueq_cm = self.constraint_manager.get_combined_inequality_constraints()
+        Aeq_cm, beq_cm = self.constraint_manager.get_combined_equality_constraints()
+        
+        # Combine with external constraints if provided
+        A_ueq = A_ueq_cm
+        b_ueq = b_ueq_cm
         if Aueq is not None and bueq is not None:
             A_ueq = np.vstack((A_ueq, Aueq)) if A_ueq is not None else Aueq
             b_ueq = np.hstack((b_ueq, bueq)) if b_ueq is not None else bueq
-        # Set the un-equality constraints for rake angle, with the form of A_ueq*x <= b_ueq
-        self.A_ueq, self.b_ueq = A_ueq, b_ueq
 
-        # Set the equality constraints for fixed rake angle, with the form of Aeq*x = beq
+        Aeq_final = Aeq_cm
+        beq_final = beq_cm
         if Aeq is not None and beq is not None:
-            self.Aeq, self.beq = Aeq, beq
+            Aeq_final = np.vstack((Aeq_final, Aeq)) if Aeq_final is not None else Aeq
+            beq_final = np.hstack((beq_final, beq)) if beq_final is not None else beq
 
-        # Set the constraint of the upper/lower Bounds
-        lb, ub = self.lb, self.ub
-        if any(np.isnan(lb)) or any(np.isnan(ub)):
-            raise ValueError("You should assemble the upper/lower bounds first")
+        # Get bounds from constraint manager
+        lb = self.constraint_manager.lb
+        ub = self.constraint_manager.ub
+        if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
+            raise ValueError("You should set bounds first using set_bounds() or constraint manager methods")
 
         # ----------------------------Apply DES transformation if enabled-----------------------------#
         if use_des:
@@ -442,8 +458,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 D=G_lap,
                 A_ineq=A_ueq,
                 b_ineq=b_ueq,
-                A_eq=self.Aeq,
-                b_eq=self.beq,
+                A_eq=Aeq_final,
+                b_eq=beq_final,
                 lb=lb,
                 ub=ub,
                 poly_positions=poly_positions,
@@ -463,8 +479,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             # Update constraints with DES-transformed versions
             A_ueq_prime = des_result.get('A_ineq_prime', A_ueq)
             b_ueq_prime = des_result.get('b_ineq', b_ueq)
-            Aeq_prime = des_result.get('A_eq_prime', self.Aeq)
-            beq_prime = des_result.get('b_eq', self.beq)
+            Aeq_prime = des_result.get('A_eq_prime', Aeq_final)
+            beq_prime = des_result.get('b_eq', beq_final)
             lb_prime = des_result['lb_prime']
             ub_prime = des_result['ub_prime']
             
@@ -480,7 +496,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             G2I = np.vstack((np.dot(W, G), G_lap))
             
             A_ueq_prime, b_ueq_prime = A_ueq, b_ueq
-            Aeq_prime, beq_prime = self.Aeq, self.beq
+            Aeq_prime, beq_prime = Aeq_final, beq_final
             lb_prime, ub_prime = lb, ub
 
         # ----------------------------Inverse using lsqlin-----------------------------#
@@ -513,6 +529,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Store mpost
         self.mpost = mpost
 
+        if verbose:
+            print("✅ Constrained least squares solution completed")
+
         # All done
         return
     # ----------------------------------------------------------------------
@@ -521,7 +540,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
     def simple_vce(self, smoothing_matrix=None, smoothing_constraints=None, method='mudpy',
                    verbose=False, max_iter=10, tol=1e-4, des_enabled=None,
                    sigma_mode='individual', sigma_groups=None, sigma_update=None, sigma_values=None,
-                   smooth_mode='single', smooth_groups=None, smooth_update=None, smooth_values=None):
+                   smooth_mode='single', smooth_groups=None, smooth_update=None, smooth_values=None,
+                   validate_constraints=True):
         """
         Perform Simple Variance Component Estimation (VCE) for multi-fault inversion.
 
@@ -572,6 +592,21 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             - 'converged': convergence flag
             - 'iterations': number of iterations
         """
+        # Validate constraints using constraint manager
+        if validate_constraints:
+            validation = self.constraint_manager.validate_constraints()
+            if not validation['valid']:
+                print("❌ Constraint validation failed:")
+                for error in validation['errors']:
+                    print(f"   Error: {error}")
+                raise ValueError("Invalid constraints detected")
+
+        if verbose:
+            print("\n🚀 Starting VCE with unified constraint management:")
+            self.constraint_manager.print_summary()
+
+        # Ensure constraints are synced
+        self.constraint_manager.sync_to_solver()
 
         from .simple_vce import simplified_vce
         from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
@@ -594,8 +629,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Icovd_chol = np.linalg.cholesky(Cd_inv)
 
         # Set bounds
-        lb, ub = self.lb, self.ub
-        if any(np.isnan(lb)) or any(np.isnan(ub)):
+        lb = self.constraint_manager.lb
+        ub = self.constraint_manager.ub
+        if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
             raise ValueError("You should set bounds first using set_bounds() method")
 
         # Setup data ranges
@@ -660,11 +696,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             if verbose:
                 print(f"Smoothing matrix built: {smoothing_matrix.shape}")
 
-        # Prepare constraint matrices
-        A_ueq = self.A_ueq
-        b_ueq = self.b_ueq
-        Aeq = self.Aeq
-        beq = self.beq
+        # Get constraints from constraint manager
+        A_ueq, b_ueq = self.constraint_manager.get_combined_inequality_constraints()
+        Aeq, beq = self.constraint_manager.get_combined_equality_constraints()
 
         # Prepare for DES transformation if enabled
         if use_des:
@@ -802,7 +836,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
     # ----------------------------------------------------------------------
     def solve_with_fnnls(self, penalty_weight=1., smoothing_matrix=None, data_weight=1.,
-                         smoothing_constraints=None, method='mudpy', verbose=False):
+                         smoothing_constraints=None, method='mudpy', verbose=False,
+                         validate_constraints=True):
         """
         Solve the constrained least squares problem using fnnls.
     
@@ -817,6 +852,22 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         Returns:
         - mpost: The solution vector.
         """
+        # Validate constraints
+        if validate_constraints:
+            validation = self.constraint_manager.validate_constraints()
+            if not validation['valid']:
+                print("❌ Constraint validation failed:")
+                for error in validation['errors']:
+                    print(f"   Error: {error}")
+                raise ValueError("Invalid constraints detected")
+
+        if verbose:
+            print("\n🚀 Starting fnnls solver with unified constraint management:")
+            self.constraint_manager.print_summary()
+
+        # Ensure constraints are synced
+        self.constraint_manager.sync_to_solver()
+
         # Get the faults
         faults = self.faults
     
@@ -907,10 +958,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         G2I = np.vstack((np.dot(W, G), G_lap2I))
     
         # ----------------------------Inverse using fnnls-----------------------------#
-        # Set the constraint of the upper/lower Bounds
-        lb, ub = self.lb, self.ub
-        if any(np.isnan(lb)) or any(np.isnan(ub)):
-            raise ValueError("You should assemble the upper/lower bounds first")
+        # Get bounds from constraint manager
+        lb = self.constraint_manager.lb
+        ub = self.constraint_manager.ub
+        if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
+            raise ValueError("You should set bounds first using set_bounds() method")
         
         # Ensure lb and ub are numpy arrays
         lb = np.asarray(lb)
