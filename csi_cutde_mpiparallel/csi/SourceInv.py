@@ -180,9 +180,7 @@ class SourceInv(object):
                 for info in utm_crs_list:
                     try:
                         candidate = pp.CRS.from_epsg(info.code)
-                        lon_0 = candidate.to_proj4_dict().get('lon_0')
-                        if lon_0 is None:
-                            lon_0 = candidate.to_dict().get('lon_0')
+                        lon_0 = candidate.to_dict().get('lon_0')
                         if lon_0 is None:
                             continue
                         delta = abs(((lon0 - lon_0 + 180.0) % 360.0) - 180.0)
