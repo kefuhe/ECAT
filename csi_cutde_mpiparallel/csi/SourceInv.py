@@ -127,20 +127,81 @@ class SourceInv(object):
         if utmzone is not None:
             self.utm = pp.CRS(proj='utm', zone=utmzone, ellps=ellps)
         else:
+            # assert lon0 is not None, 'Please specify a 0 longitude'
+            # assert lat0 is not None, 'Please specify a 0 latitude'
+            # Find the best zone, raw method
+            # utm_crs_list = query_utm_crs_info(
+            #                     datum_name="WGS 84",
+            #                     area_of_interest=AreaOfInterest(
+            #                         west_lon_degree=lon0-2.,
+            #                         south_lat_degree=lat0-2.,
+            #                         east_lon_degree=lon0+2,
+            #                         north_lat_degree=lat0+2
+            #                     ),
+            #                 )
+            # self.utm = pp.CRS.from_epsg(utm_crs_list[0].code)
+            # self.code = utm_crs_list[0].code
+
+            # New added: manual zone calculation
             assert lon0 is not None, 'Please specify a 0 longitude'
             assert lat0 is not None, 'Please specify a 0 latitude'
-            # Find the best zone
+
+            # Derive the nominal 6° UTM zone and clamp to the legal range [1, 60].
+            zone = int(np.floor((lon0 + 180.0) / 6.0) + 1)
+            zone = max(1, min(zone, 60))
+            is_northern = lat0 >= 0.0
+            hemisphere_flag = 'N' if is_northern else 'S'
+
+            # Query all UTM CRS definitions that cover a 4°×4° area centered on (lon0, lat0).
             utm_crs_list = query_utm_crs_info(
                                 datum_name="WGS 84",
                                 area_of_interest=AreaOfInterest(
-                                    west_lon_degree=lon0-2.,
-                                    south_lat_degree=lat0-2.,
-                                    east_lon_degree=lon0+2,
-                                    north_lat_degree=lat0+2
+                                    west_lon_degree=lon0-2.0,
+                                    south_lat_degree=lat0-2.0,
+                                    east_lon_degree=lon0+2.0,
+                                    north_lat_degree=lat0+2.0
                                 ),
                             )
-            self.utm = pp.CRS.from_epsg(utm_crs_list[0].code)
-            self.code = utm_crs_list[0].code
+
+            selected_crs = None
+            target_suffix = f"utm zone {zone}{hemisphere_flag}".lower()
+
+            # Prefer CRS records whose name explicitly matches the nominal zone/hemisphere.
+            for info in utm_crs_list:
+                if target_suffix in info.name.lower():
+                    selected_crs = pp.CRS.from_epsg(info.code)
+                    self.code = info.code
+                    break
+
+            if selected_crs is None:
+                best_info = None
+                best_delta = None
+                # Fall back to the candidate whose central meridian is closest to lon0.
+                for info in utm_crs_list:
+                    try:
+                        candidate = pp.CRS.from_epsg(info.code)
+                        lon_0 = candidate.to_proj4_dict().get('lon_0')
+                        if lon_0 is None:
+                            lon_0 = candidate.to_dict().get('lon_0')
+                        if lon_0 is None:
+                            continue
+                        delta = abs(((lon0 - lon_0 + 180.0) % 360.0) - 180.0)
+                        if (best_delta is None) or (delta < best_delta):
+                            best_delta = delta
+                            best_info = info
+                    except Exception:
+                        continue
+
+                if best_info is not None:
+                    selected_crs = pp.CRS.from_epsg(best_info.code)
+                    self.code = best_info.code
+
+            if selected_crs is None:
+                # If no EPSG entry can be selected, revert to a generic UTM definition.
+                selected_crs = pp.CRS(proj='utm', zone=zone, ellps=ellps, south=not is_northern)
+                self.code = f"UTM zone {zone}{hemisphere_flag}"
+
+            self.utm = selected_crs
 
         # Make the projector
         self.proj2utm = Transformer.from_crs(self.wgs, self.utm, always_xy=True) 
