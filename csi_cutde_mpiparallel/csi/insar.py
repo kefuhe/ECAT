@@ -3369,7 +3369,8 @@ class insar(SourceInv):
              plotType='scatter', cmap='jet', alpha=1., box=None, titleyoffset=1.1,
              landcolor='lightgrey', seacolor=None, shadedtopo=None, title=True, los=None,
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
-             remove_direction_labels=False):
+             remove_direction_labels=False,
+             xticks=None, yticks=None):
         '''
         Plot the data set, together with a fault, if asked.
 
@@ -3387,6 +3388,8 @@ class insar(SourceInv):
             * figsize           : tuple of figure sizes
             * box               : Lon/lat box [lonmin, lonmax, latmin, latmax]
             * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+            * xticks        : list of x ticks to use. default None
+            * yticks        : list of y ticks to use. default None
 
         Returns:
             * None
@@ -3414,7 +3417,8 @@ class insar(SourceInv):
             figsize=(None, None)
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, 
                                      latmin=latmin, latmax=latmax, 
-                                     figsize=figsize, remove_direction_labels=remove_direction_labels)
+                                     figsize=figsize, remove_direction_labels=remove_direction_labels,
+                                     xticks=xticks, yticks=yticks)
 
         # Shaded topo
         if shadedtopo is not None:

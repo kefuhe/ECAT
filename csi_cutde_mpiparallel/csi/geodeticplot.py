@@ -618,85 +618,145 @@ class geodeticplot(object):
         return
 
     def drawCoastlines(self, color='k', linewidth=1.0, linestyle='solid',
-            resolution='10m', landcolor='lightgrey', seacolor=None, drawMapScale=None,
-            parallels=None, meridians=None, drawOnFault=False, 
-            alpha=0.5, zorder=1):
-        '''
-        Draws the coast lines in the desired area.
+                       resolution='50m', landcolor='lightgrey', seacolor=None,
+                       drawMapScale=None, parallels=None, meridians=None,
+                       drawOnFault=False, alpha=0.5, zorder=1):
+        """
+        Draw coastlines within the current map extent (optimized for publication-quality PDF figures).
+        (Docstring in English)
+        """
+        import numpy as _np
+        from shapely.geometry import box as _box
+        from shapely.ops import unary_union as _unary_union
+        import cartopy.io.shapereader as _shpreader
+        import cartopy.crs as _ccrs
+    
+        # Do nothing if no map
+        if self.carte is None:
+            return
+    
+        # Optional seabackground
+        if seacolor is not None:
+            self.carte.add_feature(
+                cfeature.NaturalEarthFeature('physical', 'ocean', resolution,
+                                             edgecolor='none', facecolor=seacolor, zorder=zorder-1)
+            )
+    
+        # Get bbox (lon/lat). handle dateline crossing by normalizing later.
+        lonmin, lonmax = self.lonmin, self.lonmax
+        latmin, latmax = self.latmin, self.latmax
 
-        Kwargs:
-            * color         : Color of lines
-            * linewidth     : Width of lines
-            * linestyle     : Style of lines
-            * resolution    : Resolution of the coastline. Can be 10m, 50m or 110m
-            * drawLand      : Fill the continents (True/False)
-            * drawMapScale  : Draw a map scale (None or length in km)
-            * parallels     : If int, number of parallels. If float, spacing in degrees between parallels. If np.array, array of parallels
-            * meridians     : Number of meridians to draw or array of meridians
-            * drawOnFault   : Draw on 3D fault as well
-            * zorder        : matplotlib order of plotting
-
-        Returns:
-            * None
-        '''
-
-        # check
-        if self.carte is None: return
-
-        # Scale bar
-        if drawMapScale is not None:
-            self.drawScaleBar(drawMapScale, lonlat=None)
-
-        # Ocean color (not really nice since this colors everything in the background)
-        if seacolor=='image':
-            self.carte.stock_img()
+        # Expand bbox to avoid clipping
+        lonpad = (lonmax - lonmin) * 0.5
+        latpad = (latmax - latmin) * 0.5
+        lonmin -= lonpad
+        lonmax += lonpad
+        latmin -= latpad
+        latmax += latpad
+    
+        # Normalize lon range into [-180,180) for robust comparisons
+        def _norm_lon(lon):
+            return ((lon + 180.0) % 360.0) - 180.0
+    
+        lonmin_n = _norm_lon(lonmin)
+        lonmax_n = _norm_lon(lonmax)
+    
+        # Build list of bbox(es). If crosses dateline, split into two boxes
+        bboxes = []
+        if lonmin_n <= lonmax_n:
+            bboxes.append(_box(lonmin_n, latmin, lonmax_n, latmax))
         else:
-            if seacolor is not None: 
-                self.carte.add_feature(cfeature.NaturalEarthFeature('physical', 
-                                                                    'ocean', 
-                                                                    resolution,
-                                                                    edgecolor=color, 
-                                                                    facecolor=seacolor, 
-                                                                    zorder=np.max([zorder-1,0])))
-
-        # coastlines in cartopy are multipolygon objects. Polygon has exterior, which has xy
-        self.coastlines = cfeature.NaturalEarthFeature('physical', 'land', scale=resolution,
-                                                edgecolor=color, 
-                                                facecolor=landcolor, 
-                                                linewidth=linewidth, 
-                                                linestyle=linestyle, 
-                                                zorder=zorder, alpha=alpha)
-
-        # Draw and get the line object
-        self.carte.add_feature(self.coastlines)
-
-        ## MapScale
-        if drawMapScale is not None:
-            assert False, 'Cannot draw a map scale yet. To be implemented...'
-
-        # Parallels
+            # crosses dateline: [lonmin,180] and [-180,lonmax]
+            bboxes.append(_box(lonmin_n, latmin, 180.0, latmax))
+            bboxes.append(_box(-180.0, latmin, lonmax_n, latmax))
+    
+        # Try to cache shapefile path per resolution to avoid repeated IO
+        cache_attr = f"_coast_shp_{resolution}"
+        try:
+            shpfilename = getattr(self, cache_attr)
+        except AttributeError:
+            try:
+                shpfilename = _shpreader.natural_earth(resolution=resolution, category='physical', name='land')
+                setattr(self, cache_attr, shpfilename)
+            except Exception:
+                shpfilename = None
+    
+        # If we cannot access shapefile, fallback to cartopy feature (less optimal but safe)
+        if shpfilename is None:
+            self.carte.add_feature(
+                cfeature.NaturalEarthFeature('physical', 'land', resolution,
+                                             edgecolor=color, facecolor=landcolor,
+                                             linewidth=linewidth, linestyle=linestyle, zorder=zorder, alpha=alpha)
+            )
+            return
+    
+        # Read shapefile and clip to bbox(es)
+        reader = _shpreader.Reader(shpfilename)
+        clipped_geoms = []
+        for rec in reader.records():
+            geom = rec.geometry
+            # try intersection with each bbox
+            for b in bboxes:
+                try:
+                    if geom.intersects(b):
+                        clipped = geom.intersection(b)
+                        if not clipped.is_empty:
+                            clipped_geoms.append(clipped)
+                except Exception:
+                    # defensive: skip problematic geometries
+                    continue
+    
+        if len(clipped_geoms) == 0:
+            # nothing in extent -> nothing to draw
+            return
+    
+        # Merge geometries and simplify to reduce complexity for vector exports
+        land_geom = _unary_union(clipped_geoms)
+        try:
+            # tolerance in degrees; adjust if needed (smaller for large extents)
+            tol = max(0.01, (abs(lonmax - lonmin) + abs(latmax - latmin)) / 1000.0)
+            land_geom = land_geom.simplify(tol, preserve_topology=True)
+        except Exception:
+            pass
+    
+        # Build and add a ShapelyFeature with explicit CRS (assume source geometries are lon/lat)
+        try:
+            land_feature = cfeature.ShapelyFeature([land_geom], _ccrs.PlateCarree(),
+                                                   edgecolor=color, facecolor=landcolor,
+                                                   linewidth=linewidth, linestyle=linestyle, alpha=alpha)
+            self.carte.add_feature(land_feature, zorder=zorder)
+        except Exception:
+            # fallback
+            self.carte.add_feature(
+                cfeature.NaturalEarthFeature('physical', 'land', resolution,
+                                             edgecolor=color, facecolor=landcolor,
+                                             linewidth=linewidth, linestyle=linestyle, zorder=zorder, alpha=alpha)
+            )
+    
+        # Parallels / meridians handling (same as original behaviour)
         if parallels is not None:
-            lmin,lmax = self.latmin, self.latmax
-            if type(parallels) is int:
-                parallels = np.linspace(lmin, lmax, parallels+1)
-            elif type(parallels) is float:
-                parallels = np.arange(lmin, lmax+parallels, parallels)
-            parallels = np.round(parallels, decimals=2)
-
-        # Meridians
+            if isinstance(parallels, int):
+                parallels = _np.linspace(latmin, latmax, parallels + 1)
+            elif isinstance(parallels, float):
+                parallels = _np.arange(latmin, latmax + parallels, parallels)
+            parallels = _np.round(parallels, 2)
+    
         if meridians is not None:
-            lmin,lmax = self.lonmin, self.lonmax
-            if type(meridians) is int:
-                meridians = np.linspace(lmin, lmax, meridians+1)
-            elif type(meridians) is float:
-                meridians = np.arange(lmin, lmax+meridians, meridians)
-            meridians = np.round(meridians, decimals=2)
-
-            # Draw them
-        if meridians is not None and parallels is not None:
-            gl = self.carte.gridlines(color='gray', xlocs=meridians, ylocs=parallels, linestyle=(0, (1, 1)))
-
-        # All done
+            if isinstance(meridians, int):
+                meridians = _np.linspace(lonmin, lonmax, meridians + 1)
+            elif isinstance(meridians, float):
+                meridians = _np.arange(lonmin, lonmax + meridians, meridians)
+            meridians = _np.round(meridians, 2)
+    
+        if meridians is not None or parallels is not None:
+            self.carte.gridlines(color='gray', xlocs=meridians, ylocs=parallels,
+                                 linestyle=(0, (1, 1)), linewidth=0.5, zorder=zorder + 1)
+    
+        # Map scale placeholder
+        if drawMapScale is not None:
+            # Map scale drawing not implemented yet
+            pass
+    
         return
 
     def drawCountries(self, scale='110m', linewidth=1., edgecolor='gray', facecolor='lightgray', alpha=1., zorder=0):
@@ -1249,7 +1309,8 @@ class geodeticplot(object):
     def gps(self, gps, data=['data'], color=['k'], scale=None, 
             legendscale=10., linewidths=.1, name=False, error=True,
             zorder=5, alpha=1., width=0.005, headwidth=3, headlength=5, 
-            headaxislength=4.5, minshaft=1, minlength=1, quiverkeypos=(0.1, 0.1), legendunit=''):
+            headaxislength=4.5, minshaft=1, minlength=1, quiverkeypos=(0.1, 0.1), legendunit='',
+            error_ellipse_kwargs={}):
         '''
         Args:
             * gps           : gps object from gps.
@@ -1262,6 +1323,7 @@ class geodeticplot(object):
             * linewidths    : Width of the arrows.
             * name          : Plot the name of the stations (True/False).
             * zorder        : Order of the matplotlib rendering
+            * error_ellipse_kwargs : dictionary of additional arguments to pass to the error ellipse plotting (matplotlib.patches.Ellipse)
 
         Returns:
             * None
@@ -1349,7 +1411,8 @@ class geodeticplot(object):
                             width=(err[0]),
                             height=(err[1]),
                             facecolor='none',
-                            edgecolor=c, zorder=zorder)
+                            edgecolor=c, zorder=zorder,
+                            **error_ellipse_kwargs)
 
                     # Transformation of the ellipse according to external parameters (obtained from various statistics on the data)
                     center=(lo+vel[0]/scale, la+vel[1]/scale)

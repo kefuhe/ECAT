@@ -4186,7 +4186,9 @@ class gps(SourceInv):
              Map=True, Fault=True, zorder=None,
              vertical=False, verticalsize=[30], verticalnorm=None, box=None,
              width=0.005, headwidth=3, headlength=5, headaxislength=4.5, minshaft=1, minlength=1,
-             data=['data'], color=['k'], titleyoffset=1.1, alpha=1., legendunit='', remove_direction_labels=False):
+             data=['data'], color=['k'], titleyoffset=1.1, alpha=1., legendunit='', remove_direction_labels=False,
+             xticks=None, yticks=None, linewidths=.1,
+             error_ellipse_kwargs={}):
         '''
         Plot the network
 
@@ -4208,6 +4210,14 @@ class gps(SourceInv):
             * plot_los      : Plot the los projected gps as scatter points
             * box           : Lon/lat box [lonmin, lonmax, latmin, latmax]
             * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
+            * xticks        : list of x ticks to use. default None
+            * yticks        : list of y ticks to use. default None
+            * width         : shaft width of the arrows
+            * headwidth     : head width of the arrows
+            * headlength    : head length of the arrows
+            * headaxislength: head axis length of the arrows
+            * linewidths     : quiver linewidths
+            * error_ellipse_kwargs : dictionary of keyword arguments to be passed to the error ellipse function
 
         Returns:
             * None
@@ -4231,7 +4241,8 @@ class gps(SourceInv):
             figsize=(None, None)
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, 
                                      latmin=latmin, latmax=latmax, 
-                                     figsize=figsize, Map=Map, Fault=Fault, remove_direction_labels=remove_direction_labels)
+                                     figsize=figsize, Map=Map, Fault=Fault, remove_direction_labels=remove_direction_labels,
+                                     xticks=xticks, yticks=yticks)
 
         # Shaded topo
         if shadedtopo is not None: fig.shadedTopography(**shadedtopo)
@@ -4262,7 +4273,10 @@ class gps(SourceInv):
                       legendscale=legendscale, scale=scale, 
                       color=color, alpha=alpha, zorder=zorder,
                       width=width, headwidth=headwidth, headlength=headlength, 
-                      headaxislength=headaxislength, minshaft=minshaft, minlength=minlength, legendunit=legendunit)
+                      headaxislength=headaxislength, minshaft=minshaft, 
+                      minlength=minlength, legendunit=legendunit,
+                      error_ellipse_kwargs=error_ellipse_kwargs,
+                      linewidths=linewidths)
 
         # Set up title
         if title:
