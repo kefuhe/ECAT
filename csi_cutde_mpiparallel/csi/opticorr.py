@@ -69,7 +69,7 @@ class opticorr(SourceInv):
         # All done
         return
 
-    def read_from_varres(self,filename, factor=1.0, step=0.0, header=2, cov=False, triangular=False):
+    def read_from_varres(self, filename, factor=1.0, step=0.0, header=2, cov=False, triangular=False):
         '''
         Read the Optical Corr east-north offsets from the VarRes output. This is what comes from the decimation process in imagedownsampling
 
@@ -107,6 +107,24 @@ class opticorr(SourceInv):
         self.err_north = []
         self.corner = []
 
+        # Detect corner format from first data line in .rsp file
+        first_data_line = B[header].split()
+        num_columns = len(first_data_line)
+        
+        # Determine format based on number of columns
+        if triangular:
+            # Triangle: xind yind lon1 lat1 lon2 lat2 lon3 lat3
+            # Total: 2 + 6 = 8 columns
+            quad_full_format = False
+        elif num_columns == 10:
+            # Legacy diagonal format: xind yind ULx ULy LRx LRy ULlon ULlat LRlon LRlat
+            quad_full_format = False
+        elif num_columns == 18:
+            # Full quadrilateral: xind yind ULx ULy URx URy LRx LRy LLx LLy ULlon ULlat URlon URlat LRlon LRlat LLlon LLlat
+            quad_full_format = True
+        else:
+            raise ValueError(f"Unexpected .rsp format: {num_columns} columns detected (expected 10, 14, or 18)")
+
         # Loop over the A, there is a header line header
         for i in range(header, len(A)):
             tmp = A[i].split()
@@ -116,12 +134,29 @@ class opticorr(SourceInv):
             self.north.append(float(tmp[4]))
             self.err_east.append(float(tmp[5]))
             self.err_north.append(float(tmp[6]))
+            
             tmp = B[i].split()
             if triangular:
-                self.corner.append([np.float32(tmp[2]), np.float32(tmp[3]), np.float32(tmp[4]), np.float32(tmp[5]), np.float32(tmp[6]), np.float32(tmp[7])])
+                # Triangle: 3 vertices (lon, lat pairs starting from column 8)
+                self.corner.append([
+                    np.float32(tmp[2]), np.float32(tmp[3]),   # vertex 1
+                    np.float32(tmp[4]), np.float32(tmp[5]), # vertex 2
+                    np.float32(tmp[6]), np.float32(tmp[7])  # vertex 3
+                ])
+            elif quad_full_format:
+                # Full quadrilateral: UL, UR, LR, LL (lon, lat pairs starting from column 10)
+                self.corner.append([
+                    np.float32(tmp[10]), np.float32(tmp[11]), # upper-left
+                    np.float32(tmp[12]), np.float32(tmp[13]), # upper-right
+                    np.float32(tmp[14]), np.float32(tmp[15]), # lower-right
+                    np.float32(tmp[16]), np.float32(tmp[17])  # lower-left
+                ])
             else:
-                self.corner.append([np.float32(tmp[6]), np.float32(tmp[7]), np.float32(tmp[8]), np.float32(tmp[9])])
-
+                # Legacy diagonal format: UL, LR (lon, lat pairs starting from column 6)
+                self.corner.append([
+                    np.float32(tmp[6]), np.float32(tmp[7]),   # upper-left
+                    np.float32(tmp[8]), np.float32(tmp[9])    # lower-right
+                ])
 
         # Make arrays
         self.east = factor * (np.array(self.east) + step)
@@ -145,16 +180,19 @@ class opticorr(SourceInv):
         # Compute corner to xy
         self.xycorner = np.zeros(self.corner.shape)
         if triangular:
-            x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
-            self.xycorner[:,0] = x
-            self.xycorner[:,1] = y
-            x, y = self.ll2xy(self.corner[:,2], self.corner[:,3])
-            self.xycorner[:,2] = x
-            self.xycorner[:,3] = y
-            x, y = self.ll2xy(self.corner[:,4], self.corner[:,5])
-            self.xycorner[:,4] = x
-            self.xycorner[:,5] = y
+            # 3 vertices
+            for i in range(3):
+                x, y = self.ll2xy(self.corner[:,i*2], self.corner[:,i*2+1])
+                self.xycorner[:,i*2] = x
+                self.xycorner[:,i*2+1] = y
+        elif quad_full_format:
+            # 4 complete vertices (UL, UR, LR, LL)
+            for i in range(4):
+                x, y = self.ll2xy(self.corner[:,i*2], self.corner[:,i*2+1])
+                self.xycorner[:,i*2] = x
+                self.xycorner[:,i*2+1] = y
         else:
+            # Legacy: only 2 diagonal vertices (UL, LR)
             x, y = self.ll2xy(self.corner[:,0], self.corner[:,1])
             self.xycorner[:,0] = x
             self.xycorner[:,1] = y
@@ -1263,9 +1301,9 @@ class opticorr(SourceInv):
         if data in ('data', 'd', 'dat', 'Data'):
             values = np.sqrt(self.east**2 + self.north**2)
         elif data in ('synth', 's', 'synt', 'Synth'):
-            values = np.sqrt(self.east_synth**2, self.north_synth**2)
+            values = np.sqrt(self.east_synth**2 + self.north_synth**2)
         elif data in ('res', 'resid', 'residuals', 'r'):
-            values = np.sqrt(self.east**2 + self.north**2) - np.sqrt(self.east_synth**2, self.north_synth**2)
+            values = np.sqrt(self.east**2 + self.north**2) - np.sqrt(self.east_synth**2 + self.north_synth**2)
         elif data in ('dataNorth', 'datanorth', 'north'):
             values = self.north
         elif data in ('dataEast', 'dataeast', 'east'):
@@ -1279,12 +1317,21 @@ class opticorr(SourceInv):
         elif data in ('resEast', 'reseast'):
             values = self.east - self.east_synth
         
-        # Auto-detect triangular if not specified
+        # Auto-detect format if not specified
         if triangular is None:
             if self.corner.shape[1] == 6:
                 triangular = True
-            else:
+                quad_full_format = False
+            elif self.corner.shape[1] == 8:
                 triangular = False
+                quad_full_format = True
+            elif self.corner.shape[1] == 4:
+                triangular = False
+                quad_full_format = False
+            else:
+                raise ValueError(f"Unexpected corner shape: {self.corner.shape[1]} columns (expected 4, 6, or 8)")
+        else:
+            quad_full_format = False
 
         # Iterate over the data and corner
         for corner, d in zip(self.corner, values):
@@ -1295,17 +1342,28 @@ class opticorr(SourceInv):
 
             # Write the corners
             if triangular:
+                # Triangle: 3 vertices (lon, lat pairs)
                 fout.write('{} {} \n'.format(corner[0], corner[1]))
                 fout.write('{} {} \n'.format(corner[2], corner[3]))
                 fout.write('{} {} \n'.format(corner[4], corner[5]))
-                fout.write('{} {} \n'.format(corner[0], corner[1]))
+                fout.write('{} {} \n'.format(corner[0], corner[1]))  # Close the triangle
+            elif quad_full_format:
+                # Full quadrilateral: 4 complete vertices (UL, UR, LR, LL)
+                fout.write('{} {} \n'.format(corner[0], corner[1]))  # upper-left
+                fout.write('{} {} \n'.format(corner[2], corner[3]))  # upper-right
+                fout.write('{} {} \n'.format(corner[4], corner[5]))  # lower-right
+                fout.write('{} {} \n'.format(corner[6], corner[7]))  # lower-left
+                fout.write('{} {} \n'.format(corner[0], corner[1]))  # Close the quadrilateral
             else:
-                xmin, ymin, xmax, ymax = corner
-                fout.write('{} {} \n'.format(xmin, ymin))
-                fout.write('{} {} \n'.format(xmin, ymax))
-                fout.write('{} {} \n'.format(xmax, ymax))
-                fout.write('{} {} \n'.format(xmax, ymin))
-                fout.write('{} {} \n'.format(xmin, ymin))
+                # Legacy diagonal format: upper-left + lower-right
+                ullon, ullat = corner[0], corner[1]
+                lrlon, lrlat = corner[2], corner[3]
+                # Reconstruct the full quadrilateral from diagonal points
+                fout.write('{} {} \n'.format(ullon, ullat))  # upper-left
+                fout.write('{} {} \n'.format(lrlon, ullat))  # upper-right
+                fout.write('{} {} \n'.format(lrlon, lrlat))  # lower-right
+                fout.write('{} {} \n'.format(ullon, lrlat))  # lower-left
+                fout.write('{} {} \n'.format(ullon, ullat))  # Close the quadrilateral
 
         # Close the file
         fout.close()
