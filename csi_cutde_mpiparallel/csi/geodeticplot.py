@@ -1824,12 +1824,19 @@ class geodeticplot(object):
                         (corner[2], corner[3]),
                         (corner[4], corner[5])
                     ]
-                else:
+                elif len(corner) == 4:
                     verts = [
                         (corner[0], corner[1]),
                         (corner[2], corner[1]),
                         (corner[2], corner[3]),
                         (corner[0], corner[3])
+                    ]
+                elif len(corner) == 8:
+                    verts = [
+                        (corner[0], corner[1]),
+                        (corner[2], corner[3]),
+                        (corner[4], corner[5]),
+                        (corner[6], corner[7])
                     ]
                 rect = colls.PolyCollection([verts], linewidth=edgewidth)
                 rect.set_color(scalarMap.to_rgba(disp))

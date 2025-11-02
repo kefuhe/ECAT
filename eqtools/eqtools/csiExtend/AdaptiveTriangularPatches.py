@@ -750,7 +750,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
     def plot_isocurve_fits(self, methods=None, save_fig=None, dpi=600, style=['science'],
                            show_error_in_legend=False, use_lon_lat=False, fontsize=None, 
                            figsize=None, scatter_props=None, show=True, custom_data=None,
-                           equal_aspect=False, legend_position=None):
+                           equal_aspect=False, legend_position=None, pdf_fonttype=None):
         """
         Plot the fitted isocurve models.
     
@@ -799,8 +799,12 @@ class AdaptiveTriangularPatches(TriangularPatches):
         result_dict = {result['method']: result for result in self.isocurve_fitted_results}
     
         # Set default properties for plotting
-        with sci_plot_style(style=style, fontsize=fontsize, figsize=figsize):
-    
+        if '.pdf' in save_fig if save_fig is not None else False:
+            pdf_fonttype = pdf_fonttype if pdf_fonttype is not None else 42
+        else:
+            pdf_fonttype = None
+        with sci_plot_style(style=style, fontsize=fontsize, figsize=figsize, pdf_fonttype=pdf_fonttype):
+
             line_width = 2
     
             if show:
@@ -2826,6 +2830,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         - z_patches: Arithmetic sequence from 0 to depth for interpolation.
         - factor_depth: Depth factor, initially set to 1.
         """
+        if out_mesh is None:
+            out_mesh = f'gmsh_fault_mesh_{self.name}.msh'
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
         vertices, faces = self.mesh_generator.generate_gmsh_mesh(top_size=top_size, bottom_size=bottom_size, mesh_func=mesh_func, 
                                                 out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
@@ -2838,6 +2844,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
                                  field_size_dict={'min_dx': 3, 'bias': 1.05},
                                  mesh_algorithm=2, # 5: Delaunay, 6: Frontal-Delaunay
                                  optimize_method='Laplace2D', verbose=5):
+        if out_mesh is None:
+            out_mesh = f'gmsh_multilayer_fault_mesh_{self.name}.msh'
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
         vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(layers_coords=layers_coords, sizes=sizes, mesh_func=mesh_func, 
                                                             out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
@@ -2978,7 +2986,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
     def plot_3d(self, max_depth=None, scatter_props=None, fontsize=None, 
                 save_fig=False, file_path='profile3D.png', dpi=300, style=['science'],
                 figsize=None, show=True, elev=None, azim=None, offset_to_fault=False,
-                shape=(1.0, 1.0, 1.0), z_height=None):
+                shape=(1.0, 1.0, 1.0), z_height=None, pdf_fonttype=None):
         """
         Plot a 3D representation of the fault surface and profiles.
     
@@ -2997,15 +3005,20 @@ class AdaptiveTriangularPatches(TriangularPatches):
         offset_to_fault (bool, optional): If True, the profile center will be offset to the fault. Default is False.
         shape (tuple, optional): Shape of the plot. Default is (1.0, 1.0, 1.0).
         z_height (float, optional): Height of the z-axis. Default is None.
-    
+        pdf_fonttype (str, optional): Font type for the PDF output. Default is None.
+
         Returns:
         None
         """
         from mpl_toolkits.mplot3d import Axes3D
         import matplotlib.pyplot as plt
         from ..plottools import sci_plot_style
-    
-        with sci_plot_style(style, fontsize=fontsize, figsize=figsize):
+
+        if '.pdf' in file_path:
+            pdf_fonttype = 42 if pdf_fonttype is None else pdf_fonttype
+        else:
+            pdf_fonttype = None
+        with sci_plot_style(style, fontsize=fontsize, figsize=figsize, pdf_fonttype=pdf_fonttype):
             fig = plt.figure(facecolor='white')  # none: Set background to white
             ax = fig.add_subplot(111, projection='3d', facecolor='white')  # none: Set axis background to white
     
@@ -3032,7 +3045,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             surf = ax.plot_trisurf(x, y, z, triangles=self.Faces, linewidth=0.5, edgecolor='#7291c9', zorder=1)
             surf.set_facecolor((0, 0, 0, 0))  # Set face color to transparent
     
-            ax.set_zlabel('Depth')
+            ax.set_zlabel('Depth (km)')
     
             ax.invert_zaxis()  # Invert z-axis to display values from 0 to max depth downwards
     
@@ -3132,15 +3145,15 @@ class AdaptiveTriangularPatches(TriangularPatches):
             ax.xaxis.set_major_formatter(formatter)
             ax.yaxis.set_major_formatter(formatter)
     
-        # Show or save the figure
-        plt.subplots_adjust(left=0, right=1, bottom=0, top=1)  # Adjust the figure boundaries
-        if save_fig:
-            plt.savefig(file_path, dpi=dpi)  # , bbox_inches='tight', pad_inches=0.1
-        # Show the plot
-        if show:
-            plt.show()
-        else:
-            plt.close()
+            # Show or save the figure
+            plt.subplots_adjust(left=0, right=1, bottom=0, top=1)  # Adjust the figure boundaries
+            if save_fig:
+                plt.savefig(file_path, dpi=dpi)  # , bbox_inches='tight', pad_inches=0.1
+            # Show the plot
+            if show:
+                plt.show()
+            else:
+                plt.close()
     
     def plot_3d_plotly(self, max_depth=None, scatter_props=None, fontsize=None, 
                        save_fig=False, file_path='profile3D_plotly.png', dpi=300, style=['science'],

@@ -76,32 +76,149 @@ def update_style_library():
     # 更新可用的样式列表
     plt.style.available[:] = sorted(plt.style.library.keys())
 
+def publication_figsize(column='single', fraction=1.0, aspect=0.75, height=None, unit='inch'):
+    """
+    Return figure size (width, height) in inches for common publication column widths.
+
+    Parameters
+    ----------
+    column : str, float, or tuple
+        - Predefined column names: 'single', 'double', 'nature', 'ieee', 'ieee_double', 'a4'.
+        - Custom numeric width (interpreted as `unit`).
+        - Direct (width, height) tuple (interpreted as `unit`, will be converted to inches).
+    fraction : float, optional
+        Fraction of the column width (0..1), default is 1.0.
+    aspect : float, optional
+        Height-to-width ratio (used when `height` is None), default is 0.75.
+    height : float, optional
+        Explicit height in `unit`. Overrides `aspect` if given.
+    unit : str, optional
+        Unit for input/output: 'inch' (default) or 'cm'.
+
+    Returns
+    -------
+    tuple of float
+        Figure size (width, height) in inches.
+
+    Examples
+    --------
+    >>> publication_figsize('single')
+    (3.5, 2.625)
+    >>> publication_figsize('double', fraction=0.8)
+    (5.76, 4.32)
+    >>> publication_figsize(10, unit='cm')
+    (3.937007874015748, 2.952755905511811)
+    >>> publication_figsize((10, 8), unit='cm')
+    (3.937007874015748, 3.1496062992125984)
+    """
+    # Predefined column widths in inches
+    widths_inch = {
+        'single': 3.5,
+        'double': 7.2,
+        'nature': 3.42,
+        'ieee': 3.5,
+        'ieee_double': 7.16,
+        'a4': 8.27
+    }
+
+    cm_to_inch = 1 / 2.54
+
+    # If column is already a (w, h) tuple/list
+    if isinstance(column, (tuple, list)) and len(column) == 2:
+        w_raw, h_raw = float(column[0]), float(column[1])
+        if unit == 'cm':
+            return (w_raw * cm_to_inch, h_raw * cm_to_inch)
+        else:
+            return (w_raw, h_raw)
+
+    # Resolve width from column specification
+    if isinstance(column, (int, float)):
+        w = float(column)
+    else:
+        w = widths_inch.get(str(column).lower(), widths_inch['single'])
+
+    # Convert width if specified in cm
+    if unit == 'cm':
+        w = w * cm_to_inch
+
+    w = w * float(fraction)
+
+    # Resolve height
+    if height is not None:
+        h = float(height)
+        if unit == 'cm':
+            h = h * cm_to_inch
+    else:
+        h = w * float(aspect)
+
+    return (w, h)
+
 @contextmanager
 def sci_plot_style(style=['science', 'no-latex'], legend_frame=False, use_tes=False, 
-                   use_mathtext=False, serif=False, fontsize=None, figsize=None, pdf_fonttype=None):
+                   use_mathtext=False, serif=False, fontsize=None, figsize=None, 
+                   figsize_unit='inch', figsize_fraction=1.0, figsize_aspect=0.75, 
+                   figsize_height=None, pdf_fonttype=None):
     """
-    Set scientific plotting style with context manager.
-    
-    Parameters:
+    Context manager to set scientific plotting style.
+
+    Parameters
     ----------
-    style : list, optional
-        List of styles to use.
+    style : list of str, optional
+        Matplotlib style names to apply, default is ['science', 'no-latex'].
     legend_frame : bool, optional
-        Whether to add a frame to the legend.
+        Whether to add frame to legends, default is False.
     use_tes : bool, optional
-        Whether to use TeX for text rendering.
+        Whether to use TeX for text rendering, default is False.
     use_mathtext : bool, optional
-        Whether to use mathtext for text rendering.
+        Whether to use mathtext for rendering, default is False.
     serif : bool, optional
-        Whether to use serif fonts.
+        Whether to use serif fonts, default is False.
     fontsize : int, optional
-        Font size for text.
-    figsize : tuple, optional
-        Figure size.
+        Font size for text elements, default is None (use rcParams).
+    figsize : str, float, or tuple, optional
+        Figure size specification:
+        - str: predefined column width name ('single', 'double', 'nature', 'ieee', 'ieee_double', 'a4')
+        - float: custom width (height computed via figsize_aspect)
+        - tuple: (width, height) in figsize_unit
+        Default is None (use rcParams default).
+    figsize_unit : str, optional
+        Unit for figsize when numeric: 'inch' (default) or 'cm'.
+    figsize_fraction : float, optional
+        Fraction of column width (0..1) when figsize is a string, default is 1.0.
+    figsize_aspect : float, optional
+        Height-to-width ratio when figsize is a single number or string, default is 0.75.
+    figsize_height : float, optional
+        Explicit height in figsize_unit. Overrides figsize_aspect if given.
     pdf_fonttype : int, optional
-        Set pdf.fonttype in matplotlib. Common values are:
-        - 3 (default) for Type 3 fonts
-        - 42 for TrueType fonts
+        Set pdf.fonttype in matplotlib:
+        - 3 (default): Type 3 fonts
+        - 42: TrueType fonts (recommended for editable text in Illustrator)
+
+    Yields
+    ------
+    None
+
+    Examples
+    --------
+    >>> # Use predefined single column width
+    >>> with sci_plot_style(figsize='single'):
+    ...     fig, ax = plt.subplots()
+    
+    >>> # Use double column width with 80% width
+    >>> with sci_plot_style(figsize='double', figsize_fraction=0.8):
+    ...     fig, ax = plt.subplots()
+    
+    >>> # Custom width in cm (height auto-computed)
+    >>> with sci_plot_style(figsize=15, figsize_unit='cm'):
+    ...     fig, ax = plt.subplots()
+    
+    >>> # Direct (width, height) in cm
+    >>> with sci_plot_style(figsize=(15, 10), figsize_unit='cm'):
+    ...     fig, ax = plt.subplots()
+    
+    >>> # Custom width with explicit height in inches
+    >>> with sci_plot_style(figsize=5.0, figsize_height=4.0):
+    ...     fig, ax = plt.subplots()
     """
     # Register scienceplots styles
     register_science_styles()
@@ -130,8 +247,16 @@ def sci_plot_style(style=['science', 'no-latex'], legend_frame=False, use_tes=Fa
         plt.rcParams['legend.fontsize'] = fontsize
         plt.rcParams['font.size'] = fontsize
     
+    # Parse figsize parameter using publication_figsize
     if figsize is not None:
-        plt.rcParams['figure.figsize'] = figsize
+        resolved_figsize = publication_figsize(
+            column=figsize,
+            fraction=figsize_fraction,
+            aspect=figsize_aspect,
+            height=figsize_height,
+            unit=figsize_unit
+        )
+        plt.rcParams['figure.figsize'] = resolved_figsize
         
     if pdf_fonttype is not None:
         plt.rcParams['pdf.fonttype'] = pdf_fonttype
@@ -341,14 +466,40 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
     cbfontsize = cbfontsize if cbfontsize is not None else plt.rcParams['axes.labelsize']
     cblinewidth = cblinewidth if cblinewidth is not None else plt.rcParams['axes.linewidth']
     with sci_plot_style(style=style):
-        fault.plot(drawCoastlines=drawCoastlines, slip=slip, cmap=cmap, norm=norm, savefig=False,
-                   ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, plot_on_2d=plot_on_2d,
-                   figsize=figsize, cbaxis=cbaxis, cblabel=cblabel, show=False, expand=map_expand,
-                   remove_direction_labels=remove_direction_labels, cbticks=cbticks,
-                   cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
-        ax = fault.slipfig.faille
-        fig = fault.slipfig
-        name = fault.name
+        if not isinstance(fault, list):
+            fault.plot(drawCoastlines=drawCoastlines, slip=slip, cmap=cmap, norm=norm, savefig=False,
+                    ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, plot_on_2d=plot_on_2d,
+                    figsize=figsize, cbaxis=cbaxis, cblabel=cblabel, show=False, expand=map_expand,
+                    remove_direction_labels=remove_direction_labels, cbticks=cbticks,
+                    cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
+            ax = fault.slipfig.faille
+            fig = fault.slipfig
+            name = fault.name
+        else:
+            # Make a plot
+            # Plot the whole thing
+            from csi.geodeticplot import geodeticplot as geoplt
+            # 用所有fault.patchll的经纬度范围来计算边界
+            lon_min = min([p[:, 0].min() for f in fault for p in f.patchll])
+            lon_max = max([p[:, 0].max() for f in fault for p in f.patchll])
+            lat_min = min([p[:, 1].min() for f in fault for p in f.patchll])
+            lat_max = max([p[:, 1].max() for f in fault for p in f.patchll])
+            depth_max = max([p[:, 2].max() for f in fault for p in f.patchll])
+            gp = geoplt(lon_min, lat_min, lon_max, lat_max, figsize=figsize)
+            plot_colorbar = True
+            for ifault in fault:
+                # Plot the faults
+                gp.faultpatches(ifault, slip=slip, colorbar=plot_colorbar,
+                                plot_on_2d=False, norm=norm, cmap=cmap,
+                                cbaxis=cbaxis, cblabel=cblabel,
+                                cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize,
+                                cb_label_side=cb_label_side, map_cbaxis=map_cbaxis,
+                                alpha=1.0 if plot_colorbar else 0.4)
+                plot_colorbar = False  # Only add one colorbar for multiple faults
+
+            ax = gp.faille
+            fig = gp
+            name = 'multiple_faults'
 
         # Only for triangular faults at current stage
         if plot_faultEdges and add_faults is not None:
@@ -388,24 +539,32 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
             ax.set_zticks(zticks)
             ax.set_zlim3d([-depth, 0])
         if fault_expand is not None:
-            # Get lons lats
-            lon = np.unique(np.array([p[:, 0] for p in fault.patchll]))
-            lat = np.unique(np.array([p[:, 1] for p in fault.patchll]))
-            lonmin, lonmax = lon.min(), lon.max()
-            latmin, latmax = lat.min(), lat.max()
-            ax.set_xlim(lonmin - fault_expand, lonmax + fault_expand)
-            ax.set_ylim(latmin - fault_expand, latmax + fault_expand)
+            # 用所有fault.patchll的经纬度范围来计算边界
+            faults_list = fault if isinstance(fault, list) else [fault]
+            lon_min = min([p[:, 0].min() for f in faults_list for p in f.patchll])
+            lon_max = max([p[:, 0].max() for f in faults_list for p in f.patchll])
+            lat_min = min([p[:, 1].min() for f in faults_list for p in f.patchll])
+            lat_max = max([p[:, 1].max() for f in faults_list for p in f.patchll])
+            ax.set_xlim(lon_min - fault_expand, lon_max + fault_expand)
+            ax.set_ylim(lat_min - fault_expand, lat_max + fault_expand)
         ax.zaxis.set_major_formatter(FuncFormatter(lambda val, pos: f'{abs(val)}'))
 
         # Set View, reference to csi.geodeticplot.set_view
         if elevation is not None and azimuth is not None:
             ax.view_init(elev=elevation, azim=azimuth)
         else:
-            strike = np.mean(fault.getStrikes() * 180 / np.pi)
-            dip = np.mean(fault.getDips() * 180 / np.pi)
+            if isinstance(fault, list):
+                strike = np.mean(np.vstack([f.getStrikes() for f in fault]) * 180 / np.pi)
+                dip = np.mean(np.vstack([f.getDips() for f in fault]) * 180 / np.pi)
+            else:
+                strike = np.mean(fault.getStrikes() * 180 / np.pi)
+                dip = np.mean(fault.getDips() * 180 / np.pi)
             azimuth = -strike
             elevation = 90 - dip + 10
             ax.view_init(elev=elevation, azim=azimuth)
+        
+        if isinstance(fault, list):
+            fig.setzaxis(depth_max)
 
         # Set 3D plot shape
         optimize_3d_plot(ax, shape=shape, zratio=zratio, zaxis_position=zaxis_position,

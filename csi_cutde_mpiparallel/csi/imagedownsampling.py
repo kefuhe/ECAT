@@ -27,6 +27,9 @@ from .opticorr import opticorr
 from .imagecovariance import imagecovariance as imcov
 from .csiutils import _split_seq
 
+# Import sci_plot_style
+from eqtools.plottools import sci_plot_style
+
 
 class mpstd(mp.Process):
     def __init__(self, downsampler, Bsize, indexes, queue):
@@ -1453,6 +1456,7 @@ class imagedownsampling(object):
         if len(self.blocksll[0]) == 4:
             for block in self.blocksll:
                 corner.append(block[0] + block[1] + block[2] + block[3])
+                # corner.append(block[1] + block[3])
         elif len(self.blocksll[0]) == 3:
             for block in self.blocksll:
                 corner.append(block[0] + block[1] + block[2])
@@ -1466,11 +1470,13 @@ class imagedownsampling(object):
         if norm is None:
             norm = minmax
 
-        # Plot the original 
-        original.plot(faults=self.faults, plotType='scatter', norm=norm, 
-                        show=False, drawCoastlines=False)
-        downsampled.plot(faults=self.faults, plotType='decimate', norm=norm, 
-                        show=False, drawCoastlines=False)
+        # Plot the original
+        with sci_plot_style(figsize='double', pdf_fonttype=42): 
+            original.plot(faults=self.faults, plotType='scatter', norm=norm, 
+                            show=show, drawCoastlines=False)
+        with sci_plot_style(figsize='double', pdf_fonttype=42):
+            downsampled.plot(faults=self.faults, plotType='decimate', norm=norm, 
+                            show=show, drawCoastlines=False)
 
         # Gradient?
         if hasattr(self, 'Gradient'):
@@ -1676,41 +1682,51 @@ class imagedownsampling(object):
         # All done
         return
 
-    def writeDownsampled2File(self, prefix, rsp=False):
+    def writeDownsampled2File(self, prefix, rsp=False, full_corners=False):
         '''
-        Writes the downsampled image data to a file. The file will be called prefix.txt. If rsp is True, then it writes a file called prefix.rsp containing the boxes of the downsampling. If prefix has white spaces, those are replaced by "_".
-
+        Writes the downsampled image data to a file. The file will be called prefix.txt. 
+        If rsp is True, then it writes a file called prefix.rsp containing the boxes of the downsampling. 
+        If prefix has white spaces, those are replaced by "_".
+    
         Args:
             * prefix        : Prefix of the output file
-
+    
         Kwargs:
             * rsp           : Write the rsp file?
-
+            * full_corners  : If True, write all 4 corners (UL, UR, LR, LL) in rsp file. 
+                              If False (default), write only diagonal corners (UL, LR) for backward compatibility.
+    
         Returns:
             * None
         '''
-
+    
         # Replace spaces
         prefix = prefix.replace(" ", "_")
-
+    
         # Open files
         ftxt = open(prefix+'.txt', 'w')
         if rsp:
             frsp = open(prefix+'.rsp', 'w')
-
+    
         # Write the header
         if self.datatype == 'insar':
             ftxt.write('Number xind yind east north data err wgt Elos Nlos Ulos\n')
         elif self.datatype == 'opticorr':
             ftxt.write('Number Lon Lat East North EastErr NorthErr \n')
         ftxt.write('********************************************************\n')
+        
         if rsp:
-            frsp.write('xind yind UpperLeft-x,y DownRight-x,y\n')
+            if full_corners:
+                # Full format header: 18 columns total
+                frsp.write('xind yind UpperLeft-x,y UpperRight-x,y LowerRight-x,y LowerLeft-x,y UpperLeft-lon,lat UpperRight-lon,lat LowerRight-lon,lat LowerLeft-lon,lat\n')
+            else:
+                # Legacy format header: 10 columns total
+                frsp.write('xind yind UpperLeft-x,y DownRight-x,y UpperLeft-lon,lat DownRight-lon,lat\n')
             frsp.write('********************************************************\n')
-
+    
         # Loop over the samples
         for i in range(len(self.newimage.x)):
-
+    
             # Write in txt
             wgt = self.newimage.wgt[i]
             x = int(self.newimage.x[i])
@@ -1733,26 +1749,59 @@ class imagedownsampling(object):
                 strg = '{:4d} {:3.6f} {:3.6f} {} {} {} {} \n'\
                         .format(i, lon, lat, east, north, err_east, err_north)
             ftxt.write(strg)
-
+    
             # Write in rsp
             if rsp:
-                ulx = self.blocks[i][0][0]
-                uly = self.blocks[i][0][1]
-                drx = self.blocks[i][2][0]
-                dry = self.blocks[i][2][1]
-                ullon = self.blocksll[i][0][0]
-                ullat = self.blocksll[i][0][1]
-                drlon = self.blocksll[i][2][0]
-                drlat = self.blocksll[i][2][1]
-                strg = '{:4d} {:4d} {} {} {} {} {} {} {} {} \n'\
-                        .format(x, y, ulx, uly, drx, dry, ullon, ullat, drlon, drlat)
+                if full_corners:
+                    # Full quadrilateral format: all 4 corners (UL, UR, LR, LL)
+                    # XY coordinates
+                    ulx = self.blocks[i][0][0]
+                    uly = self.blocks[i][0][1]
+                    urx = self.blocks[i][1][0]
+                    ury = self.blocks[i][1][1]
+                    lrx = self.blocks[i][2][0]
+                    lry = self.blocks[i][2][1]
+                    llx = self.blocks[i][3][0]
+                    lly = self.blocks[i][3][1]
+                    
+                    # Lon/Lat coordinates
+                    ullon = self.blocksll[i][0][0]
+                    ullat = self.blocksll[i][0][1]
+                    urlon = self.blocksll[i][1][0]
+                    urlat = self.blocksll[i][1][1]
+                    lrlon = self.blocksll[i][2][0]
+                    lrlat = self.blocksll[i][2][1]
+                    lllon = self.blocksll[i][3][0]
+                    lllat = self.blocksll[i][3][1]
+                    
+                    strg = '{:4d} {:4d} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} \n'.format(
+                        x, y, 
+                        ulx, uly, urx, ury, lrx, lry, llx, lly,
+                        ullon, ullat, urlon, urlat, lrlon, lrlat, lllon, lllat)
+                else:
+                    # Legacy diagonal format: only UL and LR
+                    # XY coordinates
+                    ulx = self.blocks[i][0][0]
+                    uly = self.blocks[i][0][1]
+                    lrx = self.blocks[i][2][0]  # lower-right
+                    lry = self.blocks[i][2][1]
+                    
+                    # Lon/Lat coordinates
+                    ullon = self.blocksll[i][0][0]
+                    ullat = self.blocksll[i][0][1]
+                    lrlon = self.blocksll[i][2][0]
+                    lrlat = self.blocksll[i][2][1]
+                    
+                    strg = '{:4d} {:4d} {} {} {} {} {} {} {} {} \n'.format(
+                        x, y, ulx, uly, lrx, lry, ullon, ullat, lrlon, lrlat)
+                
                 frsp.write(strg)
-
+    
         # Close the files
         ftxt.close()
         if rsp:
             frsp.close()
-
+    
         # All done
         return
 
