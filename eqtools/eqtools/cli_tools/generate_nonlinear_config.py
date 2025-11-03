@@ -29,7 +29,7 @@ slip_sampling_mode: 'mag_rake'  # 'mag_rake' for magnitude and rake, 'ss_ds' for
 clipping_options:
   enabled: false  # Whether to perform clipping
   method: 'lon_lat_range'  # Clipping method (e.g., 'lon_lat_range')
-    lon_lat_range: [-119.0, -117.0, 34.0, 36.0]  # [lon_min, lon_max, lat_min, lat_max]
+  lon_lat_range: [-119.0, -117.0, 34.0, 36.0]  # [lon_min, lon_max, lat_min, lat_max]
 
 # ----------- Bounds Settings ----------- #
 # Define parameter bounds for faults
