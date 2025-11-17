@@ -2603,6 +2603,247 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def compute_surface_displacement(
+        self, box=None, disk=None, npoints=10, lonlat=None, profile=None,
+        slipVec=None, nu=0.25, data=None, method='cutde', 
+        target_mem_gb=None, max_obs_batch=None, max_tri_batch=None, 
+        min_batch_count=5, verbose=True, 
+        output_file=None, output_format='h5', output_coords='lonlat',
+        **kwargs
+    ):
+        """
+        Compute surface displacement for rectangular fault using triangular element decomposition.
+        
+        Each rectangular patch is decomposed into two triangular elements, then the computation
+        is delegated to the TriangularPatches implementation for efficient calculation.
+        
+        Parameters
+        ----------
+        box : list, optional
+            [minlon, maxlon, minlat, maxlat], grid sampling.
+        disk : list, optional
+            [lon_center, lat_center, radius_km, n], random sampling in disk.
+        npoints : int, optional
+            Number of points per axis (for grid).
+        lonlat : tuple of arrays, optional
+            (lon, lat) arrays for custom sampling.
+        profile : dict, optional
+            {'start': (lon1, lat1), 'end': (lon2, lat2), 'npoints': N}, sample along profile.
+        slipVec : np.ndarray, optional
+            (n_patch, 3) slip for each patch [strike, dip, tensile].
+        nu : float, optional
+            Poisson's ratio (default: 0.25).
+        data : object, optional
+            Custom data object with .x, .y, .z attributes (z optional, default 0).
+        method : str, optional
+            'cutde' or 'edcmp', selects calculation backend (default: 'cutde').
+        target_mem_gb : float, optional
+            Maximum memory (GB) for disp_matrix. If None, auto-detect as 60% of available RAM.
+        max_obs_batch : int, optional
+            Maximum observation points per batch. If None, auto-calculate based on memory.
+        max_tri_batch : int, optional
+            Maximum triangles per batch. If None, auto-calculate based on memory.
+        min_batch_count : int, optional
+            Minimum number of batches to ensure reasonable performance (default: 5).
+        verbose : bool, optional
+            Enable detailed progress output (default: True).
+        output_file : str, optional
+            Output file path. If None, no file is saved (default: None).
+        output_format : str, optional
+            Output format: 'h5' (HDF5) or 'txt' (text) (default: 'h5').
+        output_coords : str, optional
+            Coordinate system for output: 'lonlat' or 'xy' (default: 'lonlat').
+    
+        Notes
+        -----
+        - Each rectangular patch is split into 2 triangular elements along the diagonal
+        - Slip is duplicated for both triangular elements from the same rectangular patch
+        - All coordinate inputs in lon/lat are converted to UTM (x, y) internally
+        - Default z coordinate is 0 (surface level)
+        - Priority order: data > lonlat > box > disk > profile > default
+            
+        Returns
+        -------
+        obs_pts : np.ndarray
+            Observation points (N, 3) in [x, y, z] format.
+        disp_total : np.ndarray
+            Surface displacement at each observation point (N, 3) in [ux, uy, uz] format.
+            
+        Examples
+        --------
+        >>> # Basic usage with automatic parameters
+        >>> rect_fault = RectangularPatches("MyFault")
+        >>> obs_pts, disp = rect_fault.compute_surface_displacement(
+        ...     box=[120, 121, 35, 36],
+        ...     npoints=100
+        ... )
+        >>> 
+        >>> # Custom slip with memory control
+        >>> custom_slip = np.array([[1.0, 0.5, 0.0], ...])  # Strike, Dip, Tensile
+        >>> obs_pts, disp = rect_fault.compute_surface_displacement(
+        ...     lonlat=([120.5, 120.6], [35.5, 35.6]),
+        ...     slipVec=custom_slip,
+        ...     max_obs_batch=50000,
+        ...     output_file='displacement.h5'
+        ... )
+        """
+        
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"Computing surface displacement for rectangular fault: {self.name}")
+            print(f"Converting {len(self.patch)} rectangular patches to triangular elements")
+            print(f"{'='*70}\n")
+        
+        # Create a temporary TriangularPatches instance
+        from .TriangularPatches import TriangularPatches
+        
+        tri_fault = TriangularPatches(
+            name=f"{self.name}_triangulated",
+            utmzone=self.utmzone,
+            ellps=self.ellps,
+            lon0=self.lon0,
+            lat0=self.lat0,
+            verbose=False  # Suppress verbose from TriangularPatches creation
+        )
+        
+        # Convert rectangular patches to triangular patches
+        if verbose:
+            print("Converting rectangular patches to triangular elements...")
+        
+        tri_fault.Faces, tri_fault.Vertices, tri_slip = self._rect2triangular(slipVec)
+        
+        if verbose:
+            print(f"  Created {len(tri_fault.Faces)} triangular faces")
+            print(f"  Total vertices: {len(tri_fault.Vertices)}")
+            print(f"  Slip vectors: {tri_slip.shape}")
+        
+        # Set the slip on the triangular fault
+        tri_fault.slip = tri_slip
+        
+        # Call the TriangularPatches compute_surface_displacement method
+        if verbose:
+            print("\nDelegating computation to TriangularPatches implementation...")
+        
+        obs_pts, disp_total = tri_fault.compute_surface_displacement(
+            box=box,
+            disk=disk,
+            npoints=npoints,
+            lonlat=lonlat,
+            profile=profile,
+            slipVec=None,  # Already set in tri_fault.slip
+            nu=nu,
+            data=data,
+            method=method,
+            target_mem_gb=target_mem_gb,
+            max_obs_batch=max_obs_batch,
+            max_tri_batch=max_tri_batch,
+            min_batch_count=min_batch_count,
+            verbose=verbose,
+            output_file=output_file,
+            output_format=output_format,
+            output_coords=output_coords,
+            **kwargs
+        )
+        
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"Surface displacement computation completed for {self.name}")
+            print(f"{'='*70}\n")
+        
+        # All done
+        return obs_pts, disp_total
+    
+    def _rect2triangular(self, slipVec=None):
+        """
+        Convert rectangular patches to triangular patches.
+        
+        Each rectangular patch (4 vertices) is split into 2 triangular patches
+        along the diagonal from vertex 0 to vertex 2.
+        
+        Parameters
+        ----------
+        slipVec : np.ndarray, optional
+            (n_patch, 3) slip for each rectangular patch [strike, dip, tensile].
+            If None, uses self.slip
+        
+        Returns
+        -------
+        Faces : np.ndarray
+            (n_triangles, 3) array of vertex indices for each triangle
+        Vertices : np.ndarray
+            (n_vertices, 3) array of unique vertex coordinates [x, y, z]
+        tri_slip : np.ndarray
+            (n_triangles, 3) slip vectors for each triangle
+            
+        Notes
+        -----
+        - Rectangle vertices are numbered: 0(top-left), 1(top-right), 2(bottom-right), 3(bottom-left)
+        - Each rectangle is split into: Triangle1 [0,1,2] and Triangle2 [0,2,3]
+        - Slip is duplicated: both triangles get the same slip as the parent rectangle
+        """
+        
+        # Use provided slip or default to self.slip
+        if slipVec is not None:
+            slips = slipVec
+        else:
+            slips = self.slip
+        
+        # Get number of rectangular patches
+        n_rect = len(self.patch)
+        
+        # Pre-allocate arrays
+        # Each rectangle becomes 2 triangles, so we need 2*n_rect triangles
+        n_triangles = 2 * n_rect
+        
+        # Collect all vertices and build index mapping
+        vertices_list = []
+        vertex_map = {}  # Maps (x,y,z) tuple to vertex index
+        faces_list = []
+        slip_list = []
+        
+        vertex_count = 0
+        
+        for i, patch in enumerate(self.patch):
+            # Get the 4 corners of the rectangular patch
+            # patch is a (4, 3) array: [[x0,y0,z0], [x1,y1,z1], [x2,y2,z2], [x3,y3,z3]]
+            p0, p1, p2, p3 = patch
+            
+            # Create vertex indices for this patch
+            local_indices = []
+            
+            for vertex in [p0, p1, p2, p3]:
+                # Convert to tuple for hashing (for duplicate detection)
+                v_tuple = tuple(vertex)
+                
+                if v_tuple not in vertex_map:
+                    # New vertex
+                    vertex_map[v_tuple] = vertex_count
+                    vertices_list.append(vertex)
+                    local_indices.append(vertex_count)
+                    vertex_count += 1
+                else:
+                    # Existing vertex
+                    local_indices.append(vertex_map[v_tuple])
+            
+            # Create two triangles from the rectangle
+            # Triangle 1: vertices [0, 1, 2]
+            faces_list.append([local_indices[0], local_indices[1], local_indices[2]])
+            slip_list.append(slips[i])
+            
+            # Triangle 2: vertices [0, 2, 3]
+            faces_list.append([local_indices[0], local_indices[2], local_indices[3]])
+            slip_list.append(slips[i])
+        
+        # Convert to numpy arrays
+        Faces = np.array(faces_list, dtype=np.int64)
+        Vertices = np.array(vertices_list, dtype=np.float64)
+        tri_slip = np.array(slip_list, dtype=np.float64)
+        
+        # All done
+        return Faces, Vertices, tri_slip
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
     def AverageAlongStrikeOffsets(self, name, insars, filename, discretized=True, smooth=None):
         '''
         If the profiles have the lon lat vectors as the fault, 
