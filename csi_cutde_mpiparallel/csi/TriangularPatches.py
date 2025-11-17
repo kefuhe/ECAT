@@ -3122,11 +3122,15 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
     def compute_surface_displacement(
         self, box=None, disk=None, npoints=10, lonlat=None, profile=None,
-        slipVec=None, nu=0.25, data=None, method='cutde', **kwargs
+        slipVec=None, nu=0.25, data=None, method='cutde', 
+        target_mem_gb=None, max_obs_batch=None, max_tri_batch=None, 
+        min_batch_count=5, verbose=True, 
+        output_file=None, output_format='h5', output_coords='lonlat',
+        **kwargs
     ):
         """
         Compute surface displacement for triangular fault using selected method ('cutde' or 'edcmp').
-        Supports arbitrary observation points (box, disk, lonlat, profile, or data object) and user-defined slip.
+        Supports arbitrary observation points and user-defined slip with automatic memory management.
     
         Parameters
         ----------
@@ -3139,22 +3143,45 @@ class TriangularPatches(Fault):
         lonlat : tuple of arrays, optional
             (lon, lat) arrays for custom sampling.
         profile : dict, optional
-            {'start': (lon1, lat1), 'end': (lon2, lat2), 'n': N}, sample along profile.
+            {'start': (lon1, lat1), 'end': (lon2, lat2), 'npoints': N}, sample along profile.
         slipVec : np.ndarray, optional
             (n_patch, 3) slip for each patch [strike, dip, tensile].
         nu : float, optional
-            Poisson's ratio.
+            Poisson's ratio (default: 0.25).
         data : object, optional
             Custom data object with .x, .y, .z attributes (z optional, default 0).
         method : str, optional
-            'cutde' or 'edcmp', selects calculation backend.
-    
+            'cutde' or 'edcmp', selects calculation backend (default: 'cutde').
+        target_mem_gb : float, optional
+            Maximum memory (GB) for disp_matrix. If None, auto-detect as 60% of available RAM.
+        max_obs_batch : int, optional
+            Maximum observation points per batch. If None, auto-calculate based on memory.
+        max_tri_batch : int, optional
+            Maximum triangles per batch. If None, auto-calculate based on memory.
+        min_batch_count : int, optional
+            Minimum number of batches to ensure reasonable performance (default: 5).
+        verbose : bool, optional
+            Enable detailed progress output (default: True).
+        output_file : str, optional
+            Output file path. If None, no file is saved (default: None).
+        output_format : str, optional
+            Output format: 'h5' (HDF5) or 'txt' (text) (default: 'h5').
+        output_coords : str, optional
+            Coordinate system for output: 'lonlat' or 'xy' (default: 'lonlat').
+
+        Notes
+        -----
+        - All coordinate inputs in lon/lat are converted to UTM (x, y) using self.ll2xy
+        - Default z coordinate is 0 (surface level)
+        - Output array is C-contiguous for efficient computation
+        - Priority order: data > lonlat > box > disk > profile > default
+            
         Returns
         -------
         obs_pts : np.ndarray
-            Observation points (N, 3).
+            Observation points (N, 3) in [x, y, z] format.
         disp_total : np.ndarray
-            Surface displacement at each observation point (N, 3).
+            Surface displacement at each observation point (N, 3) in [ux, uy, uz] format.
         """
     
         obs_pts = self._prepare_observation_points(
@@ -3168,32 +3195,545 @@ class TriangularPatches(Fault):
             slips = self.slip
     
         # Prepare source triangles
-        src_tris = self.Vertices[self.Faces, :]
-        src_tris = np.copy(src_tris)
-        src_tris[:, :, -1] *= -1  # cutde requires z-up
+        src_tris = np.copy(self.Vertices[self.Faces, :])
+        src_tris[:, :, -1] *= -1  # cutde requires z-up convention
     
         if method == 'cutde':
-            from cutde.halfspace import disp, disp_free, disp_matrix
-            if obs_pts.shape[0] < 10000:
-                disp_total = disp_free(obs_pts, src_tris, slips, nu)
+            from cutde.halfspace import disp_matrix
+            import psutil
+    
+            n_obs = obs_pts.shape[0]
+            n_tri = src_tris.shape[0]
+            
+            # Auto-detect available memory
+            if target_mem_gb is None:
+                available_gb = psutil.virtual_memory().available / (1024**3)
+                target_mem_gb = available_gb * 0.6
+                if verbose:
+                    print(f"Auto-detected target memory: {target_mem_gb:.2f} GB (60% of {available_gb:.2f} GB available)")
+            
+            # Memory calculation constants
+            bytes_per_element = 8
+            mem_per_obs_tri = 3 * 3 * bytes_per_element  # 72 bytes
+            
+            # Full matrix memory requirement
+            bytes_needed = n_obs * n_tri * mem_per_obs_tri
+            gb_needed = bytes_needed / (1024**3)
+            
+            # Track what user provided
+            user_provided_obs = max_obs_batch is not None
+            user_provided_tri = max_tri_batch is not None
+            
+            # Calculate maximum obs with ALL triangles (reference value)
+            max_obs_with_full_tri = int((target_mem_gb * (1024**3)) / (n_tri * mem_per_obs_tri))
+            
+            # **Core logic: Intelligent batch size calculation**
+            if not user_provided_obs and not user_provided_tri:
+                # Case 1: Both not provided - fully automatic calculation
+                if verbose:
+                    print("\nBoth batch sizes not provided - using automatic calculation")
+                
+                if max_obs_with_full_tri >= n_obs:
+                    # Can compute all observations in one pass
+                    max_obs_batch = n_obs
+                    max_tri_batch = n_tri
+                else:
+                    # Need batching: prioritize maximizing obs_batch
+                    max_obs_batch = min(max_obs_with_full_tri, 200000)
+                    
+                    # Apply minimum batch count constraint
+                    n_batches_candidate = (n_obs + max_obs_batch - 1) // max_obs_batch
+                    if n_batches_candidate < min_batch_count:
+                        max_obs_batch = (n_obs + min_batch_count - 1) // min_batch_count
+                    
+                    max_obs_batch = max(5000, max_obs_batch)
+                    
+                    # Calculate if tri_batch is needed
+                    mem_per_batch = (max_obs_batch * n_tri * mem_per_obs_tri) / (1024**3)
+                    if mem_per_batch <= target_mem_gb:
+                        max_tri_batch = n_tri
+                    else:
+                        max_tri_batch = int((target_mem_gb * (1024**3)) / (max_obs_batch * mem_per_obs_tri))
+                        max_tri_batch = max(100, min(max_tri_batch, n_tri))
+            
+            elif user_provided_obs and not user_provided_tri:
+                # Case 2: Only obs_batch provided - auto-calculate tri_batch
+                if verbose:
+                    print(f"\nUser provided obs_batch={max_obs_batch:,}, calculating tri_batch")
+                
+                # Check if user-provided obs_batch exceeds memory limit
+                mem_per_batch = (max_obs_batch * n_tri * mem_per_obs_tri) / (1024**3)
+                
+                if mem_per_batch > target_mem_gb:
+                    if verbose:
+                        print(f"WARNING: obs_batch={max_obs_batch:,} with all triangles requires {mem_per_batch:.2f} GB")
+                        print(f"         Exceeds target {target_mem_gb:.2f} GB, calculating tri_batch")
+                    
+                    max_tri_batch = int((target_mem_gb * (1024**3)) / (max_obs_batch * mem_per_obs_tri))
+                    max_tri_batch = max(100, min(max_tri_batch, n_tri))
+                else:
+                    max_tri_batch = n_tri
+            
+            elif not user_provided_obs and user_provided_tri:
+                # Case 3: Only tri_batch provided - auto-calculate obs_batch
+                if verbose:
+                    print(f"\nUser provided tri_batch={max_tri_batch:,}, calculating obs_batch")
+                
+                # Calculate maximum obs_batch based on tri_batch
+                max_obs_with_tri = int((target_mem_gb * (1024**3)) / (max_tri_batch * mem_per_obs_tri))
+                
+                if max_obs_with_tri >= n_obs:
+                    max_obs_batch = n_obs
+                else:
+                    max_obs_batch = min(max_obs_with_tri, 200000)
+                    
+                    # Apply minimum batch count constraint
+                    n_batches_candidate = (n_obs + max_obs_batch - 1) // max_obs_batch
+                    if n_batches_candidate < min_batch_count:
+                        max_obs_batch = (n_obs + min_batch_count - 1) // min_batch_count
+                    
+                    max_obs_batch = max(5000, max_obs_batch)
+            
             else:
-                # The output disp_mat is a (N_OBS_PTS, 3, N_SRC_TRIS, 3) array. 
+                # Case 4: Both provided - check if exceeds memory limit
+                mem_per_batch = (max_obs_batch * max_tri_batch * mem_per_obs_tri) / (1024**3)
+                
+                if mem_per_batch > target_mem_gb:
+                    if verbose:
+                        print(f"\nWARNING: User-provided batch sizes require {mem_per_batch:.2f} GB")
+                        print(f"         Exceeds target {target_mem_gb:.2f} GB")
+                        print(f"         Switching to automatic calculation")
+                    
+                    # Recalculate both values automatically
+                    if max_obs_with_full_tri >= n_obs:
+                        max_obs_batch = n_obs
+                        max_tri_batch = n_tri
+                    else:
+                        max_obs_batch = min(max_obs_with_full_tri, 200000)
+                        n_batches_candidate = (n_obs + max_obs_batch - 1) // max_obs_batch
+                        if n_batches_candidate < min_batch_count:
+                            max_obs_batch = (n_obs + min_batch_count - 1) // min_batch_count
+                        max_obs_batch = max(5000, max_obs_batch)
+                        
+                        mem_per_batch = (max_obs_batch * n_tri * mem_per_obs_tri) / (1024**3)
+                        if mem_per_batch <= target_mem_gb:
+                            max_tri_batch = n_tri
+                        else:
+                            max_tri_batch = int((target_mem_gb * (1024**3)) / (max_obs_batch * mem_per_obs_tri))
+                            max_tri_batch = max(100, min(max_tri_batch, n_tri))
+                else:
+                    if verbose:
+                        print(f"\nUsing user-provided batch sizes:")
+                        print(f"  obs_batch={max_obs_batch:,}, tri_batch={max_tri_batch:,}")
+                        print(f"  Memory per iteration: {mem_per_batch:.2f} GB")
+            
+            # Calculate final batch information
+            n_obs_batches = (n_obs + max_obs_batch - 1) // max_obs_batch
+            n_tri_batches = (n_tri + max_tri_batch - 1) // max_tri_batch
+            mem_per_iter = (max_obs_batch * max_tri_batch * mem_per_obs_tri) / (1024**3)
+            
+            if verbose:
+                print(f"\n{'='*70}")
+                print(f"Batch Size Summary")
+                print(f"{'='*70}")
+                print(f"Observation batch size: {max_obs_batch:,}")
+                print(f"Triangle batch size: {max_tri_batch:,}")
+                print(f"Memory per iteration: {mem_per_iter:.2f} GB")
+                print(f"Total batches: {n_obs_batches} obs × {n_tri_batches} tri = {n_obs_batches * n_tri_batches} iterations")
+            
+            if verbose:
+                print(f"\n{'='*70}")
+                print(f"Surface Displacement Calculation Summary")
+                print(f"{'='*70}")
+                print(f"Observation points: {n_obs:,}")
+                print(f"Source triangles: {n_tri:,}")
+                print(f"Estimated memory for full matrix: {gb_needed:.2f} GB")
+                print(f"Target memory limit: {target_mem_gb:.2f} GB")
+                print(f"Memory efficiency: {(gb_needed/target_mem_gb)*100:.1f}% of target")
+            
+            # Choose calculation strategy
+            use_direct = gb_needed <= target_mem_gb and n_obs <= max_obs_batch and n_tri <= max_tri_batch
+            
+            if use_direct:
+                if verbose:
+                    print(f"Method: Direct disp_matrix calculation (single pass)")
+                    print(f"{'='*70}\n")
+                    print("Computing displacement matrix...")
                 disp_mat = disp_matrix(obs_pts, src_tris, nu)
+                if verbose:
+                    print("Applying slip vector via einsum...")
                 disp_total = np.einsum('ijkl,kl->ij', disp_mat, slips)
+                if verbose:
+                    print("Computation completed successfully!\n")
+            else:
+                if verbose:
+                    print(f"Method: Batched disp_matrix calculation")
+                    print(f"  Observation batches: {n_obs_batches} (batch size: {max_obs_batch:,})")
+                    print(f"  Triangle batches: {n_tri_batches} (batch size: {max_tri_batch:,})")
+                    print(f"  Total iterations: {n_obs_batches * n_tri_batches}")
+                    print(f"{'='*70}\n")
+                
+                disp_total = self._batched_disp_matrix(
+                    obs_pts, src_tris, slips, nu, 
+                    max_obs_batch=max_obs_batch,
+                    max_tri_batch=max_tri_batch,
+                    verbose=verbose
+                )
+                
         elif method == 'edcmp':
-            # You can implement edcmp backend here, e.g.:
             disp_total = self._edcmp_surface_displacement(obs_pts, src_tris, slips, nu, **kwargs)
         else:
             raise ValueError(f"Unknown method: {method}")
     
+        # Save output if requested
+        if output_file is not None:
+            self._save_surface_displacement(
+                obs_pts, disp_total, output_file, 
+                output_format=output_format, 
+                output_coords=output_coords,
+                verbose=verbose
+            )
+    
+        if output_coords == 'lonlat':
+            lon, lat = self.xy2ll(obs_pts[:, 0], obs_pts[:, 1])
+            obs_pts = np.column_stack([lon, lat, obs_pts[:, 2]])
         return obs_pts, disp_total
+    
+    def _save_surface_displacement(self, obs_pts, disp_total, output_file, 
+                                   output_format='h5', output_coords='lonlat', 
+                                   verbose=True):
+        """
+        Save surface displacement results to file.
+        
+        Parameters
+        ----------
+        obs_pts : np.ndarray
+            Observation points (N, 3) in [x, y, z] format.
+        disp_total : np.ndarray
+            Surface displacement (N, 3) in [ux, uy, uz] format.
+        output_file : str
+            Output file path.
+        output_format : str, optional
+            Output format: 'h5' or 'txt' (default: 'h5').
+        output_coords : str, optional
+            Coordinate system: 'lonlat' or 'xy' (default: 'lonlat').
+        verbose : bool, optional
+            Enable progress messages (default: True).
+        """
+        
+        # Convert coordinates if needed
+        if output_coords == 'lonlat':
+            lon, lat = self.xy2ll(obs_pts[:, 0], obs_pts[:, 1])
+            coords = np.column_stack([lon, lat, obs_pts[:, 2]])
+            coord_labels = ['longitude', 'latitude', 'depth']
+            coord_units = ['degrees', 'degrees', 'km']
+        else:  # xy
+            coords = obs_pts.copy()
+            coord_labels = ['x', 'y', 'z']
+            coord_units = ['km', 'km', 'km']
+        
+        if output_format == 'h5':
+            self._save_to_hdf5(
+                coords, disp_total, output_file, 
+                coord_labels, coord_units, verbose
+            )
+        elif output_format == 'txt':
+            self._save_to_text(
+                coords, disp_total, output_file, 
+                coord_labels, coord_units, verbose
+            )
+        else:
+            raise ValueError(f"Unknown output format: {output_format}. Use 'h5' or 'txt'.")
+    
+    def _save_to_hdf5(self, coords, disp_total, output_file, 
+                      coord_labels, coord_units, verbose):
+        """
+        Save results to HDF5 file.
+        
+        Parameters
+        ----------
+        coords : np.ndarray
+            Coordinate array (N, 3).
+        disp_total : np.ndarray
+            Displacement array (N, 3).
+        output_file : str
+            Output file path.
+        coord_labels : list
+            Coordinate dimension labels.
+        coord_units : list
+            Coordinate units.
+        verbose : bool
+            Enable progress messages.
+        """
+        import h5py
+        import os
+        from datetime import datetime
+        
+        # Ensure .h5 extension
+        if not output_file.endswith('.h5'):
+            output_file += '.h5'
+        
+        # Create directory if needed
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        if verbose:
+            print(f"\nSaving results to HDF5 file: {output_file}")
+        
+        with h5py.File(output_file, 'w') as f:
+            # Create groups
+            coord_group = f.create_group('coordinates')
+            disp_group = f.create_group('displacement')
+            meta_group = f.create_group('metadata')
+            
+            # Save coordinates
+            for i, (label, unit) in enumerate(zip(coord_labels, coord_units)):
+                dset = coord_group.create_dataset(label, data=coords[:, i], compression='gzip')
+                dset.attrs['units'] = unit
+                dset.attrs['description'] = f'{label.capitalize()} of observation points'
+            
+            # Save displacements
+            disp_labels = ['east', 'north', 'up']
+            disp_descriptions = [
+                'East component of displacement',
+                'North component of displacement', 
+                'Up component of displacement'
+            ]
+            for i, (label, desc) in enumerate(zip(disp_labels, disp_descriptions)):
+                dset = disp_group.create_dataset(label, data=disp_total[:, i], compression='gzip')
+                dset.attrs['units'] = 'meters'
+                dset.attrs['description'] = desc
+            
+            # Save metadata
+            meta_group.attrs['fault_name'] = self.name
+            meta_group.attrs['n_observation_points'] = coords.shape[0]
+            meta_group.attrs['n_source_triangles'] = self.Faces.shape[0]
+            meta_group.attrs['coordinate_system'] = coord_labels[0]  # 'longitude' or 'x'
+            meta_group.attrs['creation_time'] = datetime.now().isoformat()
+            meta_group.attrs['software'] = 'CSI - Triangular Patches'
+            
+            # Save slip if available
+            if hasattr(self, 'slip') and self.slip is not None:
+                slip_group = f.create_group('source_slip')
+                slip_labels = ['strike_slip', 'dip_slip', 'tensile']
+                for i, label in enumerate(slip_labels):
+                    dset = slip_group.create_dataset(label, data=self.slip[:, i], compression='gzip')
+                    dset.attrs['units'] = 'meters'
+        
+        if verbose:
+            print(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
+            print(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
+    
+    def _save_to_text(self, coords, disp_total, output_file, 
+                      coord_labels, coord_units, verbose):
+        """
+        Save results to text file.
+        
+        Parameters
+        ----------
+        coords : np.ndarray
+            Coordinate array (N, 3).
+        disp_total : np.ndarray
+            Displacement array (N, 3).
+        output_file : str
+            Output file path.
+        coord_labels : list
+            Coordinate dimension labels.
+        coord_units : list
+            Coordinate units.
+        verbose : bool
+            Enable progress messages.
+        """
+        import os
+        from datetime import datetime
+        
+        # Ensure .txt extension
+        if not output_file.endswith('.txt'):
+            output_file += '.txt'
+        
+        # Create directory if needed
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        if verbose:
+            print(f"\nSaving results to text file: {output_file}")
+        
+        with open(output_file, 'w') as f:
+            # Write header
+            f.write(f"# Surface displacement calculation results\n")
+            f.write(f"# Fault: {self.name}\n")
+            f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"# Coordinate system: {coord_labels[0]}\n")
+            f.write(f"# Number of points: {coords.shape[0]:,}\n")
+            f.write(f"# Number of source triangles: {self.Faces.shape[0]}\n")
+            f.write(f"#\n")
+            f.write(f"# Column format:\n")
+            f.write(f"# {coord_labels[0]:>12} ({coord_units[0]})  ")
+            f.write(f"{coord_labels[1]:>12} ({coord_units[1]})  ")
+            f.write(f"{coord_labels[2]:>12} ({coord_units[2]})  ")
+            f.write(f"{'disp_east':>12} (m)  ")
+            f.write(f"{'disp_north':>12} (m)  ")
+            f.write(f"{'disp_up':>12} (m)\n")
+            f.write(f"#\n")
+            
+            # Write data
+            for i in range(coords.shape[0]):
+                f.write(f"{coords[i, 0]:14.8f}  ")
+                f.write(f"{coords[i, 1]:14.8f}  ")
+                f.write(f"{coords[i, 2]:14.6f}  ")
+                f.write(f"{disp_total[i, 0]:14.8e}  ")
+                f.write(f"{disp_total[i, 1]:14.8e}  ")
+                f.write(f"{disp_total[i, 2]:14.8e}\n")
+        
+        if verbose:
+            print(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
+            print(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
+    
+    def _batched_disp_matrix(self, obs_pts, src_tris, slips, nu, 
+                             max_obs_batch=50000, max_tri_batch=1000, verbose=True):
+        """
+        Batch calculation of surface displacement using disp_matrix to save memory.
+        Displays progress bar during computation.
+        
+        Parameters
+        ----------
+        obs_pts : np.ndarray
+            Observation points (N, 3).
+        src_tris : np.ndarray
+            Source triangles (M, 3, 3).
+        slips : np.ndarray
+            Slip vectors (M, 3).
+        nu : float
+            Poisson's ratio.
+        max_obs_batch : int
+            Maximum observation points per batch.
+        max_tri_batch : int
+            Maximum triangles per batch.
+        verbose : bool
+            Show progress bar.
+            
+        Returns
+        -------
+        disp_total : np.ndarray
+            Total displacement (N, 3).
+        """
+        from cutde.halfspace import disp_matrix
+        from tqdm import tqdm
+        
+        n_obs = obs_pts.shape[0]
+        n_tri = src_tris.shape[0]
+        
+        # Calculate number of batches
+        n_obs_batches = (n_obs + max_obs_batch - 1) // max_obs_batch
+        n_tri_batches = (n_tri + max_tri_batch - 1) // max_tri_batch
+        total_iterations = n_obs_batches * n_tri_batches
+        
+        disp_total = np.zeros((n_obs, 3), dtype=obs_pts.dtype)
+        
+        if verbose:
+            print(f"Processing {n_obs:,} observation points and {n_tri:,} triangles")
+            print(f"Batching: {n_obs_batches} obs batches × {n_tri_batches} triangle batches = {total_iterations} iterations")
+            pbar = tqdm(total=total_iterations, desc="Computing displacement", 
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        
+        # Double loop: observations and triangles
+        for obs_start in range(0, n_obs, max_obs_batch):
+            obs_end = min(obs_start + max_obs_batch, n_obs)
+            obs_chunk = obs_pts[obs_start:obs_end]
+            
+            # Accumulator for this observation batch
+            obs_disp = np.zeros((obs_end - obs_start, 3), dtype=obs_pts.dtype)
+            
+            for tri_start in range(0, n_tri, max_tri_batch):
+                tri_end = min(tri_start + max_tri_batch, n_tri)
+                tri_chunk = src_tris[tri_start:tri_end]
+                slip_chunk = slips[tri_start:tri_end]
+                
+                # Compute displacement matrix for this batch
+                # Shape: (obs_batch_size, 3, tri_batch_size, 3)
+                disp_mat = disp_matrix(obs_chunk, tri_chunk, nu)
+                
+                # Apply slip and accumulate
+                # einsum: (obs, 3, tri, 3) × (tri, 3) -> (obs, 3)
+                obs_disp += np.einsum('ijkl,kl->ij', disp_mat, slip_chunk)
+                
+                if verbose:
+                    pbar.update(1)
+            
+            # Store result for this observation batch
+            disp_total[obs_start:obs_end] = obs_disp
+        
+        if verbose:
+            pbar.close()
+            print("Batched computation completed successfully!\n")
+        
+        return disp_total
     
     def _prepare_observation_points(self, box=None, disk=None, npoints=10, lonlat=None, profile=None, data=None):
         """
         Prepare observation points for surface displacement calculation.
-        Returns (N, 3) array.
+        
+        This method generates observation points based on various input methods:
+        - From a data object with .x, .y attributes
+        - From custom longitude/latitude arrays
+        - From a bounding box (regular grid)
+        - From a disk (random sampling)
+        - From a profile (line sampling)
+        - Default: Use fault extent
+        
+        Parameters
+        ----------
+        box : list of float, optional
+            Bounding box [minlon, maxlon, minlat, maxlat] for regular grid sampling.
+        disk : list, optional
+            Disk specification [lon_center, lat_center, radius_km, n_points] for random sampling.
+        npoints : int, optional
+            Number of points per axis for grid generation (default: 10).
+        lonlat : tuple of arrays, optional
+            Custom (longitude, latitude) arrays for observation points.
+        profile : dict, optional
+            Profile specification with keys:
+            - 'start': (lon, lat) starting point
+            - 'end': (lon, lat) ending point
+            - 'npoints': number of points along profile
+        data : object, optional
+            Data object with .x, .y attributes (and optional .z).
+            
+        Returns
+        -------
+        obs_pts : np.ndarray
+            Observation points as (N, 3) array in [x, y, z] format (km).
+            x, y are in UTM coordinates, z is depth (default: 0).
+            
+        Notes
+        -----
+        - All coordinate inputs in lon/lat are converted to UTM (x, y) using self.ll2xy
+        - Default z coordinate is 0 (surface level)
+        - Output array is C-contiguous for efficient computation
+        - Priority order: data > lonlat > box > disk > profile > default
+        
+        Examples
+        --------
+        >>> # Regular grid
+        >>> obs_pts = fault._prepare_observation_points(
+        ...     box=[120, 121, 35, 36], npoints=50
+        ... )
+        
+        >>> # Custom points
+        >>> obs_pts = fault._prepare_observation_points(
+        ...     lonlat=([120.5, 120.6], [35.5, 35.6])
+        ... )
+        
+        >>> # Profile line
+        >>> obs_pts = fault._prepare_observation_points(
+        ...     profile={'start': (120, 35), 'end': (121, 36), 'npoints': 100}
+        ... )
         """
         import numpy as np
+        
+        # Mode 1: From data object (highest priority)
         if data is not None and hasattr(data, 'x') and hasattr(data, 'y'):
             x = np.asarray(data.x)
             y = np.asarray(data.y)
@@ -3202,11 +3742,15 @@ class TriangularPatches(Fault):
             else:
                 z = np.zeros_like(x)
             obs_pts = np.column_stack([x, y, z])
+        
+        # Mode 2: From custom lon/lat arrays
         elif lonlat is not None:
             lon = np.array(lonlat[0])
             lat = np.array(lonlat[1])
             x, y = self.ll2xy(lon, lat)
             obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        
+        # Mode 3: From bounding box (regular grid)
         elif box is not None:
             lon = np.linspace(box[0], box[1], npoints)
             lat = np.linspace(box[2], box[3], npoints)
@@ -3215,12 +3759,16 @@ class TriangularPatches(Fault):
             lat = lat.flatten()
             x, y = self.ll2xy(lon, lat)
             obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        
+        # Mode 4: From disk (random sampling)
         elif disk is not None:
             lon, lat = [], []
             from random import uniform
-            xc, yc = disk[0], disk[1]
-            r = disk[2]
-            n = disk[3]
+            xc, yc = disk[0], disk[1]  # Center coordinates
+            r = disk[2]                # Radius in km
+            n = disk[3]                # Number of points
+            
+            # Generate random points within disk
             while len(lon) < n:
                 theta = uniform(0, 2*np.pi)
                 rad = r * np.sqrt(uniform(0, 1))
@@ -3231,18 +3779,23 @@ class TriangularPatches(Fault):
                 lon_new, lat_new = self.xy2ll(x_new, y_new)
                 lon.append(lon_new)
                 lat.append(lat_new)
+            
             lon = np.array(lon)
             lat = np.array(lat)
             x, y = self.ll2xy(lon, lat)
             obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        
+        # Mode 5: From profile (line sampling)
         elif profile is not None:
             lon1, lat1 = profile['start']
             lon2, lat2 = profile['end']
-            n = profile['n']
+            n = profile['npoints']
             lon = np.linspace(lon1, lon2, n)
             lat = np.linspace(lat1, lat2, n)
             x, y = self.ll2xy(lon, lat)
             obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        
+        # Mode 6: Default (use fault extent)
         else:
             lon = np.linspace(self.lon.min(), self.lon.max(), npoints)
             lat = np.linspace(self.lat.min(), self.lat.max(), npoints)
@@ -3251,6 +3804,7 @@ class TriangularPatches(Fault):
             lat = lat.flatten()
             x, y = self.ll2xy(lon, lat)
             obs_pts = np.column_stack([x, y, np.zeros_like(x)])
+        
         return np.ascontiguousarray(obs_pts)
     # ----------------------------------------------------------------------
 
