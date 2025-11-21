@@ -2986,7 +2986,14 @@ class AdaptiveTriangularPatches(TriangularPatches):
     def plot_3d(self, max_depth=None, scatter_props=None, fontsize=None, 
                 save_fig=False, file_path='profile3D.png', dpi=300, style=['science'],
                 figsize=None, show=True, elev=None, azim=None, offset_to_fault=False,
-                shape=(1.0, 1.0, 1.0), z_height=None, pdf_fonttype=None):
+                shape=(1.0, 1.0, 1.0), z_height=None, pdf_fonttype=None,
+                # New tick and grid parameters
+                show_minor_ticks=False, tick_direction='out',
+                major_tick_length=20, minor_tick_length=10,
+                tick_width=0.5, show_grid=True, grid_linewidth=0.5,
+                grid_linestyle='--', grid_color='gray', grid_alpha=0.3,
+                # Major tick positions control
+                x_major_ticks=None, y_major_ticks=None, z_major_ticks=None):
         """
         Plot a 3D representation of the fault surface and profiles.
     
@@ -3005,7 +3012,24 @@ class AdaptiveTriangularPatches(TriangularPatches):
         offset_to_fault (bool, optional): If True, the profile center will be offset to the fault. Default is False.
         shape (tuple, optional): Shape of the plot. Default is (1.0, 1.0, 1.0).
         z_height (float, optional): Height of the z-axis. Default is None.
-        pdf_fonttype (str, optional): Font type for the PDF output. Default is None.
+        pdf_fonttype (int, optional): Font type for the PDF output. Default is None.
+        
+        Tick and Grid Parameters:
+        show_minor_ticks (bool, optional): Whether to show minor tick marks. Default is False.
+        tick_direction (str, optional): Direction of tick marks ('in', 'out', 'inout'). Default is 'out'.
+        major_tick_length (float, optional): Length of major tick marks in points. Default is 20.
+        minor_tick_length (float, optional): Length of minor tick marks in points. Default is 10.
+        tick_width (float, optional): Width of tick marks in points. Default is 0.5.
+        show_grid (bool, optional): Whether to show grid lines. Default is True.
+        grid_linewidth (float, optional): Width of grid lines. Default is 0.5.
+        grid_linestyle (str, optional): Style of grid lines. Default is '--'.
+        grid_color (str, optional): Color of grid lines. Default is 'gray'.
+        grid_alpha (float, optional): Transparency of grid lines. Default is 0.3.
+        
+        Major Tick Positions Control:
+        x_major_ticks (array-like, optional): Custom major tick positions for x-axis. Default is None (auto).
+        y_major_ticks (array-like, optional): Custom major tick positions for y-axis. Default is None (auto).
+        z_major_ticks (array-like, optional): Custom major tick positions for z-axis. Default is None (auto).
 
         Returns:
         None
@@ -3019,19 +3043,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         else:
             pdf_fonttype = None
         with sci_plot_style(style, fontsize=fontsize, figsize=figsize, pdf_fonttype=pdf_fonttype):
-            fig = plt.figure(facecolor='white')  # none: Set background to white
-            ax = fig.add_subplot(111, projection='3d', facecolor='white')  # none: Set axis background to white
-    
-            # Set grid lines
-            # ax.xaxis._axinfo["grid"]['color'] =  'black'
-            # ax.yaxis._axinfo["grid"]['color'] =  'black'
-            # ax.zaxis._axinfo["grid"]['color'] =  'black'
-            # ax.xaxis._axinfo["grid"]['linestyle'] =  ':'
-            # ax.yaxis._axinfo["grid"]['linestyle'] =  ':'
-            # ax.zaxis._axinfo["grid"]['linestyle'] =  ':'
-            # ax.xaxis._axinfo["grid"]['linewidth'] =  0.5
-            # ax.yaxis._axinfo["grid"]['linewidth'] =  0.5
-            # ax.zaxis._axinfo["grid"]['linewidth'] =  0.5
+            fig = plt.figure(facecolor='white')
+            ax = fig.add_subplot(111, projection='3d', facecolor='white')
     
             # Set view angle
             if elev is not None and azim is not None:
@@ -3043,24 +3056,21 @@ class AdaptiveTriangularPatches(TriangularPatches):
             z = self.Vertices_ll[:, 2]
     
             surf = ax.plot_trisurf(x, y, z, triangles=self.Faces, linewidth=0.5, edgecolor='#7291c9', zorder=1)
-            surf.set_facecolor((0, 0, 0, 0))  # Set face color to transparent
+            surf.set_facecolor((0, 0, 0, 0))
     
             ax.set_zlabel('Depth (km)')
+            ax.invert_zaxis()
     
-            ax.invert_zaxis()  # Invert z-axis to display values from 0 to max depth downwards
-    
-            ax.xaxis.pane.fill = False  # Set x-axis pane to transparent
-            ax.yaxis.pane.fill = False  # Set y-axis pane to transparent
-            ax.zaxis.pane.fill = False  # Set z-axis pane to transparent
+            ax.xaxis.pane.fill = False
+            ax.yaxis.pane.fill = False
+            ax.zaxis.pane.fill = False
     
             def project_point_to_plane(points, plane_point, normal):
-                # Calculate the projection of points onto a plane
                 point_vectors = points - plane_point
                 distances = np.dot(point_vectors, normal) / np.linalg.norm(normal)
                 projections = points - np.outer(distances, normal)
                 return projections
     
-            # Plot scatter points
             if scatter_props is None:
                 scatter_props = {'color': '#ff0000', 'ec': 'k', 'linewidths': 0.5}
     
@@ -3070,86 +3080,126 @@ class AdaptiveTriangularPatches(TriangularPatches):
             for iprofile in self.profiles:
                 profile = self.profiles[iprofile]
                 end_points_ll = np.array(profile['EndPointsLL'])
-                end_points_ll_reversed = end_points_ll[::-1]  # Reverse end_points_ll
+                end_points_ll_reversed = end_points_ll[::-1]
     
-                # Create a list of 5 points: first two at 0 depth, next two at max depth, last one back to the first point
                 points = np.concatenate((end_points_ll, end_points_ll_reversed, end_points_ll[0:1]), axis=0)
                 depths = [0, 0, max_depth, max_depth, 0]
     
-                # Plot these 5 points
                 for i in range(len(points) - 1):
                     ax.plot([points[i][0], points[i+1][0]], [points[i][1], points[i+1][1]], [depths[i], depths[i+1]], 'k--', lw=1.0, zorder=3)
     
-                # Calculate a point on the plane and the normal vector
-                plane_point = np.append(end_points_ll[0], 0)  # Add depth value
-                normal = np.cross(np.append(end_points_ll[1], 0) - plane_point, [0, 0, 1])  # Add depth value
-                normal /= np.linalg.norm(normal)  # Normalize the normal vector
+                plane_point = np.append(end_points_ll[0], 0)
+                normal = np.cross(np.append(end_points_ll[1], 0) - plane_point, [0, 0, 1])
+                normal /= np.linalg.norm(normal)
     
                 lon = profile['Lon']
                 lat = profile['Lat']
                 depth = profile['Depth']
                 points = np.array([lon, lat, depth]).T
     
-                # Calculate projection points and plot
-                if 'Projections' in profile:  # If projection coordinates already exist, use them
+                if 'Projections' in profile:
                     projections = profile['Projections']
-                else:  # If no projection coordinates, perform projection and store in profile
+                else:
                     projections = project_point_to_plane(points, plane_point, normal)
     
-                # If the profile center needs to be offset to the fault
                 if offset_to_fault:
                     lonc, latc = profile['Center']
-                    # Calculate offset vector
                     top_offset_vector = self.compute_offset_vector(iprofile, in_lonlat=True, use_top_coords=True)
                     bottom_offset_vector = self.compute_offset_vector(iprofile, in_lonlat=True, use_top_coords=False)
                     if top_offset_vector is not None and bottom_offset_vector is not None:
-                        # Offset the profile center to the fault
-                        top_offset_vector.append(self.top)  # Add self.top in the z direction
-                        bottom_offset_vector.append(self.depth)  # Add self.depth in the z direction
+                        top_offset_vector.append(self.top)
+                        bottom_offset_vector.append(self.depth)
                         center = np.array([lonc, latc, self.top])
                         center_top = center + np.array(top_offset_vector)
                         center_bottom = center + np.array(bottom_offset_vector)
     
-                        # Plot the intersection line
                         ax.plot([center_top[0], center_bottom[0]], 
                                 [center_top[1], center_bottom[1]], 
                                 [center_top[2], center_bottom[2]], color='#2e8b57', linestyle='-', zorder=4, lw=2.0)
     
-                        # Save the intersection line to the profile
                         profile['Intersection'] = np.array([center_top, center_bottom])
     
                     top_offset_vector = np.array(top_offset_vector) if top_offset_vector is not None else np.array([0, 0, 0])
                     if 'Projections' not in profile:
                         if top_offset_vector.size == 2:
-                            top_offset_vector = np.append(top_offset_vector, self.top)  # 0 depth?
+                            top_offset_vector = np.append(top_offset_vector, self.top)
                         profile['Projections'] = projections + top_offset_vector[None, :]
     
-                # Plot all projection points
                 projections = np.array(projections)
                 ax.scatter(projections[:, 0], projections[:, 1], projections[:, 2], **scatter_props, zorder=2)
+    
+            # Configure tick marks for 3D axes
+            from matplotlib.ticker import AutoMinorLocator, NullLocator, FixedLocator
+            
+            # Convert points to inches (matplotlib uses inches internally)
+            points_to_inches = 1.0 / 72.0
+            major_tick_inches = major_tick_length * points_to_inches
+            minor_tick_inches = minor_tick_length * points_to_inches
+            
+            # Set tick direction and length
+            if tick_direction == 'out':
+                # For 3D axes, 'inward_factor' controls outward ticks (counter-intuitive naming)
+                major_inward = major_tick_inches
+                major_outward = 0
+                minor_inward = minor_tick_inches
+                minor_outward = 0
+            elif tick_direction == 'in':
+                major_inward = 0
+                major_outward = major_tick_inches
+                minor_inward = 0
+                minor_outward = minor_tick_inches
+            else:  # 'inout'
+                major_inward = major_tick_inches * 0.75
+                major_outward = major_tick_inches * 0.25
+                minor_inward = minor_tick_inches * 0.75
+                minor_outward = minor_tick_inches * 0.25
+            
+            # Configure tick parameters for each axis
+            for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
+                # Set major tick length and linewidth
+                axis._axinfo['tick']['inward_factor'] = major_inward
+                axis._axinfo['tick']['outward_factor'] = major_outward
+                axis._axinfo['tick']['linewidth'] = {True: tick_width, False: tick_width}
+                
+                # Configure minor ticks
+                if show_minor_ticks:
+                    axis.set_minor_locator(AutoMinorLocator())
+                else:
+                    axis.set_minor_locator(NullLocator())
+            
+            # Set custom major tick positions if provided
+            if x_major_ticks is not None:
+                ax.xaxis.set_major_locator(FixedLocator(x_major_ticks))
+            if y_major_ticks is not None:
+                ax.yaxis.set_major_locator(FixedLocator(y_major_ticks))
+            if z_major_ticks is not None:
+                ax.zaxis.set_major_locator(FixedLocator(z_major_ticks))
+            
+            # Configure grid lines (only show major tick grid)
+            if show_grid:
+                ax.grid(True, which='major', linewidth=grid_linewidth, 
+                       linestyle=grid_linestyle, color=grid_color, alpha=grid_alpha)
+            else:
+                ax.grid(False)
     
             # Get the range of x and y axes
             x_range = np.ptp(ax.get_xlim())
             y_range = np.ptp(ax.get_ylim())
     
             if z_height is not None:
-                # Calculate the ratio of x and y axes
                 xy_ratio = x_range / y_range
-                # Set the height ratio of the plot
                 ax.set_box_aspect([xy_ratio, 1, z_height])
             else:
-                # Set the height ratio of the plot
                 ax.get_proj = lambda: np.dot(Axes3D.get_proj(ax), np.diag([shape[0], shape[1], shape[2], 1]))
+            
             # Set the labels for x and y axes
             formatter = DegreeFormatter()
             ax.xaxis.set_major_formatter(formatter)
             ax.yaxis.set_major_formatter(formatter)
     
-            # Show or save the figure
-            plt.subplots_adjust(left=0, right=1, bottom=0, top=1)  # Adjust the figure boundaries
+            plt.subplots_adjust(left=0, right=1, bottom=0, top=1)
             if save_fig:
-                plt.savefig(file_path, dpi=dpi)  # , bbox_inches='tight', pad_inches=0.1
-            # Show the plot
+                plt.savefig(file_path, dpi=dpi)
             if show:
                 plt.show()
             else:

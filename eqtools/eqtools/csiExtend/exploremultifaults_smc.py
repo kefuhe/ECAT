@@ -1266,7 +1266,13 @@ class explorefault(SourceInv):
                         plot_sigmas=False, plot_faults=True, faults=None, axis_labels=None,
                         wspace=None, hspace=None, center_lon_lat=False,
                         xtick_rotation=None, ytick_rotation=None, lonlat_decimal=3,
-                        use_sigma_alias=True):
+                        use_sigma_alias=True,
+                        # Font size control - split into tick and label
+                        tick_fontsize=None, label_fontsize=None,
+                        # Tick marks control
+                        show_minor_ticks=False, tick_direction='in',
+                        major_tick_length=3, minor_tick_length=1.5,
+                        tick_width=0.5):
         """
         Plot a KDE matrix of the SMC samples.
     
@@ -1302,11 +1308,27 @@ class explorefault(SourceInv):
         center_lon_lat: bool, optional
             Whether to center lon and lat by subtracting their means. The default is False.
         xtick_rotation: int, optional
-            The rotation of x-tick labels. The default is 45.
+            The rotation of x-tick labels. The default is None.
         ytick_rotation: int, optional
-            The rotation of y-tick labels. The default is 45.
+            The rotation of y-tick labels. The default is None.
         lonlat_decimal: int, optional
             The number of decimal places to round lon and lat. The default is 3.
+        use_sigma_alias: bool, optional
+            Whether to use sigma aliases. The default is True.
+        tick_fontsize: float, optional
+            Font size for tick labels. The default is None.
+        label_fontsize: float, optional
+            Font size for axis labels. The default is None.
+        show_minor_ticks: bool, optional
+            Whether to show minor tick marks. The default is False.
+        tick_direction: str, optional
+            Direction of tick marks ('in', 'out', 'inout'). The default is 'in'.
+        major_tick_length: float, optional
+            Length of major tick marks in points. The default is 3.
+        minor_tick_length: float, optional
+            Length of minor tick marks in points. The default is 1.5.
+        tick_width: float, optional
+            Width of tick marks in points. The default is 0.5.
     
         Returns:
         None
@@ -1315,6 +1337,7 @@ class explorefault(SourceInv):
         import pandas as pd
         import matplotlib.pyplot as plt
         import numpy as np
+        from matplotlib.ticker import FuncFormatter, AutoLocator
     
         # Get the SMC chains
         trace = self.sampler['allsamples']
@@ -1359,7 +1382,11 @@ class explorefault(SourceInv):
             
             keys += sigma_keys
             index += self.sigmas_index
-        
+
+        # Replace 'magnitude' with 'slip' in all keys (unified processing)
+        keys = [key.replace('magnitude', 'slip') for key in keys]
+        # Capitalize all keys for better display
+        keys = [key.capitalize() for key in keys]
         # Convert the SMC chains to a DataFrame
         df = pd.DataFrame(trace[:, index], columns=keys)
         
@@ -1380,6 +1407,11 @@ class explorefault(SourceInv):
         
         # Set the style
         sns.set_style(style)
+        
+        # Set PDF font type if saving as PDF
+        if save and filename.endswith('.pdf'):
+            pdf_fonttype = 42  # Use Type 42 (TrueType) for better compatibility
+            plt.rcParams['pdf.fonttype'] = pdf_fonttype
         
         # Create a pair grid with separate y-axis for diagonal plots
         g = sns.PairGrid(df, diag_sharey=False)
@@ -1402,13 +1434,53 @@ class explorefault(SourceInv):
         if scatter:
             g.map_upper(sns.scatterplot, s=scatter_size)
         
+        # Configure tick marks for all subplots
+        for i in range(len(g.axes)):
+            for j in range(len(g.axes)):
+                if g.axes[i, j].get_visible():
+                    # Enable or disable minor ticks
+                    if show_minor_ticks:
+                        g.axes[i, j].minorticks_on()
+                    else:
+                        g.axes[i, j].minorticks_off()
+                    
+                    # Configure major tick marks
+                    g.axes[i, j].tick_params(
+                        axis='both',
+                        which='major',
+                        direction=tick_direction,
+                        length=major_tick_length,
+                        width=tick_width,
+                        top=False,
+                        right=False,
+                        bottom=True,
+                        left=True
+                    )
+                    
+                    # Configure minor tick marks (only if enabled)
+                    if show_minor_ticks:
+                        g.axes[i, j].tick_params(
+                            axis='both',
+                            which='minor',
+                            direction=tick_direction,
+                            length=minor_tick_length,
+                            width=tick_width,
+                            top=False,
+                            right=False,
+                            bottom=True,
+                            left=True
+                        )
+                    
+                    # Ensure tick locators are set
+                    g.axes[i, j].xaxis.set_major_locator(AutoLocator())
+                    g.axes[i, j].yaxis.set_major_locator(AutoLocator())
+        
         # Format tick labels to scientific notation for lon and lat
-        from matplotlib.ticker import FuncFormatter
         def scientific_formatter(x, pos):
             return f'{x:.2g}' if x <= 1 else f'{x:.{lonlat_decimal}f}'
         
         for ax in g.axes.flatten():
-            if ax is not None:
+            if ax is not None and ax.get_visible():
                 if 'lon' in ax.get_xlabel() or 'lat' in ax.get_xlabel():
                     ax.xaxis.set_major_formatter(FuncFormatter(scientific_formatter))
                     for label in ax.get_xticklabels():
@@ -1416,26 +1488,43 @@ class explorefault(SourceInv):
                         label.set_ha('right')
                 if 'lon' in ax.get_ylabel() or 'lat' in ax.get_ylabel():
                     ax.yaxis.set_major_formatter(FuncFormatter(scientific_formatter))
-
-        # Set x-tick rotation if provided
+    
+        # Set tick rotation and font size
+        default_tick_fontsize = tick_fontsize if tick_fontsize is not None else 10
         if xtick_rotation is not None:
             for ax in g.axes[-1, :]:
                 for label in ax.get_xticklabels():
                     label.set_rotation(xtick_rotation)
                     label.set_ha('right')
-
-        # Set y-tick rotation if provided
+                    label.set_fontsize(default_tick_fontsize)
+        else:
+            for ax in g.axes[-1, :]:
+                ax.tick_params(axis='x', labelsize=default_tick_fontsize)
+    
         if ytick_rotation is not None:
             for ax in g.axes[:, 0]:
                 for label in ax.get_yticklabels():
                     label.set_rotation(ytick_rotation)
                     label.set_ha('right')
+                    label.set_fontsize(default_tick_fontsize)
+        else:
+            for ax in g.axes[:, 0]:
+                ax.tick_params(axis='y', labelsize=default_tick_fontsize)
+        
         # Set axis labels if provided
+        default_label_fontsize = label_fontsize if label_fontsize is not None else 12
         if axis_labels:
             for i, label in enumerate(axis_labels):
-                g.axes[-1, i].set_xlabel(label, fontsize=12)
-                g.axes[i, 0].set_ylabel(label, fontsize=12)
-
+                g.axes[-1, i].set_xlabel(label, fontsize=default_label_fontsize)
+                g.axes[i, 0].set_ylabel(label, fontsize=default_label_fontsize)
+        else:
+            # Set fontsize for existing axis labels
+            for i in range(len(g.axes)):
+                if g.axes[-1, i].get_xlabel():
+                    g.axes[-1, i].set_xlabel(g.axes[-1, i].get_xlabel(), fontsize=default_label_fontsize)
+                if g.axes[i, 0].get_ylabel():
+                    g.axes[i, 0].set_ylabel(g.axes[i, 0].get_ylabel(), fontsize=default_label_fontsize)
+    
         plt.tight_layout()
         if wspace is not None or hspace is not None:
             plt.subplots_adjust(wspace=wspace, hspace=hspace)
@@ -1502,12 +1591,14 @@ class explorefault(SourceInv):
             if plot_faults:
                 for ifault, faultname in enumerate(self.faultnames):
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                        scatter=False, filename=f'kde_matrix_F{ifault}.png', figsize=fault_figsize)
+                                        scatter=False, filename=f'kde_matrix_F{ifault}.png', figsize=fault_figsize,
+                                        hspace=0.05, wspace=0.05)
             
             # Plot Sigmas
             if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
                 self.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
-                                    scatter=False, filename='kde_matrix_sigmas.png', figsize=sigmas_figsize)
+                                    scatter=False, filename='kde_matrix_sigmas.png', figsize=sigmas_figsize,
+                                    hspace=0.05, wspace=0.05)
             
             # Save the model results
             faults = self.returnModel(model=model, print_stats=False)
