@@ -103,7 +103,7 @@ git clone https://github.com/kefuhe/ECAT-cases.git
 
 If you use this package in your research, please cite it as follows:
 
-Kefeng, H., X. Caijun, Y. Wen, Z. Yingwen, X. Guangyu, S. Longxiang, and W. Jianjun (2025), A Unified Framework for Adaptive Fault Modeling: Methods and Applications, SCIENCE CHINA Earth Sciences. doi: [10.1007/s11430-025-1773-0](https://doi.org/10.1007/s11430-025-1773-0 "https://doi.org/10.1007/s11430-025-1773-0").
+He K., C. Xu, Y. Wen, Y. Zhao, G. Xu, L. Sun, and J. Wang (2025), A Unified Framework for Adaptive Fault Modeling: Methods and Applications, SCIENCE CHINA Earth Sciences. doi: [10.1007/s11430-025-1773-0](https://doi.org/10.1007/s11430-025-1773-0 "https://doi.org/10.1007/s11430-025-1773-0").
 
 ## Postseismic （Pending)
 
