@@ -954,76 +954,112 @@ class TriangularPatches(Fault):
         return np.array([self.getpatchgeometry(p, center=True)[2] for p in self.patch]) 
 
     # ----------------------------------------------------------------------
+    # Write patches to a GMT style file
     def writePatches2File(self, filename, add_slip=None, scale=1.0, stdh5=None, decim=1):
         '''
         Writes the patch corners in a file that can be used in psxyz.
-
+    
         Args:
             * filename      : Name of the file.
-
+    
         Kwargs:
-            * add_slip      : Put the slip as a value for the color. 
-                              Can be None, strikeslip, dipslip, total, coupling
+            * add_slip      : Put the slip as a value for the color. Can be:
+                              - None: no color value
+                              - str: 'strikeslip', 'dipslip', 'tensile', 'total', 'coupling'
+                              - np.ndarray: (n,) or (1,n) or (n,1) array of custom values
             * scale         : Multiply the slip value by a factor.
-            * patch         : Can be 'normal' or 'equiv'
             * stdh5         : Get the standard deviation from a h5 file
             * decim         : Decimate the h5 file
-
+    
         Returns:
             * None
         '''
-
+    
         # Check size
         if self.N_slip!=None and self.N_slip!=len(self.patch) and add_slip is not None:
             raise NotImplementedError('Only works for len(slip)==len(patch)')
-
+    
         # Write something
         print('Writing geometry to file {}'.format(filename))
-
+    
         # Open the file
         fout = open(filename, 'w')
-
+    
         # If an h5 file is specified, open it
         if stdh5 is not None:
             import h5py
             h5fid = h5py.File(stdh5, 'r')
             samples = h5fid['samples'].value[::decim,:]
-
+    
+        # Check if add_slip is a numpy array
+        custom_values = None
+        if isinstance(add_slip, np.ndarray):
+            # Handle different array shapes
+            if add_slip.ndim == 1:
+                # 1D array (n,)
+                custom_values = add_slip
+            elif add_slip.ndim == 2:
+                # 2D array (1,n) or (n,1)
+                if add_slip.shape[0] == 1:
+                    custom_values = add_slip.flatten()
+                elif add_slip.shape[1] == 1:
+                    custom_values = add_slip.flatten()
+                else:
+                    raise ValueError(f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}")
+            else:
+                raise ValueError(f"Array must be 1D or 2D, got {add_slip.ndim}D")
+            
+            # Verify length matches number of patches
+            nPatches = len(self.patch)
+            if len(custom_values) != nPatches:
+                raise ValueError(f"Custom values length ({len(custom_values)}) must match "
+                               f"number of patches ({nPatches})")
+    
         # Loop over the patches
         nPatches = len(self.patch)
         for pIndex in range(nPatches):
-
+    
             # Select the string for the color
             string = '  '
             if add_slip is not None:
-                if add_slip == 'coupling':
-                    slp = self.coupling[pIndex]
+                # Case 1: Custom numpy array values
+                if custom_values is not None:
+                    slp = custom_values[pIndex] * scale
                     string = '-Z{}'.format(slp)
-                if add_slip == 'strikeslip':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,pIndex])
+                # Case 2: String-based slip components
+                elif isinstance(add_slip, str):
+                    if add_slip == 'coupling':
+                        slp = self.coupling[pIndex]
+                        string = '-Z{}'.format(slp)
+                    elif add_slip == 'strikeslip':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,pIndex])
+                        else:
+                            slp = self.slip[pIndex,0]*scale
+                        string = '-Z{}'.format(slp)
+                    elif add_slip == 'dipslip':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,pIndex+nPatches])
+                        else:
+                            slp = self.slip[pIndex,1]*scale
+                        string = '-Z{}'.format(slp)
+                    elif add_slip == 'tensile':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,pIndex+2*nPatches])
+                        else:
+                            slp = self.slip[pIndex,2]*scale
+                        string = '-Z{}'.format(slp)
+                    elif add_slip == 'total':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,pIndex]**2 + samples[:,pIndex+nPatches]**2)
+                        else:
+                            slp = np.sqrt(self.slip[pIndex,0]**2 + self.slip[pIndex,1]**2)*scale
+                        string = '-Z{}'.format(slp)
                     else:
-                        slp = self.slip[pIndex,0]*scale
-                    string = '-Z{}'.format(slp)
-                elif add_slip == 'dipslip':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,pIndex+nPatches])
-                    else:
-                        slp = self.slip[pIndex,1]*scale
-                    string = '-Z{}'.format(slp)
-                elif add_slip == 'tensile':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,pIndex+2*nPatches])
-                    else:
-                        slp = self.slip[pIndex,2]*scale
-                    string = '-Z{}'.format(slp)
-                elif add_slip == 'total':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,pIndex]**2 + samples[:,pIndex+nPatches]**2)
-                    else:
-                        slp = np.sqrt(self.slip[pIndex,0]**2 + self.slip[pIndex,1]**2)*scale
-                    string = '-Z{}'.format(slp)
-
+                        raise ValueError(f"Unknown add_slip option: {add_slip}")
+                else:
+                    raise TypeError(f"add_slip must be str or np.ndarray, got {type(add_slip)}")
+    
             # Put the parameter number in the file as well if it exists
             parameter = ' '
             if hasattr(self,'index_parameter') and add_slip is not None:
@@ -1031,21 +1067,25 @@ class TriangularPatches(Fault):
                 j = np.int64(self.index_parameter[pIndex,1])
                 k = np.int64(self.index_parameter[pIndex,2])
                 parameter = '# {} {} {} '.format(i,j,k)
-
+    
             # Put the slip value
             if add_slip is not None:
-                if add_slip=='coupling':
+                # Check type first before string comparison
+                if isinstance(add_slip, str) and add_slip == 'coupling':
                     slipstring = ' # {}'.format(self.coupling[pIndex])
                 else:
-                    slipstring = ' # {} {} {} '.format(self.slip[pIndex,0],
-                                               self.slip[pIndex,1], self.slip[pIndex,2])
-
+                    if custom_values is not None:
+                        slipstring = ' # {} {} {} '.format(custom_values[pIndex], 0.0, 0.0)
+                    else:
+                        slipstring = ' # {} {} {} '.format(self.slip[pIndex,0],
+                                                self.slip[pIndex,1], self.slip[pIndex,2])
+    
             # Write the string to file
             if add_slip is None:
                 fout.write('> {} {} \n'.format(string, parameter))
             else:
                 fout.write('> {} {} {}  \n'.format(string,parameter,slipstring))
-
+    
             # Write the 3 patch corners (the order is to be GMT friendly)
             p = self.patchll[pIndex]
             pp = p[0]; fout.write('{} {} {} \n'.format(np.round(pp[0], decimals=4), 
@@ -1057,14 +1097,14 @@ class TriangularPatches(Fault):
             pp = p[2]; fout.write('{} {} {} \n'.format(np.round(pp[0], decimals=4), 
                                                        np.round(pp[1], decimals=4), 
                                                        np.round(pp[2], decimals=4)))
-
+    
         # Close the file
         fout.close()
-
+    
         # Close h5 file if it is open
         if stdh5 is not None:
             h5fid.close()
-
+    
         # All done
         return
     # ----------------------------------------------------------------------
@@ -4199,23 +4239,51 @@ class TriangularPatches(Fault):
         
         Kwargs:
             * figure        : Number of the figure.
-            * slip          : What slip to plot
-            * equiv         : useless. For consitency between fault objects
+            * slip          : What slip to plot. Can be:
+                              - str: 'total', 'strikeslip', 'dipslip', 'tensile', 'coupling'
+                              - np.ndarray: (n,) or (1,n) or (n,1) array of custom values
+            * equiv         : useless. For consistency between fault objects
             * show          : Show me
-            * Norm          : colorbar min and max values
+            * norm          : colorbar min and max values
             * linewidth     : Line width in points
             * plot_on_2d    : Plot on a map as well
+            * colorbar      : if True, plots a colorbar
+            * cbaxis        : [Left, Bottom, Width, Height] of the colorbar axis
+            * cborientation : 'horizontal' (default) or 'vertical'
+            * cblabel       : Write something next to the colorbar
             * drawCoastline : Self-explanatory argument...
             * expand        : Expand the map by {expand} degree around the edges
                               of the fault.
             * savefig       : Save figures as eps.
             * scalebar      : Length of a scalebar (float, default is None)
+            * figsize       : tuple (width, height) for figure size
+            * cmap          : Colormap (any of the matplotlib ones)
+            * edgecolor     : either a color or 'slip'
+            * ftype         : File type for saving ('eps', 'png', 'pdf', etc.)
+            * dpi           : Resolution for saved figure
+            * bbox_inches   : Bounding box for saved figure
+            * suffix        : Suffix for the saved figure filename
             * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
             * cbticks       : List of ticks to set on the colorbar
             * cblinewidth   : Width of the colorbar label border and tick lines
             * cbfontsize    : Font size of the colorbar label, default is 10
             * cb_label_side : Position of the label relative to the ticks ('opposite' or 'same'), default is 'opposite'
             * map_cbaxis    : Axis for the colorbar on the map plot, default is None
+        
+        Examples:
+            >>> # Basic usage with string slip type
+            >>> fault.plot(slip='total')
+            >>> 
+            >>> # Plot custom slip values
+            >>> custom_slip = np.random.rand(len(fault.patch)) * 5
+            >>> fault.plot(slip=custom_slip, cblabel='Custom Slip (m)')
+            >>> 
+            >>> # Plot with custom colorbar limits
+            >>> fault.plot(slip='strikeslip', norm=[0, 2], cblabel='Strike-slip (m)')
+            >>> 
+            >>> # Save figure with custom parameters
+            >>> fault.plot(slip='total', savefig=True, suffix='test', 
+            ...           dpi=600, ftype='pdf')
         
         Returns:
             * None
@@ -4240,7 +4308,7 @@ class TriangularPatches(Fault):
         if drawCoastlines:
             fig.drawCoastlines(parallels=None, meridians=None, drawOnFault=True)
     
-        # Draw the fault
+        # Draw the fault - slip can now be either string or array
         fig.faultpatches(self, slip=slip, norm=norm, colorbar=colorbar, cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel, 
                          plot_on_2d=plot_on_2d, linewidth=linewidth, cmap=cmap, edgecolor=edgecolor,
                          cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
@@ -4249,12 +4317,20 @@ class TriangularPatches(Fault):
         if savefig:
             prefix = self.name.replace(' ','_')
             suffix = f'_{suffix}' if suffix != '' else ''
+            
+            # Determine slip name for filename
+            if isinstance(slip, np.ndarray):
+                slip_name = 'custom'
+            else:
+                slip_name = slip
+                
             saveFig = ['fault']
             if plot_on_2d:
                 saveFig.append('map')
-            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
+            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip_name), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
     
         self.slipfig = fig
+        
         # show
         if show:
             showFig = ['fault']

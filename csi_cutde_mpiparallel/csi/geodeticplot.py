@@ -832,7 +832,8 @@ class geodeticplot(object):
             * fault         : Fault instance
     
         Kwargs:
-            * slip          : Can be 'strikeslip', 'dipslip', 'tensile', 'total' or 'coupling'
+            * slip          : Can be 'strikeslip', 'dipslip', 'tensile', 'total', 'coupling', 
+                              or a numpy array (n,) or (1,n) or (n,1) of custom values
             * norm          : Limits for the colorbar.
             * colorbar      : if True, plots a colorbar.
             * cbaxis        : [Left, Bottom, Width, Height] of the colorbar axis
@@ -856,26 +857,55 @@ class geodeticplot(object):
             * None
         '''
     
-        # Get slip
-        if slip in ('strikeslip'):
-            slip = fault.slip[:,0].copy()
-        elif slip in ('dipslip'):
-            slip = fault.slip[:,1].copy()
-        elif slip in ('tensile'):
-            slip = fault.slip[:,2].copy()
-        elif slip in ('total'):
-            slip = np.sqrt(fault.slip[:,0]**2 + fault.slip[:,1]**2 + fault.slip[:,2]**2)
-        elif slip in ('coupling'):
-            slip = fault.coupling.copy()
+        # Get slip values
+        if isinstance(slip, np.ndarray):
+            # Handle custom numpy array
+            if slip.ndim == 1:
+                # 1D array (n,)
+                slip_values = slip
+            elif slip.ndim == 2:
+                # 2D array (1,n) or (n,1)
+                if slip.shape[0] == 1:
+                    slip_values = slip.flatten()
+                elif slip.shape[1] == 1:
+                    slip_values = slip.flatten()
+                else:
+                    raise ValueError(f"2D array must be (1,n) or (n,1), got shape {slip.shape}")
+            else:
+                raise ValueError(f"Array must be 1D or 2D, got {slip.ndim}D")
+            
+            # Verify length matches number of patches
+            nPatches = len(fault.patch)
+            if len(slip_values) != nPatches:
+                raise ValueError(f"Custom slip array length ({len(slip_values)}) must match "
+                               f"number of patches ({nPatches})")
+        
+        elif isinstance(slip, str):
+            # Handle string-based slip components (original behavior)
+            if slip in ('strikeslip'):
+                slip_values = fault.slip[:,0].copy()
+            elif slip in ('dipslip'):
+                slip_values = fault.slip[:,1].copy()
+            elif slip in ('tensile'):
+                slip_values = fault.slip[:,2].copy()
+            elif slip in ('total'):
+                slip_values = np.sqrt(fault.slip[:,0]**2 + fault.slip[:,1]**2 + fault.slip[:,2]**2)
+            elif slip in ('coupling'):
+                slip_values = fault.coupling.copy()
+            else:
+                print(f"Unknown slip direction: {slip}")
+                return
+        
         else:
-            print ("Unknown slip direction")
-            return
-        slip *= factor
+            raise TypeError(f"slip must be str or np.ndarray, got {type(slip)}")
+        
+        # Apply scale factor
+        slip_values *= factor
     
         # norm
         if norm == None:
-            vmin=slip.min()
-            vmax=slip.max()
+            vmin=slip_values.min()
+            vmax=slip_values.max()
         else:
             vmin=norm[0]
             vmax=norm[1]
@@ -919,9 +949,9 @@ class geodeticplot(object):
                     #if xi<0.: xi += 360.
                     verts.append((xi,yi,zi))
                 rect = art3d.Poly3DCollection([verts])
-                rect.set_facecolor(scalarMap.to_rgba(slip[p]))
+                rect.set_facecolor(scalarMap.to_rgba(slip_values[p]))
                 if edgecolor=='slip': 
-                    rect.set_edgecolors(scalarMap.to_rgba(slip[p]))
+                    rect.set_edgecolors(scalarMap.to_rgba(slip_values[p]))
                 else:
                     rect.set_edgecolors(edgecolor)
                 if alpha<1.0:
@@ -949,7 +979,7 @@ class geodeticplot(object):
                     #if xi<0.: xi += 360.
                     verts.append((xi,yi))
                 rect = colls.PolyCollection([verts])
-                rect.set_facecolor(scalarMap.to_rgba(slip[p]))
+                rect.set_facecolor(scalarMap.to_rgba(slip_values[p]))
                 rect.set_edgecolors('gray')
                 rect.set_linewidth(linewidth)
                 if alpha<1.0:
@@ -960,11 +990,11 @@ class geodeticplot(object):
         # put up a colorbar
         if colorbar:
             if self.faille is not None: 
-                self.addColorbar(slip, scalarMap, cbaxis, cborientation, self.figFaille, cblabel=cblabel, 
+                self.addColorbar(slip_values, scalarMap, cbaxis, cborientation, self.figFaille, cblabel=cblabel, 
                                  cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side) 
             if plot_on_2d and self.carte is not None: 
                 cbaxis = map_cbaxis if map_cbaxis is not None else cbaxis
-                self.addColorbar(slip, scalarMap, cbaxis, cborientation, self.figCarte, cblabel=cblabel, 
+                self.addColorbar(slip_values, scalarMap, cbaxis, cborientation, self.figCarte, cblabel=cblabel, 
                                  cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side)
     
         # All done

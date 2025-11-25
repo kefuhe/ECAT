@@ -1374,12 +1374,16 @@ class RectangularPatches(Fault):
                                 patch='normal', stdh5=None, decim=1):
         '''
         Writes the patch corners in a file that can be used in psxyz.
-
+    
         Args:
             * filename      : Name of the file.
-
+    
         Kwargs:
-            * add_slip      : Put the slip as a value for the color. Can be None, strikeslip, dipslip, total, coupling.
+            * add_slip      : Put the slip as a value for the color. Can be:
+                              - None: no color value
+                              - str: 'strikeslip', 'dipslip', 'opening', 'total', 'coupling', 
+                                     'normaltraction', 'strikesheartraction', 'dipsheartraction'
+                              - np.ndarray: (n,) or (1,n) or (n,1) array of custom values
             * scale         : Multiply the slip value by a factor.
             * patch         : Can be 'normal' or 'equiv'
             * stdh5         : Get standard deviation from an h5 file
@@ -1388,54 +1392,88 @@ class RectangularPatches(Fault):
         # Write something
         if self.verbose:
             print('Writing geometry to file {}'.format(filename))
-
+    
         # Open the file
         fout = open(filename, 'w')
-
+    
         # If an h5 file is specified, open it
         if stdh5 is not None:
             import h5py
             h5fid = h5py.File(stdh5, 'r')
             samples = h5fid['samples'].value[::decim,:]
-
+    
+        # Check if add_slip is a numpy array
+        custom_values = None
+        if isinstance(add_slip, np.ndarray):
+            # Handle different array shapes
+            if add_slip.ndim == 1:
+                # 1D array (n,)
+                custom_values = add_slip
+            elif add_slip.ndim == 2:
+                # 2D array (1,n) or (n,1)
+                if add_slip.shape[0] == 1:
+                    custom_values = add_slip.flatten()
+                elif add_slip.shape[1] == 1:
+                    custom_values = add_slip.flatten()
+                else:
+                    raise ValueError(f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}")
+            else:
+                raise ValueError(f"Array must be 1D or 2D, got {add_slip.ndim}D")
+            
+            # Verify length matches number of patches
+            nPatches = len(self.patch)
+            if len(custom_values) != nPatches:
+                raise ValueError(f"Custom values length ({len(custom_values)}) must match "
+                               f"number of patches ({nPatches})")
+    
         # Loop over the patches
         nPatches = len(self.patch)
         for p in range(nPatches):
-
+    
             # Select the string for the color
             string = '  '
             if add_slip is not None:
-                if add_slip == 'strikeslip':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,p])
+                # Case 1: Custom numpy array values
+                if custom_values is not None:
+                    slp = custom_values[p] * scale
+                # Case 2: String-based slip components
+                elif isinstance(add_slip, str):
+                    if add_slip == 'strikeslip':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,p])
+                        else:
+                            slp = self.slip[p,0]*scale
+                    elif add_slip == 'dipslip':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,p+nPatches])
+                        else:
+                            slp = self.slip[p,1]*scale
+                    elif add_slip == 'opening':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,p+2*nPatches])
+                        else:
+                            slp = self.slip[p,2]*scale
+                    elif add_slip == 'total':
+                        if stdh5 is not None:
+                            slp = np.std(samples[:,p]**2 + samples[:,p+nPatches]**2)
+                        else:
+                            slp = np.sqrt(self.slip[p,0]**2 + self.slip[p,1]**2)*scale
+                    elif add_slip == 'normaltraction':
+                        slp = self.Normal[p]
+                    elif add_slip == 'strikesheartraction':
+                        slp = self.ShearStrike[p]
+                    elif add_slip == 'dipsheartraction':
+                        slp = self.ShearDip[p]
+                    elif add_slip == 'coupling':
+                        slp = self.coupling[p]
                     else:
-                        slp = self.slip[p,0]*scale
-                elif add_slip == 'dipslip':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,p+nPatches])
-                    else:
-                        slp = self.slip[p,1]*scale
-                elif add_slip == 'opening':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,p+2*nPatches])
-                    else:
-                        slp = self.slip[p,2]*scale
-                elif add_slip == 'total':
-                    if stdh5 is not None:
-                        slp = np.std(samples[:,p]**2 + samples[:,p+nPatches]**2)
-                    else:
-                        slp = np.sqrt(self.slip[p,0]**2 + self.slip[p,1]**2)*scale
-                elif add_slip == 'normaltraction':
-                    slp = self.Normal
-                elif add_slip == 'strikesheartraction':
-                    slp = self.ShearStrike
-                elif add_slip == 'dipsheartraction':
-                    slp = self.ShearDip
-                elif add_slip == 'coupling':
-                    slp = self.coupling[p]
+                        raise ValueError(f"Unknown add_slip option: {add_slip}")
+                else:
+                    raise TypeError(f"add_slip must be str or np.ndarray, got {type(add_slip)}")
+                
                 # Make string
                 string = '-Z{}'.format(slp)
-
+    
             # Put the parameter number in the file as well if it exists
             parameter = ' ' 
             if hasattr(self,'index_parameter'):
@@ -1443,16 +1481,21 @@ class RectangularPatches(Fault):
                 j = np.int64(self.index_parameter[p,1])
                 k = np.int64(self.index_parameter[p,2])
                 parameter = '# {} {} {} '.format(i,j,k)
-
+    
             # Put the slip value
             if add_slip is not None:
-                slipstring = ' # {} {} {} '.format(self.slip[p,0], self.slip[p,1], self.slip[p,2])
-            else:
-                slipstring = ' '
-
+                # Check type first before string comparison
+                if isinstance(add_slip, str) and add_slip == 'coupling':
+                    slipstring = ' # {}'.format(self.coupling[p])
+                else:
+                    if custom_values is not None:
+                        slipstring = ' # {} {} {} '.format(custom_values[p], 0.0, 0.0)
+                    else:
+                        slipstring = ' # {} {} {} '.format(self.slip[p,0], self.slip[p,1], self.slip[p,2])
+    
             # Write the string to file
             fout.write('> {} {} {}  \n'.format(string,parameter,slipstring))
-
+    
             # Write the 4 patch corners (the order is to be GMT friendly)
             if patch in ('normal'):
                 p = self.patchll[p]
@@ -1464,14 +1507,14 @@ class RectangularPatches(Fault):
             pp=p[0]; fout.write('{} {} {} \n'.format(pp[0], pp[1], pp[2]))
             pp=p[3]; fout.write('{} {} {} \n'.format(pp[0], pp[1], pp[2]))
             pp=p[2]; fout.write('{} {} {} \n'.format(pp[0], pp[1], pp[2]))
-
+    
         # Close th file
         fout.close()
-
+    
         # Close h5 file if it is open
         if stdh5 is not None:
             h5fid.close()
-
+    
         # All done 
         return
     # ----------------------------------------------------------------------
@@ -2753,7 +2796,7 @@ class RectangularPatches(Fault):
         # All done
         return obs_pts, disp_total
     
-    def _rect2triangular(self, slipVec=None):
+    def _rect2triangular(self, slipVec=None, return_tri_fault=False):
         """
         Convert rectangular patches to triangular patches.
         
@@ -2765,21 +2808,38 @@ class RectangularPatches(Fault):
         slipVec : np.ndarray, optional
             (n_patch, 3) slip for each rectangular patch [strike, dip, tensile].
             If None, uses self.slip
+        return_tri_fault : bool, optional
+            If True, returns a TriangularPatches object instead of arrays.
+            If False (default), returns arrays (Faces, Vertices, tri_slip).
         
         Returns
         -------
-        Faces : np.ndarray
-            (n_triangles, 3) array of vertex indices for each triangle
-        Vertices : np.ndarray
-            (n_vertices, 3) array of unique vertex coordinates [x, y, z]
-        tri_slip : np.ndarray
-            (n_triangles, 3) slip vectors for each triangle
-            
+        If return_tri_fault is False:
+            Faces : np.ndarray
+                (n_triangles, 3) array of vertex indices for each triangle
+            Vertices : np.ndarray
+                (n_vertices, 3) array of unique vertex coordinates [x, y, z]
+            tri_slip : np.ndarray
+                (n_triangles, 3) slip vectors for each triangle
+                
+        If return_tri_fault is True:
+            tri_fault : TriangularPatches
+                A TriangularPatches object with the converted geometry and slip
+                
         Notes
         -----
-        - Rectangle vertices are numbered: 0(top-left), 1(top-right), 2(bottom-right), 3(bottom-left)
-        - Each rectangle is split into: Triangle1 [0,1,2] and Triangle2 [0,2,3]
+        - Rectangle vertices are numbered: 0(bottom-left), 1(bottom-right), 2(top-right), 3(top-left)
+        - Each rectangle is split into: Triangle1 [0,1,2] and Triangle2 [0,2,3] to keep anticlockwise order
         - Slip is duplicated: both triangles get the same slip as the parent rectangle
+        
+        Examples
+        --------
+        >>> # Get arrays (default behavior)
+        >>> Faces, Vertices, tri_slip = rect_fault._rect2triangular()
+        >>> 
+        >>> # Get TriangularPatches object
+        >>> tri_fault = rect_fault._rect2triangular(return_tri_fault=True)
+        >>> tri_fault.plot(slip='total')
         """
         
         # Use provided slip or default to self.slip
@@ -2803,6 +2863,7 @@ class RectangularPatches(Fault):
         
         vertex_count = 0
         
+        tri_patches = []
         for i, patch in enumerate(self.patch):
             # Get the 4 corners of the rectangular patch
             # patch is a (4, 3) array: [[x0,y0,z0], [x1,y1,z1], [x2,y2,z2], [x3,y3,z3]]
@@ -2833,13 +2894,61 @@ class RectangularPatches(Fault):
             # Triangle 2: vertices [0, 2, 3]
             faces_list.append([local_indices[0], local_indices[2], local_indices[3]])
             slip_list.append(slips[i])
+
+            # Store triangle patches for potential use
+            tri_patches.append(np.array([p0, p1, p2]))
+            tri_patches.append(np.array([p0, p2, p3]))
         
         # Convert to numpy arrays
         Faces = np.array(faces_list, dtype=np.int64)
         Vertices = np.array(vertices_list, dtype=np.float64)
         tri_slip = np.array(slip_list, dtype=np.float64)
         
-        # All done
+        # If user wants TriangularPatches object
+        if return_tri_fault:
+            from .TriangularPatches import TriangularPatches
+            
+            # Create TriangularPatches object
+            tri_fault = TriangularPatches(
+                name=f"{self.name}_triangulated",
+                utmzone=self.utmzone,
+                ellps=self.ellps,
+                lon0=self.lon0,
+                lat0=self.lat0,
+                verbose=self.verbose
+            )
+            
+            # Set the triangular geometry
+            tri_fault.Faces = Faces
+            tri_fault.Vertices = Vertices
+            tri_fault.patch = tri_patches
+            
+            # Convert
+            tri_fault.vertices2ll()
+            tri_fault.patch2ll()
+
+            # Initialize slip
+            tri_fault.initializeslip()
+            tri_fault.slip = tri_slip
+
+            # Set fault trace
+            tri_fault.xf = self.xf
+            tri_fault.yf = self.yf
+            tri_fault.lon = self.lon
+            tri_fault.lat = self.lat
+            if hasattr(self, 'xi'):
+                tri_fault.xi = self.xi
+                tri_fault.yi = self.yi
+                tri_fault.loni = self.loni
+                tri_fault.lati = self.lati
+
+            # Set depth
+            tri_fault.setdepth()
+            
+            # Return the TriangularPatches object
+            return tri_fault
+        
+        # Default: return arrays
         return Faces, Vertices, tri_slip
     # ----------------------------------------------------------------------
 
@@ -3533,68 +3642,103 @@ class RectangularPatches(Fault):
         
         Args:
             * figure        : Number of the figure.
-            * slip          : which slip to plot
+            * slip          : which slip to plot. Can be:
+                              - str: 'total', 'strikeslip', 'dipslip', 'opening', 'coupling'
+                              - np.ndarray: (n,) or (1,n) or (n,1) array of custom values
             * equiv         : plot the equivalent patches
             * show          : True/False
             * axesscaling   : Perform axes scaling
-            * Norm          : Colorbar limits for slip
+            * norm          : Colorbar limits for slip [vmin, vmax]
             * linewidth     : width of the lines
-            * plot_on_2d    : Make a map plot of the fautl
+            * plot_on_2d    : Make a map plot of the fault
             * drawCoastlines: True/False
             * expand        : How much to extend the map around the fault (degrees)
+            * colorbar      : if True, plots a colorbar
+            * cbaxis        : [Left, Bottom, Width, Height] of the colorbar axis
+            * cborientation : 'horizontal' (default) or 'vertical'
+            * cblabel       : Write something next to the colorbar
+            * figsize       : tuple (width, height) for figure size
+            * cmap          : Colormap (any of the matplotlib ones)
+            * edgecolor     : either a color or 'slip'
+            * ftype         : File type for saving ('png', 'pdf', etc.)
+            * dpi           : Resolution for saved figure
+            * bbox_inches   : Bounding box for saved figure
+            * savefig       : Save the figure
+            * suffix        : Suffix for the saved figure filename
             * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
             * cbticks       : List of ticks to set on the colorbar
             * cblinewidth   : Width of the colorbar label border and tick lines
             * cbfontsize    : Font size of the colorbar label, default is 10
             * cb_label_side : Position of the label relative to the ticks ('opposite' or 'same'), default is 'opposite'
             * map_cbaxis    : Axis for the colorbar on the map plot, default is None
+            
+        Examples:
+            >>> # Basic usage with string slip type
+            >>> fault.plot(slip='total')
+            >>> 
+            >>> # Plot custom slip values
+            >>> custom_slip = np.random.rand(len(fault.patch)) * 5
+            >>> fault.plot(slip=custom_slip, cblabel='Custom Slip (m)')
+            >>> 
+            >>> # Plot with custom colorbar limits
+            >>> fault.plot(slip='strikeslip', norm=[0, 2], cblabel='Strike-slip (m)')
+            >>> 
+            >>> # Save figure with custom parameters
+            >>> fault.plot(slip='total', savefig=True, suffix='test', 
+            ...           dpi=600, ftype='pdf')
         '''
-
+    
         # Get lons lats
         lonmin = np.min([p[:,0] for p in self.patchll])-expand
-        #if lonmin<0: 
-        #    lonmin += 360
         lonmax = np.max([p[:,0] for p in self.patchll])+expand
-        #if lonmax<0:
-        #    lonmax+= 360
         latmin = np.min([p[:,1] for p in self.patchll])-expand
         latmax = np.max([p[:,1] for p in self.patchll])+expand
-
+    
         # Create a figure
         fig = geoplot(figure=figure, lonmin=lonmin, lonmax=lonmax, latmin=latmin, latmax=latmax, figsize=figsize,
                       remove_direction_labels=remove_direction_labels)
-
+    
         # Draw the coastlines
         if drawCoastlines:
             fig.drawCoastlines(parallels=None, meridians=None, drawOnFault=True)
-
-        # Draw the fault
-        fig.faultpatches(self, slip=slip, norm=norm, colorbar=True, 
+    
+        # Draw the fault - slip can now be either string or array
+        fig.faultpatches(self, slip=slip, norm=norm, colorbar=colorbar, 
                          cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
                          plot_on_2d=plot_on_2d, cmap=cmap, edgecolor=edgecolor,
-                         cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
-
-        # Plot the trace of there is one
+                         cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, 
+                         cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
+    
+        # Plot the trace if there is one
         if self.lon is not None:
             fig.faulttrace(self)
-
+    
         # Savefigs?
         if savefig:
             prefix = self.name.replace(' ','_')
             suffix = f'_{suffix}' if suffix != '' else ''
+            
+            # Determine slip name for filename
+            if isinstance(slip, np.ndarray):
+                slip_name = 'custom'
+            else:
+                slip_name = slip
+                
             saveFig = ['fault']
             if plot_on_2d:
                 saveFig.append('map')
-            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
-
+            fig.savefig(prefix+'{0}_{1}'.format(suffix, slip_name), 
+                       ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
+    
         self.slipfig = fig
+        
         # show
         if show:
             showFig = ['fault']
             if plot_on_2d:
                 showFig.append('map')
             fig.show(showFig=showFig)
-
+    
         # All done
         return
     # ----------------------------------------------------------------------
