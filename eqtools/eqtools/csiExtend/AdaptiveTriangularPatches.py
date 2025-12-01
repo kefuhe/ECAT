@@ -2843,14 +2843,14 @@ class AdaptiveTriangularPatches(TriangularPatches):
                                  out_mesh=None, write2file=False, show=True, read_mesh=True, 
                                  field_size_dict={'min_dx': 3, 'bias': 1.05},
                                  mesh_algorithm=2, # 5: Delaunay, 6: Frontal-Delaunay
-                                 optimize_method='Laplace2D', verbose=5):
+                                 optimize_method='Laplace2D', verbose=5, nodes_on_layers=True):
         if out_mesh is None:
             out_mesh = f'gmsh_multilayer_fault_mesh_{self.name}.msh'
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
         vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(layers_coords=layers_coords, sizes=sizes, mesh_func=mesh_func, 
                                                             out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
                                                             field_size_dict=field_size_dict, mesh_algorithm=mesh_algorithm, 
-                                                            optimize_method=optimize_method, verbose=verbose)
+                                                            optimize_method=optimize_method, verbose=verbose, nodes_on_layers=nodes_on_layers)
         self.VertFace2csifault(vertices, faces)
 
     def skin_curve_to_bottom(self, 

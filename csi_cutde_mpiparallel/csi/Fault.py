@@ -1371,23 +1371,24 @@ class Fault(SourceInv):
                 vertical = True
 
         # Compute the Green's functions
-        if method in ('okada', 'Okada', 'OKADA', 'ok92', 'meade', 'Meade', 'MEADE'):
+        method_lower = method.lower()
+        if method_lower in ('okada', 'ok92', 'meade'):
             G = self.homogeneousGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
-        elif method in ('edks', 'EDKS'):
+        elif method_lower in ('edks',):
             G = self.edksGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
-        elif method in ('PSCMP', 'pscmp', 'PSGRN', 'psgrn'):
+        elif method_lower in ('pscmp', 'psgrn'):
             n_jobs = int(n_jobs) if n_jobs is not None else max(os.cpu_count()//2, 4)
             G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence, 
                               pscmpgrns=pscmpgrns, psgrndir=psgrndir, workdir=pscmp_workdir, 
                               n_jobs=n_jobs, cleanup_inp=cleanup_inp, force_recompute=force_recompute)
-        elif method in ('EDCMP', 'edcmp', 'EDGRN', 'edgrn'):
+        elif method_lower in ('edcmp', 'edgrn'):
             G = self.edcmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, 
                               edcmpgrns=edcmpgrns, grn_dir=edgrndir, workdir=edcmp_workdir, 
                               layered_model=edcmp_layered_model, n_jobs=n_jobs, 
                               cleanup_inp=cleanup_inp, force_recompute=force_recompute)
-        elif method in ('cutde', 'CUTDE'):
+        elif method_lower in ('cutde',):
             G = self.cutdeGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
-        elif method in ('empty',):
+        elif method_lower in ('empty',):
             G = self.emptyGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         else:
             raise Exception('Method {} not implemented'.format(method))
