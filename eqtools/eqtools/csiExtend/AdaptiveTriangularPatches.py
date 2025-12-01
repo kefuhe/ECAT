@@ -2787,6 +2787,152 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         return np.linspace(0, self.depth, num_patches)
     
+    def _smooth_coords(
+            self,
+            coords: np.ndarray,
+            smooth_window: int = 5,
+            smooth_method: str = 'savgol',
+            polyorder: int = 2
+        ) -> np.ndarray:
+        """
+        Apply smoothing to coordinates to remove small fluctuations.
+        
+        Parameters:
+        -----------
+        coords : np.ndarray
+            Coordinates array, shape (n, 2) or (n, 3).
+        smooth_window : int
+            Smoothing window size (must be odd, will be adjusted if even).
+        smooth_method : str
+            Smoothing method:
+            - 'savgol': Savitzky-Golay filter (preserves shape, recommended)
+            - 'moving_average': Simple moving average
+            - 'gaussian': Gaussian filter
+        polyorder : int
+            Polynomial order for Savitzky-Golay filter (must be < smooth_window).
+            
+        Returns:
+        --------
+        np.ndarray
+            Smoothed coordinates (same shape as input).
+        """
+        if len(coords) < smooth_window:
+            return coords
+        
+        # Ensure window is odd
+        if smooth_window % 2 == 0:
+            smooth_window += 1
+        
+        smoothed = coords.copy()
+        
+        # Determine number of spatial dimensions to smooth (exclude depth if present)
+        n_dims = min(coords.shape[1], 2)  # Only smooth x, y
+        
+        for dim in range(n_dims):
+            arr = coords[:, dim]
+            
+            if smooth_method == 'savgol':
+                from scipy.signal import savgol_filter
+                order = min(polyorder, smooth_window - 1)
+                smoothed[:, dim] = savgol_filter(arr, smooth_window, order, mode='interp')
+                
+            elif smooth_method == 'moving_average':
+                kernel = np.ones(smooth_window) / smooth_window
+                smoothed_arr = np.convolve(arr, kernel, mode='same')
+                # Fix edge effects
+                half_w = smooth_window // 2
+                for i in range(half_w):
+                    smoothed_arr[i] = np.mean(arr[:i + half_w + 1])
+                    smoothed_arr[-(i + 1)] = np.mean(arr[-(i + half_w + 1):])
+                smoothed[:, dim] = smoothed_arr
+                
+            elif smooth_method == 'gaussian':
+                from scipy.ndimage import gaussian_filter1d
+                sigma = smooth_window / 4.0
+                smoothed[:, dim] = gaussian_filter1d(arr, sigma, mode='nearest')
+        
+        return smoothed
+    
+    def smooth_top_coords(
+            self,
+            smooth_window: int = 5,
+            smooth_method: str = 'savgol'
+        ):
+        """
+        Smooth top coordinates to remove small fluctuations.
+        
+        Parameters:
+        -----------
+        smooth_window : int
+            Smoothing window size.
+        smooth_method : str
+            'savgol' (default, preserves shape), 'moving_average', or 'gaussian'.
+        """
+        if not hasattr(self, 'top_coords') or self.top_coords is None:
+            raise ValueError("top_coords not set. Please set top_coords first.")
+        
+        self.top_coords = self._smooth_coords(self.top_coords, smooth_window, smooth_method)
+        
+        # Update lon/lat
+        lon, lat = self.xy2ll(self.top_coords[:, 0], self.top_coords[:, 1])
+        self.top_coords_ll = np.column_stack([lon, lat, self.top_coords[:, 2]])
+        
+        if self.verbose:
+            print(f"Smoothed top_coords with window={smooth_window}, method={smooth_method}")
+    
+    def smooth_bottom_coords(
+            self,
+            smooth_window: int = 5,
+            smooth_method: str = 'savgol'
+        ):
+        """
+        Smooth bottom coordinates to remove small fluctuations.
+        
+        Parameters:
+        -----------
+        smooth_window : int
+            Smoothing window size.
+        smooth_method : str
+            'savgol' (default, preserves shape), 'moving_average', or 'gaussian'.
+        """
+        if not hasattr(self, 'bottom_coords') or self.bottom_coords is None:
+            raise ValueError("bottom_coords not set. Please set bottom_coords first.")
+        
+        self.bottom_coords = self._smooth_coords(self.bottom_coords, smooth_window, smooth_method)
+        
+        # Update lon/lat
+        lon, lat = self.xy2ll(self.bottom_coords[:, 0], self.bottom_coords[:, 1])
+        self.bottom_coords_ll = np.column_stack([lon, lat, self.bottom_coords[:, 2]])
+        
+        if self.verbose:
+            print(f"Smoothed bottom_coords with window={smooth_window}, method={smooth_method}")
+    
+    def smooth_coords(
+            self,
+            smooth_window: int = 5,
+            smooth_method: str = 'savgol',
+            smooth_top: bool = True,
+            smooth_bottom: bool = True
+        ):
+        """
+        Smooth top and/or bottom coordinates.
+        
+        Parameters:
+        -----------
+        smooth_window : int
+            Smoothing window size.
+        smooth_method : str
+            'savgol' (default, preserves shape), 'moving_average', or 'gaussian'.
+        smooth_top : bool
+            If True, smooth top_coords.
+        smooth_bottom : bool
+            If True, smooth bottom_coords.
+        """
+        if smooth_top:
+            self.smooth_top_coords(smooth_window, smooth_method)
+        if smooth_bottom:
+            self.smooth_bottom_coords(smooth_window, smooth_method)
+
     def generate_mesh(self,  
                         top_size=None, 
                         bottom_size=None, 
@@ -2798,8 +2944,11 @@ class AdaptiveTriangularPatches(TriangularPatches):
                         field_size_dict={'min_dx': 3, 'bias': 1.05},
                         segments_dict=None,
                         verbose=5,
-                        mesh_algorithm=2, # 5: Delaunay, 6: Frontal-Delaunay
-                        optimize_method='Laplace2D'):
+                        mesh_algorithm=2,
+                        optimize_method='Laplace2D',
+                        smooth_coords: bool = False,
+                        smooth_window: int = 5,
+                        smooth_method: str = 'savgol'):
         """
         Generate a slanted fault mesh.
     
@@ -2818,6 +2967,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         verbose (int, optional): Gmsh log level, ranging from 0 (no log information) to 5 (print all log information).
         mesh_algorithm (int, optional): Mesh algorithm to use (2: default, 5: Delaunay, 6: Frontal-Delaunay).
         optimize_method (str, optional): Optimization method to use ('Laplace2D' by default).
+        smooth_coords (bool, optional): If True, smooth top and bottom coordinates before meshing.
+            Useful when coordinates have small fluctuations or jagged edges. Default is False.
+        smooth_window (int, optional): Smoothing window size (only used if smooth_coords=True). Default is 5.
+        smooth_method (str, optional): Smoothing method: 'savgol', 'moving_average', or 'gaussian'. Default is 'savgol'.
     
         Returns:
         None. However, if read_mesh is True, the following instance variables will be updated:
@@ -2829,28 +2982,108 @@ class AdaptiveTriangularPatches(TriangularPatches):
         - depth: Maximum z-coordinate of all vertices.
         - z_patches: Arithmetic sequence from 0 to depth for interpolation.
         - factor_depth: Depth factor, initially set to 1.
+        
+        Examples:
+        ---------
+        >>> # Without smoothing
+        >>> fault.generate_mesh(mesh_func=True)
+        
+        >>> # With smoothing for jagged coordinates
+        >>> fault.generate_mesh(
+        ...     mesh_func=True,
+        ...     smooth_coords=True,
+        ...     smooth_window=7,
+        ...     smooth_method='savgol'
+        ... )
         """
+        # Apply smoothing if requested
+        if smooth_coords:
+            self.smooth_coords(
+                smooth_window=smooth_window,
+                smooth_method=smooth_method,
+                smooth_top=True,
+                smooth_bottom=True
+            )
+        
         if out_mesh is None:
             out_mesh = f'gmsh_fault_mesh_{self.name}.msh'
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
-        vertices, faces = self.mesh_generator.generate_gmsh_mesh(top_size=top_size, bottom_size=bottom_size, mesh_func=mesh_func, 
-                                                out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
-                                                field_size_dict=field_size_dict, segments_dict=segments_dict, 
-                                                verbose=verbose, mesh_algorithm=mesh_algorithm, optimize_method=optimize_method)
+        vertices, faces = self.mesh_generator.generate_gmsh_mesh(
+            top_size=top_size, bottom_size=bottom_size, mesh_func=mesh_func, 
+            out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
+            field_size_dict=field_size_dict, segments_dict=segments_dict, 
+            verbose=verbose, mesh_algorithm=mesh_algorithm, optimize_method=optimize_method)
         self.VertFace2csifault(vertices, faces)
 
     def generate_multilayer_mesh(self, layers_coords, sizes=None, mesh_func=None, 
                                  out_mesh=None, write2file=False, show=True, read_mesh=True, 
                                  field_size_dict={'min_dx': 3, 'bias': 1.05},
-                                 mesh_algorithm=2, # 5: Delaunay, 6: Frontal-Delaunay
-                                 optimize_method='Laplace2D', verbose=5, nodes_on_layers=True):
+                                 mesh_algorithm=2,
+                                 optimize_method='Laplace2D', verbose=5, nodes_on_layers=True,
+                                 smooth_coords: bool = False,
+                                 smooth_window: int = 5,
+                                 smooth_method: str = 'savgol'):
+        """
+        Generate a multi-layer fault mesh.
+        
+        Parameters:
+        -----------
+        layers_coords : list
+            List of layer coordinates arrays.
+        sizes : list, optional
+            List of mesh sizes for each layer.
+        mesh_func : callable, optional
+            Function to calculate mesh size.
+        out_mesh : str, optional
+            Path to the output mesh file.
+        write2file : bool, optional
+            If True, write mesh to file.
+        show : bool, optional
+            If True, show Gmsh GUI.
+        read_mesh : bool, optional
+            If True, read the generated mesh.
+        field_size_dict : dict, optional
+            Mesh size field parameters.
+        mesh_algorithm : int, optional
+            Gmsh mesh algorithm.
+        optimize_method : str, optional
+            Mesh optimization method.
+        verbose : int, optional
+            Gmsh verbosity level.
+        nodes_on_layers : bool, optional
+            If True, ensure nodes on layer interfaces.
+        smooth_coords : bool, optional
+            If True, smooth all coordinates before meshing.
+        smooth_window : int, optional
+            Smoothing window size.
+        smooth_method : str, optional
+            Smoothing method: 'savgol', 'moving_average', or 'gaussian'.
+        """
+        # Apply smoothing if requested
+        if smooth_coords:
+            # Smooth top and bottom
+            self.smooth_coords(
+                smooth_window=smooth_window,
+                smooth_method=smooth_method,
+                smooth_top=True,
+                smooth_bottom=True
+            )
+            
+            # Smooth intermediate layers
+            for i, layer in enumerate(layers_coords):
+                layers_coords[i] = self._smooth_coords(layer, smooth_window, smooth_method)
+            
+            if self.verbose:
+                print(f"Smoothed {len(layers_coords)} intermediate layers")
+        
         if out_mesh is None:
             out_mesh = f'gmsh_multilayer_fault_mesh_{self.name}.msh'
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
-        vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(layers_coords=layers_coords, sizes=sizes, mesh_func=mesh_func, 
-                                                            out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
-                                                            field_size_dict=field_size_dict, mesh_algorithm=mesh_algorithm, 
-                                                            optimize_method=optimize_method, verbose=verbose, nodes_on_layers=nodes_on_layers)
+        vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(
+            layers_coords=layers_coords, sizes=sizes, mesh_func=mesh_func, 
+            out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
+            field_size_dict=field_size_dict, mesh_algorithm=mesh_algorithm, 
+            optimize_method=optimize_method, verbose=verbose, nodes_on_layers=nodes_on_layers)
         self.VertFace2csifault(vertices, faces)
 
     def skin_curve_to_bottom(self, 
