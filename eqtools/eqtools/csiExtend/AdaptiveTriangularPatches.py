@@ -3015,25 +3015,35 @@ class AdaptiveTriangularPatches(TriangularPatches):
             verbose=verbose, mesh_algorithm=mesh_algorithm, optimize_method=optimize_method)
         self.VertFace2csifault(vertices, faces)
 
-    def generate_multilayer_mesh(self, layers_coords, sizes=None, mesh_func=None, 
+    def generate_multilayer_mesh(self, layers_coords=None, mesh_func=None, 
+                                 top_size=None, bottom_size=None,
                                  out_mesh=None, write2file=False, show=True, read_mesh=True, 
                                  field_size_dict={'min_dx': 3, 'bias': 1.05},
                                  mesh_algorithm=2,
                                  optimize_method='Laplace2D', verbose=5, nodes_on_layers=True,
                                  smooth_coords: bool = False,
                                  smooth_window: int = 5,
-                                 smooth_method: str = 'savgol'):
+                                 smooth_method: str = 'savgol',
+                                 lonlat: bool = True,
+                                 remove_entities: bool = False,
+                                 sparse_points=None,
+                                 sparse_factor=0.25,
+                                 occ_method='thrusections'):
         """
         Generate a multi-layer fault mesh.
         
         Parameters:
         -----------
-        layers_coords : list
-            List of layer coordinates arrays.
-        sizes : list, optional
-            List of mesh sizes for each layer.
-        mesh_func : callable, optional
-            Function to calculate mesh size.
+        layers_coords : list, optional
+            List of layer coordinates arrays. Each array has shape (n, 3) with columns [lon/x, lat/y, depth].
+            If None, uses self.layers (UTM) or self.layers_ll (lonlat) based on the lonlat parameter.
+        mesh_func : bool or None, optional
+            If True, uses field-based sizing with field_size_dict.
+            If False or None, uses top_size/bottom_size with linear interpolation.
+        top_size : float, optional
+            Mesh size at the top. If None, uses mesh_generator.top_size.
+        bottom_size : float, optional
+            Mesh size at the bottom. If None, uses mesh_generator.bottom_size or top_size.
         out_mesh : str, optional
             Path to the output mesh file.
         write2file : bool, optional
@@ -3043,22 +3053,100 @@ class AdaptiveTriangularPatches(TriangularPatches):
         read_mesh : bool, optional
             If True, read the generated mesh.
         field_size_dict : dict, optional
-            Mesh size field parameters.
+            Mesh size field parameters: {'min_dx': float, 'bias': float}.
+            Only used when mesh_func=True.
         mesh_algorithm : int, optional
-            Gmsh mesh algorithm.
+            Gmsh mesh algorithm (1: MeshAdapt, 2: Automatic, 5: Delaunay, 6: Frontal-Delaunay).
         optimize_method : str, optional
             Mesh optimization method.
         verbose : int, optional
-            Gmsh verbosity level.
+            Gmsh verbosity level (0-5).
         nodes_on_layers : bool, optional
-            If True, ensure nodes on layer interfaces.
+            If True, mesh nodes are constrained to layer interfaces.
+            If False, nodes can be placed freely on B-Spline surface.
         smooth_coords : bool, optional
             If True, smooth all coordinates before meshing.
         smooth_window : int, optional
             Smoothing window size.
         smooth_method : str, optional
             Smoothing method: 'savgol', 'moving_average', or 'gaussian'.
+        lonlat : bool, optional
+            If True, input layers_coords are in longitude/latitude format.
+            If False, layers_coords are in UTM format.
+            When layers_coords is None, determines whether to use self.layers_ll (True) 
+            or self.layers (False). Default is True.
+        remove_entities : bool, optional
+            If True, remove point and line entities after creating surfaces.
+            Default is False.
+        sparse_points : bool or None, optional
+            If True, sparse input points before creating curves.
+            If False, use original points without sparsification.
+            If None (default), automatically sparse when mesh_func=True.
+        sparse_factor : float, optional
+            Factor to multiply with min mesh size to get sparse interval.
+            Default is 0.25 (1/4 of min mesh size).
+        occ_method : str, optional
+            Method to create surfaces in OCC kernel when nodes_on_layers=False.
+            - 'filling': Use addBSplineFilling with explicit 4-edge boundaries (similar to 
+              Trelis skin). Most stable for jagged boundaries. Default.
+            - 'thrusections': Use addThruSections (smooth B-Spline surface through curves).
+              May overshoot boundaries for jagged curves.
+            - 'thrusections_ruled': Use addThruSections with makeRuled=True (linear 
+              interpolation between curves). Good compromise.
+        
+        Examples:
+        ---------
+        >>> # Method 1: Field-based sizing
+        >>> fault.generate_multilayer_mesh(
+        ...     mesh_func=True,
+        ...     field_size_dict={'min_dx': 5, 'bias': 1.05}
+        ... )
+        
+        >>> # Method 2: Fixed/interpolated sizing
+        >>> fault.generate_multilayer_mesh(
+        ...     mesh_func=False,
+        ...     top_size=10.0, bottom_size=50.0
+        ... )
+        
+        >>> # Method 3: For jagged boundaries with OCC kernel
+        >>> fault.generate_multilayer_mesh(
+        ...     nodes_on_layers=False,
+        ...     mesh_func=False,
+        ...     top_size=50.0, bottom_size=200.0,
+        ...     make_ruled=True  # Use ruled surface to avoid artifacts
+        ... )
         """
+        # Handle layers_coords input
+        if layers_coords is None:
+            # Use stored layer coordinates
+            if lonlat:
+                if not hasattr(self, 'layers_ll') or self.layers_ll is None or len(self.layers_ll) == 0:
+                    raise ValueError("layers_coords is None and self.layers_ll is not set. "
+                                   "Please provide layers_coords or call set_layer_coords() first.")
+                # Convert from lonlat to UTM
+                layers_coords_utm = []
+                for layer_ll in self.layers_ll:
+                    lon, lat, z = layer_ll[:, 0], layer_ll[:, 1], layer_ll[:, 2]
+                    x, y = self.ll2xy(lon, lat)
+                    layers_coords_utm.append(np.column_stack([x, y, z]))
+                layers_coords = layers_coords_utm
+            else:
+                if not hasattr(self, 'layers') or self.layers is None or len(self.layers) == 0:
+                    raise ValueError("layers_coords is None and self.layers is not set. "
+                                   "Please provide layers_coords or call set_layer_coords() first.")
+                layers_coords = [layer.copy() for layer in self.layers]
+        else:
+            # Convert input layers_coords if needed
+            if lonlat:
+                layers_coords_utm = []
+                for layer_ll in layers_coords:
+                    layer_ll = np.atleast_2d(layer_ll)
+                    lon, lat, z = layer_ll[:, 0], layer_ll[:, 1], layer_ll[:, 2]
+                    x, y = self.ll2xy(lon, lat)
+                    layers_coords_utm.append(np.column_stack([x, y, z]))
+                layers_coords = layers_coords_utm
+            # If lonlat=False, layers_coords is already in UTM, use directly
+        
         # Apply smoothing if requested
         if smooth_coords:
             # Smooth top and bottom
@@ -3078,12 +3166,28 @@ class AdaptiveTriangularPatches(TriangularPatches):
         
         if out_mesh is None:
             out_mesh = f'gmsh_multilayer_fault_mesh_{self.name}.msh'
+        
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
+        
         vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(
-            layers_coords=layers_coords, sizes=sizes, mesh_func=mesh_func, 
-            out_mesh=out_mesh, write2file=write2file, show=show, read_mesh=read_mesh, 
-            field_size_dict=field_size_dict, mesh_algorithm=mesh_algorithm, 
-            optimize_method=optimize_method, verbose=verbose, nodes_on_layers=nodes_on_layers)
+            layers_coords=layers_coords, 
+            mesh_func=mesh_func,
+            top_size=top_size,
+            bottom_size=bottom_size,
+            out_mesh=out_mesh, 
+            write2file=write2file, 
+            show=show, 
+            read_mesh=read_mesh, 
+            field_size_dict=field_size_dict, 
+            mesh_algorithm=mesh_algorithm, 
+            optimize_method=optimize_method, 
+            verbose=verbose, 
+            nodes_on_layers=nodes_on_layers,
+            remove_entities=remove_entities,
+            sparse_points=sparse_points,
+            sparse_factor=sparse_factor,
+            occ_method=occ_method
+        )
         self.VertFace2csifault(vertices, faces)
 
     def skin_curve_to_bottom(self, 

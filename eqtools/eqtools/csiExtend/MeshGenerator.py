@@ -829,53 +829,215 @@ class MeshGenerator:
             self.gmsh_faces = faces
         return vertices, faces
     
-    def generate_multilayer_gmsh_mesh(self, layers_coords, sizes=None, mesh_func=None, 
+    def generate_multilayer_gmsh_mesh(self, layers_coords, mesh_func=None, 
+                                      top_size=None, bottom_size=None,
                                       out_mesh=None, write2file=False, show=True, read_mesh=True, 
                                       field_size_dict={'min_dx': 3, 'bias': 1.05},
                                       mesh_algorithm=2, optimize_method='Laplace2D', verbose=5,
-                                      nodes_on_layers=True):
+                                      nodes_on_layers=True, remove_entities=False,
+                                      sparse_points=None, sparse_factor=0.25,
+                                      occ_method='thrusections'):
         """
         Generate a multi-layer mesh using Gmsh.
     
         Parameters:
-        - layers_coords (list of np.ndarray): List of intermediate layer coordinates.
-        - sizes (list of float, optional): List of mesh sizes for each layer.
-        - mesh_func (callable, optional): Function to define mesh size.
-        - out_mesh (str, optional): Output mesh file path.
-        - write2file (bool, optional): Whether to write the mesh to a file.
-        - show (bool, optional): Whether to show the mesh in Gmsh GUI.
-        - read_mesh (bool, optional): Whether to read the mesh into the current object.
-        - field_size_dict (dict, optional): Dictionary containing 'min_dx' and 'bias' for mesh size progression.
-        - mesh_algorithm (int, optional): Algorithm to use for mesh generation.
-        - optimize_method (str, optional): Method to use for mesh optimization.
-        - verbose (int, optional): Verbosity level for Gmsh.
-        - nodes_on_layers (bool, optional): If True (default), mesh nodes are placed on intermediate 
-          layers. If False, uses OCC kernel to create a single continuous surface through all curves,
-          where mesh nodes can be placed freely without being constrained to layer boundaries.
+        -----------
+        layers_coords : list of np.ndarray
+            List of intermediate layer coordinates. Each array has shape (n, 3).
+        mesh_func : bool or None, optional
+            If True, uses field-based sizing with field_size_dict (mesh size increases 
+            with distance from top curve).
+            If False or None, uses top_size/bottom_size with linear interpolation.
+        top_size : float, optional
+            Mesh size at the top. If None, uses self.top_size.
+        bottom_size : float, optional
+            Mesh size at the bottom. If None, uses self.bottom_size or top_size.
+        out_mesh : str, optional
+            Output mesh file path.
+        write2file : bool, optional
+            Whether to write the mesh to a file.
+        show : bool, optional
+            Whether to show the mesh in Gmsh GUI.
+        read_mesh : bool, optional
+            Whether to read the mesh into the current object.
+        field_size_dict : dict, optional
+            Dictionary containing 'min_dx' (minimum mesh size at top) and 'bias' 
+            (growth factor) for mesh size progression. Only used when mesh_func=True.
+        mesh_algorithm : int, optional
+            Algorithm to use for mesh generation.
+            1: MeshAdapt, 2: Automatic (default), 5: Delaunay, 6: Frontal-Delaunay
+        optimize_method : str, optional
+            Method to use for mesh optimization.
+        verbose : int, optional
+            Verbosity level for Gmsh (0-5).
+        nodes_on_layers : bool, optional
+            If True (default), mesh nodes are placed on intermediate layer boundaries.
+            If False, uses OCC kernel to create surfaces where mesh nodes can be 
+            placed freely (not constrained to layer interfaces).
+        remove_entities : bool, optional
+            If True, remove point and line entities after creating surfaces.
+            Default is False.
+        sparse_points : bool or None, optional
+            If True, sparse input points before creating curves.
+            If False, use original points without sparsification.
+            If None (default), automatically sparse when mesh_func=True.
+        sparse_factor : float, optional
+            Factor to multiply with min mesh size to get sparse interval.
+            Default is 0.25 (1/4 of min mesh size).
+        occ_method : str, optional
+            Method to create surfaces in OCC kernel when nodes_on_layers=False.
+            - 'filling': Use addBSplineFilling with explicit 4-edge boundaries (similar to 
+              Trelis skin). Most stable for jagged boundaries. Default.
+            - 'thrusections': Use addThruSections (smooth B-Spline surface through curves).
+              May overshoot boundaries for jagged curves.
+            - 'thrusections_ruled': Use addThruSections with makeRuled=True (linear 
+              interpolation between curves). Good compromise.
     
         Returns:
-        - vertices, faces: Mesh vertices and faces arrays.
+        --------
+        vertices : np.ndarray
+            Mesh vertices array of shape (n_vertices, 3).
+        faces : np.ndarray
+            Mesh faces array of shape (n_faces, 3).
+            
+        Notes:
+        ------
+        Mesh size control methods:
+        1. mesh_func=True: Uses distance field from top curve, size = min_dx * bias^n
+        2. mesh_func=False/None: Uses top_size/bottom_size with linear interpolation
+           for intermediate layers.
+        
+        Point sparsification:
+        When sparse_points=True (or None with mesh_func=True), input coordinates are
+        discretized to sparse_factor * min_mesh_size interval to speed up curve meshing.
+        
+        OCC method comparison:
+        - 'filling': Creates surfaces with strict boundary control using 4 edges.
+          Similar to Trelis/Cubit skin command. Best for jagged/curved boundaries.
+        - 'thrusections': Creates smooth B-Spline surface. May cause boundary overshoot
+          for highly curved boundaries.
+        - 'thrusections_ruled': Creates ruled surface (linear interpolation). Good 
+          balance between smoothness and boundary control.
+        
+        Examples:
+        ---------
+        >>> # Method 1: Field-based sizing (mesh grows from top to bottom)
+        >>> vertices, faces = mesh_generator.generate_multilayer_gmsh_mesh(
+        ...     layers_coords, mesh_func=True, 
+        ...     field_size_dict={'min_dx': 5, 'bias': 1.05}
+        ... )
+        
+        >>> # Method 2: Fixed/interpolated sizing
+        >>> vertices, faces = mesh_generator.generate_multilayer_gmsh_mesh(
+        ...     layers_coords, mesh_func=False,
+        ...     top_size=10.0, bottom_size=50.0
+        ... )
+        
+        >>> # Method 3: OCC with explicit boundary control (like Trelis skin)
+        >>> vertices, faces = mesh_generator.generate_multilayer_gmsh_mesh(
+        ...     layers_coords, mesh_func=False, nodes_on_layers=False,
+        ...     top_size=50.0, bottom_size=200.0,
+        ...     occ_method='filling'
+        ... )
+        
+        >>> # Method 4: OCC with ruled surface
+        >>> vertices, faces = mesh_generator.generate_multilayer_gmsh_mesh(
+        ...     layers_coords, mesh_func=False, nodes_on_layers=False,
+        ...     top_size=50.0, bottom_size=200.0,
+        ...     occ_method='thrusections_ruled'
+        ... )
         """
         gmsh.initialize('', False)
         gmsh.option.setNumber("General.Terminal", verbose)
         gmsh.clear()
         gmsh.option.setNumber("Mesh.Algorithm", mesh_algorithm)
+        
+        # Resolve mesh sizes
+        _top_size = top_size if top_size is not None else self.top_size
+        _bottom_size = bottom_size if bottom_size is not None else (self.bottom_size or _top_size)
+        
+        # Ensure we have valid sizes (default to reasonable values if not specified)
+        if _top_size is None or _top_size <= 0:
+            _top_size = 10.0  # Default size
+        if _bottom_size is None or _bottom_size <= 0:
+            _bottom_size = _top_size
+        
+        # Calculate layer sizes by linear interpolation between top and bottom
+        num_layers = len(layers_coords) if layers_coords is not None else 0
+        if num_layers > 0:
+            layer_sizes = np.linspace(_top_size, _bottom_size, num_layers + 2)[1:-1]
+        else:
+            layer_sizes = []
+        
+        # Determine minimum mesh size for sparsification
+        if mesh_func:
+            min_mesh_size = field_size_dict.get('min_dx', _top_size)
+        else:
+            min_mesh_size = min(_top_size, _bottom_size)
+        
+        # Determine whether to sparse points
+        # Default: sparse when mesh_func=True, unless explicitly disabled
+        if sparse_points is None:
+            do_sparse = mesh_func is True
+        else:
+            do_sparse = sparse_points
+        
+        # Sparse coordinates if needed
+        if do_sparse:
+            min_spacing = min_mesh_size * sparse_factor
+            top_coords_use = discretize_coords(self.top_coords, every=min_spacing)
+            bottom_coords_use = discretize_coords(self.bottom_coords, every=min_spacing)
+            layers_coords_use = []
+            if layers_coords is not None:
+                for layer in layers_coords:
+                    layers_coords_use.append(discretize_coords(layer, every=min_spacing))
+        else:
+            top_coords_use = self.top_coords
+            bottom_coords_use = self.bottom_coords
+            layers_coords_use = layers_coords if layers_coords is not None else []
     
         if nodes_on_layers:
             # Use geo kernel - nodes will be constrained to layer boundaries
-            top_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], self.top_size or 0.0) for point in self.top_coords]
-            bottom_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], self.bottom_size or 0.0) for point in self.bottom_coords]
-        
-            layer_points = []
-            if layers_coords is not None:
-                for layer, size in zip(layers_coords, sizes or [0.0]*len(layers_coords)):
-                    layer_points.append([gmsh.model.geo.addPoint(point[0], point[1], -point[2], size) for point in layer])
+            if mesh_func:
+                min_dx = field_size_dict.get('min_dx', _top_size)
+                bias = field_size_dict.get('bias', 1.05)
+                top_depth = np.mean(self.top_coords[:, 2])
+                bottom_depth = np.mean(self.bottom_coords[:, 2])
+                depth_range = abs(bottom_depth - top_depth)
+                # Estimate bottom size based on exponential growth
+                estimated_bottom_size = min_dx * (bias ** (depth_range / min_dx * 0.5))
+                estimated_bottom_size = min(estimated_bottom_size, depth_range / 2)
+                
+                top_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], min_dx) 
+                             for point in top_coords_use]
+                bottom_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], estimated_bottom_size) 
+                                for point in bottom_coords_use]
+            
+                layer_points = []
+                if layers_coords_use:
+                    func_layer_sizes = np.linspace(min_dx, estimated_bottom_size, num_layers + 2)[1:-1]
+                    for layer, size in zip(layers_coords_use, func_layer_sizes):
+                        layer_points.append([gmsh.model.geo.addPoint(point[0], point[1], -point[2], size) 
+                                            for point in layer])
+            else:
+                top_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], _top_size) 
+                             for point in top_coords_use]
+                bottom_points = [gmsh.model.geo.addPoint(point[0], point[1], -point[2], _bottom_size) 
+                                for point in bottom_coords_use]
+            
+                layer_points = []
+                if layers_coords_use:
+                    for layer, size in zip(layers_coords_use, layer_sizes):
+                        layer_points.append([gmsh.model.geo.addPoint(point[0], point[1], -point[2], size) 
+                                            for point in layer])
         
             all_points = [top_points] + layer_points + [bottom_points]
             all_curves = [gmsh.model.geo.addSpline(layer) for layer in all_points]
         
-            left_edges = [gmsh.model.geo.addLine(all_points[i][0], all_points[i+1][0]) for i in range(len(all_points) - 1)]
-            right_edges = [gmsh.model.geo.addLine(all_points[i][-1], all_points[i+1][-1]) for i in range(len(all_points) - 1)]
+            left_edges = [gmsh.model.geo.addLine(all_points[i][0], all_points[i+1][0]) 
+                         for i in range(len(all_points) - 1)]
+            right_edges = [gmsh.model.geo.addLine(all_points[i][-1], all_points[i+1][-1]) 
+                          for i in range(len(all_points) - 1)]
             
             surfaces = []
             for i in range(len(all_curves) - 1):
@@ -885,8 +1047,8 @@ class MeshGenerator:
             
             gmsh.model.geo.synchronize()
             
-            # Define mesh size field
-            if mesh_func is not None:
+            # Define mesh size field if mesh_func is True
+            if mesh_func:
                 gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
                 gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
                 gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
@@ -895,92 +1057,216 @@ class MeshGenerator:
                 gmsh.model.mesh.field.setNumbers(field_distance, "CurvesList", [all_curves[0]])
         
                 field_size = gmsh.model.mesh.field.add("MathEval")
-                math_exp = self.get_math_progression(field_distance, min_dx=field_size_dict['min_dx'], bias=field_size_dict['bias'])
+                math_exp = self.get_math_progression(field_distance, 
+                                                     min_dx=field_size_dict['min_dx'], 
+                                                     bias=field_size_dict['bias'])
                 gmsh.model.mesh.field.setString(field_size, "F", math_exp)
         
                 gmsh.model.mesh.field.setAsBackgroundMesh(field_size)
+            
+            # Store top curve for later use
+            top_curve_tag = all_curves[0]
+            
+            # Remove entities if requested
+            if remove_entities:
+                gmsh.model.removeEntities(gmsh.model.getEntities(0))
+                gmsh.model.removeEntities(gmsh.model.getEntities(1))
         else:
-            # Use OCC kernel with addThruSections for a single continuous surface
-            # makeRuled=False creates a smooth B-Spline surface where mesh nodes 
-            # are NOT constrained to lie on the intermediate layer curves
-            top_points = [gmsh.model.occ.addPoint(point[0], point[1], -point[2]) for point in self.top_coords]
-            bottom_points = [gmsh.model.occ.addPoint(point[0], point[1], -point[2]) for point in self.bottom_coords]
+            # Use OCC kernel with explicit boundary control
+            top_points = [gmsh.model.occ.addPoint(point[0], point[1], -point[2]) 
+                         for point in top_coords_use]
+            bottom_points = [gmsh.model.occ.addPoint(point[0], point[1], -point[2]) 
+                            for point in bottom_coords_use]
         
             layer_points = []
-            if layers_coords is not None:
-                for layer in layers_coords:
-                    layer_points.append([gmsh.model.occ.addPoint(point[0], point[1], -point[2]) for point in layer])
+            if layers_coords_use:
+                for layer in layers_coords_use:
+                    layer_points.append([gmsh.model.occ.addPoint(point[0], point[1], -point[2]) 
+                                        for point in layer])
         
             all_points = [top_points] + layer_points + [bottom_points]
             
-            # Create BSplines and Wires for each layer
-            all_wires = []
+            # Create BSplines for each layer
+            all_splines = []
             for pts in all_points:
                 spline = gmsh.model.occ.addBSpline(pts)
-                wire = gmsh.model.occ.addWire([spline])
-                all_wires.append(wire)
+                all_splines.append(spline)
             
-            # Create a single smooth B-Spline surface through all wires
-            # makeRuled=False: creates a smooth lofted surface (nodes NOT on layer curves)
-            # makeRuled=True: creates ruled surfaces (nodes still on layer curves)
-            out_dim_tags = gmsh.model.occ.addThruSections(all_wires, makeSolid=False, makeRuled=False)
-            surfaces = [tag for dim, tag in out_dim_tags if dim == 2]
+            if occ_method == 'filling':
+                # Method: Create surfaces with explicit 4-edge boundaries (like Trelis skin)
+                # This gives strict boundary control
+                
+                # Create left and right edges (lines connecting adjacent layers)
+                left_edges = [gmsh.model.occ.addLine(all_points[i][0], all_points[i+1][0]) 
+                             for i in range(len(all_points) - 1)]
+                right_edges = [gmsh.model.occ.addLine(all_points[i][-1], all_points[i+1][-1]) 
+                              for i in range(len(all_points) - 1)]
+                
+                # Create surfaces with explicit boundaries
+                surfaces = []
+                for i in range(len(all_splines) - 1):
+                    # Create wire from the four edges
+                    # Order: top curve -> right edge -> bottom curve (reversed) -> left edge (reversed)
+                    wire = gmsh.model.occ.addWire([all_splines[i], right_edges[i], all_splines[i+1], left_edges[i]])
+                    
+                    # Use addBSplineFilling for a surface bounded by the wire
+                    try:
+                        surface = gmsh.model.occ.addBSplineFilling(wire, type="Coons")
+                    except Exception as e:
+                        if verbose > 0:
+                            print(f"Warning: addBSplineFilling failed for surface {i}, trying addSurfaceFilling: {e}")
+                        try:
+                            # Fallback to addSurfaceFilling
+                            loop = gmsh.model.occ.addCurveLoop([all_splines[i], right_edges[i], -all_splines[i+1], -left_edges[i]])
+                            surface = gmsh.model.occ.addSurfaceFilling(loop)
+                        except Exception as e2:
+                            if verbose > 0:
+                                print(f"Warning: addSurfaceFilling also failed: {e2}")
+                            # Last resort: use ThruSections for this pair
+                            wire1 = gmsh.model.occ.addWire([all_splines[i]])
+                            wire2 = gmsh.model.occ.addWire([all_splines[i+1]])
+                            out_dim_tags = gmsh.model.occ.addThruSections([wire1, wire2], makeSolid=False, makeRuled=True)
+                            surface = [tag for dim, tag in out_dim_tags if dim == 2][0]
+                    
+                    surfaces.append(surface)
+                
+                # Store top curve tag for mesh sizing
+                top_curve_tag = all_splines[0]
+                
+            elif occ_method == 'thrusections_ruled':
+                # Method: Use addThruSections with makeRuled=True (linear interpolation)
+                all_wires = [gmsh.model.occ.addWire([spline]) for spline in all_splines]
+                out_dim_tags = gmsh.model.occ.addThruSections(all_wires, makeSolid=False, makeRuled=True)
+                surfaces = [tag for dim, tag in out_dim_tags if dim == 2]
+                top_curve_tag = None  # Will find later
+                
+            elif occ_method == 'thrusections':
+                # Method: Use addThruSections with smooth B-Spline surface
+                all_wires = [gmsh.model.occ.addWire([spline]) for spline in all_splines]
+                out_dim_tags = gmsh.model.occ.addThruSections(all_wires, makeSolid=False, makeRuled=False)
+                surfaces = [tag for dim, tag in out_dim_tags if dim == 2]
+                top_curve_tag = None  # Will find later
+                
+            else:
+                raise ValueError(f"Unknown occ_method: {occ_method}. Choose from 'filling', 'thrusections', 'thrusections_ruled'")
             
             gmsh.model.occ.synchronize()
             
-            # Get the boundary curves of the resulting surface for mesh size field
-            # The top curve should be one of the boundary curves
-            all_boundaries = gmsh.model.getBoundary([(2, s) for s in surfaces], oriented=False, combined=False)
-            top_curve_tags = [abs(tag) for dim, tag in all_boundaries if dim == 1][:1]
+            # Calculate total depth range
+            top_depth = np.mean(self.top_coords[:, 2])
+            bottom_depth = np.mean(self.bottom_coords[:, 2])
+            depth_range = abs(bottom_depth - top_depth)
             
-            # Define mesh size field
-            if mesh_func is not None:
-                gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-                gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-        
-                field_distance = gmsh.model.mesh.field.add("Distance")
-                gmsh.model.mesh.field.setNumbers(field_distance, "CurvesList", top_curve_tags)
-        
-                field_size = gmsh.model.mesh.field.add("MathEval")
-                math_exp = self.get_math_progression(field_distance, min_dx=field_size_dict['min_dx'], bias=field_size_dict['bias'])
-                gmsh.model.mesh.field.setString(field_size, "F", math_exp)
-        
-                gmsh.model.mesh.field.setAsBackgroundMesh(field_size)
+            # Determine mesh size bounds
+            if mesh_func:
+                min_size = field_size_dict.get('min_dx', _top_size)
+                bias = field_size_dict.get('bias', 1.05)
+                max_size = min_size * (bias ** (depth_range / min_size))
+                max_size = min(max_size, depth_range)
             else:
-                # Set mesh size from sizes if provided
-                if sizes is not None:
-                    all_sizes = [self.top_size or 0.0] + list(sizes) + [self.bottom_size or 0.0]
-                    for layer_pts, size in zip(all_points, all_sizes):
-                        if size > 0:
-                            for pt in layer_pts:
-                                gmsh.model.mesh.setSize([(0, pt)], size)
+                min_size = min(_top_size, _bottom_size)
+                max_size = max(_top_size, _bottom_size)
+            
+            # Set global mesh size constraints
+            gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
+            
+            # Disable other size sources
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            
+            # Find the top curve if not already known (for thrusections methods)
+            if top_curve_tag is None:
+                top_start_orig = np.array([top_coords_use[0][0], top_coords_use[0][1], -top_coords_use[0][2]])
+                top_end_orig = np.array([top_coords_use[-1][0], top_coords_use[-1][1], -top_coords_use[-1][2]])
+                
+                all_boundaries = gmsh.model.getBoundary([(2, s) for s in surfaces], oriented=False, combined=False)
+                boundary_curve_tags = list(set([abs(tag) for dim, tag in all_boundaries if dim == 1]))
+                
+                min_endpoint_dist = float('inf')
+                
+                for curve_tag in boundary_curve_tags:
+                    try:
+                        curve_bounds = gmsh.model.getBoundary([(1, curve_tag)], oriented=False)
+                        if len(curve_bounds) >= 2:
+                            pt1_tag = abs(curve_bounds[0][1])
+                            pt2_tag = abs(curve_bounds[1][1])
+                            pt1_coords = np.array(gmsh.model.getValue(0, pt1_tag, []))
+                            pt2_coords = np.array(gmsh.model.getValue(0, pt2_tag, []))
+                            
+                            dist = min(
+                                np.linalg.norm(pt1_coords - top_start_orig) + np.linalg.norm(pt2_coords - top_end_orig),
+                                np.linalg.norm(pt1_coords - top_end_orig) + np.linalg.norm(pt2_coords - top_start_orig)
+                            )
+                            
+                            if dist < min_endpoint_dist:
+                                min_endpoint_dist = dist
+                                top_curve_tag = curve_tag
+                    except:
+                        pass
+                
+                # Fallback: use bounding box method
+                if top_curve_tag is None or min_endpoint_dist > min_size:
+                    max_avg_z = -float('inf')
+                    for curve_tag in boundary_curve_tags:
+                        try:
+                            bounds = gmsh.model.getBoundingBox(1, curve_tag)
+                            avg_z = (bounds[2] + bounds[5]) / 2
+                            xy_extent = np.sqrt((bounds[3] - bounds[0])**2 + (bounds[4] - bounds[1])**2)
+                            z_extent = abs(bounds[5] - bounds[2])
+                            
+                            if xy_extent > z_extent and avg_z > max_avg_z:
+                                max_avg_z = avg_z
+                                top_curve_tag = curve_tag
+                        except:
+                            pass
+                
+                if top_curve_tag is None:
+                    top_curve_tag = boundary_curve_tags[0] if boundary_curve_tags else 1
+            
+            # Create distance field from top curve
+            field_distance = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(field_distance, "CurvesList", [top_curve_tag])
+            
+            field_size = gmsh.model.mesh.field.add("MathEval")
+            
+            if mesh_func:
+                math_exp = self.get_math_progression(field_distance, 
+                                                     min_dx=field_size_dict['min_dx'], 
+                                                     bias=field_size_dict['bias'])
+            else:
+                if depth_range > 0 and _bottom_size != _top_size:
+                    math_exp = f"Min(Max({_top_size} + ({_bottom_size} - {_top_size}) * F{field_distance} / {depth_range}, {min_size}), {max_size})"
+                else:
+                    math_exp = f"{_top_size}"
+            
+            gmsh.model.mesh.field.setString(field_size, "F", math_exp)
+            gmsh.model.mesh.field.setAsBackgroundMesh(field_size)
+            
+            # Remove entities if requested
+            if remove_entities:
+                try:
+                    gmsh.model.occ.remove(gmsh.model.occ.getEntities(0))
+                    gmsh.model.occ.remove(gmsh.model.occ.getEntities(1))
+                except:
+                    pass
 
-        # Remove points and lines to clean up the model
-        # gmsh.model.removeEntities(gmsh.model.getEntities(0))
-        # gmsh.model.removeEntities(gmsh.model.getEntities(1))
-    
-        # Refine, generate, and optimize the mesh
-        gmsh.model.mesh.refine()
         # Generate and optimize the mesh
         gmsh.model.mesh.generate(2)
         gmsh.model.mesh.optimize(optimize_method)
         
-        # Ensure no duplicate nodes exist
         gmsh.model.mesh.removeDuplicateNodes()
     
-        # Write mesh to file if specified
         if out_mesh is not None:
             self.out_mesh = out_mesh
         if write2file:
             gmsh.write(self.out_mesh)
     
-        # Show the mesh in Gmsh GUI if specified
         if show:
             if 'close' not in sys.argv:
                 gmsh.fltk.run()
     
-        # Read the mesh into the current object if specified
         if read_mesh:
             node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
             vertices = node_coords.reshape(-1, 3)

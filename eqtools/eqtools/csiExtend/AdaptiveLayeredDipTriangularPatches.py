@@ -1346,6 +1346,8 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             use_profile_depths: bool = False,
             nodes_on_layers: bool = True,
             mesh_func: bool = True,
+            top_size: float = None,
+            bottom_size: float = None,
             field_size_dict: dict = {'min_dx': 3, 'bias': 1.05},
             mesh_algorithm: int = 2,
             optimize_method: str = 'Laplace2D',
@@ -1356,6 +1358,10 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             smooth_layers: bool = False,
             smooth_window: int = 5,
             smooth_method: str = 'savgol',
+            remove_entities: bool = False,
+            sparse_points: bool = None,
+            sparse_factor: float = 0.25,
+            occ_method='thrusections',
             **kwargs
         ):
         """
@@ -1372,17 +1378,25 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         nodes_on_layers : bool
             If True, ensure nodes are placed on layer interfaces.
         mesh_func : bool
-            If True, use field-based mesh sizing.
+            If True, use field-based mesh sizing with field_size_dict.
+            If False, use top_size/bottom_size with linear interpolation.
+        top_size : float, optional
+            Mesh size at the top. Only used when mesh_func=False.
+            If None, uses mesh_generator.top_size.
+        bottom_size : float, optional
+            Mesh size at the bottom. Only used when mesh_func=False.
+            If None, uses mesh_generator.bottom_size or top_size.
         field_size_dict : dict
-            Mesh size field parameters.
+            Mesh size field parameters: {'min_dx': float, 'bias': float}.
+            Only used when mesh_func=True.
         mesh_algorithm : int
-            Gmsh algorithm (2: default, 5: Delaunay, 6: Frontal-Delaunay).
+            Gmsh algorithm (1: MeshAdapt, 2: Automatic, 5: Delaunay, 6: Frontal-Delaunay).
         optimize_method : str
             Mesh optimization method.
         show : bool
             If True, show mesh in Gmsh GUI.
         verbose : int
-            Gmsh verbosity level.
+            Gmsh verbosity level (0-5).
         out_mesh : str, optional
             Output mesh file path.
         write2file : bool
@@ -1394,16 +1408,59 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             Smoothing window size (only used if smooth_layers=True).
         smooth_method : str
             Smoothing method: 'savgol', 'moving_average', or 'gaussian'.
+        remove_entities : bool
+            If True, remove point and line entities after creating surfaces.
+            Default is False.
+        sparse_points : bool or None
+            If True, sparse input points before creating curves.
+            If False, use original points without sparsification.
+            If None (default), automatically sparse when mesh_func=True.
+        sparse_factor : float
+            Factor to multiply with min mesh size to get sparse interval.
+            Default is 0.25 (1/4 of min mesh size).
+        occ_method : str, optional
+            Method to create surfaces in OCC kernel when nodes_on_layers=False.
+            - 'filling': Use addBSplineFilling with explicit 4-edge boundaries (similar to 
+              Trelis skin). Most stable for jagged boundaries. Default.
+            - 'thrusections': Use addThruSections (smooth B-Spline surface through curves).
+              May overshoot boundaries for jagged curves.
+            - 'thrusections_ruled': Use addThruSections with makeRuled=True (linear 
+              interpolation between curves). Good compromise.
         **kwargs
-            Additional arguments for generate_multilayer_mesh.
+            Additional arguments for generate_multilayer_gmsh_mesh.
             
         Examples:
         ---------
+        >>> # With field-based mesh sizing
+        >>> fault.generate_layered_mesh(
+        ...     num_layers=5,
+        ...     mesh_func=True,
+        ...     field_size_dict={'min_dx': 5, 'bias': 1.05}
+        ... )
+        
+        >>> # With fixed mesh sizes
+        >>> fault.generate_layered_mesh(
+        ...     num_layers=5,
+        ...     mesh_func=False,
+        ...     top_size=50.0,
+        ...     bottom_size=200.0
+        ... )
+        
         >>> # With smoothing for variable strike
         >>> fault.generate_layered_mesh(
         ...     num_layers=5,
         ...     smooth_layers=True,
         ...     smooth_window=7
+        ... )
+        
+        >>> # For jagged boundaries with OCC kernel
+        >>> fault.generate_layered_mesh(
+        ...     num_layers=5,
+        ...     nodes_on_layers=False,
+        ...     mesh_func=False,
+        ...     top_size=50.0,
+        ...     bottom_size=200.0,
+        ...     make_ruled=True
         ... )
         """
         # Generate layer coordinates if not already done
@@ -1456,6 +1513,8 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         vertices, faces = self.mesh_generator.generate_multilayer_gmsh_mesh(
             layers_coords=self.layer_coords,
             mesh_func=mesh_func,
+            top_size=top_size,
+            bottom_size=bottom_size,
             out_mesh=out_mesh,
             write2file=write2file,
             show=show,
@@ -1465,6 +1524,10 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             optimize_method=optimize_method,
             verbose=verbose,
             nodes_on_layers=nodes_on_layers,
+            remove_entities=remove_entities,
+            sparse_points=sparse_points,
+            sparse_factor=sparse_factor,
+            occ_method=occ_method,
             **kwargs
         )
         self.VertFace2csifault(vertices, faces)
