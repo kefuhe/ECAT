@@ -198,7 +198,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         super().__init__(name, utmzone=utmzone, ellps=ellps, lon0=lon0, lat0=lat0, verbose=verbose)
         self.relocated_aftershock_source = seismiclocations('relocs', utmzone=utmzone, lon0=lon0, lat0=lat0, verbose=verbose)
         self.mesh_func = None
-        self.out_mesh = f'{name}.msh'
+        self.out_mesh = f'{self.name}.msh'
         self.profiles = {}
         self.mesh_generator = MeshGenerator()
 
@@ -2495,30 +2495,88 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
     def convert_mesh_file(self, mshfile, output_format=None, unit_conversion=1.0, 
                           flip_z=False, output_filename=None):
+        """
+        Convert a mesh file to another format using meshio.
+        
+        Parameters:
+        -----------
+        mshfile : str
+            Path to the input mesh file.
+        output_format : str
+            Output format name for meshio (e.g., 'abaqus', 'vtk', 'stl', 'obj').
+            Common formats and their extensions:
+            - 'abaqus' -> .inp
+            - 'vtk' -> .vtk
+            - 'stl' -> .stl
+            - 'obj' -> .obj
+            - 'gmsh' -> .msh
+        unit_conversion : float, optional
+            Factor to multiply coordinates by. Default is 1.0.
+        flip_z : bool, optional
+            If True, negate z-coordinates. Default is False.
+        output_filename : str, optional
+            Output file path. If None, auto-generated from input filename.
+        
+        Returns:
+        --------
+        str
+            Path to the output file.
+        """
         import meshio
         import os
+        
+        # Mapping from meshio format names to file extensions
+        format_to_extension = {
+            'abaqus': 'inp',
+            'vtk': 'vtk',
+            'vtu': 'vtu',
+            'stl': 'stl',
+            'obj': 'obj',
+            'gmsh': 'msh',
+            'gmsh22': 'msh',
+            'gmsh4': 'msh',
+            'medit': 'mesh',
+            'ply': 'ply',
+            'off': 'off',
+            'exodus': 'e',
+            'dolfin-xml': 'xml',
+            'med': 'med',
+            'nastran': 'bdf',
+            'tecplot': 'dat',
+        }
+        
+        if output_format is None:
+            raise ValueError("output_format must be specified (e.g., 'abaqus', 'vtk', 'stl')")
+        
         try:
             data = meshio.read(mshfile)
-            data.points *= unit_conversion
+            data.points = data.points * unit_conversion
 
             if flip_z:
                 data.points[:, 2] = -data.points[:, 2]
 
-            # Fliter out the vertex cells if the output format is inp
-            if output_format == 'inp':
-                cells = [cell for cell in data.cells if cell.type != 'vertex']
+            # Filter out vertex cells for formats that don't support them (like Abaqus)
+            if output_format in ['abaqus', 'nastran']:
+                cells = [cell for cell in data.cells if cell.type not in ('vertex', 'line')]
             else:
                 cells = data.cells
 
-            # If output filename is not provided, generate it from the input filename with the new extension
+            # Generate output filename if not provided
             if output_filename is None:
                 base_name = os.path.splitext(mshfile)[0]
-                output_filename = f"{base_name}.{output_format}"
+                extension = format_to_extension.get(output_format, output_format)
+                output_filename = f"{base_name}.{extension}"
+
+            # Write the mesh file
+            meshio.write(output_filename, meshio.Mesh(data.points, cells), file_format=output_format)
+            
+            if self.verbose:
+                print(f"Mesh converted and saved to: {output_filename}")
+            
+            return output_filename
 
         except Exception as e:
-            raise ValueError("Unable to read the file with meshio.") from e
-        
-        meshio.write(output_filename, meshio.Mesh(data.points, cells), file_format=output_format)
+            raise ValueError(f"Failed to convert mesh file: {e}") from e
     
     def save_geometry_as_mesh(self, path, format=None, coord_type='none', 
                             output_unit='m', flip_z=False, proj_string=None):
@@ -3006,7 +3064,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             )
         
         if out_mesh is None:
-            out_mesh = f'gmsh_fault_mesh_{self.name}.msh'
+            out_mesh = self.out_mesh
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
         vertices, faces = self.mesh_generator.generate_gmsh_mesh(
             top_size=top_size, bottom_size=bottom_size, mesh_func=mesh_func, 
@@ -3165,7 +3223,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
                 print(f"Smoothed {len(layers_coords)} intermediate layers")
         
         if out_mesh is None:
-            out_mesh = f'gmsh_multilayer_fault_mesh_{self.name}.msh'
+            out_mesh = self.out_mesh
         
         self.mesh_generator.set_coordinates(self.top_coords, self.bottom_coords)
         
