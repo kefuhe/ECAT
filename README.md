@@ -78,6 +78,7 @@ git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/E
 | | [Taiwan Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000m9g4/executive) | 2024-04-05, Mw7.4, Reverse | [Details](https://www.google.com/search?q=./Cases/Taiwan_20240405Mw7_4/) |
 | | [Wushi Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000lsze/executive) | 2024-01-22, Mw7.0, Strike-slip | [Details](https://www.google.com/search?q=./Cases/Wushi_20240122M7_0/) |
 | | [Western Xizang](https://earthquake.usgs.gov/earthquakes/eventpage/us6000b26j/executive) | 2020-07-22, Mw6.3, Normal | [Details](https://www.google.com/search?q=./Cases/Western_Xizang_20200722M6_3/) |
+| **BLSE Linear Inversion** |  [Dingri Earthquake  2020](https://www.globalcmt.org/cgi-bin/globalcmt-cgi-bin/CMT5/form?itype=ymd&yr=2020&mo=3&day=18&otype=ymd&oyr=2020&omo=3&oday=21&jyr=1976&jday=1&ojyr=1976&ojday=1&nday=1&lmw=5&umw=10&lms=0&ums=10&lmb=0&umb=10&llat=28&ulat=29&llon=87&ulon=88&lhd=0&uhd=20&lts=-9999&uts=9999&lpe1=0&upe1=90&lpe2=0&upe2=90&list=5)                                                                            | 2020-03-20, Mw5.7, Normal                         | [Details](https://www.google.com/search?q=./Cases/Dingri_Events/Dingri_20200320Mw5_6/LinearInv/)     |
 
 ### 3.3 Real Earthquake Case Studies (Visual Gallery)
 
