@@ -40,31 +40,6 @@ cd ECAT
 
 -----
 
-## 📚 ECAT Case Library
-
-The full case library, including research cases and advanced examples, is hosted in a separate repository.
-
-**Option 1: Auto-download via Script**
-Uncomment the following line in `install.sh` / `install.bat`:
-
-```bash
-git submodule update --init --recursive
-```
-
-**Option 2: Manual Download**
-
-```bash
-# Using the helper script
-./download_cases.sh
-
-# Or direct clone
-git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/ECAT-cases.git)
-```
-
------
-
------
-
 ## 🏃 Running ECAT & Case Studies
 
 ECAT relies on a rich library of cases for testing and research. To run ECAT effectively, you should first obtain the case library.
