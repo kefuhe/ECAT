@@ -41,6 +41,7 @@ cd ECAT
 -----
 
 ## 🏃 Running ECAT & Case Studies
+![1764664091188](image/README/1764664091188.png)
 
 ECAT relies on a rich library of cases for testing and research. To run ECAT effectively, you should first obtain the case library.
 
