@@ -85,6 +85,31 @@ cd ECAT
 # or install.bat for Windows
 ```
 
+-----
+
+## 📚 ECAT Case Library
+
+The full case library, including research cases and advanced examples, is hosted in a separate repository.
+
+**Option 1: Auto-download via Script**
+Uncomment the following line in `install.sh` / `install.bat`:
+
+```bash
+git submodule update --init --recursive
+```
+
+**Option 2: Manual Download**
+
+```bash
+# Using the helper script
+./download_cases.sh
+
+# Or direct clone
+git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/ECAT-cases.git)
+```
+
+-----
+
 ## 🔎 Case Studies (Coseismic)
 
 ### 1. Adaptive Fault Geometry with Relocated Aftershocks
