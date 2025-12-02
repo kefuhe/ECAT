@@ -23,6 +23,131 @@
 
 ---
 
+## 💻 Installation
+
+See [Install.md](Install.md) for detailed instructions.
+
+### Quick Start
+
+```bash
+# Clone the repository
+git clone [https://github.com/kefuhe/ECAT.git](https://github.com/kefuhe/ECAT.git)
+cd ECAT
+# Run installation script
+./install.sh  # Linux/Mac
+# or install.bat for Windows
+```
+
+-----
+
+## 📚 ECAT Case Library
+
+The full case library, including research cases and advanced examples, is hosted in a separate repository.
+
+**Option 1: Auto-download via Script**
+Uncomment the following line in `install.sh` / `install.bat`:
+
+```bash
+git submodule update --init --recursive
+```
+
+**Option 2: Manual Download**
+
+```bash
+# Using the helper script
+./download_cases.sh
+
+# Or direct clone
+git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/ECAT-cases.git)
+```
+
+-----
+
+-----
+
+## 🏃 Running ECAT & Case Studies
+
+ECAT relies on a rich library of cases for testing and research. To run ECAT effectively, you should first obtain the case library.
+
+### 3.1 Get the Case Library (Basic Running)
+
+The full case library is hosted in a separate repository (`ECAT-Cases`). You have two options to download it:
+
+**Option 1: Auto-download via Install Script**
+Uncomment the following line in `install.sh` / `install.bat` before running installation:
+
+```bash
+git submodule update --init --recursive
+```
+
+**Option 2: Manual Download**
+
+```bash
+# Using the helper script
+./download_cases.sh
+
+# Or direct clone into the directory
+git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/ECAT-cases.git)
+```
+
+### 3.2 Method & Example Modules
+
+*Basic examples to understand specific modules of ECAT.*
+
+| 🏷️ Category | ⚡ Earthquake Example | 📝 Description (Date, Magnitude, Type) | 📁 Directory (in `ECAT-Cases`) |
+| :--- | :--- | :--- | :--- |
+| **Downsampling** | InSAR Downsampling | Example code for InSAR downsampling | [Details](https://www.google.com/search?q=./Cases/InSAR_Downsampling/) |
+| **Nonlinear Inversion** | [Hotan Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000abmk/executive) | 2020-06-25, Mw6.3, Normal | [Details](https://www.google.com/search?q=./Cases/Hotan_20200625M6_3/) |
+| | [Iran Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us10008ei0/executive) | 2017-04-05, Mw6.1, Reverse | [Details](https://www.google.com/search?q=./Cases/Iran_20170405M6_1/) |
+| | [Taiwan Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000m9g4/executive) | 2024-04-05, Mw7.4, Reverse | [Details](https://www.google.com/search?q=./Cases/Taiwan_20240405Mw7_4/) |
+| | [Wushi Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000lsze/executive) | 2024-01-22, Mw7.0, Strike-slip | [Details](https://www.google.com/search?q=./Cases/Wushi_20240122M7_0/) |
+| | [Western Xizang](https://earthquake.usgs.gov/earthquakes/eventpage/us6000b26j/executive) | 2020-07-22, Mw6.3, Normal | [Details](https://www.google.com/search?q=./Cases/Western_Xizang_20200722M6_3/) |
+
+### 3.3 Real Earthquake Case Studies (Visual Gallery)
+
+*Advanced applications demonstrating adaptive fault geometry and complex slip distribution.*
+
+#### A. Adaptive Fault Geometry with Relocated Aftershocks
+
+**Case 1: 2021 Maduo Earthquake (Mw 7.4)**
+
+<p align="center">
+<img src="image/README/1702140126132.png" width="45%" />
+<img src="image/README/1705485485549.png" width="45%" />
+</p>
+
+**Case 2: 2023 Kahramanmaraş Türkiye Doublet**
+
+*Complex multi-segment modeling with variance dip angles.*
+
+![1764647500996](image/readmecopy/1764647500996.jpg)
+
+**Case 3: 2022 Luding Earthquake**
+
+*Pre-Clustering Selection Followed by Fitting.*
+![1764647465814](image/README/1764660657124.jpg)
+
+#### B. Isocurve Fitting (Depth-focused Aftershocks)
+
+*Note: Robust curve fitting serves as a reference. Final curves often incorporate user interaction.*
+
+![1764647436387](image/readmecopy/1764647436387.jpg)
+
+<p align="center">
+  <img src="image/README/1764660730874.jpg" width="80%" alt="Inversion Workflow"/>
+</p>
+
+#### C. Comprehensive Research Cases List
+
+| 🌏 Case Name | 📝 Description | 🔗 Link |
+| :--- | :--- | :--- |
+| **Dingri 2015** | 2015-04-25, Mw5.7, Normal | [Details](https://www.google.com/search?q=./Cases/Dingri_Events/Dingri_20150425Mw5_7/) |
+| **Dingri 2020** | 2020-03-20, Mw5.6, Normal | [Details](https://www.google.com/search?q=./Cases/Dingri_Events/Dingri_20200320Mw5_6/) |
+| **Dingri 2025** | 2025-01-07, Mw7.0, Normal | [Details](https://www.google.com/search?q=./Cases/Dingri_Events/Dingri_20250107Mw7_0/) |
+| **Sagaing 2025** | 2025-03-28, Mw7.8, Strike-slip | [Details](https://www.google.com/search?q=./Cases/Sagaing_20250328Mw7_8/) |
+
+---
+
 ## 🚀 Core Features & Workflow
 
 ### 1. Inversion Workflow & Strategies
@@ -67,77 +192,6 @@ ECAT utilizes layered Green's function calculations powered by `edcmp` and `pscm
 > For details, see `README` in the `csi` subdirectory.
 
 ![1755593711201](image/README/1755593711201.png)
-
----
-
-## 💻 Installation
-
-See [Install.md](Install.md) for detailed instructions.
-
-### Quick Start
-
-```bash
-# Clone the repository
-git clone [https://github.com/kefuhe/ECAT.git](https://github.com/kefuhe/ECAT.git)
-cd ECAT
-# Run installation script
-./install.sh  # Linux/Mac
-# or install.bat for Windows
-```
-
------
-
-## 📚 ECAT Case Library
-
-The full case library, including research cases and advanced examples, is hosted in a separate repository.
-
-**Option 1: Auto-download via Script**
-Uncomment the following line in `install.sh` / `install.bat`:
-
-```bash
-git submodule update --init --recursive
-```
-
-**Option 2: Manual Download**
-
-```bash
-# Using the helper script
-./download_cases.sh
-
-# Or direct clone
-git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/ECAT-cases.git)
-```
-
------
-
-## 🔎 Case Studies (Coseismic)
-
-### 1. Adaptive Fault Geometry with Relocated Aftershocks
-
-#### Case 1: 2021 Maduo Earthquake (Mw 7.4)
-
-<p align="center">
-<img src="image/README/1702140126132.png" width="45%" />
-<img src="image/README/1705485485549.png" width="45%" />
-</p>
-
-#### Case 2: 2023 Kahramanmaraş Türkiye Doublet
-
-*Complex multi-segment modeling with variance dip angles.*
-
-![1764647500996](image/readmecopy/1764647500996.jpg)
-
-#### Case 3: 2022 Luding Earthquake
-
-*Pre-Clustering Selection Followed by Fitting.*
-
-![1764647465814](image/readmecopy/1764647465814.jpg)
-
-### 2. Isocurve Fitting (Depth-focused Aftershocks)
-
-*Note: Robust curve fitting serves as a reference. Final curves often incorporate user interaction.*
-
-![1764647436387](image/readmecopy/1764647436387.jpg)
 
 ---
 
