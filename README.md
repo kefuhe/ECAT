@@ -193,7 +193,7 @@ ECAT utilizes layered Green's function calculations powered by `edcmp` and `pscm
 
 If you use ECAT in your research, please cite:
 
-> **He K., C. Xu, Y. Wen, Y. Zhao, G. Xu, L. Sun, and J. Wang (2025).**  A Unified Framework for Adaptive Fault Modeling: Methods and Applications. *SCIENCE CHINA Earth Sciences* . DOI: [10.1007/s11430-025-1773-0](https://www.sciengine.com/SCES/doi/10.1007/s11430-025-1773-0)
+> **He K., C. Xu, Y. Wen, Y. Zhao, G. Xu, L. Sun, and J. Wang (2025).**  A Unified Framework for Adaptive Fault Modeling: Methods and Applications. *SCIENCE CHINA Earth Sciences* . DOI: [10.1007/s11430-025-1773-0](https://www.sciengine.com/SCES/doi/10.1007/s11430-025-1773-0).
 
 ---
 
