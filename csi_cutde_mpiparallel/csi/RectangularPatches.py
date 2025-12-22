@@ -589,7 +589,19 @@ class RectangularPatches(Fault):
             # Get the patch
             p = self.patch[u]
             p1, p2, p3, p4 = self.patch[u]
-        
+
+            # --- Automatically correct top and bottom depths ---
+            # Top edge
+            z_top = 0.5 * (p1[2] + p2[2])
+            p1 = np.array([p1[0], p1[1], z_top])
+            p2 = np.array([p2[0], p2[1], z_top])
+            # Bottom edge
+            z_bottom = 0.5 * (p3[2] + p4[2])
+            p3 = np.array([p3[0], p3[1], z_bottom])
+            p4 = np.array([p4[0], p4[1], z_bottom])
+            p = np.array([p1, p2, p3, p4])
+            # --------------------------------
+
             # 1. Get the two top points
             pt1 = p[0]; x1, y1, z1 = pt1 
             pt2 = p[1]; x2, y2, z2 = pt2
@@ -3630,7 +3642,7 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def plot(self, figure=134, slip='total', 
+    def plot(self, figure=134, slip='total', title='',
              equiv=False, show=True, axesscaling=True, 
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
@@ -3707,12 +3719,16 @@ class RectangularPatches(Fault):
                          cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel,
                          plot_on_2d=plot_on_2d, cmap=cmap, edgecolor=edgecolor,
                          cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, 
-                         cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
+                         cb_label_side=cb_label_side, map_cbaxis=map_cbaxis, equiv=equiv,)
     
         # Plot the trace if there is one
         if self.lon is not None:
             fig.faulttrace(self)
-    
+
+        if title:
+            fig.titlefault(title=title)
+            if plot_on_2d:
+                fig.titlemap(title=title)
         # Savefigs?
         if savefig:
             prefix = self.name.replace(' ','_')

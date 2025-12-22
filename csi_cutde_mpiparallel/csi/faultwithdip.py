@@ -42,13 +42,25 @@ class faultwithdip(RectangularPatches):
         # All done
         return
 
-
     def buildPatches(self, dip, dipdirection, every=10, trace_tol=0.1, trace_fracstep=0.2, trace_xaxis='x'):
         '''
-        Builds a dipping fault.
+        Build rectangular patches for a dipping fault with automatic trace discretization.
+        
         Args:
-            * dip           : Dip angle
-            * dipdirection  : Direction towards which the fault dips from North.
+            * dip           : Dip angle in degrees (0=horizontal, 90=vertical).
+            * dipdirection  : Azimuth (degrees from North, clockwise) towards which 
+                                the fault dips.
+            * every         : Patch length along strike (km). Default: 10.
+            * trace_tol     : Tolerance for trace discretization. Default: 0.1.
+            * trace_fracstep: Fractional step for discretization. Default: 0.2.
+            * trace_xaxis   : Axis for discretization ('x' or 'y'). Default: 'x'.
+        
+        Note:
+            This method automatically discretizes the fault trace. Use buildPatchesNoDisc() 
+            if you want to use fault trace coordinates directly.
+        
+        Sets:
+            * self.patch, self.patchll, self.slip, self.patchdip
         '''
 
         # Print
@@ -168,13 +180,22 @@ class faultwithdip(RectangularPatches):
 
     def buildPatchesNoDisc(self, dip, dipdirection, every=10, trace_tol=0.1, trace_fracstep=0.2, trace_xaxis='x'):
         '''
-        Builds a dipping fault.
+        Build rectangular patches using pre-discretized fault trace (self.xf, self.yf).
+        
         Args:
-            * dip           : Dip angle
-            * dipdirection  : Direction towards which the fault dips.
-        ---
-        第一步的离散移除，直接划分断层
-        Modified by Kefeng He at 06/22/2022.
+            * dip           : Dip angle in degrees (0=horizontal, 90=vertical).
+            * dipdirection  : Azimuth (degrees from North, clockwise) towards which 
+                                the fault dips.
+        
+        Requires:
+            User must set self.xf and self.yf before calling this method.
+            These arrays define the fault trace coordinates (km).
+        
+        Note:
+            Use buildPatches() for automatic trace discretization.
+        
+        Sets:
+            * self.patch, self.patchll, self.slip, self.patchdip
         '''
 
         # Print
@@ -189,7 +210,9 @@ class faultwithdip(RectangularPatches):
         self.slip = []
         self.patchdip = []
 
-        # Discretize the surface trace of the fault
+        # Use trace directly
+        if not hasattr(self, 'xf') or not hasattr(self, 'yf'):
+            raise ValueError("Please set fault trace coordinates (self.xf, self.yf) before calling buildPatchesNoDisc()")
         self.xi = self.xf
         self.yi = self.yf
         # Compute the lon/lat
@@ -283,9 +306,6 @@ class faultwithdip(RectangularPatches):
 
         # Translate slip into an array
         self.slip = np.array(self.slip)
-
-        # Re-discretoze to get the original fault
-        # self.discretize(every,trace_tol,trace_fracstep,trace_xaxis)
 
         # Compute the equivalent rectangles
         self.computeEquivRectangle()

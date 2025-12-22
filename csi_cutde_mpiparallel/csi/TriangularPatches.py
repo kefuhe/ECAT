@@ -4228,7 +4228,7 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def plot(self, figure=134, slip='total', equiv=False, show=True, 
+    def plot(self, figure=134, slip='total', title='', equiv=False, show=True, 
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='', 
              drawCoastlines=True, expand=0.2, savefig=False, scalebar=None, figsize=(None, None),
@@ -4312,7 +4312,12 @@ class TriangularPatches(Fault):
         fig.faultpatches(self, slip=slip, norm=norm, colorbar=colorbar, cbaxis=cbaxis, cborientation=cborientation, cblabel=cblabel, 
                          plot_on_2d=plot_on_2d, linewidth=linewidth, cmap=cmap, edgecolor=edgecolor,
                          cbticks=cbticks, cblinewidth=cblinewidth, cbfontsize=cbfontsize, cb_label_side=cb_label_side, map_cbaxis=map_cbaxis)
-    
+
+        if title:
+            fig.titlefault(title=title)
+            if plot_on_2d:
+                fig.titlemap(title=title)
+        
         # Savefigs?
         if savefig:
             prefix = self.name.replace(' ','_')
@@ -4330,7 +4335,7 @@ class TriangularPatches(Fault):
             fig.savefig(prefix+'{0}_{1}'.format(suffix, slip_name), ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
     
         self.slipfig = fig
-        
+
         # show
         if show:
             showFig = ['fault']

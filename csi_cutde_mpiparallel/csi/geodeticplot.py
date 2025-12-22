@@ -395,34 +395,34 @@ class geodeticplot(object):
         self.figCarte.clf()
         return
 
-    def titlemap(self, titre, y=1.1):
+    def titlemap(self, title, y=1.1):
         '''
         Sets the title of the map.
 
         Args:
-            * titre : title of the map
+            * title : title of the map
 
         Returns:
             * None
         '''
 
-        self.carte.set_title(titre, y=y)
+        self.carte.set_title(title, y=y)
 
         # All done
         return
 
-    def titlefault(self, titre):
+    def titlefault(self, title):
         '''
         Sets the title of the fault model.
 
         Args:
-            * titre : title of the fault
+            * title : title of the fault
 
         Returns:
             * None
         '''
 
-        self.faille.set_title(titre, title=1.08)
+        self.faille.set_title(title, y=1.08)
 
         # All done
         return
@@ -820,7 +820,7 @@ class geodeticplot(object):
         # All done
         return
 
-    def faultpatches(self, fault, slip='strikeslip', norm=None, colorbar=True,
+    def faultpatches(self, fault, slip='strikeslip', equiv=False, norm=None, colorbar=True,
                      cbaxis=[0.1, 0.2, 0.1, 0.02], map_cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
                      plot_on_2d=False, revmap=False, linewidth=1.0, cmap='jet', offset=None,
                      alpha=1.0, factor=1.0, zorder=3, edgecolor='slip', colorscale='normal',
@@ -931,6 +931,10 @@ class geodeticplot(object):
             cNorm = colors.LogNorm(vmin=vmin, vmax=vmax)
         scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=cmap)
     
+        if equiv:
+            patchll = fault.equivpatchll
+        else:
+            patchll = fault.patchll
         # fault figure
         if self.faille is not None:
             Xs = np.array([])
@@ -941,9 +945,9 @@ class geodeticplot(object):
                 y = []
                 z = []
                 for i in range(ncorners):
-                    x.append(fault.patchll[p][i][0]+offset[0])
-                    y.append(fault.patchll[p][i][1]+offset[1])
-                    z.append(-1.0*fault.patchll[p][i][2]+offset[2])
+                    x.append(patchll[p][i][0]+offset[0])
+                    y.append(patchll[p][i][1]+offset[1])
+                    z.append(-1.0*patchll[p][i][2]+offset[2])
                 verts = []
                 for xi,yi,zi in zip(x,y,z):
                     #if xi<0.: xi += 360.
@@ -968,7 +972,7 @@ class geodeticplot(object):
     
         # If 2d.
         if plot_on_2d and self.carte is not None:
-            for p, patch in zip(range(len(fault.patchll)), fault.patchll):
+            for p, patch in zip(range(len(patchll)), patchll):
                 x = []
                 y = []
                 for i in range(ncorners):
