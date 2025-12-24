@@ -2462,36 +2462,6 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def getcenter(self, p, coordinates='xy'):
-        ''' 
-        Get the center of one rectangular patch.
-
-        Args:
-            * p     : Patch geometry.
-        
-        Kwargs:
-            * coordinates : 'xy' or 'll'. If 'll', returns the center in lon, lat
-
-        Returns:
-            * x,y,z  : Coordinates of the center
-        '''
-    
-        # Get center
-        p1, p2, p3, p4 = p
-
-        # Compute the center
-        x = p1[0] + (p3[0] - p1[0])/2.
-        y = p1[1] + (p3[1] - p1[1])/2.
-        z = p1[2] + (p3[2] - p1[2])/2.
-
-        # CHeck 
-        if coordinates == 'll': x,y = self.xy2ll(x,y)
-
-        # All done
-        return x,y,z
-    # ----------------------------------------------------------------------
-
-    # ----------------------------------------------------------------------
     def computetotalslip(self):
         '''
         Computes the total slip. Stores is in self.totalslip
@@ -2508,31 +2478,82 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def getcenters(self, coordinates='xy'):
-        '''
-        Get the center of the patches.
+    def getcenter(self, p, coordinates='xy'):
+        ''' 
+        Get the center of a single rectangular patch.
 
+        Args:
+            * p           : Patch geometry (list of 4 vertices).
+        
         Kwargs:
             * coordinates : 'xy' or 'll'. If 'll', returns the center in lon, lat
 
         Returns:
-            * centers       : list of centers [x,y,z]
+            * x,y,z       : Coordinates of the center
+        '''
+        
+        # Unpack vertices. For a rectangle, the center is the midpoint of the diagonal.
+        # Assuming patch order: 0:P1, 1:P2, 2:P3, 3:P4
+        p1 = p[0]
+        p3 = p[2]
+
+        # Compute the center
+        x = (p1[0] + p3[0]) / 2.0
+        y = (p1[1] + p3[1]) / 2.0
+        z = (p1[2] + p3[2]) / 2.0
+
+        # Coordinate conversion
+        if coordinates == 'll': 
+            x, y = self.xy2ll(x, y)
+
+        return x, y, z
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def getcenters(self, coordinates='xy'):
+        '''
+        Get the center coordinates of all patches.
+        
+        This method uses vectorized NumPy operations for performance, 
+        avoiding slow Python loops.
+
+        Kwargs:
+            * coordinates : 'xy' or 'll'. 
+                            If 'll', returns centers in [lon, lat, depth]
+                            If 'xy', returns centers in [x, y, depth]
+
+        Returns:
+            * centers : (N, 3) numpy array of center coordinates
         '''
 
-        # Get the patches
-        patch = self.equivpatch
+        # Convert the patch list to a numpy array for vectorized calculation
+        # self.equivpatch shape is usually (N_patches, 4_vertices, 3_coords)
+        patches = np.array(self.equivpatch) 
 
-        # Initialize a list
-        center = []
-
-        # loop over the patches
-        for p in patch:
-            x, y, z = self.getcenter(p)
-            x, y, z = self.getcenter(p, coordinates=coordinates)
-            center.append([x, y, z])
-
-        # All done
-        return center
+        # Geometric definition of a rectangle center: Midpoint of the diagonal (P1 + P3) / 2
+        # We assume the vertex order is: 0:TopLeft, 1:TopRight, 2:BotRight, 3:BotLeft
+        # Extract P1 (index 0) and P3 (index 2) for all patches simultaneously
+        p1 = patches[:, 0, :] # Shape (N, 3)
+        p3 = patches[:, 2, :] # Shape (N, 3)
+        
+        # Vectorized mean calculation (extremely fast)
+        centers = (p1 + p3) / 2.0
+        
+        # Batch coordinate conversion if requested
+        if coordinates == 'll':
+            # Extract X and Y columns (in km)
+            x_km = centers[:, 0]
+            y_km = centers[:, 1]
+            
+            # Convert to Lon/Lat in batch
+            # Note: self.xy2ll must support numpy array inputs (standard in pyproj/CSI)
+            lon, lat = self.xy2ll(x_km, y_km)
+            
+            # Update the array columns
+            centers[:, 0] = lon
+            centers[:, 1] = lat
+            
+        return centers
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -4399,40 +4420,190 @@ class RectangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def buildLaplacian_mudpy(self, verbose=False, method=None, irregular=False, bounds=None):
+    def _build_adjacency_cache(self, nstrike, ndip, verbose=True):
         '''
-        Node: Only support the case where the faults are aranged by the order of 'strike'
+        Internal method: Pre-compute neighbor indices and Euclidean distances.
         
-        bounds: A tuple with 4 strings corresponding to the boundary conditions requested by
-                the user on the edges fo the fault model. The ordering is top,bototm,left and right edges.
-                Possible values for each element of the tuple are 'free' for a free boundary condition
-                and 'locked' for a locked one. For example a bounds tuple with 3 locked edges and the top
-                edge free would be bounds=('free', 'locked', 'locked', 'locked')
-        Added by kfhe, at 10/14/2021
+        Stores the geometric topology in self._distance_map to accelerate 
+        matrix assembly.
+        
+        Args:
+            nstrike : Number of patches along strike
+            ndip    : Number of patches along dip
         '''
-        # Get numbers
+        if verbose:
+            print("------------------------------------------")
+            print("Pre-computing geometric adjacency and distances...")
+
         npatch = len(self.patch)
-        if self.numz is None:
-            print('We try a wild guess for the number of patches along dip')
-            width = np.mean([self.getpatchgeometry(p, center=True)[3] for p in self.patch])
-            depths = [ [p[j][2] for j in range(4)] for p in self.patch]
-            depthRange = np.max(depths)-np.min(depths)
-            self.numz = np.rint(depthRange/width)
-            print('The guess is that there is {} patches along dip'.format(np.int64(self.numz)))
-            print('If that is not correct, please provide self.numz')
+        
+        # Validate dimensions
+        if npatch != nstrike * ndip:
+            print(f"Error: Dimensions mismatch. {nstrike}x{ndip} != {npatch}")
+            return
 
-        # Get number of Patches along strike
-        nstrike = np.int64(npatch // self.numz)
-        ndip = self.numz = np.int64(self.numz)
+        centers = np.array(self.getcenters())
+        
+        # Initialize storage
+        # _distance_map structure: List of dicts {'top': (idx, dist), ...}
+        self._distance_map = []
+        
+        for i in range(npatch):
+            row = i // nstrike
+            col = i % nstrike
+            ref_center = centers[i]
+            
+            geo_info = {}
+            
+            def add_neighbor(direction, neighbor_idx):
+                dist = np.linalg.norm(centers[neighbor_idx] - ref_center)
+                geo_info[direction] = (neighbor_idx, dist)
 
+            # 1. Top (row - 1)
+            if row > 0: add_neighbor('top', i - nstrike)
+            # 2. Bottom (row + 1)
+            if row < ndip - 1: add_neighbor('bottom', i + nstrike)
+            # 3. Right (col - 1)
+            if col > 0: add_neighbor('right', i - 1)
+            # 4. Left (col + 1)
+            if col < nstrike - 1: add_neighbor('left', i + 1)
+            
+            self._distance_map.append(geo_info)
+            
+        if verbose:
+            print("Adjacency cache built.")
+        return
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def build_distance_weighted_laplacian(self, nstrike, ndip, bounds=None, verbose=True):
+        '''
+        Fast assembly of a distance-weighted Laplacian smoothing matrix.
+        
+        Features:
+        1. Uses inverse-distance weighting (1/d) to handle non-uniform grids.
+        2. Normalizes the matrix so the maximum diagonal element is 1.0.
+        3. Sign convention: Diagonal (-), Neighbors (+).
+
+        Args:
+            nstrike : Number of patches along strike
+            ndip    : Number of patches along dip
+            bounds  : Tuple of ('free', 'locked')
+            
+        Returns:
+            D       : Normalized Laplacian matrix (max diag = 1.0)
+        '''
+        
+        # 1. Check/Build Cache
+        if not hasattr(self, '_distance_map') or self._distance_map is None or len(self._distance_map) != len(self.patch):
+            self._build_adjacency_cache(nstrike, ndip, verbose=verbose)
+            
+        if verbose:
+            print("Assembling distance-weighted Laplacian...")
+
+        # 2. Parse Bounds
+        if bounds is None: bounds = ('free', 'free', 'free', 'free')
+        b_flags = {
+            'top': bounds[0].lower() == 'free',
+            'bottom': bounds[1].lower() == 'free',
+            'left': bounds[2].lower() == 'free',
+            'right': bounds[3].lower() == 'free'
+        }
+
+        npatch = len(self.patch)
         D = np.zeros((npatch, npatch))
 
-        for kfault in range(npatch):#Loop over faults and fill regularization matrix
-            stencil,values=self.laplace_stencil(kfault, nstrike, ndip, bounds=bounds)
-            #Add strike slip branches of stencil
-            D[kfault, stencil]=values
+        # 3. Fast Assembly
+        for i in range(npatch):
+            geo_info = self._distance_map[i]
+            row_weights = {}
+            
+            # Helper: Get physical weight (1/d)
+            def get_w(direction):
+                if direction in geo_info:
+                    d = geo_info[direction][1]
+                    return 1.0 / d if d > 1e-12 else 0.0
+                return 0.0
+
+            # Base Weights
+            w_top, w_bottom = get_w('top'), get_w('bottom')
+            w_right, w_left = get_w('right'), get_w('left')
+
+            # --- Boundary Folding (Neumann) ---
+            # Top/Bottom
+            if 'top' in geo_info:
+                row_weights[geo_info['top'][0]] = w_top
+            elif b_flags['top'] and 'bottom' in geo_info:
+                w_bottom += w_bottom # Fold Top -> Bottom
+            
+            if 'bottom' in geo_info:
+                idx = geo_info['bottom'][0]
+                row_weights[idx] = row_weights.get(idx, 0.0) + w_bottom
+            elif b_flags['bottom'] and 'top' in geo_info:
+                idx = geo_info['top'][0]
+                row_weights[idx] = row_weights.get(idx, 0.0) + w_top # Fold Bottom -> Top
+
+            # Right/Left
+            if 'right' in geo_info:
+                row_weights[geo_info['right'][0]] = w_right
+            elif b_flags['right'] and 'left' in geo_info:
+                w_left += w_left # Fold Right -> Left
+                
+            if 'left' in geo_info:
+                idx = geo_info['left'][0]
+                row_weights[idx] = row_weights.get(idx, 0.0) + w_left
+            elif b_flags['left'] and 'right' in geo_info:
+                idx = geo_info['right'][0]
+                row_weights[idx] = row_weights.get(idx, 0.0) + w_right # Fold Left -> Right
+
+            # Fill Row
+            sum_weights = 0.0
+            for n_idx, w in row_weights.items():
+                D[i, n_idx] = w      # Neighbor (+)
+                sum_weights += w
+            D[i, i] = -sum_weights   # Center (-)
+
+        # 4. Normalize (Max Diag = 1.0)
+        max_diag = np.max(np.abs(np.diag(D)))
+        if max_diag > 0:
+            D /= max_diag
+            
+        return D
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def buildLaplacian_mudpy(self, verbose=False, method=None, irregular=False, bounds=None):
+        '''
+        Build the Laplacian regularization matrix compatible with Mudpy conventions.
         
-        # All done
+        Wraps `build_distance_weighted_laplacian` and scales by 4.0.
+        '''
+        # 1. Determine Dimensions (Legacy Logic)
+        npatch = len(self.patch)
+        if self.numz is None:
+            if verbose: print('Guessing numz...')
+            width = np.mean([self.getpatchgeometry(p, center=True)[3] for p in self.patch])
+            depths = [[p[j][2] for j in range(4)] for p in self.patch]
+            self.numz = np.rint((np.max(depths) - np.min(depths)) / width)
+
+        ndip = np.int64(self.numz)
+        if ndip <= 0: return None
+        nstrike = np.int64(npatch // ndip)
+
+        if nstrike * ndip != npatch:
+            print(f"Error: Dimensions mismatch ({nstrike}x{ndip} != {npatch}). Check geometry.")
+            return None
+
+        # 2. Build Matrix
+        # Using the clean, new method name
+        D = self.build_distance_weighted_laplacian(nstrike, ndip, bounds=bounds, verbose=verbose)
+
+        # 3. Scale for Compatibility (Diag ~ -4.0)
+        D *= 4.0
+
+        if verbose:
+            print("Laplacian matrix built (Mudpy compatible).")
+
         return D
     # ----------------------------------------------------------------------
 
