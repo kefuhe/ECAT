@@ -126,7 +126,7 @@ class explorefault(SourceInv):
         elif self.mode == 'mag_rake':
             self.keys = ['lon', 'lat', 'depth', 'dip', 
                             'width', 'length', 'strike', 
-                            'magnitude', 'rake']
+                            'slip', 'rake']
         else:
             raise ValueError("Invalid mode. Expected 'ss_ds' or 'mag_rake'.")
 
@@ -152,7 +152,24 @@ class explorefault(SourceInv):
     def load_and_set_config(self, config_file, fixed_params, geodata=None):
         # Load the configuration file
         self.config = explorefaultConfig(config_file, geodata=geodata)
+
+        # --- Compatibility handling: migrate 'magnitude' to 'slip' if present in config ---
+        # If the config file uses 'magnitude', remap it to 'slip'
+        def rename_key_recursive(d, old_key, new_key):
+            if isinstance(d, dict):
+                # If old_key exists, assign its value to new_key and remove old_key
+                if old_key in d:
+                    d[new_key] = d.pop(old_key)
+                # Recursively handle all child dictionaries
+                for k, v in d.items():
+                    rename_key_recursive(v, old_key, new_key)
         
+        # Process bounds, initial, fixed_params
+        rename_key_recursive(self.config.bounds, 'magnitude', 'slip')
+        rename_key_recursive(self.config.initial, 'magnitude', 'slip')
+        rename_key_recursive(self.config.fixed_params, 'magnitude', 'slip')
+        # -----------------------------------------------------------
+
         # Set fixed parameters
         self.fixed_params = self.config.fixed_params if self.config.fixed_params else {}
         if fixed_params:
@@ -224,7 +241,7 @@ class explorefault(SourceInv):
                            - 'strikeslip' : Strike Slip (tuple or float)
                            - 'dipslip'    : Dip slip (tuple or float)
                        - mag_rake mode:
-                           - 'magnitude'  : Magnitude (tuple or float)
+                           - 'slip'  : Total slip (tuple or float)
                            - 'rake'       : Rake (tuple or float)
                    - 'fault_name' : A dictionary for each fault that holds the same keys as 'defaults'. These will override the defaults.
                    - 'data_name'  : A dictionary for each data set that holds the following keys.
@@ -487,10 +504,10 @@ class explorefault(SourceInv):
             if self.mode == 'ss_ds':
                 strikeslip, dipslip = params['strikeslip'], params['dipslip']
             elif self.mode == 'mag_rake':
-                magnitude, rake = params['magnitude'], params['rake']
+                slip, rake = params['slip'], params['rake']
                 rad_rake = np.radians(rake)
-                strikeslip = magnitude*np.cos(rad_rake)
-                dipslip = magnitude*np.sin(rad_rake)
+                strikeslip = slip*np.cos(rad_rake)
+                dipslip = slip*np.sin(rad_rake)
     
             # Set slip 
             fault.slip[:,0] = strikeslip
@@ -673,8 +690,8 @@ class explorefault(SourceInv):
             
             # Set slip values
             if self.mode == 'mag_rake':
-                fault.slip[:,0] = ispecs['magnitude']*np.cos(np.radians(ispecs['rake']))
-                fault.slip[:,1] = ispecs['magnitude']*np.sin(np.radians(ispecs['rake']))
+                fault.slip[:,0] = ispecs['slip']*np.cos(np.radians(ispecs['rake']))
+                fault.slip[:,1] = ispecs['slip']*np.sin(np.radians(ispecs['rake']))
             elif self.mode == 'ss_ds':
                 fault.slip[:,0] = ispecs['strikeslip']
                 fault.slip[:,1] = ispecs['dipslip']
@@ -1263,13 +1280,13 @@ class explorefault(SourceInv):
 
     def plot_kde_matrix(self, figsize=None, save=False, filename='kde_matrix.png', show=True, 
                         style='white', fill=True, scatter=False, scatter_size=15, 
-                        plot_sigmas=False, plot_faults=True, faults=None, axis_labels=None,
+                        plot_sigmas=False, plot_faults=True, faults=None, 
+                        axis_labels=None, # kept for backward compatibility; `label_map` is recommended
+                        label_map=None,   # <--- New parameter: user-defined mapping dictionary
                         wspace=None, hspace=None, center_lon_lat=False,
                         xtick_rotation=None, ytick_rotation=None, lonlat_decimal=3,
                         use_sigma_alias=True,
-                        # Font size control - split into tick and label
                         tick_fontsize=None, label_fontsize=None,
-                        # Tick marks control
                         show_minor_ticks=False, tick_direction='in',
                         major_tick_length=3, minor_tick_length=1.5,
                         tick_width=0.5):
@@ -1338,159 +1355,189 @@ class explorefault(SourceInv):
         import matplotlib.pyplot as plt
         import numpy as np
         from matplotlib.ticker import FuncFormatter, AutoLocator
-    
+
+        # 1. Define default label mapping (Internal Defaults)
+        default_label_map = {
+            'lon': r'Lon ($^\circ$)',
+            'lat': r'Lat ($^\circ$)',
+            'depth': r'Depth (km)',
+            'dip': r'Dip ($^\circ$)',
+            'width': r'Width (km)',
+            'length': r'Length (km)',
+            'strike': r'Strike ($^\circ$)',
+            'slip': r'Slip (m)',      
+            'magnitude': r'Mw',       
+            'rake': r'Rake ($^\circ$)',
+            'strikeslip': r'SS (m)',
+            'dipslip': r'DS (m)'
+        }
+
+        # 2. Merge user-provided `label_map`
+        if label_map:
+            default_label_map.update(label_map)
+
         # Get the SMC chains
         trace = self.sampler['allsamples']
         keys = []
         index = []
+
+        # --- Data Extraction Logic ---
         if plot_faults:
             if faults is None:
                 for fault_name in self.faultnames:
                     keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
                     index += self.param_index[fault_name]
-            elif type(faults) in (list, ):
+            elif isinstance(faults, list):
                 for fault_name in faults:
                     keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
                     index += self.param_index[fault_name]
-            elif type(faults) in (str, ):
+            elif isinstance(faults, str):
                 assert faults in self.faultnames, f"Fault {faults} not found."
-                keys += self.param_keys[faults]
+                keys += [f"{faults}_{key}" for key in self.param_keys[faults]]
                 index += self.param_index[faults]
         
         if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
-            # Convert sigma keys to LaTeX format for better display
-            if use_sigma_alias:
-                sigma_keys = []
-                for key in self.sigmas_keys_alias:
-                    if key.startswith('sigma_'):
-                        # Convert sigma_xxx to $\sigma_{xxx}$
-                        subscript = key.replace('sigma_', '')
-                        latex_key = f'$\\sigma_{{{subscript}}}$'
-                        sigma_keys.append(latex_key)
-                    else:
-                        sigma_keys.append(key)
+            # Use aliases if available to construct initial keys
+            if use_sigma_alias and hasattr(self, 'sigmas_keys_alias'):
+                num_sigmas = len(self.sigmas_index)
+                keys += self.sigmas_keys_alias[:num_sigmas]
             else:
-                sigma_keys = []
-                for key in self.sigmas_keys:
-                    if key.startswith('sigma_'):
-                        # Convert sigma_xxx to $\sigma_{xxx}$
-                        subscript = key.replace('sigma_', '')
-                        latex_key = f'$\\sigma_{{{subscript}}}$'
-                        sigma_keys.append(latex_key)
-                    else:
-                        sigma_keys.append(key)
-            
-            keys += sigma_keys
+                keys += self.sigmas_keys
             index += self.sigmas_index
 
-        # Replace 'magnitude' with 'slip' in all keys (unified processing)
-        keys = [key.replace('magnitude', 'slip') for key in keys]
-        # Capitalize all keys for better display
-        keys = [key.capitalize() for key in keys]
-        # Convert the SMC chains to a DataFrame
-        df = pd.DataFrame(trace[:, index], columns=keys)
-        
-        # Remove columns with zero variance
-        df = df.loc[:, df.var() != 0]
-        
-        # Center lon and lat if required
-        if center_lon_lat:
+        # --- Debug: print the actually generated Keys for user mapping reference ---
+        if self.parallel_rank == 0:
+            print(f"[DEBUG] Keys generated for plot: {keys}")
+
+        # 3. Process Keys and generate final Labels (improved logic: supports multi-fault distinctions)
+        final_labels = []
+
+        # Priority 0: If user provided `axis_labels` list, use it
+        if axis_labels is not None and len(axis_labels) == len(keys):
+            final_labels = axis_labels
+        else:
             for key in keys:
-                if 'lon' in key:
-                    lon_mean = df[key].mean()
-                    df[key] -= lon_mean
-                    print(f"Mean of {key}: {lon_mean}")
-                if 'lat' in key:
-                    lat_mean = df[key].mean()
-                    df[key] -= lat_mean
-                    print(f"Mean of {key}: {lat_mean}")
+                # Extract base key (e.g., 'fault_0_lon' -> 'lon')
+                parts = key.split('_')
+                base_key = parts[-1]
+                # Try to extract prefix (e.g., 'fault_0') for multi-fault distinction
+                prefix = "_".join(parts[:-1]) if len(parts) > 1 else ""
+
+                # Priority 1: Exact key match (Full Key Match)
+                # User may specify 'fault_0_slip' explicitly in `label_map`
+                if key in default_label_map:
+                    final_labels.append(default_label_map[key])
+                
+                # Priority 2: Sigma handling
+                elif 'sigma' in key or 'sigma' in base_key:
+                    # If base_key (e.g., 'asc') is in the map, prefer it
+                    if base_key in default_label_map:
+                        final_labels.append(default_label_map[base_key])
+                    elif use_sigma_alias:
+                        if key.startswith('$'): 
+                            final_labels.append(key)
+                        else:
+                            sub = key.replace('sigma_', '') 
+                            if sub == 'sigma' or sub == '':
+                                final_labels.append(r'$\sigma$')
+                            else:
+                                final_labels.append(fr'$\sigma_{{{sub}}}$')
+                    else:
+                        final_labels.append(key)
+                
+                # Priority 3: Base key match (core change)
+                elif base_key in default_label_map:
+                    label = default_label_map[base_key]
+
+                    # [Key change]: For multiple faults, if the key looks like a fault parameter,
+                    # automatically add a prefix to distinguish (e.g., F0, F1)
+                    if len(self.faultnames) > 1 and prefix:
+                        # Simplify prefix: convert 'fault_0' to 'F0' to save space
+                        if prefix.startswith("fault_"):
+                            display_prefix = prefix.replace("fault_", "F")
+                        else:
+                            display_prefix = prefix
+
+                        # Final becomes 'F0 Slip (m)'
+                        final_labels.append(f"{display_prefix} {label}")
+                    else:
+                        # Single fault: keep concise 'Slip (m)'
+                        final_labels.append(label)
+                
+                # Priority 4: Fallback
+                else:
+                    final_labels.append(base_key.capitalize())
+
+        # 4. Create DataFrame (rest of logic unchanged)
+        df_temp = pd.DataFrame(trace[:, index], columns=keys)
+        valid_indices = []
+        valid_labels = []
         
-        # Set the style
+        for i, col in enumerate(df_temp.columns):
+            if df_temp[col].var() != 0:
+                valid_indices.append(index[i])
+                valid_labels.append(final_labels[i])
+                
+        df = pd.DataFrame(trace[:, valid_indices], columns=valid_labels)
+        
+        if center_lon_lat:
+            for col in df.columns:
+                if 'Lon' in col or 'Lat' in col or 'lon' in col.lower() or 'lat' in col.lower():
+                    mean_val = df[col].mean()
+                    df[col] -= mean_val
+        
         sns.set_style(style)
         
-        # Set PDF font type if saving as PDF
         if save and filename.endswith('.pdf'):
-            pdf_fonttype = 42  # Use Type 42 (TrueType) for better compatibility
-            plt.rcParams['pdf.fonttype'] = pdf_fonttype
+            plt.rcParams['pdf.fonttype'] = 42
         
-        # Create a pair grid with separate y-axis for diagonal plots
         g = sns.PairGrid(df, diag_sharey=False)
         
         if figsize is not None:
             g.figure.set_size_inches(*figsize)
         
-        # Remove the upper half of plots if scatter is not required
         if not scatter:
             for i, j in zip(*np.triu_indices_from(g.axes, 1)):
                 g.axes[i, j].set_visible(False)
         
-        # Plot a filled KDE on the diagonal
         g.map_diag(sns.kdeplot, fill=fill)
-        
-        # Plot a filled KDE with scatter points on the off-diagonal
         g.map_lower(sns.kdeplot, fill=fill)
-        
-        # Plot scatter points on the upper half if required
         if scatter:
             g.map_upper(sns.scatterplot, s=scatter_size)
         
-        # Configure tick marks for all subplots
         for i in range(len(g.axes)):
             for j in range(len(g.axes)):
                 if g.axes[i, j].get_visible():
-                    # Enable or disable minor ticks
                     if show_minor_ticks:
                         g.axes[i, j].minorticks_on()
                     else:
                         g.axes[i, j].minorticks_off()
                     
-                    # Configure major tick marks
                     g.axes[i, j].tick_params(
-                        axis='both',
-                        which='major',
-                        direction=tick_direction,
-                        length=major_tick_length,
-                        width=tick_width,
-                        top=False,
-                        right=False,
-                        bottom=True,
-                        left=True
+                        axis='both', which='major', direction=tick_direction,
+                        length=major_tick_length, width=tick_width,
+                        top=False, right=False, bottom=True, left=True
                     )
-                    
-                    # Configure minor tick marks (only if enabled)
                     if show_minor_ticks:
                         g.axes[i, j].tick_params(
-                            axis='both',
-                            which='minor',
-                            direction=tick_direction,
-                            length=minor_tick_length,
-                            width=tick_width,
-                            top=False,
-                            right=False,
-                            bottom=True,
-                            left=True
+                            axis='both', which='minor', direction=tick_direction,
+                            length=minor_tick_length, width=tick_width
                         )
-                    
-                    # Ensure tick locators are set
                     g.axes[i, j].xaxis.set_major_locator(AutoLocator())
                     g.axes[i, j].yaxis.set_major_locator(AutoLocator())
         
-        # Format tick labels to scientific notation for lon and lat
         def scientific_formatter(x, pos):
-            return f'{x:.2g}' if x <= 1 else f'{x:.{lonlat_decimal}f}'
+            if abs(x) >= 1000 or (abs(x) < 0.01 and x != 0):
+                return f'{x:.1e}'
+            return f'{x:.{lonlat_decimal}f}'
         
         for ax in g.axes.flatten():
             if ax is not None and ax.get_visible():
-                if 'lon' in ax.get_xlabel() or 'lat' in ax.get_xlabel():
-                    ax.xaxis.set_major_formatter(FuncFormatter(scientific_formatter))
-                    for label in ax.get_xticklabels():
-                        label.set_rotation(45)
-                        label.set_ha('right')
-                if 'lon' in ax.get_ylabel() or 'lat' in ax.get_ylabel():
-                    ax.yaxis.set_major_formatter(FuncFormatter(scientific_formatter))
-    
-        # Set tick rotation and font size
+                ax.xaxis.set_major_formatter(FuncFormatter(scientific_formatter))
+                ax.yaxis.set_major_formatter(FuncFormatter(scientific_formatter))
+
         default_tick_fontsize = tick_fontsize if tick_fontsize is not None else 10
+        
         if xtick_rotation is not None:
             for ax in g.axes[-1, :]:
                 for label in ax.get_xticklabels():
@@ -1511,29 +1558,20 @@ class explorefault(SourceInv):
             for ax in g.axes[:, 0]:
                 ax.tick_params(axis='y', labelsize=default_tick_fontsize)
         
-        # Set axis labels if provided
         default_label_fontsize = label_fontsize if label_fontsize is not None else 12
-        if axis_labels:
-            for i, label in enumerate(axis_labels):
-                g.axes[-1, i].set_xlabel(label, fontsize=default_label_fontsize)
-                g.axes[i, 0].set_ylabel(label, fontsize=default_label_fontsize)
-        else:
-            # Set fontsize for existing axis labels
-            for i in range(len(g.axes)):
-                if g.axes[-1, i].get_xlabel():
-                    g.axes[-1, i].set_xlabel(g.axes[-1, i].get_xlabel(), fontsize=default_label_fontsize)
-                if g.axes[i, 0].get_ylabel():
-                    g.axes[i, 0].set_ylabel(g.axes[i, 0].get_ylabel(), fontsize=default_label_fontsize)
+        for i in range(len(g.axes)):
+            if g.axes[-1, i].get_xlabel():
+                g.axes[-1, i].set_xlabel(g.axes[-1, i].get_xlabel(), fontsize=default_label_fontsize)
+            if g.axes[i, 0].get_ylabel():
+                g.axes[i, 0].set_ylabel(g.axes[i, 0].get_ylabel(), fontsize=default_label_fontsize)
     
         plt.tight_layout()
         if wspace is not None or hspace is not None:
             plt.subplots_adjust(wspace=wspace, hspace=hspace)
         
-        # Save the figure if required
         if save:
-            plt.savefig(filename, dpi=600)
+            plt.savefig(filename, dpi=600, bbox_inches='tight')
         
-        # Show the figure if required
         if show:
             plt.show()
 
