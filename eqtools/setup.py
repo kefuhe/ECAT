@@ -61,6 +61,7 @@ setup(
             "ecat-generate-pscmp-template=eqtools.cli_tools.pscmp_template_cli:main",
             "ecat-generate-edgrn-template=eqtools.cli_tools.edgrn_template_cli:main",
             "ecat-generate-edcmp-template=eqtools.cli_tools.edcmp_template_cli:main",
+            "ecat-list-fault-perturb-methods=eqtools.cli_tools.list_fault_perturb_methods:main",
         ],
     },
     cmdclass={
