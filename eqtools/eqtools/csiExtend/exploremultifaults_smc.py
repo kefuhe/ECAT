@@ -108,6 +108,53 @@ class explorefault(SourceInv):
         # Load and set the configuration
         self.load_and_set_config(config_file, fixed_params, geodata=geodata)
 
+        # ==========================================================
+        # [ADDED] Top-level fault alias loading and validation
+        # ==========================================================
+        
+        # 1. Initialize default alias mapping (fault_0 -> F0, fault_1 -> F1)
+        self.fault_alias_map = {f'fault_{i}': f'F{i}' for i in range(self.nfaults)}
+        
+        # 2. Read aliases from the config top-level (adjacent to 'nfaults')
+        # Use getattr to avoid errors if older config classes lack this attribute
+        raw_aliases = getattr(self.config, 'fault_aliasnames', None)
+        
+        if raw_aliases is not None:
+            final_aliases = []
+            
+            # --- Validation logic A: String ---
+            if isinstance(raw_aliases, str):
+                # If a single string is provided but 'nfaults' > 1, this is a configuration error
+                if self.nfaults > 1:
+                    raise ValueError(
+                        f"[Config Error] 'fault_names' is a single string ('{raw_aliases}'), "
+                        f"but 'nfaults' is {self.nfaults}. You must provide a list of names like ['Name1', 'Name2']."
+                    )
+                final_aliases = [raw_aliases]
+                
+            # --- Validation logic B: List ---
+            elif isinstance(raw_aliases, list):
+                # Length must exactly match 'nfaults'
+                if len(raw_aliases) != self.nfaults:
+                    raise ValueError(
+                        f"[Config Error] Length of 'fault_names' ({len(raw_aliases)}) "
+                        f"does not match 'nfaults' ({self.nfaults}). "
+                        f"Expected {self.nfaults} names."
+                    )
+                # Ensure elements are strings
+                final_aliases = [str(x) for x in raw_aliases]
+            
+            # --- Validation logic C: Type error ---
+            else:
+                raise TypeError(f"[Config Error] 'fault_names' must be a string (for 1 fault) or a list of strings.")
+
+            # 3. Update alias mapping dictionary
+            for i, alias in enumerate(final_aliases):
+                self.fault_alias_map[f'fault_{i}'] = alias
+                
+        if self.verbose:
+            print(f"[INFO] Fault Aliases Active: {self.fault_alias_map}")
+
         # Initialize the fault objects
         self.nfaults = num_faults if num_faults else self.nfaults
         self.faults = {f'fault_{i}': planarfault('mcmc fault {}'.format(i), utmzone=self.utmzone, 
@@ -641,24 +688,27 @@ class explorefault(SourceInv):
     def returnModel(self, model='median', print_stats=True):
         '''
         Returns a list of faults corresponding to the desired model.
+        (Standard Mode: Geometry is directly taken from MCMC samples)
     
         Kwargs:
-            * model             : Can be 'mean', 'median', 'std', 'MAP', an integer or a dictionary with the appropriate keys
+            * model             : 'mean', 'median', 'std', 'MAP', integer, or dict
+            * print_stats       : Whether to print fit statistics and parameter table
     
         Returns:
             * list of fault instances
         '''
-    
-        # Get it 
+        import numpy as np
+
+        # 1. Retrieve sampled values (Standard Logic)
         if model in ('Mean', 'mean'):
             samples = self.sampler['allsamples'].mean(axis=0)
         elif model in ('Median', 'median'):
             samples = np.median(self.sampler['allsamples'], axis=0)
-        elif model in ('Std', 'std', 'STD'):                     
+        elif model in ('Std', 'std', 'STD'):                    
             samples = self.sampler['allsamples'].std(axis=0)
         elif model in ('MAP', 'map', 'Map'):
-            # Assuming 'logposterior' is the key for log posterior values
-            max_posterior_index = np.argmax(self.sampler['postval'])
+            key = 'postval' if 'postval' in self.sampler else 'log_posterior'
+            max_posterior_index = np.argmax(self.sampler[key])
             samples = self.sampler['allsamples'][max_posterior_index, :]
         else: 
             if type(model) is int:
@@ -670,23 +720,23 @@ class explorefault(SourceInv):
         faults = []
         specs = {}
 
-        # Iterate over the fault names
+        # 2. Iterate faults to build the model
         for fault_name in self.faultnames:
-
+            # Standard mode: ispecs directly contains inversion parameters like lon, lat, length, strike
             ispecs = self.build_fault_params(samples, fault_name)
-
             specs[fault_name] = ispecs
 
             fault = self.faults[fault_name]
+            
             if model not in ['STD', 'std', 'Std']:
                 # Build the fault patches
-                # Use the parameters from the samples
+                # Use geometry parameters directly from MCMC inversion
                 fault.buildPatches(ispecs['lon'], ispecs['lat'], 
-                                ispecs['depth'], ispecs['strike'],
-                                ispecs['dip'], ispecs['length'],
-                                ispecs['width'], 1, 1, verbose=False)
+                                   ispecs['depth'], ispecs['strike'],
+                                   ispecs['dip'], ispecs['length'],
+                                   ispecs['width'], 1, 1, verbose=False)
             else:
-                fault.slip = np.zeros((1, 2), dtype=np.float64)  # Empty slip for STD model
+                fault.slip = np.zeros((1, 2), dtype=np.float64)
             
             # Set slip values
             if self.mode == 'mag_rake':
@@ -696,10 +746,9 @@ class explorefault(SourceInv):
                 fault.slip[:,0] = ispecs['strikeslip']
                 fault.slip[:,1] = ispecs['dipslip']
 
-            # Add the fault to the list
             faults.append(fault)
         
-        # Build Green's functions for the data based on self.dataFaults
+        # 3. Build Green's functions (Standard Logic)
         if model not in ['STD', 'std', 'Std']:
             for idf, idataFaults in enumerate(self.dataFaults):
                 if idataFaults is None:
@@ -707,31 +756,25 @@ class explorefault(SourceInv):
             for fault_name in self.faultnames:
                 fault = self.faults[fault_name]
                 for ilike in self.Likelihoods:
-                    # Build the green's functions
                     fault.buildGFs(ilike[0], slipdir='sd', verbose=False, vertical=ilike[-1])
-            # Build different set between self.faultnames and self.dataFaults
             for idataFaults, ilike in zip(self.dataFaults, self.Likelihoods):
                 for fault_name in set(self.faultnames).difference(idataFaults):
                     fault = self.faults[fault_name]
                     fault.buildGFs(ilike[0], slipdir='sd', verbose=False, method='empty', vertical=ilike[-1])
         
-        # Extract the reference values
+        # Extract reference & sigmas
         if 'reference' in self.param_keys:
             specs['reference'] = np.array(samples[self.param_index['reference']])
-
-        # Extract the sigmas
         if self._sigma_update_flag:
             specs['sigmas'] = np.array(samples[self.sigmas_index])
 
-        # Save the desired model 
-        if not hasattr(self, 'model_dict'):
-            self.model_dict = {}
+        # Save model
+        if not hasattr(self, 'model_dict'): self.model_dict = {}
         self.model_dict[model] = specs
         self.model = samples
 
-        # If model is not 'std', build synthetics
+        # 4. Build synthetic data (Synthetics)
         if model not in ['STD', 'std', 'Std']:
-            # Build Synthetics
             cogps_vertical_list = []
             cosar_list = []
             for data, vertical in zip(self.datas, self.verticals):
@@ -740,22 +783,57 @@ class explorefault(SourceInv):
                 elif data.dtype == 'insar':
                     cosar_list.append(data)
             
-            ## Build synthetics for GPS data
             for cogps, vertical in cogps_vertical_list:
                 cogps.buildsynth(faults, vertical=vertical)
             
-            ## Build synthetics for InSAR data
             for cosar in cosar_list:
                 cosar.buildsynth(faults, vertical=True)
-                # Add reference if exists
                 if hasattr(cosar, 'refnumber') and '{}'.format(cosar.name) in self.keys:
                     cosar.synth += self.model[cosar.refnumber]
             
-            # Calculate and print fit statistics
+            # =================================================================
+            # Printing logic: Fit Stats + detailed parameter table (with aliases)
+            # =================================================================
             if print_stats:
+                # 1. Print fit statistics (RMS, WRMS, etc.)
                 self.calculate_and_print_fit_statistics(model=model)
 
-        # All done
+                # 2. Print detailed parameter table
+                print(f"\n[MCMC Parameter Summary: {str(model).upper()}]")
+                display_data = []
+                
+                # Iterate fault parameter groups
+                for group_name, keys in self.param_keys.items():
+                    # --- Alias handling logic ---
+                    display_group_name = group_name
+                    if hasattr(self, 'fault_alias_map') and group_name in self.fault_alias_map:
+                        display_group_name = self.fault_alias_map[group_name]
+                    elif group_name.startswith('fault_'):
+                        display_group_name = group_name.replace('fault_', 'F')
+                    # ------------------
+                    
+                    indices = self.param_index[group_name]
+                    for key, idx in zip(keys, indices):
+                        val = samples[idx]
+                        display_data.append([display_group_name, key, f"{val:.4f}", idx])
+                
+                # Iterate Sigmas
+                if hasattr(self, 'sigmas_index') and len(self.sigmas_index) > 0:
+                    sigma_vals = samples[self.sigmas_index]
+                    s_keys = getattr(self, 'sigmas_keys_alias', [f'sigma_{i}' for i in range(len(sigma_vals))])
+                    for i, (k, v) in enumerate(zip(s_keys, sigma_vals)):
+                        display_data.append(['Nuisance', k, f"{v:.4f}", self.sigmas_index[i]])
+                
+                # Sort by index
+                display_data.sort(key=lambda x: x[3])
+
+                try:
+                    from tabulate import tabulate
+                    print(tabulate(display_data, headers=['Name', 'Param', 'Value', 'Index'], tablefmt='simple'))
+                except ImportError:
+                    for row in display_data:
+                        print(f"{row[0]} {row[1]}: {row[2]}")
+
         return faults
 
     def calculate_data_fit_metrics(self, data, vertical=True):
@@ -1354,187 +1432,146 @@ class explorefault(SourceInv):
         import pandas as pd
         import matplotlib.pyplot as plt
         import numpy as np
-        from matplotlib.ticker import FuncFormatter, AutoLocator
+        from matplotlib.ticker import FormatStrFormatter, AutoLocator, ScalarFormatter
 
-        # 1. Define default label mapping (Internal Defaults)
+        # 1. Defaults (Academic Symbols)
         default_label_map = {
-            'lon': r'Lon ($^\circ$)',
-            'lat': r'Lat ($^\circ$)',
-            'depth': r'Depth (km)',
-            'dip': r'Dip ($^\circ$)',
-            'width': r'Width (km)',
-            'length': r'Length (km)',
-            'strike': r'Strike ($^\circ$)',
-            'slip': r'Slip (m)',      
-            'magnitude': r'Mw',       
-            'rake': r'Rake ($^\circ$)',
-            'strikeslip': r'SS (m)',
-            'dipslip': r'DS (m)'
+            'lon': r'Lon', 'lat': r'Lat', 'depth': r'Z', 'dip': r'$\delta$',     
+            'width': r'W', 'length': r'L', 'strike': r'Str', 'slip': r'S',           
+            'magnitude': r'S', 'rake': r'$\lambda$', 'strikeslip': r'SS', 'dipslip': r'DS'        
         }
+        if label_map: default_label_map.update(label_map)
 
-        # 2. Merge user-provided `label_map`
-        if label_map:
-            default_label_map.update(label_map)
+        # 2. Standard Sorting Order
+        standard_order = ['lon', 'lat', 'depth', 'length', 'width', 'strike', 'dip', 'slip', 'magnitude', 'rake', 'strikeslip', 'dipslip']
+        def get_sort_priority(key):
+            try: return standard_order.index(key)
+            except ValueError: return 999 
 
-        # Get the SMC chains
         trace = self.sampler['allsamples']
         keys = []
         index = []
 
-        # --- Data Extraction Logic ---
+        # --- Data Extraction (Standard Faults) ---
         if plot_faults:
-            if faults is None:
-                for fault_name in self.faultnames:
-                    keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
-                    index += self.param_index[fault_name]
-            elif isinstance(faults, list):
-                for fault_name in faults:
-                    keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
-                    index += self.param_index[fault_name]
-            elif isinstance(faults, str):
-                assert faults in self.faultnames, f"Fault {faults} not found."
-                keys += [f"{faults}_{key}" for key in self.param_keys[faults]]
-                index += self.param_index[faults]
+            target_faults = faults if faults else self.faultnames
+            if isinstance(target_faults, str): target_faults = [target_faults]
+
+            for fault_name in target_faults:
+                if fault_name not in self.faultnames: continue
+                f_keys = self.param_keys[fault_name]
+                f_indices = self.param_index[fault_name]
+                
+                # Sorting logic
+                sorted_pairs = sorted(zip(f_keys, f_indices), key=lambda x: get_sort_priority(x[0]))
+                
+                for k, idx in sorted_pairs:
+                    keys.append(f"{fault_name}_{k}")
+                    index.append(idx)
         
-        if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
-            # Use aliases if available to construct initial keys
+        # --- Sigmas ---
+        if plot_sigmas and hasattr(self, 'sigmas_keys'):
             if use_sigma_alias and hasattr(self, 'sigmas_keys_alias'):
-                num_sigmas = len(self.sigmas_index)
-                keys += self.sigmas_keys_alias[:num_sigmas]
+                keys += self.sigmas_keys_alias[:len(self.sigmas_index)]
             else:
                 keys += self.sigmas_keys
             index += self.sigmas_index
 
-        # --- Debug: print the actually generated Keys for user mapping reference ---
         if self.parallel_rank == 0:
             print(f"[DEBUG] Keys generated for plot: {keys}")
 
-        # 3. Process Keys and generate final Labels (improved logic: supports multi-fault distinctions)
+        # 3. Label Generation (With Alias Support)
         final_labels = []
 
-        # Priority 0: If user provided `axis_labels` list, use it
         if axis_labels is not None and len(axis_labels) == len(keys):
             final_labels = axis_labels
         else:
             for key in keys:
-                # Extract base key (e.g., 'fault_0_lon' -> 'lon')
                 parts = key.split('_')
                 base_key = parts[-1]
-                # Try to extract prefix (e.g., 'fault_0') for multi-fault distinction
                 prefix = "_".join(parts[:-1]) if len(parts) > 1 else ""
 
-                # Priority 1: Exact key match (Full Key Match)
-                # User may specify 'fault_0_slip' explicitly in `label_map`
+                # Alias Subscript Helper
+                def format_subscript(symbol, sub_text):
+                    clean_symbol = symbol.replace('$', '')
+                    # Check Alias Map
+                    if hasattr(self, 'fault_alias_map') and sub_text in self.fault_alias_map:
+                        display_sub = self.fault_alias_map[sub_text]
+                    elif sub_text.startswith("fault_"):
+                        display_sub = sub_text.replace("fault_", "F")
+                    else:
+                        display_sub = sub_text
+                    return fr'${clean_symbol}_{{{display_sub}}}$'
+
+                # Label Matching
                 if key in default_label_map:
                     final_labels.append(default_label_map[key])
-                
-                # Priority 2: Sigma handling
                 elif 'sigma' in key or 'sigma' in base_key:
-                    # If base_key (e.g., 'asc') is in the map, prefer it
                     if base_key in default_label_map:
                         final_labels.append(default_label_map[base_key])
                     elif use_sigma_alias:
-                        if key.startswith('$'): 
-                            final_labels.append(key)
+                        if key.startswith('$'): final_labels.append(key)
                         else:
                             sub = key.replace('sigma_', '') 
-                            if sub == 'sigma' or sub == '':
-                                final_labels.append(r'$\sigma$')
-                            else:
-                                final_labels.append(fr'$\sigma_{{{sub}}}$')
+                            sub_display = sub if sub else ''
+                            final_labels.append(fr'$log(\sigma_{{{sub_display}}})$')
                     else:
                         final_labels.append(key)
-                
-                # Priority 3: Base key match (core change)
                 elif base_key in default_label_map:
                     label = default_label_map[base_key]
-
-                    # [Key change]: For multiple faults, if the key looks like a fault parameter,
-                    # automatically add a prefix to distinguish (e.g., F0, F1)
-                    if len(self.faultnames) > 1 and prefix:
-                        # Simplify prefix: convert 'fault_0' to 'F0' to save space
-                        if prefix.startswith("fault_"):
-                            display_prefix = prefix.replace("fault_", "F")
-                        else:
-                            display_prefix = prefix
-
-                        # Final becomes 'F0 Slip (m)'
-                        final_labels.append(f"{display_prefix} {label}")
+                    if (len(self.faultnames) > 1) and prefix in self.faultnames:
+                        final_labels.append(format_subscript(label, prefix))
                     else:
-                        # Single fault: keep concise 'Slip (m)'
+                        if not label.startswith('$'): label = fr'${label}$'
                         final_labels.append(label)
-                
-                # Priority 4: Fallback
                 else:
                     final_labels.append(base_key.capitalize())
 
-        # 4. Create DataFrame (rest of logic unchanged)
+        # 4. DataFrame & Plot
         df_temp = pd.DataFrame(trace[:, index], columns=keys)
         valid_indices = []
         valid_labels = []
-        
         for i, col in enumerate(df_temp.columns):
             if df_temp[col].var() != 0:
                 valid_indices.append(index[i])
                 valid_labels.append(final_labels[i])
-                
         df = pd.DataFrame(trace[:, valid_indices], columns=valid_labels)
         
         if center_lon_lat:
             for col in df.columns:
                 if 'Lon' in col or 'Lat' in col or 'lon' in col.lower() or 'lat' in col.lower():
-                    mean_val = df[col].mean()
-                    df[col] -= mean_val
-        
+                    df[col] -= df[col].mean()
+
         sns.set_style(style)
-        
-        if save and filename.endswith('.pdf'):
-            plt.rcParams['pdf.fonttype'] = 42
+        if save and filename.endswith('.pdf'): plt.rcParams['pdf.fonttype'] = 42
         
         g = sns.PairGrid(df, diag_sharey=False)
-        
-        if figsize is not None:
-            g.figure.set_size_inches(*figsize)
-        
+        if figsize: g.figure.set_size_inches(*figsize)
         if not scatter:
-            for i, j in zip(*np.triu_indices_from(g.axes, 1)):
-                g.axes[i, j].set_visible(False)
-        
+            for i, j in zip(*np.triu_indices_from(g.axes, 1)): g.axes[i, j].set_visible(False)
         g.map_diag(sns.kdeplot, fill=fill)
         g.map_lower(sns.kdeplot, fill=fill)
-        if scatter:
-            g.map_upper(sns.scatterplot, s=scatter_size)
+        if scatter: g.map_upper(sns.scatterplot, s=scatter_size)
         
-        for i in range(len(g.axes)):
-            for j in range(len(g.axes)):
-                if g.axes[i, j].get_visible():
-                    if show_minor_ticks:
-                        g.axes[i, j].minorticks_on()
-                    else:
-                        g.axes[i, j].minorticks_off()
-                    
-                    g.axes[i, j].tick_params(
-                        axis='both', which='major', direction=tick_direction,
-                        length=major_tick_length, width=tick_width,
-                        top=False, right=False, bottom=True, left=True
-                    )
-                    if show_minor_ticks:
-                        g.axes[i, j].tick_params(
-                            axis='both', which='minor', direction=tick_direction,
-                            length=minor_tick_length, width=tick_width
-                        )
-                    g.axes[i, j].xaxis.set_major_locator(AutoLocator())
-                    g.axes[i, j].yaxis.set_major_locator(AutoLocator())
-        
-        def scientific_formatter(x, pos):
-            if abs(x) >= 1000 or (abs(x) < 0.01 and x != 0):
-                return f'{x:.1e}'
-            return f'{x:.{lonlat_decimal}f}'
-        
-        for ax in g.axes.flatten():
-            if ax is not None and ax.get_visible():
-                ax.xaxis.set_major_formatter(FuncFormatter(scientific_formatter))
-                ax.yaxis.set_major_formatter(FuncFormatter(scientific_formatter))
+        # 5. Adaptive Formatting
+        def apply_smart_formatting(axis):
+            vmin, vmax = axis.get_view_interval()
+            if vmax - vmin == 0: return
+            if abs(vmax) > 1e4 or (abs(vmax) < 1e-3 and abs(vmax) > 0):
+                sf = ScalarFormatter(useMathText=True); sf.set_powerlimits((-3, 4))
+                axis.set_major_formatter(sf); return
+            import math
+            decimals = max(0, int(math.ceil(-math.log10((vmax - vmin) / 5.0))))
+            axis.set_major_formatter(FormatStrFormatter(f'%.{decimals}f'))
+
+        for i, row in enumerate(g.axes):
+            for j, ax in enumerate(row):
+                if not ax.get_visible(): continue
+                if show_minor_ticks: ax.minorticks_on()
+                ax.tick_params(axis='both', which='major', direction=tick_direction, length=major_tick_length, width=tick_width)
+                ax.xaxis.set_major_locator(AutoLocator()); ax.yaxis.set_major_locator(AutoLocator())
+                if i == len(g.axes)-1: apply_smart_formatting(ax.xaxis)
+                if j == 0 and (i != 0 or i==0): apply_smart_formatting(ax.yaxis)
 
         default_tick_fontsize = tick_fontsize if tick_fontsize is not None else 10
         
@@ -1575,30 +1612,10 @@ class explorefault(SourceInv):
         if show:
             plt.show()
 
-    def plot_smc_statistics_arviz(self):
-        import arviz as az
-        import matplotlib.pyplot as plt
-        # plt.rcParams['plot.max_subplots'] = 100
-    
-        # Get the SMC chains
-        trace = self.sampler['allsamples']
-        keys = self.keys
-    
-        # Convert the SMC chains to a dictionary
-        data = {keys[i]: trace[:, i] for i in range(len(keys))}
-    
-        # Convert the dictionary to an InferenceData object
-        idata = az.from_dict(data)
-    
-        # Plot the pair plot
-        az.plot_pair(idata, marginals=True)
-    
-        plt.show()
-
     def extract_and_plot_bayesian_results(self, rank=0, filename='samples_mag_rake_multifaults.h5', 
                                         plot_faults=True, plot_sigmas=True, plot_data=True,
                                         antisymmetric=True, res_use_data_norm=True, cmap='jet',
-                                        model='median', fault_figsize=(7.5, 6.5), sigmas_figsize=(7.5, 6.5),
+                                        model='median', fault_figsize=(7.5, 6.5), sigmas_figsize=(2.625, 2.625),
                                         save_data=True, sar_corner=None):
         """
         Extract and plot the Bayesian results.
@@ -1614,7 +1631,7 @@ class explorefault(SourceInv):
         cmap: colormap to use (default is 'jet')
         model: the model to use ('mean', 'median', 'std', 'MAP', default is 'mean')
         fault_figsize: figure size for fault KDE plots (default is A4 size (7.5, 6.5))
-        sigmas_figsize: figure size for sigmas KDE plots (default is A4 size (7.5, 6.5))
+        sigmas_figsize: figure size for sigmas KDE plots (default is A4 size (2.625, 2.625))
         save_data: whether to save the data to a file (default is True)
         sar_corner (None, 'tri', 'quad'): sar corner type (default is None)
         """
@@ -1630,7 +1647,7 @@ class explorefault(SourceInv):
                 for ifault, faultname in enumerate(self.faultnames):
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
                                         scatter=False, filename=f'kde_matrix_F{ifault}.png', figsize=fault_figsize,
-                                        hspace=0.05, wspace=0.05)
+                                        hspace=0.05, wspace=0.05, xtick_rotation=45)
             
             # Plot Sigmas
             if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):

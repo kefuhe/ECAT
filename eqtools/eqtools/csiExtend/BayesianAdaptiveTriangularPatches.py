@@ -113,7 +113,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     
         return perturb_coords
     
-    @track_mesh_update()
+    @track_mesh_update(description="Perturb dips using preset reference values (No mesh update).",
+                       params_info={"perturbations": "Array of dip changes", "fixed_nodes": "List of fixed indices"})
     def perturb_dips_with_preset_params(self, perturbations, discretization_interval=None, interpolation_axis='x', 
                                         fixed_nodes=None, angle_unit='degrees', is_utm=False, 
                                         buffer_nodes=None, buffer_radius=None, update_xydip_ref=False,
@@ -159,7 +160,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
             user_direction_angle
         )
     
-    @track_mesh_update(update_mesh=True)
+    @track_mesh_update(update_mesh=True,
+                       description="Perturb dips using preset reference values and rebuild simple mesh.",
+                       params_info={"perturbations": "Array of dip changes", "kwargs": "Mesh generation parameters (disct_z, bias...)"})
     def perturb_DipsPresetParams_SimpleMesh(self, perturbations, discretization_interval=None, interpolation_axis='x',
                                             fixed_nodes=None, angle_unit='degrees', is_utm=False, 
                                             buffer_nodes=None, buffer_radius=None, update_xydip_ref=False, 
@@ -337,7 +340,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     
         return coords
 
-    @track_mesh_update()
+    @track_mesh_update(description="Perturb top coordinates along a fixed/average direction.",
+                       params_info={"perturbations": "1D Array of shifts (km)"})
     def perturb_top_coords_along_fixed_direction(self, perturbations, average_direction=None, 
                                          fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                      use_average_strike=False):
@@ -347,7 +351,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.top_coords, lonlat=False, coord_type='top')
         return self.top_coords
 
-    @track_mesh_update()
+    @track_mesh_update(description="Perturb bottom coordinates along a fixed/average direction.",
+                       params_info={"perturbations": "1D Array of shifts (km)"})
     def perturb_bottom_coords_along_fixed_direction(self, perturbations, average_direction=None, 
                                             fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                      use_average_strike=False):
@@ -357,7 +362,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True)
+    @track_mesh_update(update_mesh=True, 
+                       description="Perturb bottom coords along fixed direction and rebuild simple mesh.",
+                       params_info={"perturbations": "Array of shifts", "average_direction": "Azimuth (deg/rad)"})
     def perturb_BottomFixedDir_simpleMesh(self, perturbations, average_direction=None,
                                           fixed_nodes=None, angle_unit='degrees', 
                                           perturbation_direction='horizontal', 
@@ -387,7 +394,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_mesh(self.top_coords, self.bottom_coords, disct_z, bias, min_dz)
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True)
+    @track_mesh_update(update_mesh=True,
+                       description="Perturb bottom along fixed direction, then deform existing Gmsh mesh.",
+                       params_info={"perturbations": "Array of shifts"})
     def perturb_BottomFixedDir_DeformMesh(self, perturbations, 
                                              top_size=2.0, bottom_size=4.0, num_segments=30, 
                                              disct_z=10, projection=None, rotation_angle=None, 
@@ -438,7 +447,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
                                     bias=bias, min_dz=min_dz)
         return self.bottom_coords
 
-    @track_mesh_update()
+    @track_mesh_update(description="Perturb a specific middle layer along a fixed direction.",
+                       params_info={"perturbations": "Array of shifts", "mid_layer_index": "Index of layer"})
     def perturb_layer_coords_along_fixed_direction(self, perturbations, mid_layer_index=0, average_direction=None, 
                                            fixed_nodes=None, angle_unit='degrees', 
                                            perturbation_direction='horizontal',
@@ -451,7 +461,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.layers_ll[mid_layer_index] = np.vstack((lon, lat, z)).T
         return self.layers[mid_layer_index]
     
-    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1)
+    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1,
+                       description="Translate the entire fault geometry along a fixed direction.",
+                       params_info={"perturbations": "[distance_km]"})
     def perturb_geometry_along_fixed_direction(self, perturbations, average_direction=None, 
                                                fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                                use_average_strike=False):
@@ -562,7 +574,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     
         return coords
 
-    @track_mesh_update()
+    @track_mesh_update(description="Rotate top coordinates around a pivot.",
+                       params_info={"perturbations": "Rotation angle", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_top_coords_by_rotation(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                         angle_unit='degrees', force_pivot_in_coords=False):
         assert hasattr(self, 'top_coords_ref'), 'You need to set top_coords_ref before perturbing the coordinates.'
@@ -571,7 +584,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.top_coords, lonlat=False, coord_type='top')
         return self.top_coords
 
-    @track_mesh_update()
+    @track_mesh_update(description="Rotate bottom coordinates around a pivot.",
+                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_bottom_coords_by_rotation(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                            angle_unit='degrees', force_pivot_in_coords=False):
         assert hasattr(self, 'bottom_coords_ref'), 'You need to set bottom_coords_ref before perturbing the coordinates.'
@@ -580,7 +594,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True)
+    @track_mesh_update(update_mesh=True,
+                       description="Rotate bottom coordinates and rebuild simple mesh.",
+                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_BottomRotation_simpleMesh(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                           angle_unit='degrees', force_pivot_in_coords=False,
                                           disct_z=None, bias=None, min_dz=None):
@@ -605,7 +621,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_mesh(self.top_coords, self.bottom_coords, disct_z, bias, min_dz)
         return self.bottom_coords
 
-    @track_mesh_update(update_mesh=False, update_laplacian=False, update_area=False, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=False, update_laplacian=False, update_area=False, expected_perturbations_count=4,
+                       description="Combined Perturbation: FixedDir + Rotate + Translate (No mesh update).",
+                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"})
     def perturb_BottomFixedDir_RotateTransGeom(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                           angle_unit='degrees', force_pivot_in_coords=False,
                                                           fixed_nodes=None, use_average_strike=True, pivot='midpoint'):
@@ -634,7 +652,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         #     layers = [self.perturb_layer_coords_by_translation(i, perturbations[1:-1], False, True) for i in range(len(self.layers_ref))]
         return 
     
-    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4,
+                       description="Combined Perturbation (FixedDir+Rot+Trans) and rebuild simple mesh.",
+                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"})
     def perturb_BottomFixedDir_RotateTransGeom_simpleMesh(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                           angle_unit='degrees', force_pivot_in_coords=False,
                                                           fixed_nodes=None, use_average_strike=True, pivot='midpoint',
@@ -669,7 +689,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_mesh(self.top_coords, self.bottom_coords, disct_z=disct_z, bias=bias, min_dz=min_dz)
         return
     
-    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=6)
+    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=6,
+                       description="Complex Multi-layer Perturbation (FixedDir + Rot + Trans).",
+                       params_info={"perturbations": "[mid_offset, vert_offset, bot_offset, rot, dx, dy]"})
     def perturb_BottomFixedDir_RotateTransGeom_multiLayerMesh(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                               angle_unit='degrees', force_pivot_in_coords=False,
                                                               fixed_nodes=None, use_average_strike=True, pivot='midpoint',
@@ -738,7 +760,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_multilayer_mesh(self.top_coords, self.layers, self.bottom_coords, disct_z=disct_z, bias=bias)
         return
     
-    @track_mesh_update()
+    @track_mesh_update(description="Rotate a specific layer.",
+                       params_info={"perturbations": "Angle", "mid_layer_index": "Index"})
     def perturb_layer_coords_by_rotation(self, mid_layer_index, perturbations, pivot='midpoint', recalculate_pivot=False,
                                          is_utm=False, angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -764,7 +787,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.layers_ll[mid_layer_index] = np.vstack((lon, lat, z)).T
         return self.layers[mid_layer_index]
     
-    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1)
+    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1,
+                       description="Rotate the entire fault geometry.",
+                       params_info={"perturbations": "Angle", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_geometry_by_rotation(self, perturbations, pivot='midpoint', recalculate_pivot=False,
                                      angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -811,7 +836,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     
         return coords
     
-    @track_mesh_update()
+    @track_mesh_update(description="Translate top coordinates.",
+                       params_info={"perturbations": "[dx, dy]"})
     def perturb_top_coords_by_translation(self, perturbations):
         """
         Apply a global translation to the top coordinates.
@@ -827,7 +853,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.top_coords, lonlat=False, coord_type='top')
         return self.top_coords
     
-    @track_mesh_update()
+    @track_mesh_update(description="Translate bottom coordinates.",
+                       params_info={"perturbations": "[dx, dy]"})
     def perturb_bottom_coords_by_translation(self, perturbations):
         """
         Apply a global translation to the bottom coordinates.
@@ -843,7 +870,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True)
+    @track_mesh_update(update_mesh=True,
+                       description="Translate bottom coordinates and rebuild simple mesh.",
+                       params_info={"perturbations": "[dx, dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"})
     def perturb_BottomTrans_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Apply a global translation to the bottom coordinates and update the simple mesh.
@@ -858,7 +887,8 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_mesh(self.top_coords, self.bottom_coords, disct_z, bias, min_dz)
         return self.bottom_coords
     
-    @track_mesh_update()
+    @track_mesh_update(description="Translate a specific layer.",
+                       params_info={"perturbations": "[dx, dy]", "mid_layer_index": "int"})
     def perturb_layer_coords_by_translation(self, perturbations, mid_layer_index=0):
         """
         Apply a global translation to the coordinates of a specific layer.
@@ -877,7 +907,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.layers_ll[mid_layer_index] = np.vstack((lon, lat, z)).T
         return self.layers[mid_layer_index]
     
-    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=2)
+    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=2,
+                       description="Translate the entire fault geometry.",
+                       params_info={"perturbations": "[dx, dy]"})
     def perturb_geometry_by_translation(self, perturbations):
         """
         Apply a global translation to all coordinates.
@@ -898,7 +930,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     #---------------------------------------------------------------------------------------------------------------#
     
     #-------------------------------------Perturbing geometry by translation and rotation-------------------------------------#
-    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=3)
+    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=3,
+                       description="Rotate and Translate the entire geometry.",
+                       params_info={"perturbations": "[rot_angle, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_geometry_by_rotation_and_translation(self, perturbations, pivot='midpoint', is_utm=False,
                                                      angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -964,7 +998,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         coords = np.c_[coords, Z]
         return coords
     
-    @track_mesh_update(expected_perturbations_count=2)
+    @track_mesh_update(expected_perturbations_count=2,
+                       description="Perturb bottom coords using Dutta logic.",
+                       params_info={"perturbations": "[amod1, amod2]"})
     def perturb_bottom_coords_dutta(self, perturbations, fixed_nodes=[0, -1]):
         """
         Perturb bottom coordinates between two specific nodes.
@@ -980,7 +1016,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4,
+                       description="Generate Dutta mesh (Legacy Logic).",
+                       params_info={"perturbations": "[D1, D2, S1, S2]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dx": "Minimum dx"})
     def perturb_geometry_dutta(self, perturbations, disct_z=None, bias=None, min_dx=None):
         """
         Generate a mesh for a seismic fault using the Dutta method.
@@ -1010,7 +1048,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
     #-------------------------------------------------------------------------------------------------------------------#
 
     #-------------------------------Perturbing Bottom Coords by Translation and Rotation------------------------#
-    @track_mesh_update(update_mesh=False, update_laplacian=False, expected_perturbations_count=3)
+    @track_mesh_update(update_mesh=False, update_laplacian=False, expected_perturbations_count=3,
+                       description="Rotate and Translate bottom coordinates.",
+                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_BottomRotateTrans(self, perturbations, pivot='midpoint', is_utm=False,
                                   angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -1036,7 +1076,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True, expected_perturbations_count=3)
+    @track_mesh_update(update_mesh=True, expected_perturbations_count=3,
+                       description="Rotate and Translate bottom coords, then rebuild simple mesh.",
+                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
     def perturb_BottomRotateTrans_simpleMesh(self, perturbations, pivot='midpoint', is_utm=False,
                                                         angle_unit='degrees', force_pivot_in_coords=False,
                                                         disct_z=None, bias=None, min_dz=None):
@@ -1361,7 +1403,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.intersector = patch
         return start, end
     
-    @track_mesh_update(update_mesh=False, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=False, expected_perturbations_count=4,
+                       description="Perturb endpoints and midpoint (Translate only, no mesh update).",
+                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]"})
     def perturb_BottomEndpointsFixedDirAndMidpointTrans(self, perturbations):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints
@@ -1375,7 +1419,7 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         # Perturb the bottom coordinates
         # Perturb the endpoints
         if not hasattr(self, 'average_direction') or self.average_direction is None:
-            # 计算coords中相邻两点之间的走向
+            # Calculate average direction from top coordinates
             coords = self.top_coords_ref
             trends = np.arctan2(np.diff(coords[:, 1]), np.diff(coords[:, 0]))
             trends = np.concatenate(([trends[0]], (trends[:-1] + trends[1:]) / 2, [trends[-1]]))
@@ -1389,7 +1433,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords 
     
-    @track_mesh_update(update_mesh=True, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=True, expected_perturbations_count=4,
+                       description="Perturb endpoints/midpoint and rebuild simple mesh.",
+                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"})
     def perturb_BottomEndpointsFixedDirAndMidpointTrans_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints
@@ -1406,7 +1452,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.generate_simple_mesh(self.top_coords, self.bottom_coords, disct_z=disct_z, bias=bias, min_dz=min_dz)
         return 
     
-    @track_mesh_update(update_mesh=False, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=False, expected_perturbations_count=4,
+                       description="Dutta Perturbation on bottom coords (No mesh update).",
+                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"})
     def perturb_BottomEndpointsFixedDirandMidpointsDutta(self, perturbations):
         assert hasattr(self, 'bottom_coords_ref'), 'You need to set bottom_coords_ref before perturbing the coordinates.'
         assert self.bottom_coords_ref.shape[0] == self.top_coords_ref.shape[0], 'The number of top and bottom coordinates must be the same.'
@@ -1465,7 +1513,9 @@ class BayesianAdaptiveTriangularPatches(BayesianTriFaultBase):
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True, expected_perturbations_count=4)
+    @track_mesh_update(update_mesh=True, expected_perturbations_count=4,
+                       description="Standard Dutta Perturbation with Simple Mesh generation.",
+                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"})
     def perturb_BottomEndpointsFixedDirandMidpointsDutta_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints

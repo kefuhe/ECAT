@@ -24,9 +24,11 @@ class ExploreFaultConfig(CommonConfigBase):
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
         self.slip_sampling_mode = 'mag_rake'
 
+        self.fault_aliasnames = None
+
         if config_file:
             self.load_config(config_file, geodata=geodata)
-        
+
         # Parse the 'update' parameter in sigmas
         n_datasets = len(self.geodata.get('data', []))
         data_names = [d.name for d in self.geodata.get('data', [])]
@@ -39,10 +41,13 @@ class ExploreFaultConfig(CommonConfigBase):
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
 
+        self._apply_alias_mapping(config)
+
         self.bounds = config.get('bounds', {})
         self.initial = config.get('initial', {})
         self.fixed_params = config.get('fixed_params', {})
         self.nfaults = config.get('nfaults', 1)
+        self.fault_aliasnames = config.get('fault_aliasnames', None)
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
         self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
         self.clipping_options = config.get('clipping_options', {})
@@ -67,6 +72,59 @@ class ExploreFaultConfig(CommonConfigBase):
         # self._set_geodata_attributes()
         self.update_polys_estimate_and_boundaries()
         self._select_data_sets()
+
+    def _apply_alias_mapping(self, config_data):
+        """
+        Internal helper: modify the `config_data` dictionary in-memory to replace
+        alias names with internal fault IDs.
+        """
+        # Extract alias names
+        aliases = config_data.get('fault_aliasnames', None)
+        self.fault_aliasnames = aliases  # keep a copy for later display
+
+        if not aliases:
+            return
+
+        # Determine nfaults (prefer the value in the config file)
+        n_f = config_data.get('nfaults', self.nfaults)
+        
+        # Build alias mapping: {'RCM': 'fault_0'}
+        if isinstance(aliases, str): aliases = [aliases]
+        
+        alias_map = {}
+        for i, name in enumerate(aliases):
+            if i < n_f:
+                alias_map[name] = f'fault_{i}'
+        
+        # 1. Replace keys in Bounds / Initial / Fixed Params
+        for section in ['bounds', 'initial', 'fixed_params']:
+            if section in config_data:
+                new_dict = {}
+                for k, v in config_data[section].items():
+                    # If k is 'RCM', replace with 'fault_0'
+                    new_key = alias_map.get(k, k)
+                    new_dict[new_key] = v
+                config_data[section] = new_dict
+
+        # 2. Replace Geodata -> Faults values
+        # This is the key to fix "ValueError: Invalid fault names"
+        if 'geodata' in config_data and 'faults' in config_data['geodata']:
+            raw_faults = config_data['geodata']['faults']
+            
+            if isinstance(raw_faults, list):
+                new_faults_list = []
+                for item in raw_faults:
+                    if isinstance(item, list):
+                        # Handle list: ['RCM', 'Other'] -> ['fault_0', 'fault_1']
+                        new_faults_list.append([alias_map.get(x, x) for x in item])
+                    elif isinstance(item, str):
+                        # Handle single string: 'RCM' -> 'fault_0'
+                        new_faults_list.append(alias_map.get(item, item))
+                    else:
+                        new_faults_list.append(item)
+                
+                # Write back to config_data for subsequent load_config use
+                config_data['geodata']['faults'] = new_faults_list
 
     def update_polys_estimate_and_boundaries(self, datas=None):
         if self.geodata.get('polys', {}).get('enabled', False):
@@ -140,8 +198,9 @@ class ExploreFaultConfig(CommonConfigBase):
           faultnames, bounds, initial, fixed_params, geodata, sigmas, and other parameters.
         - Numpy arrays and other non-serializable objects will be converted to lists or basic types.
         - geodata['data'] will be replaced by a list of dataset names.
-        - bounds、initial、fixed_params等fault相关字典，顺序为'defaults'在前，然后依次为fault_0, fault_1, ...（与self.faultnames一致）。
-        - 你可以根据需要添加更多属性到export_dict。
+                - For fault-related dictionaries such as bounds, initial, and fixed_params,
+                    the order is 'defaults' first, then fault_0, fault_1, ... (consistent with self.faultnames).
+                - You may add more attributes to export_dict as needed.
     
         Example
         -------
@@ -163,7 +222,7 @@ class ExploreFaultConfig(CommonConfigBase):
             else:
                 return obj
     
-        # Deepcopy to avoid修改原对象
+        # Deepcopy to avoid modifying the original objects
         bounds_export = copy.deepcopy(self.bounds)
         initial_export = copy.deepcopy(self.initial)
         fixed_params_export = copy.deepcopy(self.fixed_params)
@@ -173,7 +232,7 @@ class ExploreFaultConfig(CommonConfigBase):
         if 'data' in geodata_export and isinstance(geodata_export['data'], list):
             geodata_export['data'] = [d.name for d in geodata_export['data']]
     
-        # bounds/initial/fixed_params: 只输出'defaults'和self.faultnames顺序
+        # bounds/initial/fixed_params: output only 'defaults' and entries in the order of self.faultnames
         def _ordered_fault_dict(src):
             od = OrderedDict()
             if 'defaults' in src:

@@ -18,6 +18,7 @@ def generate_nonlinear_config(output_path):
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain for BayesianMultiFaultsInversion
 nfaults: 1  # Number of faults to be modeled
+fault_aliasnames: null  # Alias names for faults (e.g., ['RC', 'KL'])
 lon_lat_0: null  # UTM coordinates of the origin (e.g., [lon, lat])
 
 # ----------- Slip Sampling Mode ----------- #
@@ -45,7 +46,7 @@ bounds:
     strike: [Uniform, 270.0, 90.0]  # Strike angle bounds (in degrees)
     magnitude: [Uniform, 0.0, 10.0]  # Magnitude bounds
     rake: [Uniform, -150, 120.0]  # Rake angle bounds (in degrees)
-  fault_1:  # Specific bounds for fault_1
+  fault_1:  # Specific bounds for fault_1 or its alias name
     rake: [Uniform, -30, 60.0]  # Rake angle bounds for fault_1 (in degrees)
     strike: [Uniform, 0.0, 270.0]  # Strike angle bounds for fault_1 (in degrees)
 
@@ -55,7 +56,7 @@ fixed_params:
   # fault_0:  # Uncomment and set fixed parameters for fault_0 if needed
     # lon: 102.205
     # depth: 3.1578
-  fault_1:  # Fixed parameters for fault_1
+  fault_1:  # Fixed parameters for fault_1 or its alias name
     lon: -117.541  # Fixed longitude
     lat: 35.6431  # Fixed latitude
     depth: 0.0  # Fixed depth (in kilometers)

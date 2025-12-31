@@ -81,6 +81,9 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             multifaults.assembleGFs()
             self.multifaults = multifaults
 
+        # Validate the perturbation methods defined in the raw YAML configuration
+        self._validate_perturbation_config()
+
         if self.parallel_rank is not None and self.parallel_rank == 0:
             self.export_config()
 
@@ -102,6 +105,81 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Force set sampling mode
         if self.bayesian_sampling_mode == 'SMC_F_J':
             self.slip_sampling_mode = 'ss_ds'
+
+    def _validate_perturbation_config(self):
+        """
+        Validate perturbation methods by matching YAML config against 
+        actual instantiated fault objects.
+
+        This approach eliminates the need for 'type' in YAML and ensures 
+        validity based on the actual Python objects being used.
+        """
+        # 1. Local Import
+        from ..bayesian_perturbation_base import PerturbationRegistry
+
+        # 2. Check if YAML config exists
+        if not hasattr(self, 'faults') or not self.faults:
+            return
+
+        # 3. Build a lookup map: Fault Name -> Fault Instance
+        # We assume self.multifaults holds the instantiated objects.
+        # Based on csi/multifaults logic, it usually has a list of faults.
+        fault_instance_map = {f.name:f for f in self.multifaults.faults}
+
+        # 4. Iterate through YAML configuration
+        for fault_name, fault_config in self.faults.items():
+            
+            # Skip defaults template
+            if fault_name == 'defaults': continue
+            if fault_name not in self.multifaults.faultnames: continue
+            if not isinstance(fault_config, dict): continue
+
+            # Check if geometry update is enabled
+            geom_config = fault_config.get('geometry', {})
+            if not geom_config.get('update', False):
+                continue
+
+            # Parse the nested method parameter structure
+            method_params = fault_config.get('method_parameters', {})
+            if not method_params: continue
+
+            update_geom_params = method_params.get('update_fault_geometry', {})
+            if not update_geom_params: continue
+
+            method_name = update_geom_params.get('method')
+            if not method_name: continue
+
+            # 5. Retrieve the Actual Fault Instance
+            fault_instance = fault_instance_map.get(fault_name)
+
+            # 6. Query Registry using the REAL INSTANCE
+            # This automatically handles inheritance (MRO) via get_help(instance)
+            valid_methods = PerturbationRegistry.get_help(fault_instance)
+            
+            # 7. Validate
+            if method_name not in valid_methods:
+                fault_class_name = fault_instance.__class__.__name__
+                available_list = list(valid_methods.keys())
+                
+                error_msg = (
+                    f"\n{'='*60}\n"
+                    f"CONFIG ERROR: Fault '{fault_name}'\n"
+                    f"------------------------------------------------------------\n"
+                    f"Invalid perturbation method: '{method_name}'\n"
+                    f"Actual Python Class: {fault_class_name}\n"
+                    f"\n"
+                    f"The method '{method_name}' is not registered for this class.\n"
+                    f"Available methods (including inherited ones):\n"
+                    f"{available_list}\n"
+                    f"\n"
+                    f"-> Please check spelling in your config.yml.\n"
+                    f"-> Ensure @track_mesh_update is applied in {fault_class_name}.\n"
+                    f"{'='*60}\n"
+                )
+                raise ValueError(error_msg)
+                
+            if self.verbose:
+                print(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
 
     def load_from_file(self, config_file, encoding='utf-8'):
         """
