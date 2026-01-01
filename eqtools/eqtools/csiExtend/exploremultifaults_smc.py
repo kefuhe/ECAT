@@ -112,45 +112,12 @@ class explorefault(SourceInv):
         # [ADDED] Top-level fault alias loading and validation
         # ==========================================================
         
-        # 1. Initialize default alias mapping (fault_0 -> F0, fault_1 -> F1)
-        self.fault_alias_map = {f'fault_{i}': f'F{i}' for i in range(self.nfaults)}
-        
-        # 2. Read aliases from the config top-level (adjacent to 'nfaults')
-        # Use getattr to avoid errors if older config classes lack this attribute
-        raw_aliases = getattr(self.config, 'fault_aliasnames', None)
-        
-        if raw_aliases is not None:
-            final_aliases = []
-            
-            # --- Validation logic A: String ---
-            if isinstance(raw_aliases, str):
-                # If a single string is provided but 'nfaults' > 1, this is a configuration error
-                if self.nfaults > 1:
-                    raise ValueError(
-                        f"[Config Error] 'fault_names' is a single string ('{raw_aliases}'), "
-                        f"but 'nfaults' is {self.nfaults}. You must provide a list of names like ['Name1', 'Name2']."
-                    )
-                final_aliases = [raw_aliases]
-                
-            # --- Validation logic B: List ---
-            elif isinstance(raw_aliases, list):
-                # Length must exactly match 'nfaults'
-                if len(raw_aliases) != self.nfaults:
-                    raise ValueError(
-                        f"[Config Error] Length of 'fault_names' ({len(raw_aliases)}) "
-                        f"does not match 'nfaults' ({self.nfaults}). "
-                        f"Expected {self.nfaults} names."
-                    )
-                # Ensure elements are strings
-                final_aliases = [str(x) for x in raw_aliases]
-            
-            # --- Validation logic C: Type error ---
-            else:
-                raise TypeError(f"[Config Error] 'fault_names' must be a string (for 1 fault) or a list of strings.")
-
-            # 3. Update alias mapping dictionary
-            for i, alias in enumerate(final_aliases):
-                self.fault_alias_map[f'fault_{i}'] = alias
+        # Load fault alias mapping from config
+        if hasattr(self.config, 'fault_id_to_alias') and self.config.fault_id_to_alias:
+            self.fault_alias_map = self.config.fault_id_to_alias
+        else:
+            # Fallback (if no mapping provided in config), i.e., Initialize default alias mapping (fault_0 -> F0, fault_1 -> F1)
+            self.fault_alias_map = {f'fault_{i}': f'F{i}' for i in range(self.nfaults)}
                 
         if self.verbose:
             print(f"[INFO] Fault Aliases Active: {self.fault_alias_map}")
@@ -1008,6 +975,8 @@ class explorefault(SourceInv):
             fault_params = self.model_dict[model].get(fault_name, {})
             std_params = self.model_dict.get('std', {}).get(fault_name, {}) if include_std else {}
             fixed_params = self.fixed_params.get(fault_name, {})
+            if_name = self.fault_alias_map.get(fault_name, fault_name) if hasattr(self, 'fault_alias_map') else fault_name
+            if_name = f'{fault_name} ({if_name})' if if_name != fault_name else fault_name
             
             # Get estimated parameters for this fault
             estimated_fault_params = estimated_params['fault'].get(fault_name, [])
@@ -1038,7 +1007,8 @@ class explorefault(SourceInv):
                     row = [
                         index_counter,
                         'Fault',
-                        fault_name,
+                        # fault_name,
+                        if_name,
                         param,
                         f"{value:.{decimal_places}f}" if isinstance(value, (int, float)) else str(value)
                     ]
@@ -1065,7 +1035,8 @@ class explorefault(SourceInv):
                     row = [
                         'N/A',
                         'Fault',
-                        fault_name,
+                        #fault_name,
+                        if_name,
                         param_name,
                         f"{value:.{decimal_places}f}" if isinstance(value, (int, float)) else str(value)
                     ]
@@ -1218,7 +1189,9 @@ class explorefault(SourceInv):
                     
                     # Write fault parameters
                     for fault_name in self.faultnames:
-                        f.write(f"Fault: {fault_name}\n")
+                        if_name = self.fault_alias_map.get(fault_name, fault_name) if hasattr(self, 'fault_alias_map') else fault_name
+                        if_name = f'{fault_name} ({if_name})' if if_name != fault_name else fault_name
+                        f.write(f"Fault: {if_name}\n")
                         f.write("-" * 30 + "\n")
                         
                         fault_data = structured_data['parameters']['faults'][fault_name]
@@ -1645,8 +1618,9 @@ class explorefault(SourceInv):
             # Plot Faults
             if plot_faults:
                 for ifault, faultname in enumerate(self.faultnames):
+                    if_name = self.fault_alias_map.get(faultname, faultname) if hasattr(self, 'fault_alias_map') else faultname
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
-                                        scatter=False, filename=f'kde_matrix_F{ifault}.png', figsize=fault_figsize,
+                                        scatter=False, filename=f'kde_matrix_{if_name}.png', figsize=fault_figsize,
                                         hspace=0.05, wspace=0.05, xtick_rotation=45)
             
             # Plot Sigmas

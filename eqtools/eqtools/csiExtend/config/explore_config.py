@@ -24,90 +24,170 @@ class ExploreFaultConfig(CommonConfigBase):
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
         self.slip_sampling_mode = 'mag_rake'
 
+        # Storage for user-defined aliases (e.g., ['ATF', 'Kunlun'])
         self.fault_aliasnames = None
 
+        # Load configuration if file is provided
         if config_file:
             self.load_config(config_file, geodata=geodata)
 
-        # Parse the 'update' parameter in sigmas
-        n_datasets = len(self.geodata.get('data', []))
-        data_names = [d.name for d in self.geodata.get('data', [])]
-        # Parse sigmas parameters
-        self.sigmas = parse_sigmas_config(self.geodata['sigmas'], 
-                                                     dataset_names=data_names,
-                                                     param_name='values')
+        # Build default fault_id_to_alias mapping
+        # n_f = self.nfaults
+        # self.fault_id_to_alias = {f'fault_{i}': f'F{i}' for i in range(n_f)}
+
+        # Parse sigmas parameters after loading config
+        if self.geodata and 'data' in self.geodata:
+            data_names = [d.name for d in self.geodata.get('data', [])]
+            
+            if 'sigmas' in self.geodata:
+                self.sigmas = parse_sigmas_config(
+                    self.geodata['sigmas'], 
+                    dataset_names=data_names,
+                    param_name='values'
+                )
 
     def load_config(self, config_file, geodata=None):
-        with open(config_file, 'r') as f:
+        """
+        Load configuration from a YAML file.
+        
+        This method implements a "Translation Layer" strategy:
+        1. Load raw YAML data.
+        2. Apply alias mapping (translate User Aliases -> Internal IDs).
+        3. Assign values to attributes (triggering built-in validation).
+        """
+        with open(config_file, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
 
+        # [CRITICAL STEP] Apply Alias Mapping BEFORE any assignment/validation
+        # This ensures that 'ATF' is converted to 'fault_0' so validation passes.
         self._apply_alias_mapping(config)
 
+        # Load basic settings
         self.bounds = config.get('bounds', {})
         self.initial = config.get('initial', {})
         self.fixed_params = config.get('fixed_params', {})
         self.nfaults = config.get('nfaults', 1)
-        self.fault_aliasnames = config.get('fault_aliasnames', None)
+        
+        # Store aliases for display purposes later
+        self.fault_aliasnames = config.get('fault_aliasnames', config.get('fault_names', None))
+        
+        # Re-initialize internal faultnames based on loaded nfaults
         self.faultnames = [f'fault_{i}' for i in range(self.nfaults)]
+        
         self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
         self.clipping_options = config.get('clipping_options', {})
+        
+        # Handle Geodata
+        # Priority: arguments > config file
         self.geodata = config.get('geodata', {})
+
         lon_lat_0 = config.get('lon_lat_0', None)
         if lon_lat_0:
             self.lon0, self.lat0 = lon_lat_0
         self.data_sources = config.get('data_sources', {})
 
+        # Load data files if not provided externally
         self._update_geodata(geodata)
         self._validate_verticals()
 
-        # Parse the 'update' parameter in sigmas
-        n_datasets = len(self.geodata.get('data', []))
-        data_names = [d.name for d in self.geodata.get('data', [])]
-        # Parse sigmas parameters
-        self.sigmas = parse_sigmas_config(self.geodata['sigmas'], 
-                                                     dataset_names=data_names,
-                                                     param_name='values')
+        # Parse sigmas (using 'values' as the key for ExploreFaultConfig)
+        if 'data' in self.geodata:
+            data_names = [d.name for d in self.geodata.get('data', [])]
+            if 'sigmas' in self.geodata:
+                self.sigmas = parse_sigmas_config(
+                    self.geodata['sigmas'], 
+                    dataset_names=data_names,
+                    param_name='values'
+                )
+        
+        # [VALIDATION TRIGGER]
+        # Assigning to self.dataFaults triggers `parse_data_faults` in base_config.py
+        # Since _apply_alias_mapping has run, 'faults' now contains 'fault_0' etc.
+        # So validation will PASS.
         self.dataFaults = self.geodata.get('faults', None)
 
-        # self._set_geodata_attributes()
+        # Update polygon boundaries
         self.update_polys_estimate_and_boundaries()
         self._select_data_sets()
 
     def _apply_alias_mapping(self, config_data):
         """
-        Internal helper: modify the `config_data` dictionary in-memory to replace
-        alias names with internal fault IDs.
+        Internal Helper: Configuration Translation Layer.
+        
+        Modifies the `config_data` dictionary IN-PLACE.
+        It identifies user-defined aliases (e.g., 'ATF') and replaces them with
+        internal system IDs (e.g., 'fault_0').
+        
+        Targets for replacement:
+        1. Keys in `bounds`, `initial`, `fixed_params`.
+        2. Values in `geodata['faults']`.
         """
-        # Extract alias names
-        aliases = config_data.get('fault_aliasnames', None)
-        self.fault_aliasnames = aliases  # keep a copy for later display
+        # 1. Extract alias names (support both 'fault_names' and 'fault_aliasnames')
+        aliases = config_data.get('fault_names', config_data.get('fault_aliasnames', None))
 
+        # If no aliases defined, do nothing
         if not aliases:
             return
-
-        # Determine nfaults (prefer the value in the config file)
+        
+        # Determine nfaults (prefer the value in the config file, fallback to default)
         n_f = config_data.get('nfaults', self.nfaults)
+
+        if aliases is not None:
+            final_aliases = []
+            
+            # --- Validation logic A: String ---
+            if isinstance(aliases, str):
+                # If a single string is provided but 'nfaults' > 1, this is a configuration error
+                if n_f > 1:
+                    raise ValueError(
+                        f"[Config Error] 'fault_names' is a single string ('{aliases}'), "
+                        f"but 'nfaults' is {n_f}. You must provide a list of names like ['Name1', 'Name2']."
+                    )
+                final_aliases = [aliases]
+                
+            # --- Validation logic B: List ---
+            elif isinstance(aliases, list):
+                # Length must exactly match 'nfaults'
+                if len(aliases) != n_f:
+                    raise ValueError(
+                        f"[Config Error] Length of 'fault_names' ({len(aliases)}) "
+                        f"does not match 'nfaults' ({n_f}). "
+                        f"Expected {n_f} names."
+                    )
+                # Ensure elements are strings
+                final_aliases = [str(x) for x in aliases]
+            
+            # --- Validation logic C: Type error ---
+            else:
+                raise TypeError(f"[Config Error] 'fault_names' must be a string (for 1 fault) or a list of strings.")
         
-        # Build alias mapping: {'RCM': 'fault_0'}
-        if isinstance(aliases, str): aliases = [aliases]
+            aliases = final_aliases
         
+        # 2. Build the Mapping Dictionary: {'UserAlias': 'InternalID'}
+        # Example: {'ATF': 'fault_0', 'Kunlun': 'fault_1'}
         alias_map = {}
         for i, name in enumerate(aliases):
             if i < n_f:
                 alias_map[name] = f'fault_{i}'
         
-        # 1. Replace keys in Bounds / Initial / Fixed Params
+        # Store reverse mapping for display purposes
+        self.fault_id_to_alias = {v: k for k, v in alias_map.items()}
+
+        # 3. Replace Keys in Parameter Dictionaries
+        # (bounds, initial, fixed_params)
         for section in ['bounds', 'initial', 'fixed_params']:
             if section in config_data:
+                # Create a new dict to hold translated keys
                 new_dict = {}
                 for k, v in config_data[section].items():
-                    # If k is 'RCM', replace with 'fault_0'
+                    # If key matches an alias, translate it; otherwise keep original
                     new_key = alias_map.get(k, k)
                     new_dict[new_key] = v
+                # Update the section in config_data
                 config_data[section] = new_dict
 
-        # 2. Replace Geodata -> Faults values
-        # This is the key to fix "ValueError: Invalid fault names"
+        # 4. Replace Values in Geodata -> Faults
+        # This fixes the "ValueError: Invalid fault names" error.
         if 'geodata' in config_data and 'faults' in config_data['geodata']:
             raw_faults = config_data['geodata']['faults']
             
@@ -115,15 +195,16 @@ class ExploreFaultConfig(CommonConfigBase):
                 new_faults_list = []
                 for item in raw_faults:
                     if isinstance(item, list):
-                        # Handle list: ['RCM', 'Other'] -> ['fault_0', 'fault_1']
+                        # Handle list of faults: ['ATF', 'Other'] -> ['fault_0', 'fault_1']
                         new_faults_list.append([alias_map.get(x, x) for x in item])
                     elif isinstance(item, str):
-                        # Handle single string: 'RCM' -> 'fault_0'
+                        # Handle single fault string: 'ATF' -> 'fault_0'
                         new_faults_list.append(alias_map.get(item, item))
                     else:
+                        # Handle None or other types
                         new_faults_list.append(item)
                 
-                # Write back to config_data for subsequent load_config use
+                # Write back translated list to config_data
                 config_data['geodata']['faults'] = new_faults_list
 
     def update_polys_estimate_and_boundaries(self, datas=None):
