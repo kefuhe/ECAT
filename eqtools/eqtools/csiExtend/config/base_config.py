@@ -2,6 +2,10 @@ import yaml
 import os
 import glob
 import numpy as np
+import logging
+
+# Setup module-level logger
+logger = logging.getLogger(__name__)
 
 # Load csi and its extensions
 from csi.gps import gps
@@ -78,7 +82,9 @@ class CommonConfigBase:
                 data_instance = insar(data_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
                 data_instance.read_from_varres(data_file_prefix, cov=True)
             else:
-                raise ValueError(f"Unsupported data type: {data_type}")
+                msg = f"Unsupported data type: {data_type}"
+                logger.error(msg)
+                raise ValueError(msg)
             self.geodata['data'].append(data_instance)
 
     def load_all_data(self):
@@ -86,14 +92,17 @@ class CommonConfigBase:
             for data_type in self.data_sources:
                 self.load_data(data_type)
             if not self.geodata['data']:
-                raise ValueError("Failed to load any geodata files.")
+                msg = "No geodata files were loaded. Please check your configuration."
+                logger.error(msg)
+                raise ValueError(msg)
         else:
-            print("Geodata already provided in configuration.")
+            if self.verbose:
+                logger.info("Geodata already provided in configuration.")
 
     def _print_initialization_message(self):
-        print("---------------------------------")
-        print("---------------------------------")
-        print(f"Initializing {self.__class__.__name__} object")
+        logger.info("---------------------------------")
+        logger.info("---------------------------------")
+        logger.info(f"Initializing {self.__class__.__name__} object")
 
     def list_attributes(self):
         """
@@ -122,11 +131,15 @@ class CommonConfigBase:
         data_length = len(self.geodata['data'])
         if isinstance(verticals, list):
             if len(verticals) != data_length:
-                raise ValueError(f"Length of 'verticals' list ({len(verticals)}) does not match length of 'data' ({data_length})")
+                msg = f"Length of 'verticals' list ({len(verticals)}) does not match length of 'data' ({data_length})"
+                logger.error(msg)
+                raise ValueError(msg)
         elif isinstance(verticals, bool):
             self.geodata['verticals'] = [verticals] * data_length
         else:
-            raise ValueError("'verticals' must be either a list or a boolean")
+            msg = "'verticals' must be either a list or a boolean"
+            logger.error(msg)
+            raise ValueError(msg)
 
     def _select_data_sets(self):
         data_verticals_dict = {d.name: v for d, v in zip(self.geodata['data'], self.geodata['verticals'])}
@@ -137,7 +150,9 @@ class CommonConfigBase:
                 if method == 'lon_lat_range':
                     lon_lat_range = method_config.get('lon_lat_range', None)
                     if lon_lat_range is None:
-                        raise ValueError("Clipping method 'lon_lat_range' requires 'lon_lat_range' to be set")
+                        msg = "Clipping method 'lon_lat_range' requires 'lon_lat_range' to be set"
+                        logger.error(msg)
+                        raise ValueError(msg)
                     for data in self.geodata['data']:
                         if data.dtype == 'insar':
                             data.select_pixels(*lon_lat_range)
@@ -152,7 +167,9 @@ class CommonConfigBase:
                     distance_to_fault = method_config.get('distance_to_fault', None)
                     faults = self.faults_list
                     if distance_to_fault is None or not faults:
-                        raise ValueError("Clipping method 'distance_to_fault' requires 'distance_to_fault' and non-empty 'faults_list' to be set")
+                        msg = "Clipping method 'distance_to_fault' requires 'distance_to_fault' and non-empty 'faults_list' to be set"
+                        logger.error(msg)
+                        raise ValueError(msg)
                     for data in self.geodata['data']:
                         if data.dtype == 'insar':
                             data.reject_pixels_fault(distance_to_fault, faults)
@@ -160,4 +177,6 @@ class CommonConfigBase:
                             # No clipping for GPS data
                             continue
                 else:
-                    raise ValueError(f"Unsupported clipping method: {method}")
+                    msg = f"Unsupported clipping method: {method}"
+                    logger.error(msg)
+                    raise ValueError(msg)

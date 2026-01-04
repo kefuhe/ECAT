@@ -1,6 +1,10 @@
 import yaml
 import os
 import numpy as np
+import logging
+
+# Setup module-level logger
+logger = logging.getLogger(__name__)
 
 # Load csi and its extensions
 from csi.gps import gps
@@ -150,12 +154,16 @@ class LinearInversionConfig(CommonConfigBase):
         if isinstance(polys_config, list):
             # List format - validate length matches number of datasets
             if len(polys_config) != n_datasets:
-                raise ValueError(f"Length of 'polys' list ({len(polys_config)}) must equal the number of datasets ({n_datasets})")
+                msg = f"Length of 'polys' list ({len(polys_config)}) does not match the number of datasets ({n_datasets})"
+                logger.error(msg)
+                raise ValueError(msg)
         elif isinstance(polys_config, (int, str, type(None))):
             # Single value format - expand to all datasets
             self.geodata['polys'] = [polys_config] * n_datasets
         else:
-            raise ValueError(f"'polys' must be None, int, str, or list, got {type(polys_config)}")
+            msg = f"'polys' must be None, int, str, or list, got {type(polys_config)}"
+            logger.error(msg)
+            raise ValueError(msg)
         # print(f"Polys configuration set to: {self.geodata['polys']}")
 
     @property
@@ -219,11 +227,11 @@ class LinearInversionConfig(CommonConfigBase):
                 self._process_euler_unit_conversions()
                 
             if self.verbose and self.euler_constraints['enabled']:
-                print(f"Euler constraints parsed for faults: {self.euler_constraints['configured_faults']}")
+                logger.info(f"Euler constraints parsed for faults: {self.euler_constraints['configured_faults']}")
                 
         except Exception as e:
             if self.verbose:
-                print(f"Warning: Failed to parse Euler constraints: {e}")
+                logger.warning(f"Warning: Failed to parse Euler constraints: {e}")
             # Disable Euler constraints if parsing fails
             self.euler_constraints['enabled'] = False
             self.use_euler_constraints = False
@@ -489,10 +497,14 @@ class LinearInversionConfig(CommonConfigBase):
         )
     
         if len(geodata) != len(verticals):
-            raise ValueError("Length of geodata and verticals should be the same.")
+            msg = "Length of 'geodata' and 'verticals' should be the same."
+            logger.error(msg)
+            raise ValueError(msg)
         
         if gfmethods is not None and len(self.faultnames) != len(gfmethods):
-            raise ValueError("Length of faultnames and gfmethods should be the same.")
+            msg = "Length of faultnames and gfmethods should be the same."
+            logger.error(msg)
+            raise ValueError(msg)
         
         for i, fault_name in enumerate(self.faultnames):
             fault_parameters = self.faults[fault_name]
@@ -509,16 +521,22 @@ class LinearInversionConfig(CommonConfigBase):
                         elif ifault.patchType == 'rectangle':
                             method = 'okada'
                         else:
-                            raise ValueError(f"Unknown patchType '{ifault.patchType}' for fault '{fault_name}'")
+                            msg = f"Unknown patchType '{ifault.patchType}' for fault '{fault_name}'"
+                            logger.error(msg)
+                            raise ValueError(msg)
                     else:
-                        raise ValueError(f"Cannot determine default method for fault '{fault_name}' (missing patchType)")
+                        msg = f"Cannot determine default method for fault '{fault_name}' (missing patchType)"
+                        logger.error(msg)
+                        raise ValueError(msg)
             
             # Check whether the method is allowed or not
             if method not in allowed_methods:
-                raise ValueError(
+                msg = (
                     f"Invalid Green's function method '{method}' for fault '{fault_name}'. "
                     f"Allowed methods are: {allowed_methods}"
                 )
+                logger.error(msg)
+                raise ValueError(msg)
     
             fault_parameters['method_parameters']['update_GFs'] = {
                 'geodata': geodata,
@@ -566,7 +584,9 @@ class LinearInversionConfig(CommonConfigBase):
             if fault_name in self.faults:
                 self.faults[fault_name]['method_parameters'].update(method_parameters)
             else:
-                raise ValueError(f"Fault {fault_name} does not exist in the configuration.")
+                msg = f"Fault {fault_name} does not exist in the configuration."
+                logger.error(msg)
+                raise ValueError(msg)
 
     def _validate_laplacian_bounds(self):
         """
@@ -590,13 +610,16 @@ class LinearInversionConfig(CommonConfigBase):
             else:
                 # Validate bounds format
                 if not isinstance(bounds, list) or len(bounds) != 4:
-                    raise ValueError(f"Fault '{fault_name}': bounds must be a list of length 4, got {bounds}")
+                    msg = f"Fault '{fault_name}': bounds must be a list of length 4, got {bounds}"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 
                 # Validate bounds values
                 invalid_bounds = set(bounds) - valid_bounds
                 if invalid_bounds:
-                    raise ValueError(f"Fault '{fault_name}': bounds can only contain 'free' and 'locked', "
-                                f"found invalid values: {list(invalid_bounds)}")
+                    msg = f"Fault '{fault_name}': bounds can only contain 'free' and 'locked', found invalid values: {list(invalid_bounds)}"
+                    logger.error(msg)
+                    raise ValueError(msg)
     
     def export_config(self, filename=None, format='yaml'):
         """
@@ -757,6 +780,8 @@ class LinearInversionConfig(CommonConfigBase):
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(export_dict, f, ensure_ascii=False, indent=2)
         else:
-            raise ValueError("Only 'yaml' and 'json' formats are supported.")
+            msg = "Only 'yaml' and 'json' formats are supported."
+            logger.error(msg)
+            raise ValueError(msg)
 
 # EOF

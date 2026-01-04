@@ -2,6 +2,9 @@
 Configuration parsing utilities for bayesian_config.py and related modules.
 """
 import numpy as np
+import logging 
+# Setup module-level logger
+logger = logging.getLogger(__name__)
 
 def parse_update(config, n_datasets, param_name="update", dataset_names=None):
     """
@@ -55,7 +58,9 @@ def parse_update(config, n_datasets, param_name="update", dataset_names=None):
             flags = [False] * n_datasets
             for idx in update:
                 if idx >= n_datasets:
-                    raise ValueError(f"Index {idx} in {param_name} exceeds number of datasets ({n_datasets})")
+                    msg = f"Index {idx} in {param_name} exceeds number of datasets ({n_datasets})"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 flags[idx] = True
             return flags
         elif dataset_names and all(isinstance(x, str) for x in update):
@@ -63,37 +68,51 @@ def parse_update(config, n_datasets, param_name="update", dataset_names=None):
             flags = [False] * n_datasets
             for name in update:
                 if name not in dataset_names:
-                    raise ValueError(f"Dataset name '{name}' not found in dataset_names")
+                    msg = f"Dataset name '{name}' in {param_name} not found in dataset_names"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 idx = dataset_names.index(name)
                 flags[idx] = True
             return flags
         else:
-            raise ValueError(f"Invalid list format for {param_name}")
+            msg = f"Invalid list format for {param_name}"
+            logger.error(msg)
+            raise ValueError(msg)
     
     elif isinstance(update, dict):
         # Compatible with old dictionary format
         if "true_indices" in update and "false_indices" in update:
-            raise ValueError(f"Cannot specify both 'true_indices' and 'false_indices' in {param_name}")
+            msg = f"Cannot specify both 'true_indices' and 'false_indices' in {param_name}"
+            logger.error(msg)
+            raise ValueError(msg)
         
         if "true_indices" in update:
             flags = [False] * n_datasets
             for idx in update["true_indices"]:
                 if idx >= n_datasets:
-                    raise ValueError(f"Index {idx} in {param_name}.true_indices exceeds number of datasets ({n_datasets})")
+                    msg = f"Index {idx} in {param_name}.true_indices exceeds number of datasets ({n_datasets})"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 flags[idx] = True
             return flags
         elif "false_indices" in update:
             flags = [True] * n_datasets
             for idx in update["false_indices"]:
                 if idx >= n_datasets:
-                    raise ValueError(f"Index {idx} in {param_name}.false_indices exceeds number of datasets ({n_datasets})")
+                    msg = f"Index {idx} in {param_name}.false_indices exceeds number of datasets ({n_datasets})"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 flags[idx] = False
             return flags
         else:
-            raise ValueError(f"Dict format for {param_name} must contain either 'true_indices' or 'false_indices'")
+            msg = f"Dict format for {param_name} must contain either 'true_indices' or 'false_indices'"
+            logger.error(msg)
+            raise ValueError(msg)
     
     else:
-        raise ValueError(f"Invalid format for {param_name}")
+        msg = f"Invalid format for {param_name}"
+        logger.error(msg)
+        raise ValueError(msg)
 
 
 def parse_initial_values(config, n_datasets, param_name="initial_value", default_value=0.0, 
@@ -166,13 +185,17 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
             # Single value in list, expand it
             return [float(initial_value[0])] * n_datasets
         if len(initial_value) != n_datasets:
-            raise ValueError(f"Length of '{print_name}' list ({len(initial_value)}) does not match number of datasets ({n_datasets})")
+            msg = f"Length of '{print_name}' list ({len(initial_value)}) does not match number of datasets ({n_datasets})"
+            logger.error(msg)
+            raise ValueError(msg)
         
         # Convert all values to float
         processed_values = []
         for i, val in enumerate(initial_value):
             if not isinstance(val, (int, float)):
-                raise ValueError(f"All values in '{print_name}' must be numbers, got {type(val)} at index {i}")
+                msg = f"All values in '{print_name}' must be numbers, got {type(val)} at index {i}"
+                logger.error(msg)
+                raise ValueError(msg)
             processed_values.append(float(val))
         
         return processed_values
@@ -180,15 +203,18 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
     # Handle dictionary format (dataset names to values mapping)
     elif isinstance(initial_value, dict):
         if dataset_names is None:
-            # raise ValueError(f"Dataset names must be provided when using dictionary format for '{print_name}'")
-            raise ValueError(f'Not be supported when using dictionary format for {print_name}')
+            msg = f"dataset_names must be provided when using dictionary format for {print_name}"
+            logger.error(msg)
+            raise ValueError(msg)
         
         processed_values = []
         for i, dataset_name in enumerate(dataset_names):
             if dataset_name in initial_value:
                 val = initial_value[dataset_name]
                 if not isinstance(val, (int, float)):
-                    raise ValueError(f"Value for dataset '{dataset_name}' in '{print_name}' must be a number, got {type(val)}")
+                    msg = f"Value for dataset '{dataset_name}' in '{print_name}' must be a number, got {type(val)}"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 processed_values.append(float(val))
             else:
                 # Use default value for datasets not specified in dictionary
@@ -197,7 +223,9 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
         return processed_values
     
     else:
-        raise ValueError(f"'{param_name}' must be a number, list of numbers, or dictionary mapping dataset names to numbers, got {type(initial_value)}")
+        msg = f"'{param_name}' must be a number, list of numbers, or dictionary mapping dataset names to numbers, got {type(initial_value)}"
+        logger.error(msg)
+        raise ValueError(msg)
 
 def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_name="dataFaults"):
     """
@@ -237,7 +265,9 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
             return all_faultnames.copy()
         elif isinstance(item, str):
             if item not in all_faultnames:
-                raise ValueError(f"Fault name '{item}' in {param_name} not found in all_faultnames")
+                msg = f"Fault name '{item}' in {param_name} not found in all_faultnames"
+                logger.error(msg)
+                raise ValueError(msg)
             return [item]
         elif isinstance(item, list):
             # Check if it's exactly all_faultnames
@@ -248,9 +278,13 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
                 return item.copy()
             else:
                 invalid_names = set(item) - set(all_faultnames)
-                raise ValueError(f"Invalid fault names in {param_name}: {invalid_names}")
+                msg = f"Invalid fault names in {param_name}: {invalid_names}"
+                logger.error(msg)
+                raise ValueError(msg)
         else:
-            raise ValueError(f"Invalid fault specification in {param_name}: {item}")
+            msg = f"Invalid fault specification in {param_name}: {item}"
+            logger.error(msg)
+            raise ValueError(msg)
     
     # Case 1: None - expand to all_faultnames for all datasets
     if data_faults_config is None:
@@ -259,8 +293,9 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
     # Case 2: List format
     elif isinstance(data_faults_config, list):
         if len(data_faults_config) != len(all_datanames):
-            raise ValueError(f"Length of {param_name} ({len(data_faults_config)}) must equal "
-                           f"number of datasets ({len(all_datanames)})")
+            msg = f"Length of {param_name} ({len(data_faults_config)}) must equal number of datasets ({len(all_datanames)})"
+            logger.error(msg)
+            raise ValueError(msg)
         
         result = []
         for i, item in enumerate(data_faults_config):
@@ -268,7 +303,9 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
                 normalized = _normalize_fault_item(item, all_faultnames, f"{param_name}[{i}]")
                 result.append(normalized)
             except ValueError as e:
-                raise ValueError(f"Error in {param_name}[{i}] for dataset '{all_datanames[i]}': {str(e)}")
+                msg = f"Error in {param_name}[{i}] for dataset '{all_datanames[i]}': {str(e)}"
+                logger.error(msg)
+                raise ValueError(msg)
         
         return result
     
@@ -284,7 +321,9 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
                                                      f"{param_name}['{dataname}']")
                     result.append(normalized)
                 except ValueError as e:
-                    raise ValueError(f"Error in {param_name}['{dataname}']: {str(e)}")
+                    msg = f"Error in {param_name}['{dataname}']: {str(e)}"
+                    logger.error(msg)
+                    raise ValueError(msg)
             else:
                 # Default to all_faultnames for unspecified datasets
                 result.append(all_faultnames.copy())
@@ -292,12 +331,16 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
         # Check for invalid dataset names in config
         invalid_datasets = set(data_faults_config.keys()) - set(all_datanames)
         if invalid_datasets:
-            raise ValueError(f"Invalid dataset names in {param_name}: {invalid_datasets}")
+            msg = f"Invalid dataset names in {param_name}: {invalid_datasets}"
+            logger.error(msg)
+            raise ValueError(msg)
         
         return result
     
     else:
-        raise ValueError(f"{param_name} must be None, a list, or a dictionary")
+        msg = f"{param_name} must be None, a list, or a dictionary"
+        logger.error(msg)
+        raise ValueError(msg)
 
 
 def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFaults"):
@@ -334,15 +377,21 @@ def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFau
         """Normalize a fault subset item"""
         if isinstance(item, str):
             if item not in all_faultnames:
-                raise ValueError(f"Fault name '{item}' in {param_name} not found in all_faultnames")
+                msg = f"Fault name '{item}' in {param_name} not found in all_faultnames"
+                logger.error(msg)
+                raise ValueError(msg)
             return [item]
         elif isinstance(item, list):
             if not set(item).issubset(set(all_faultnames)):
                 invalid_names = set(item) - set(all_faultnames)
-                raise ValueError(f"Invalid fault names in {param_name}: {invalid_names}")
+                msg = f"Invalid fault names in {param_name}: {invalid_names}"
+                logger.error(msg)
+                raise ValueError(msg)
             return item.copy()
         else:
-            raise ValueError(f"Invalid fault specification in {param_name}: {item}")
+            msg = f"Invalid fault specification in {param_name}: {item}"
+            logger.error(msg)
+            raise ValueError(msg)
     
     # Case 1: None or [None] - single alpha case
     if alpha_faults_config is None or (isinstance(alpha_faults_config, list) and 
@@ -353,8 +402,10 @@ def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFau
     # Case 2: List format
     elif isinstance(alpha_faults_config, list):
         if len(alpha_faults_config) > len(all_faultnames):
-            raise ValueError(f"Length of {param_name} ({len(alpha_faults_config)}) must be less than or equal to "
-                           f"number of all faults ({len(all_faultnames)})")
+            msg = f"Length of {param_name} ({len(alpha_faults_config)}) must be less than or equal to " \
+                  f"number of all faults ({len(all_faultnames)})"
+            logger.error(msg)
+            raise ValueError(msg)
         
         result = []
         all_assigned_faults = set()
@@ -368,21 +419,29 @@ def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFau
                 item_set = set(normalized)
                 overlap = all_assigned_faults.intersection(item_set)
                 if overlap:
-                    raise ValueError(f"Fault names {overlap} appear in multiple alpha groups")
+                    msg = f"Fault names {overlap} appear in multiple alpha groups"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 all_assigned_faults.update(item_set)
                 
             except ValueError as e:
-                raise ValueError(f"Error in {param_name}[{i}]: {str(e)}")
+                msg = f"Error in {param_name}[{i}]: {str(e)}"
+                logger.error(msg)
+                raise ValueError(msg)
         
         # Check for complete coverage
         if all_assigned_faults != set(all_faultnames):
             missing = set(all_faultnames) - all_assigned_faults
-            raise ValueError(f"{param_name} does not cover all fault names. Missing: {missing}")
+            msg = f"{param_name} does not cover all fault names. Missing: {missing}"
+            logger.error(msg)
+            raise ValueError(msg)
         
         return result
     
     else:
-        raise ValueError(f"{param_name} must be None, or a list")
+        msg = f"{param_name} must be None, or a list"
+        logger.error(msg)
+        raise ValueError(msg)
 
 def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'):
     """
@@ -467,7 +526,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
     
     # Validate dataset_names must be provided
     if not dataset_names:
-        raise ValueError("dataset_names must be provided and cannot be empty")
+        msg = "dataset_names must be provided and cannot be empty"
+        logger.error(msg)
+        raise ValueError(msg)
     
     # Default values
     default_config = {
@@ -496,7 +557,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
             if len(update) == 1:
                 update_list = [update[0]]
             else:
-                raise ValueError(f"In single mode, update cannot be a multi-value list, current length: {len(update)}")
+                msg = f"In single mode, update cannot be a multi-value list, current length: {len(update)}"
+                logger.error(msg)
+                raise ValueError(msg)
         else:
             update_list = [update]
             
@@ -504,9 +567,13 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
             if len(initial_value) == 1:
                 initial_value_list = [float(initial_value[0])]
             else:
-                raise ValueError(f"In single mode, {param_name} cannot be a multi-value list, current length: {len(initial_value)}")
+                msg = f"In single mode, {param_name} cannot be a multi-value list, current length: {len(initial_value)}"
+                logger.error(msg)
+                raise ValueError(msg)
         elif isinstance(initial_value, dict):
-            raise ValueError(f"In single mode, {param_name} cannot be a dictionary")
+            msg = f"In single mode, {param_name} cannot be a dictionary"
+            logger.error(msg)
+            raise ValueError(msg)
         else:
             initial_value_list = [float(initial_value)]
             
@@ -522,7 +589,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         # Handle update parameters
         if isinstance(update, (list, tuple, np.ndarray)):
             if len(update) != num_datasets:
-                raise ValueError(f"In individual mode, update list length ({len(update)}) must equal number of datasets ({num_datasets})")
+                msg = f"In individual mode, update list length ({len(update)}) must equal number of datasets ({num_datasets})"
+                logger.error(msg)
+                raise ValueError(msg)
             update_list = list(update)
         else:
             # Expand single value to dataset size
@@ -539,7 +608,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
                     initial_value_list.append(0.0)  # Default to 0.0
         elif isinstance(initial_value, (list, tuple, np.ndarray)):
             if len(initial_value) != num_datasets:
-                raise ValueError(f"In individual mode, {param_name} list length ({len(initial_value)}) must equal number of datasets ({num_datasets})")
+                msg = f"In individual mode, {param_name} list length ({len(initial_value)}) must equal number of datasets ({num_datasets})"
+                logger.error(msg)
+                raise ValueError(msg)
             initial_value_list = [float(val) for val in initial_value]
         else:
             # Expand single value to dataset size
@@ -557,7 +628,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         initial_value_config = config.get(param_name, [])  # Use the specified parameter name
         
         if not groups:
-            raise ValueError("In grouped mode, groups parameter must be provided")
+            msg = "In grouped mode, groups parameter must be provided and cannot be empty"
+            logger.error(msg)
+            raise ValueError(msg)
         
         # Build mapping from dataset names to parameter groups
         dataset_to_group = {}
@@ -566,13 +639,17 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         for group_idx, (group_name, datasets) in enumerate(groups.items()):
             for dataset_name in datasets:
                 if dataset_name in dataset_to_group:
-                    raise ValueError(f"Dataset '{dataset_name}' is assigned to multiple groups")
+                    msg = f"Dataset '{dataset_name}' is assigned to multiple groups"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 dataset_to_group[dataset_name] = group_idx
         
         # Verify all datasets are grouped
         missing_datasets = set(dataset_names) - set(dataset_to_group.keys())
         if missing_datasets:
-            raise ValueError(f"The following datasets are not grouped: {missing_datasets}")
+            msg = f"The following datasets are not assigned to any group: {missing_datasets}"
+            logger.error(msg)
+            raise ValueError(msg)
         
         # Build parameter mapping: [0, 0, 1, 1, 2, 2] style
         dataset_param_indices = [dataset_to_group[name] for name in dataset_names]
@@ -582,7 +659,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         
         if isinstance(update_config, (list, tuple, np.ndarray)):
             if len(update_config) != num_groups:
-                raise ValueError(f"In grouped mode, update list length ({len(update_config)}) must equal number of groups ({num_groups})")
+                msg = f"In grouped mode, update list length ({len(update_config)}) must equal number of groups ({num_groups})"
+                logger.error(msg)
+                raise ValueError(msg)
             update_list = list(update_config)
         else:
             # Expand single value to number of groups
@@ -599,7 +678,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
                     initial_value_list.append(0.0)  # Default to 0.0
         elif isinstance(initial_value_config, (list, tuple, np.ndarray)):
             if len(initial_value_config) != num_groups:
-                raise ValueError(f"In grouped mode, {param_name} list length ({len(initial_value_config)}) must equal number of groups ({num_groups})")
+                msg = f"In grouped mode, {param_name} list length ({len(initial_value_config)}) must equal number of groups ({num_groups})"
+                logger.error(msg)
+                raise ValueError(msg)
             initial_value_list = [float(val) for val in initial_value_config]
         else:
             # Expand single value to number of groups
@@ -608,7 +689,9 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         total_params = num_groups
     
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
+        msg = f"Unsupported mode: {mode}. Supported modes are 'single', 'individual', and 'grouped'."
+        logger.error(msg)
+        raise ValueError(msg)
     
     # Calculate number of updatable parameters and create updatable index mapping
     updatable_param_indices = []
@@ -734,7 +817,9 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
     """
 
     if not faultnames:
-        raise ValueError("faultnames must be provided and cannot be empty")
+        msg = "faultnames must be provided and cannot be empty"
+        logger.error(msg)
+        raise ValueError(msg)
 
     num_faults = len(faultnames)
     mode = alpha_config.get('mode', 'single')
@@ -747,10 +832,14 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         initial_value = alpha_config.get(param_name, 0.0)
         update_list = [update] if not isinstance(update, (list, tuple, np.ndarray)) else list(update)
         if len(update_list) != 1:
-            raise ValueError("In 'single' mode, 'update' must be a single value")
+            msg = "In 'single' mode, 'update' must be a single value"
+            logger.error(msg)
+            raise ValueError(msg)
         if isinstance(initial_value, (list, tuple, np.ndarray)):
             if len(initial_value) != 1:
-                raise ValueError("In 'single' mode, 'initial_value' must be a single value")
+                msg = "In 'single' mode, 'initial_value' must be a single value"
+                logger.error(msg)
+                raise ValueError(msg)
             initial_value_list = [float(initial_value[0])]
         else:
             initial_value_list = [float(initial_value)]
@@ -764,7 +853,9 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         initial_value = alpha_config.get(param_name, 0.0)
         if isinstance(update, (list, tuple, np.ndarray)):
             if len(update) != num_faults:
-                raise ValueError("In 'individual' mode, 'update' length must match number of faults")
+                msg = "In 'individual' mode, 'update' length must match number of faults"
+                logger.error(msg)
+                raise ValueError(msg)
             update_list = list(update)
         else:
             update_list = [update] * num_faults
@@ -772,7 +863,9 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
             initial_value_list = [float(initial_value.get(name, 0.0)) for name in faultnames]
         elif isinstance(initial_value, (list, tuple, np.ndarray)):
             if len(initial_value) != num_faults:
-                raise ValueError("In 'individual' mode, 'initial_value' length must match number of faults")
+                msg = "In 'individual' mode, 'initial_value' length must match number of faults"
+                logger.error(msg)
+                raise ValueError(msg)
             initial_value_list = [float(v) for v in initial_value]
         else:
             initial_value_list = [float(initial_value)] * num_faults
@@ -787,27 +880,37 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         if group_faults is None:
             groups = alpha_config.get('groups', None)
             if groups is None:
-                raise ValueError("In 'grouped' mode, 'faults' (list of lists) or 'groups' (dict) must be provided")
+                msg = "In 'grouped' mode, 'faults' (list of lists) or 'groups' (dict) must be provided"
+                logger.error(msg)
+                raise ValueError(msg)
             # Convert groups dict to list of lists
             group_faults = [groups[k] for k in groups]
         if not isinstance(group_faults, list) or not all(isinstance(g, list) for g in group_faults):
-            raise ValueError("'faults' must be a list of lists of fault names")
+            msg = "'faults' must be a list of lists of fault names"
+            logger.error(msg)
+            raise ValueError(msg)
         num_groups = len(group_faults)
         # Build fault to group index mapping
         fault_to_group = {}
         for idx, flist in enumerate(group_faults):
             for f in flist:
                 if f in fault_to_group:
-                    raise ValueError(f"Fault '{f}' assigned to multiple groups")
+                    msg = f"Fault '{f}' assigned to multiple groups"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 fault_to_group[f] = idx
         missing = set(faultnames) - set(fault_to_group.keys())
         if missing:
-            raise ValueError(f"Faults not assigned to any group: {missing}")
+            msg = f"Faults not assigned to any group: {missing}"
+            logger.error(msg)
+            raise ValueError(msg)
         fault_param_indices = [fault_to_group[name] for name in faultnames]
         update = alpha_config.get('update', True)
         if isinstance(update, (list, tuple, np.ndarray)):
             if len(update) != num_groups:
-                raise ValueError("In 'grouped' mode, 'update' length must match number of groups")
+                msg = "In 'grouped' mode, 'update' length must match number of groups"
+                logger.error(msg)
+                raise ValueError(msg)
             update_list = list(update)
         else:
             update_list = [update] * num_groups
@@ -816,14 +919,18 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
             initial_value_list = [float(initial_value.get(str(i), 0.0)) for i in range(num_groups)]
         elif isinstance(initial_value, (list, tuple, np.ndarray)):
             if len(initial_value) != num_groups:
-                raise ValueError("In 'grouped' mode, 'initial_value' length must match number of groups")
+                msg = "In 'grouped' mode, 'initial_value' length must match number of groups"
+                logger.error(msg)
+                raise ValueError(msg)
             initial_value_list = [float(v) for v in initial_value]
         else:
             initial_value_list = [float(initial_value)] * num_groups
         total_params = num_groups
 
     else:
-        raise ValueError(f"Unknown alpha mode: {mode}")
+        msg = f"Unknown alpha mode: {mode}. Supported modes are 'single', 'individual', and 'grouped'."
+        logger.error(msg)
+        raise ValueError(msg)
 
     # --- Updatable parameter indices ---
     updatable_param_indices = []
@@ -884,7 +991,9 @@ def parse_bounds(bounds_config, param_names, param_type="parameter"):
         elif defaults is not None:
             result[name] = defaults
         else:
-            raise ValueError(f"No bounds specified for {param_type} '{name}' and no defaults provided")
+            msg = f"No bounds specified for {param_type} '{name}' and no defaults provided"
+            logger.error(msg)
+            raise ValueError(msg)
     
     return result
 
@@ -917,7 +1026,9 @@ def validate_config_list(config_list, expected_length, param_name):
         If the list length doesn't match expected length
     """
     if len(config_list) != expected_length:
-        raise ValueError(f"Length of {param_name} ({len(config_list)}) does not match expected length ({expected_length})")
+        msg = f"Length of {param_name} ({len(config_list)}) must equal expected length ({expected_length})"
+        logger.error(msg)
+        raise ValueError(msg)
 
 
 def expand_single_value(value, n_items):
@@ -1043,29 +1154,42 @@ def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None)
     def validate_units(units, unit_type):
         if unit_type == 'euler_pole':
             if len(units) != 3:
-                raise ValueError(f"euler_pole_units must have 3 elements [lat, lon, omega], got {len(units)}")
+                msg = f"euler_pole_units must have 3 elements [lat, lon, omega], got {len(units)}"
+                logger.error(msg)
+                raise ValueError(msg)
             if units[0] not in valid_angle_units or units[1] not in valid_angle_units:
-                raise ValueError(f"Invalid angle units in euler_pole_units: {units[:2]}")
+                msg = f"Invalid angle units in euler_pole_units: {units[:2]}"
+                logger.error(msg)
+                raise ValueError(msg)
             if units[2] not in valid_angular_velocity_units:
-                raise ValueError(f"Invalid angular velocity unit in euler_pole_units: {units[2]}")
+                msg = f"Invalid angular velocity unit in euler_pole_units: {units[2]}"
+                logger.error(msg)
+                raise ValueError(msg)
         elif unit_type == 'euler_vector':
             if len(units) != 3:
-                raise ValueError(f"euler_vector_units must have 3 elements [wx, wy, wz], got {len(units)}")
+                msg = f"euler_vector_units must have 3 elements [wx, wy, wz], got {len(units)}"
+                logger.error(msg)
+                raise ValueError(msg)
             if not all(u in valid_angular_velocity_units for u in units):
-                raise ValueError(f"Invalid angular velocity units in euler_vector_units: {units}")
+                msg = f"Invalid angular velocity units in euler_vector_units: {units}"
+                logger.error(msg)
+                raise ValueError(msg)
     
     def validate_reference_strike(strike, context):
         """Validate reference strike angle"""
         if not isinstance(strike, (int, float)):
-            raise ValueError(f"reference_strike in {context} must be a number")
+            msg = f"reference_strike in {context} must be a number"
+            logger.error(msg)
+            raise ValueError(msg)
         # Normalize to [0, 360) range
         return float(strike % 360)
     
     def validate_motion_sense(motion_sense, context):
         """Validate motion sense"""
         if motion_sense not in valid_motion_senses:
-            raise ValueError(f"Invalid motion_sense '{motion_sense}' in {context}. "
-                           f"Valid options: {valid_motion_senses}")
+            msg = f"Invalid motion_sense '{motion_sense}' in {context}. Valid options: {valid_motion_senses}"
+            logger.error(msg)
+            raise ValueError(msg)
         return motion_sense
     
     validate_units(defaults['euler_pole_units'], 'euler_pole')
@@ -1088,7 +1212,9 @@ def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None)
         
         # Validate required parameters
         if 'blocks' not in fault_config:
-            raise ValueError(f"Missing 'blocks' for fault '{fault_name}'")
+            msg = f"Fault '{fault_name}' is missing required 'blocks' parameter"
+            logger.error(msg)
+            raise ValueError(msg)
             
         blocks = fault_config['blocks']
         
@@ -1097,26 +1223,40 @@ def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None)
         
         # Validate block_types and blocks consistency
         if len(block_types) != 2:
-            raise ValueError(f"Fault '{fault_name}' must have exactly 2 block_types, got {len(block_types)}")
+            msg = f"Fault '{fault_name}' must have exactly 2 block_types, got {len(block_types)}"
+            logger.error(msg)
+            raise ValueError(msg)
         if len(blocks) != 2:
-            raise ValueError(f"Fault '{fault_name}' must have exactly 2 blocks, got {len(blocks)}")
+            msg = f"Fault '{fault_name}' must have exactly 2 blocks, got {len(blocks)}"
+            logger.error(msg)
+            raise ValueError(msg)
             
         for block_type in block_types:
             if block_type not in valid_block_types:
-                raise ValueError(f"Invalid block_type '{block_type}' for fault '{fault_name}'")
+                msg = f"Invalid block_type '{block_type}' for fault '{fault_name}'"
+                logger.error(msg)
+                raise ValueError(msg)
         
         # Validate blocks based on block_types
         for i, (block_type, block) in enumerate(zip(block_types, blocks)):
             if block_type == 'dataset':
                 if not isinstance(block, str):
-                    raise ValueError(f"Block {i} for fault '{fault_name}' with type 'dataset' must be a string")
+                    msg = f"Block {i} for fault '{fault_name}' with type 'dataset' must be a string"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 if dataset_names and block not in dataset_names:
-                    raise ValueError(f"Dataset '{block}' for fault '{fault_name}' not found in dataset_names")
+                    msg = f"Dataset '{block}' for fault '{fault_name}' not found in dataset_names"
+                    logger.error(msg)
+                    raise ValueError(msg)
             elif block_type in ['euler_pole', 'euler_vector']:
                 if not isinstance(block, (list, tuple)) or len(block) != 3:
-                    raise ValueError(f"Block {i} for fault '{fault_name}' with type '{block_type}' must be a 3-element array")
+                    msg = f"Block {i} for fault '{fault_name}' with type '{block_type}' must be a 3-element array"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 if not all(isinstance(x, (int, float)) for x in block):
-                    raise ValueError(f"Block {i} for fault '{fault_name}' must contain numeric values")
+                    msg = f"Block {i} for fault '{fault_name}' with type '{block_type}' must contain numeric values"
+                    logger.error(msg)
+                    raise ValueError(msg)
         
         # Merge with defaults
         merged_config = merge_with_defaults(fault_config, {
@@ -1148,7 +1288,9 @@ def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None)
         if 'block_names' not in merged_config:
             merged_config['block_names'] = [f"{fault_name}_blockA", f"{fault_name}_blockB"]
         elif len(merged_config['block_names']) != 2:
-            raise ValueError(f"Fault '{fault_name}' must have exactly 2 block_names if provided")
+            msg = f"Fault '{fault_name}' must have exactly 2 block_names if provided"
+            logger.error(msg)
+            raise ValueError(msg)
         
         # Convert units to standard format and store conversion factors
         if 'units' in fault_config:
@@ -1184,15 +1326,21 @@ def parse_euler_constraints_config(euler_config, faultnames, dataset_names=None)
         # Validate fix_reference_block
         fix_ref = merged_config['fix_reference_block']
         if fix_ref is not None and fix_ref not in [0, 1]:
-            raise ValueError(f"fix_reference_block for fault '{fault_name}' must be None, 0, or 1")
+            msg = f"fix_reference_block for fault '{fault_name}' must be None, 0, or 1"
+            logger.error(msg)
+            raise ValueError(msg)
         
         # Validate apply_to_patches
         apply_patches = merged_config['apply_to_patches']
         if apply_patches is not None:
             if not isinstance(apply_patches, (list, tuple)):
-                raise ValueError(f"apply_to_patches for fault '{fault_name}' must be a list or None")
+                msg = f"apply_to_patches for fault '{fault_name}' must be a list or None"
+                logger.error(msg)
+                raise ValueError(msg)
             if not all(isinstance(x, int) and x >= 0 for x in apply_patches):
-                raise ValueError(f"apply_to_patches for fault '{fault_name}' must contain non-negative integers")
+                msg = f"apply_to_patches for fault '{fault_name}' must contain non-negative integers"
+                logger.error(msg)
+                raise ValueError(msg)
         
         fault_configs[fault_name] = merged_config
     
@@ -1237,18 +1385,26 @@ def parse_euler_units(units_config, unit_type):
     
     if unit_type == 'euler_pole':
         if len(units_config) != 3:
-            raise ValueError("Euler pole units must have 3 elements: [latitude, longitude, angular_velocity]")
+            msg = "Euler pole units must have 3 elements: [latitude, longitude, angular_velocity]"
+            logger.error(msg)
+            raise ValueError(msg)
         
         lat_factor = angle_conversions.get(units_config[0])
         lon_factor = angle_conversions.get(units_config[1])
         omega_factor = angular_velocity_conversions.get(units_config[2])
         
         if lat_factor is None:
-            raise ValueError(f"Invalid latitude unit: {units_config[0]}")
+            msg = f"Invalid latitude unit: {units_config[0]}"
+            logger.error(msg)
+            raise ValueError(msg)
         if lon_factor is None:
-            raise ValueError(f"Invalid longitude unit: {units_config[1]}")
+            msg = f"Invalid longitude unit: {units_config[1]}"
+            logger.error(msg)
+            raise ValueError(msg)
         if omega_factor is None:
-            raise ValueError(f"Invalid angular velocity unit: {units_config[2]}")
+            msg = f"Invalid angular velocity unit: {units_config[2]}"
+            logger.error(msg)
+            raise ValueError(msg)
             
         return {
             'units': units_config,
@@ -1258,13 +1414,17 @@ def parse_euler_units(units_config, unit_type):
     
     elif unit_type == 'euler_vector':
         if len(units_config) != 3:
-            raise ValueError("Euler vector units must have 3 elements: [wx, wy, wz]")
+            msg = "Euler vector units must have 3 elements: [wx, wy, wz]"
+            logger.error(msg)
+            raise ValueError(msg)
         
         conversion_factors = []
         for unit in units_config:
             factor = angular_velocity_conversions.get(unit)
             if factor is None:
-                raise ValueError(f"Invalid angular velocity unit: {unit}")
+                msg = f"Invalid angular velocity unit: {unit}"
+                logger.error(msg)
+                raise ValueError(msg)
             conversion_factors.append(factor)
             
         return {
@@ -1274,5 +1434,7 @@ def parse_euler_units(units_config, unit_type):
         }
     
     else:
-        raise ValueError(f"Invalid unit_type: {unit_type}")
+        msg = f"Invalid unit_type: {unit_type}"
+        logger.error(msg)
+        raise ValueError(msg)
 # --------------------------------------------------------------------------------------#

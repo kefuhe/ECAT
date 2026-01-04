@@ -12,6 +12,9 @@ Changed by Kefeng He on 2023-11-16 for the purpose of exploring multiple faults
 
 and change pymc to SMP-MPI for parallel sampling, which is more efficient for large number of parameters
 '''
+import logging
+# Setup module-level logger
+logger = logging.getLogger(__name__)
 
 # Externals
 from mpi4py import MPI
@@ -19,7 +22,7 @@ import json
 try:
     import h5py
 except:
-    print('No hdf5 capabilities detected')
+    logger.warning('No hdf5 capabilities detected')
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm, uniform
@@ -86,11 +89,34 @@ class explorefault(SourceInv):
 
         self.verbose = verbose
         self.parallel_rank = parallel_rank if parallel_rank is not None else MPI.COMM_WORLD.Get_rank()
-        # Initialize the fault
-        if self.verbose and self.parallel_rank == 0:
-            print ("---------------------------------")
-            print ("---------------------------------")
-            print ("Initializing fault exploration {}".format(name))
+        # Note: In MPI, usually we only want the root process to log/print
+        self.verbose = verbose and (self.parallel_rank == 0)
+
+        # 1. Always get the logger instance
+        self.logger = logging.getLogger(__name__)
+        # 2. Smart logging configuration
+        if self.verbose:
+            # Ensure this logger captures INFO messages
+            self.logger.setLevel(logging.INFO)
+            
+            # Check if logging is already configured (e.g., by basicConfig in main script)
+            if not logging.getLogger().hasHandlers():
+                # If no handlers exist, configure a default console handler for the user
+                console_handler = logging.StreamHandler()
+                formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                console_handler.setFormatter(formatter)
+                
+                # Add handler to root logger to capture all logs
+                logging.getLogger().addHandler(console_handler)
+                logging.getLogger().setLevel(logging.INFO)
+                
+                self.logger.info("Smart Logging: No existing configuration detected. Auto-enabled verbose logging to console.")
+
+        # Log initialization message instead of print
+        if self.parallel_rank == 0:
+            self.logger.info("---------------------------------")
+            self.logger.info("---------------------------------")
+            self.logger.info("Initializing fault exploration {}".format(name))
 
         # Base class init
         if lon0 is None or lat0 is None:
@@ -106,7 +132,12 @@ class explorefault(SourceInv):
                                             lon0=lon0, lat0=lat0)
 
         # Load and set the configuration
-        self.load_and_set_config(config_file, fixed_params, geodata=geodata)
+        try:
+            self.load_and_set_config(config_file, fixed_params, geodata=geodata)
+            self.logger.info(f"[OK] Fault exploration '{name}' initialized successfully")
+        except Exception as e:
+            self.logger.error(f"[ERROR] Initialization failed: {str(e)}", exc_info=True)
+            raise e
 
         # ==========================================================
         # [ADDED] Top-level fault alias loading and validation
@@ -119,8 +150,8 @@ class explorefault(SourceInv):
             # Fallback (if no mapping provided in config), i.e., Initialize default alias mapping (fault_0 -> F0, fault_1 -> F1)
             self.fault_alias_map = {f'fault_{i}': f'F{i}' for i in range(self.nfaults)}
                 
-        if self.verbose:
-            print(f"[INFO] Fault Aliases Active: {self.fault_alias_map}")
+        if self.parallel_rank == 0:
+            self.logger.info(f"Fault Aliases Active: {self.fault_alias_map}")
 
         # Initialize the fault objects
         self.nfaults = num_faults if num_faults else self.nfaults
@@ -207,13 +238,6 @@ class explorefault(SourceInv):
         self._sigma_update_positions = self.config.sigmas['updatable_param_indices'][self.config.sigmas['dataset_param_indices']] # positions of sigma to be updated in the full parameter vector
         self._sigma_update_positions = self._sigma_update_positions[self._sigma_update_indices]
         self._sigma_update_flag = np.any(self.config.sigmas['update']) # whether any sigma is to be updated
-        
-        # Debug
-        # print("Sigma Update Mask:", self._sigma_update_mask)
-        # print("Sigma Initial Values:", self._sigma_initial)
-        # print("Sigma Update Indices:", self._sigma_update_indices)
-        # print("Sigma Update Positions:", self._sigma_update_positions)
-        # print("Sigma Update Flag:", self._sigma_update_flag)
 
     def build_fault_params(self, samples, fault_name):
         '''
@@ -582,7 +606,6 @@ class explorefault(SourceInv):
                 else:
                     sigmas = self._sigma_initial.astype(np.float64, copy=True)
                     sigmas[self._sigma_update_indices] = samples[self.sigmas_index][self._sigma_update_positions]
-                # print(f"sigmas: {sigmas}, sigmas_position: {self.sigmas_index}, _sigma_update_indices: {self._sigma_update_indices}, _sigma_update_positions: {self._sigma_update_positions}")
                 # If log_scaled, convert sigmas to log scale
                 sigmas = np.power(10, np.array(sigmas)) if self.sigmas['log_scaled'] else np.array(sigmas)
                 for i, (data, dobs, Cd_inv, logCd_det, vertical) in enumerate(self.Likelihoods):
@@ -636,7 +659,7 @@ class explorefault(SourceInv):
         rank = comm.Get_rank()
     
         if rank == 0:
-            print('Starting the loop...', flush=True)
+            self.logger.info('Starting the loop...')
     
         # Run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
@@ -647,7 +670,7 @@ class explorefault(SourceInv):
             self.sampler = final._asdict()
             # Save the samples to an HDF5 file
             self.save2h5(filename)
-            print('Finished the loop.')
+            self.logger.info('Finished the loop.')
     
         # All done
         return
@@ -766,7 +789,7 @@ class explorefault(SourceInv):
                 self.calculate_and_print_fit_statistics(model=model)
 
                 # 2. Print detailed parameter table
-                print(f"\n[MCMC Parameter Summary: {str(model).upper()}]")
+                print(f"MCMC Parameter Summary: {str(model).upper()}")
                 display_data = []
                 
                 # Iterate fault parameter groups
@@ -796,10 +819,11 @@ class explorefault(SourceInv):
 
                 try:
                     from tabulate import tabulate
-                    print(tabulate(display_data, headers=['Name', 'Param', 'Value', 'Index'], tablefmt='simple'))
+                    print(tabulate(display_data, headers=['Name', 'Param', 'Value'], tablefmt='simple'))
                 except ImportError:
                     for row in display_data:
                         print(f"{row[0]} {row[1]}: {row[2]}")
+
 
         return faults
 
@@ -885,7 +909,7 @@ class explorefault(SourceInv):
                 total_vr += vr
                 data_count += 1
             except Exception as e:
-                print(f"{data.name:<15} | Error calculating metrics: {str(e)}")
+                self.logger.warning(f"Error calculating fit metrics for {data.name}: {str(e)}")
         
         if data_count > 0:
             print("-"*60)
@@ -1241,7 +1265,7 @@ class explorefault(SourceInv):
                         f.write(f"{samples_str}\n")
     
             if output_to_screen:
-                print(f"\nModel parameters saved to: {filename} (format: {file_format})")
+                self.logger.info(f"\nModel parameters saved to: {filename} (format: {file_format})")
     
         return estimated_params
     
@@ -1369,6 +1393,8 @@ class explorefault(SourceInv):
             The list of faults to plot. The default is None.
         axis_labels: list, optional
             The list of axis labels. The default is None.
+        label_map: dict, optional
+            A dictionary mapping original axis labels to custom labels. The default is None.
         wspace: float, optional
             The amount of width reserved for space between subplots, expressed as a fraction of the average axis width. The default is None.
         hspace: float, optional
@@ -1451,7 +1477,7 @@ class explorefault(SourceInv):
             index += self.sigmas_index
 
         if self.parallel_rank == 0:
-            print(f"[DEBUG] Keys generated for plot: {keys}")
+            self.logger.debug(f"Keys generated for plot: {keys}")
 
         # 3. Label Generation (With Alias Support)
         final_labels = []
@@ -1722,7 +1748,7 @@ class explorefault(SourceInv):
                     data = samples[dataset]
                     f.create_dataset(dataset, data=data)
         except Exception as e:
-            print(f'Error saving to HDF5 file: {e}')
+            self.logger.warning(f'Error saving to HDF5 file: {e}')
     
     def load_samples_from_h5(self, filename, datasets=None):
         '''
@@ -1751,7 +1777,7 @@ class explorefault(SourceInv):
                     data = f[dataset][:]
                     samples[dataset] = data
         except Exception as e:
-            print(f'Error loading from HDF5 file: {e}')
+            self.logger.warning(f'Error loading from HDF5 file: {e}')
 
         # Save the loaded samples
         self.sampler = samples
@@ -1810,9 +1836,9 @@ class explorefault(SourceInv):
         # Print beautiful table if requested
         if print_table:
             headers = ['Category', 'Name', 'Parameter', 'Index']
-            print("\nMCMC Parameter Positions:")
-            print(tabulate(all_params, headers=headers, tablefmt='grid', stralign='left'))
-            print(f"\nTotal parameters: {len(all_params)}")
+            self.logger.info("\nMCMC Parameter Positions:")
+            self.logger.info(tabulate(all_params, headers=headers, tablefmt='grid', stralign='left'))
+            self.logger.info(f"\nTotal parameters: {len(all_params)}")
         
         return estimated_params
 

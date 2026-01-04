@@ -13,6 +13,63 @@ from .config_utils import parse_update, parse_initial_values
 from .config_utils import parse_alpha_faults, parse_data_faults, parse_sigmas_config
 from .base_config import CommonConfigBase
 
+
+class AliasManager:
+    """Manage fault ID and alias mappings."""
+    
+    def __init__(self, num_faults, user_aliases=None):
+        self.num_faults = num_faults
+        self.user_aliases = user_aliases or []
+        self.id_to_alias = {}
+        self.alias_to_id = {}
+        self._build_mappings()
+    
+    def _build_mappings(self):
+        """Build ID <-> Alias mappings."""
+        if self.user_aliases:
+            if isinstance(self.user_aliases, str):
+                if self.num_faults > 1:
+                    raise ValueError(
+                        f"Single alias '{self.user_aliases}' provided but nfaults={self.num_faults}"
+                    )
+                self.user_aliases = [self.user_aliases]
+            
+            if len(self.user_aliases) != self.num_faults:
+                raise ValueError(
+                    f"Alias count ({len(self.user_aliases)}) != nfaults ({self.num_faults})"
+                )
+        
+        for i in range(self.num_faults):
+            fault_id = f'fault_{i}'
+            alias = self.user_aliases[i] if self.user_aliases else f'F{i}'
+            self.id_to_alias[fault_id] = alias
+            self.alias_to_id[alias] = fault_id
+    
+    def translate_config_keys(self, config_dict):
+        """Translate aliases in configuration dictionary keys"""
+        if not self.user_aliases:
+            return config_dict
+        
+        translated = {}
+        for key, value in config_dict.items():
+            new_key = self.alias_to_id.get(key, key)
+            translated[new_key] = value
+        return translated
+    
+    def translate_faults_list(self, faults_list):
+        """Translate aliases in faults list"""
+        if not faults_list or not self.user_aliases:
+            return faults_list
+        
+        if isinstance(faults_list, list):
+            return [
+                [self.alias_to_id.get(f, f) for f in item] 
+                if isinstance(item, list) 
+                else self.alias_to_id.get(item, item)
+                for item in faults_list
+            ]
+        return faults_list
+
 class ExploreFaultConfig(CommonConfigBase):
     def __init__(self, config_file=None, geodata=None, verbose=False, parallel_rank=None):
         self._sigmas_param_name = 'values'  # ExploreFaultConfig uses 'values' for sigmas
@@ -30,10 +87,6 @@ class ExploreFaultConfig(CommonConfigBase):
         # Load configuration if file is provided
         if config_file:
             self.load_config(config_file, geodata=geodata)
-
-        # Build default fault_id_to_alias mapping
-        # n_f = self.nfaults
-        # self.fault_id_to_alias = {f'fault_{i}': f'F{i}' for i in range(n_f)}
 
         # Parse sigmas parameters after loading config
         if self.geodata and 'data' in self.geodata:
@@ -58,9 +111,22 @@ class ExploreFaultConfig(CommonConfigBase):
         with open(config_file, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
 
-        # [CRITICAL STEP] Apply Alias Mapping BEFORE any assignment/validation
-        # This ensures that 'ATF' is converted to 'fault_0' so validation passes.
-        self._apply_alias_mapping(config)
+        nfaults = config.get('nfaults', 1)
+        user_aliases = config.get('fault_aliasnames', config.get('fault_names', None))
+
+        # Initialize AliasManager with user aliases and number of faults
+        self.alias_manager = AliasManager(nfaults, user_aliases)
+        self.fault_id_to_alias = self.alias_manager.id_to_alias
+
+        # Translate configuration sections using AliasManager
+        for section in ['bounds', 'initial', 'fixed_params']:
+            if section in config:
+                config[section] = self.alias_manager.translate_config_keys(config[section])
+        
+        if 'geodata' in config and 'faults' in config['geodata']:
+            config['geodata']['faults'] = self.alias_manager.translate_faults_list(
+                config['geodata']['faults']
+            )
 
         # Load basic settings
         self.bounds = config.get('bounds', {})
@@ -109,103 +175,6 @@ class ExploreFaultConfig(CommonConfigBase):
         # Update polygon boundaries
         self.update_polys_estimate_and_boundaries()
         self._select_data_sets()
-
-    def _apply_alias_mapping(self, config_data):
-        """
-        Internal Helper: Configuration Translation Layer.
-        
-        Modifies the `config_data` dictionary IN-PLACE.
-        It identifies user-defined aliases (e.g., 'ATF') and replaces them with
-        internal system IDs (e.g., 'fault_0').
-        
-        Targets for replacement:
-        1. Keys in `bounds`, `initial`, `fixed_params`.
-        2. Values in `geodata['faults']`.
-        """
-        # 1. Extract alias names (support both 'fault_names' and 'fault_aliasnames')
-        aliases = config_data.get('fault_names', config_data.get('fault_aliasnames', None))
-
-        # If no aliases defined, do nothing
-        if not aliases:
-            return
-        
-        # Determine nfaults (prefer the value in the config file, fallback to default)
-        n_f = config_data.get('nfaults', self.nfaults)
-
-        if aliases is not None:
-            final_aliases = []
-            
-            # --- Validation logic A: String ---
-            if isinstance(aliases, str):
-                # If a single string is provided but 'nfaults' > 1, this is a configuration error
-                if n_f > 1:
-                    raise ValueError(
-                        f"[Config Error] 'fault_names' is a single string ('{aliases}'), "
-                        f"but 'nfaults' is {n_f}. You must provide a list of names like ['Name1', 'Name2']."
-                    )
-                final_aliases = [aliases]
-                
-            # --- Validation logic B: List ---
-            elif isinstance(aliases, list):
-                # Length must exactly match 'nfaults'
-                if len(aliases) != n_f:
-                    raise ValueError(
-                        f"[Config Error] Length of 'fault_names' ({len(aliases)}) "
-                        f"does not match 'nfaults' ({n_f}). "
-                        f"Expected {n_f} names."
-                    )
-                # Ensure elements are strings
-                final_aliases = [str(x) for x in aliases]
-            
-            # --- Validation logic C: Type error ---
-            else:
-                raise TypeError(f"[Config Error] 'fault_names' must be a string (for 1 fault) or a list of strings.")
-        
-            aliases = final_aliases
-        
-        # 2. Build the Mapping Dictionary: {'UserAlias': 'InternalID'}
-        # Example: {'ATF': 'fault_0', 'Kunlun': 'fault_1'}
-        alias_map = {}
-        for i, name in enumerate(aliases):
-            if i < n_f:
-                alias_map[name] = f'fault_{i}'
-        
-        # Store reverse mapping for display purposes
-        self.fault_id_to_alias = {v: k for k, v in alias_map.items()}
-
-        # 3. Replace Keys in Parameter Dictionaries
-        # (bounds, initial, fixed_params)
-        for section in ['bounds', 'initial', 'fixed_params']:
-            if section in config_data:
-                # Create a new dict to hold translated keys
-                new_dict = {}
-                for k, v in config_data[section].items():
-                    # If key matches an alias, translate it; otherwise keep original
-                    new_key = alias_map.get(k, k)
-                    new_dict[new_key] = v
-                # Update the section in config_data
-                config_data[section] = new_dict
-
-        # 4. Replace Values in Geodata -> Faults
-        # This fixes the "ValueError: Invalid fault names" error.
-        if 'geodata' in config_data and 'faults' in config_data['geodata']:
-            raw_faults = config_data['geodata']['faults']
-            
-            if isinstance(raw_faults, list):
-                new_faults_list = []
-                for item in raw_faults:
-                    if isinstance(item, list):
-                        # Handle list of faults: ['ATF', 'Other'] -> ['fault_0', 'fault_1']
-                        new_faults_list.append([alias_map.get(x, x) for x in item])
-                    elif isinstance(item, str):
-                        # Handle single fault string: 'ATF' -> 'fault_0'
-                        new_faults_list.append(alias_map.get(item, item))
-                    else:
-                        # Handle None or other types
-                        new_faults_list.append(item)
-                
-                # Write back translated list to config_data
-                config_data['geodata']['faults'] = new_faults_list
 
     def update_polys_estimate_and_boundaries(self, datas=None):
         if self.geodata.get('polys', {}).get('enabled', False):

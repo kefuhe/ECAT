@@ -1,5 +1,9 @@
 import yaml
+import logging
 
+# Setup module-level logger
+logger = logging.getLogger(__name__)
+# Load csi and its extensions
 from .linear_config import LinearInversionConfig
 from ..multifaults_base import MyMultiFaultsInversion
 
@@ -176,6 +180,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     f"-> Ensure @track_mesh_update is applied in {fault_class_name}.\n"
                     f"{'='*60}\n"
                 )
+                logger.error(error_msg)
                 raise ValueError(error_msg)
                 
             if self.verbose:
@@ -223,10 +228,12 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 if 'rake_angle' in config_data:
                     self.rake_angle = config_data['rake_angle']
                 else:
-                    raise ValueError("When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file.")
+                    msg = "When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file."
+                    logger.error(msg)
+                    raise ValueError(msg)
             elif 'rake_angle' in config_data:
                 if self.verbose:
-                    print("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
+                    logger.warning("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
     
         # Get the default parameters
         default_fault_parameters = config_data['faults']['defaults']
@@ -272,20 +279,20 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
                 if self.verbose:
-                    print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
+                    logger.info(f"Fault '{fault_name}' not found in config file. Using default parameters.")
     
         # Remove faults not in faultnames from config_data and self.faults
         for fault_name in list(config_data['faults'].keys()):
             if fault_name != 'defaults' and fault_name not in self.faultnames:
                 del config_data['faults'][fault_name]
                 if self.verbose:
-                    print(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
+                    logger.info(f"Fault '{fault_name}' found in config file but not in faultnames. Removed from configuration.")
     
         for fault_name in list(self.faults.keys()):
             if fault_name not in self.faultnames:
                 del self.faults[fault_name]
                 if self.verbose:
-                    print(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
+                    logger.info(f"Fault '{fault_name}' found in self.faults but not in faultnames. Removed from configuration.")
     
         # Set the attributes based on the key-value pairs in config_data
         self.set_attributes(**config_data)
@@ -335,17 +342,20 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 
                 # Validate sample_positions format
                 if not isinstance(sample_positions, list) or len(sample_positions) != 2:
-                    raise ValueError(f"Fault '{fault_name}': sample_positions must be a list of length 2, "
-                                   f"got {sample_positions}")
+                    msg = f"Fault '{fault_name}': sample_positions must be a list of length 2, got {sample_positions}"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 
                 start, end = sample_positions
                 if not isinstance(start, int) or not isinstance(end, int):
-                    raise ValueError(f"Fault '{fault_name}': sample_positions must contain integers, "
-                                   f"got {sample_positions}")
+                    msg = f"Fault '{fault_name}': sample_positions must contain integers, got {sample_positions}"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 
                 if start > end:
-                    raise ValueError(f"Fault '{fault_name}': sample_positions start ({start}) "
-                                   f"cannot be greater than end ({end})")
+                    msg = f"Fault '{fault_name}': sample_positions start ({start}) cannot be greater than end ({end})"
+                    logger.error(msg)
+                    raise ValueError(msg)
                 
                 # Check if this fault actually updates geometry (end > start)
                 if end > start:
@@ -356,7 +366,9 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Validate that sample_positions form a complete 0-n sequence
         if geometry_updating_faults:
             if not all_sample_positions:
-                raise ValueError("No valid geometry sample positions found in geometry-updating faults")
+                msg = "No valid geometry sample positions found in geometry-updating faults"
+                logger.error(msg)
+                raise ValueError(msg)
             
             min_pos = min(all_sample_positions)
             max_pos = max(all_sample_positions)
@@ -364,16 +376,19 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             
             # Check if starting from 0
             if min_pos != 0:
-                raise ValueError(f"Geometry sample positions must start from 0, but starts from {min_pos}")
+                msg = f"Geometry sample positions must start from 0, but starts from {min_pos}"
+                logger.error(msg)
+                raise ValueError(msg)
             
             # Check if positions form a complete sequence
             missing_positions = expected_positions - all_sample_positions
             if missing_positions:
-                raise ValueError(f"Geometry sample positions must form a complete sequence, "
-                               f"missing positions: {sorted(missing_positions)}")
+                msg = f"Geometry sample positions must form a complete sequence, missing positions: {sorted(missing_positions)}"
+                logger.error(msg)
+                raise ValueError(msg)
             
             if self.verbose:
-                print(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
+                logger.info(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
                       f"sample positions [0, {max_pos+1}) complete")
 
     def set_attributes(self, **kwargs):
@@ -395,4 +410,6 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
-                raise ValueError(f"Unknown attribute '{key}'")
+                msg = f"Unknown attribute '{key}'"
+                logger.error(msg)
+                raise ValueError(msg)
