@@ -33,6 +33,7 @@ from csi import planarfault
 from csi import gps, insar
 from .SMC_MPI import SMC_samples_parallel_mpi
 from .config import explorefaultConfig
+from .logging_utils.mpi_logging import ensure_default_logging
 from numba import njit
 from collections import namedtuple
 import yaml
@@ -92,38 +93,14 @@ class explorefault(SourceInv):
         # Note: In MPI, usually we only want the root process to log/print
         self.verbose = verbose and (self.parallel_rank == 0)
 
-        # 1. Always get the logger instance
+        # Setup logging
+        ensure_default_logging(verbose=self.verbose)
         self.logger = logging.getLogger(__name__)
-        # 2. Smart logging configuration
-        if self.verbose:
-            # Ensure this logger captures INFO messages
-            self.logger.setLevel(logging.INFO)
-            
-            # Check if logging is already configured (e.g., by basicConfig in main script)
-            if not logging.getLogger().hasHandlers():
-                # If no handlers exist, configure a default console handler for the user
-                console_handler = logging.StreamHandler()
-                formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-                console_handler.setFormatter(formatter)
-                
-                # Add handler to root logger to capture all logs
-                logging.getLogger().addHandler(console_handler)
-                logging.getLogger().setLevel(logging.INFO)
 
-                if self.parallel_rank == 0:
-                    self.logger.setLevel(logging.INFO)
-                else:
-                    self.logger.setLevel(logging.ERROR)
-                
-                self.logger.addHandler(console_handler)
-                
-                self.logger.info("Smart Logging: No existing configuration detected. Auto-enabled verbose logging to console.")
-
-        # Log initialization message instead of print
-        if self.parallel_rank == 0:
-            self.logger.info("---------------------------------")
-            self.logger.info("---------------------------------")
-            self.logger.info("Initializing fault exploration {}".format(name))
+        # Log initialization message instead of printing
+        self.logger.info("---------------------------------")
+        self.logger.info("---------------------------------")
+        self.logger.info("Initializing fault exploration {}".format(name))
 
         # Base class init
         if lon0 is None or lat0 is None:
@@ -132,6 +109,8 @@ class explorefault(SourceInv):
                 lon_lat_0 = config.get('lon_lat_0', None)
                 if lon_lat_0:
                     lon0, lat0 = lon_lat_0
+        if lon0 is None or lat0 is None:
+            self.logger.error("lon0 and lat0 must be set from either the config file or the arguments")
         assert lon0 is not None and lat0 is not None, "lon0 and lat0 must be set from either the config file or the arguments"
 
         super(explorefault, self).__init__(name, utmzone=utmzone, 
