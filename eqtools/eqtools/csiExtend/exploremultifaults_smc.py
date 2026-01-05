@@ -109,6 +109,13 @@ class explorefault(SourceInv):
                 # Add handler to root logger to capture all logs
                 logging.getLogger().addHandler(console_handler)
                 logging.getLogger().setLevel(logging.INFO)
+
+                if self.parallel_rank == 0:
+                    self.logger.setLevel(logging.INFO)
+                else:
+                    self.logger.setLevel(logging.ERROR)
+                
+                self.logger.addHandler(console_handler)
                 
                 self.logger.info("Smart Logging: No existing configuration detected. Auto-enabled verbose logging to console.")
 
