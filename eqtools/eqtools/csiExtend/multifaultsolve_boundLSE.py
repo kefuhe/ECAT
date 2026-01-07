@@ -389,7 +389,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self.constraint_manager.sync_to_solver()
 
         # Import DES utilities
-        from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
+        from .des_utils import apply_des_transformation, recover_sf_with_poly
 
         # Determine if DES should be used
         use_des = des_enabled if des_enabled is not None else self.des_enabled
@@ -656,7 +656,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self.constraint_manager.sync_to_solver()
 
         from .simple_vce import simplified_vce
-        from .des_utils import apply_des_transformation, recover_sf_with_poly, get_poly_positions_from_multifaults
+        from .des_utils import apply_des_transformation, recover_sf_with_poly
 
         use_des = des_enabled if des_enabled is not None else self.des_enabled
 
@@ -749,13 +749,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         # Prepare for DES transformation if enabled
         if use_des:
-            if verbose:
-                print("Preparing DES transformation...")
-
-            poly_positions = get_poly_positions_from_multifaults(self)
-
             des_result = apply_des_transformation(
-                G=G,
+                G=G,  # Use original G matrix for DES parameter calculation
                 D=smoothing_matrix,
                 A_ineq=A_ueq,
                 b_ineq=b_ueq,
@@ -763,9 +758,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 b_eq=beq,
                 lb=lb,
                 ub=ub,
-                poly_positions=poly_positions,
+                fault_indices_config=self.des_indices_config,
                 mode=self.des_config.get('mode', 'per_column'),
-                groups=self.des_config.get('groups', None),
                 G_norm=self.des_config.get('G_norm', 'l2'),
                 depth_grouping_config=self.des_config.get('depth_grouping_config', None)
             )
@@ -781,9 +775,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             fault_ranges_vce = fault_ranges  # Keep original for now
 
             self.des_result = des_result
-
-            if verbose:
-                print(f"DES applied: scaling factor range [{des_result['scale_factors'].min():.3f}, {des_result['scale_factors'].max():.3f}]")
         else:
             G_vce = G
             L_vce = smoothing_matrix
@@ -826,9 +817,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         # Recover solution if DES was used
         if use_des:
-            if verbose:
-                print("Recovering solution from DES transformation...")
-
             m_prime = vce_result['m']
             m_recovered = recover_sf_with_poly(
                 m_prime,
@@ -838,9 +826,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             )
 
             vce_result['m'] = m_recovered
-
-            if verbose:
-                print("DES recovery completed")
 
         # Store results
         self.mpost = vce_result['m']
