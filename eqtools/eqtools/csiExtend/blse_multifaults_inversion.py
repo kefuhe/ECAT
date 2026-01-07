@@ -75,6 +75,19 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         self.assembleGFs()
         
         self.update_config(self.config)
+
+        # DES (Depth-Equalized Smoothing) parameters
+        des_from_config = getattr(self.config, 'des', {'enabled': False})
+        des_config = des_config if des_config is not None else des_from_config
+        self.des_enabled = des_enabled or des_config.get('enabled', False)
+        self.des_config = des_config if des_config is not None else {
+            'mode': 'per_patch',
+            'G_norm': 'l2',
+            'depth_grouping': {
+                'strategy': 'uniform',
+                'interval': 1.0
+                }
+        }
         
         # Apply all constraints using the constraint manager
         self.constraint_manager.apply_all_constraints_from_config(

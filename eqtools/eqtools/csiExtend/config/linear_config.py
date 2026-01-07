@@ -53,6 +53,18 @@ class LinearInversionConfig(CommonConfigBase):
             'faults': None
         }
 
+        # Initialize DES configuration with default values
+        self.des = {
+            'enabled': False,
+            'mode': 'per_patch',
+            'norm': 'l2',
+            'depth_grouping': {
+                'strategy': 'uniform',
+                'interval': 5.0,
+                'tolerance': 1e-6
+            }
+        }
+
         # Initialize Euler constraints with default values
         self.euler_constraints = {
             'enabled': False,
@@ -89,6 +101,10 @@ class LinearInversionConfig(CommonConfigBase):
         self.set_data_faults(dataFaults)
         self.set_alpha_faults(alphaFaults)
 
+        # [New] Parse DES configuration from kwargs
+        des = getattr(self, 'des', None)
+        self.des = self._parse_des_config(des)
+
         # Parse alpha parameters
         fault_names = self.faultnames
         self.alpha = parse_alpha_config(self.alpha, faultnames=fault_names)
@@ -105,6 +121,43 @@ class LinearInversionConfig(CommonConfigBase):
         # n_datasets = len(self.geodata.get('data', []))
         data_names = [d.name for d in self.geodata.get('data', [])]
         self.geodata['sigmas'] = parse_sigmas_config(self.geodata['sigmas'], dataset_names=data_names)
+
+    def _parse_des_config(self, des_dict):
+        """
+        Parse DES configuration from a dictionary, merging with default values.
+        """
+        # 默认配置结构
+        default_des = {
+            'enabled': False,
+            'mode': 'per_patch',
+            'norm': 'l2',
+            'depth_grouping': {
+                'strategy': 'uniform',
+                'interval': 5.0,
+                'tolerance': 1e-6
+            }
+        }
+
+        if des_dict is None:
+            return default_des
+
+        # 合并用户配置与默认配置
+        config = default_des.copy()
+        config.update(des_dict)
+        
+        # 处理嵌套的 depth_grouping
+        if 'depth_grouping' in des_dict:
+            default_depth = default_des['depth_grouping'].copy()
+            default_depth.update(des_dict['depth_grouping'])
+            config['depth_grouping'] = default_depth
+
+        # 简单验证
+        valid_modes = ['per_patch', 'per_depth', 'per_column']
+        if config['mode'] not in valid_modes:
+            logger.warning(f"Invalid DES mode '{config['mode']}'. Fallback to 'per_patch'.")
+            config['mode'] = 'per_patch'
+
+        return config
 
     def _validate_polys(self, polys):
         """

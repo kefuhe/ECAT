@@ -76,7 +76,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self.des_config = des_config if des_config is not None else {
             'mode': 'per_patch',
             'G_norm': 'l2',
-            'depth_grouping_config': {
+            'depth_grouping': {
                 'strategy': 'uniform',
                 'interval': 1.0
                 }
@@ -522,7 +522,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 mode=self.des_config.get('mode', 'per_column'),
                 # groups=self.des_config.get('groups', None),
                 G_norm=self.des_config.get('G_norm', 'l2'),
-                depth_grouping_config=self.des_config.get('depth_grouping_config', None)
+                depth_grouping_config=self.des_config.get('depth_grouping', None)
             )
             
             # Apply DES scaling to get G_prime
@@ -761,7 +761,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 fault_indices_config=self.des_indices_config,
                 mode=self.des_config.get('mode', 'per_column'),
                 G_norm=self.des_config.get('G_norm', 'l2'),
-                depth_grouping_config=self.des_config.get('depth_grouping_config', None)
+                depth_grouping_config=self.des_config.get('depth_grouping', None)
             )
 
             G_vce = des_result['G_prime']

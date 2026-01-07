@@ -1,11 +1,12 @@
 from ruamel.yaml import YAML
 import os
 
-def generate_default_config(output_path, gf_method=None, include_euler_constraints=False):
+def generate_default_config(output_path, gf_method=None, include_euler_constraints=False, include_des_config=False):
     """
     Generate a default configuration file for Bayesian inversion with comments.
     If gf_method is 'pscmp' or 'edcmp', specific options will be included.
     If include_euler_constraints is True, Euler pole constraints configuration will be added.
+    If include_des_config is True, Depth-Equalized Smoothing (DES) configuration will be added.
     """
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -90,6 +91,26 @@ alpha:
   initial_value: -2.0  # Initial value for alpha. Optional: (float, list of floats with same length as alpha['faults'], or a single float list)
   log_scaled: true  # Whether alpha is log-scaled
   faults: null  # List of fault names for smoothing"""
+
+    # Add DES configuration if requested
+    if include_des_config:
+        config_text += """
+
+# -------------------------------------------------------------------------
+# Depth-Equalized Smoothing (DES) Configuration [Zhang et al., 2025]
+# Note: Currently only supported in BLSE/VCE inversion mode.
+# -------------------------------------------------------------------------
+des:
+  enabled: false               # Whether to enable DES (true/false)
+  mode: 'per_patch'           # Mode: 'per_patch' (default/recommended), 'per_depth', 'per_column'
+  norm: 'l2'                  # Norm type: 'l2' (default), 'l1'
+  
+  # Configuration below is required only when mode is 'per_depth'
+  depth_grouping:
+    strategy: 'uniform'       # Grouping strategy: 'uniform' (equidistant), 'custom', 'values'
+    interval: 1.0             # Interval for 'uniform' strategy (unit: km)
+    # custom_groups: [0, 5, 10, 20, 50] # Depth nodes for 'custom' strategy
+    # tolerance: 0.1          # Tolerance for 'values' strategy (unit: km)"""
 
     # Add Euler constraints configuration if requested
     if include_euler_constraints:
@@ -240,11 +261,17 @@ def main():
         action="store_true",
         help="Include Euler pole constraints configuration in the generated file"
     )
+    parser.add_argument(
+        "--include-des-config",
+        action="store_true",
+        help="Include Depth-Equalized Smoothing (DES) configuration in the generated file"
+    )
     args = parser.parse_args()
 
     output_path = os.path.abspath(args.output)
     generate_default_config(output_path, gf_method=args.gf_method, 
-                          include_euler_constraints=args.include_euler_constraints)
+                          include_euler_constraints=args.include_euler_constraints,
+                          include_des_config=args.include_des_config)
 
 if __name__ == "__main__":
     main()
