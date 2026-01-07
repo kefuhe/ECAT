@@ -39,7 +39,19 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Calculate the covariance matrix and the inverse of the covariance matrix
         self.calculate_Icovd_chol()
         self.calculate_slip_and_poly_positions()
+
+        # Configure DES Logger
+        from .des_utils import setup_des_logging
+        import logging
         
+        if verbose:
+            # Shows High-level info (Alpha, Mode, Ranges)
+            setup_des_logging(logging.INFO)
+            # OR for deep debugging:
+            # setup_des_logging(logging.DEBUG)
+        else:
+            setup_des_logging(logging.WARNING)
+
         # Initialize storage for bounds and constraints
         self._lb = None
         self._ub = None
@@ -61,15 +73,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         
         # DES (Depth-Equalized Smoothing) parameters
         self.des_enabled = des_enabled
-        depth_lists = [np.array(fault.getcenters(), dtype=float)[:, 2] for fault in self.faults]
-        # Duplicate each fault's depth array once for strike-slip and dip-slip components estimation
-        self.depths = np.unique(np.concatenate([np.tile(depth_list, 2) for depth_list in depth_lists]))
         self.des_config = des_config if des_config is not None else {
-            'mode': 'per_column',
+            'mode': 'per_patch',
             'G_norm': 'l2',
             'depth_grouping_config': {
                 'strategy': 'uniform',
-                'depths': self.depths,
                 'interval': 1.0
                 }
         }
@@ -98,17 +106,65 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         return
 
     def calculate_slip_and_poly_positions(self):
+        """
+        Calculates indices for SS, DS, Poly, AND Depths for DES.
+        """
         self.slip_positions = {}
         self.poly_positions = {}
-        start_position = 0
+        self.des_indices_config = [] 
+        
+        current_idx = 0
+        
         for fault in self.faults:
-            npatches = len(fault.patch)
-            num_slip_samples = len(fault.slipdir)*npatches
-            num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
-            self.slip_positions[fault.name] = (start_position, start_position + num_slip_samples)
-            self.poly_positions[fault.name] = (start_position + num_slip_samples, start_position + num_slip_samples + num_poly_samples)
-            start_position += num_slip_samples + num_poly_samples
-        self.lsq_parameters = start_position
+            n_patches = len(fault.patch)
+            
+            # --- 获取深度信息 ---
+            # 假设 fault.getcenters() 返回 [x, y, z] (km)，取 z 为深度
+            # 注意：确保单位一致 (通常是 km 或 m，只要配置里对得上即可)
+            centers = fault.getcenters()
+            depths = [c[2] for c in centers] # List of depth for each patch
+            
+            # --- 1. SS 索引 ---
+            ss_start = current_idx
+            ss_end = ss_start + n_patches
+            ss_indices = list(range(ss_start, ss_end))
+            current_idx = ss_end
+            
+            # --- 2. DS 索引 ---
+            ds_indices = []
+            if len(fault.slipdir) > 1:
+                ds_start = current_idx
+                ds_end = ds_start + n_patches
+                ds_indices = list(range(ds_start, ds_end))
+                current_idx = ds_end
+            
+            # Legacy positions update
+            slip_end_idx = current_idx
+            self.slip_positions[fault.name] = (ss_start, slip_end_idx)
+            
+            # --- 3. Poly 索引 ---
+            num_poly = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
+            if num_poly > 0:
+                poly_start = current_idx
+                poly_end = poly_start + num_poly
+                poly_indices = list(range(poly_start, poly_end))
+                current_idx = poly_end
+            else:
+                poly_indices = []
+            
+            self.poly_positions[fault.name] = (slip_end_idx, current_idx)
+
+            # --- 4. 生成 DES 配置 ---
+            fault_config = {
+                'name': fault.name,
+                'ss': ss_indices,
+                'ds': ds_indices,
+                'poly': poly_indices,
+                'depths': depths  # <--- 新增：保存该断层每个 Patch 的深度
+            }
+            self.des_indices_config.append(fault_config)
+
+        self.lsq_parameters = current_idx
 
     def set_bounds(self, lb=None, ub=None, strikeslip_limits=None, dipslip_limits=None, poly_limits=None):
         """Set bounds using constraint manager."""
@@ -450,7 +506,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 print("Applying Depth-Equalized Smoothing (DES) transformation...")
             
             # Get polynomial positions
-            poly_positions = get_poly_positions_from_multifaults(self)
+            # poly_positions = get_poly_positions_from_multifaults(self)
             
             # Apply DES transformation to the original Green's function matrix G
             des_result = apply_des_transformation(
@@ -462,9 +518,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 b_eq=beq_final,
                 lb=lb,
                 ub=ub,
-                poly_positions=poly_positions,
+                fault_indices_config=self.des_indices_config,
                 mode=self.des_config.get('mode', 'per_column'),
-                groups=self.des_config.get('groups', None),
+                # groups=self.des_config.get('groups', None),
                 G_norm=self.des_config.get('G_norm', 'l2'),
                 depth_grouping_config=self.des_config.get('depth_grouping_config', None)
             )
@@ -510,9 +566,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         
         # ----------------------------Recover solution if DES was used-----------------------------#
         if use_des:
-            if verbose:
-                print("Recovering solution from DES transformation...")
-            
             # Recover the final solution
             mpost = recover_sf_with_poly(
                 mpost_prime, 
@@ -520,17 +573,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 des_result['norm2_fault'], 
                 des_result['fault_indices']
             )
-            
-            if verbose:
-                print("DES recovery completed")
         else:
             mpost = mpost_prime
         
         # Store mpost
         self.mpost = mpost
-
-        if verbose:
-            print("✅ Constrained least squares solution completed")
 
         # All done
         return
