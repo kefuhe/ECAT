@@ -222,7 +222,7 @@ def compute_Gprime_explicit(G, fault_indices_config, mode="per_patch", G_norm="l
     final_scales : array_like
         The actual scaling factors applied to each column.
     """
-    logger.info(f"Starting DES computation. Mode: {mode}, Norm: {G_norm}")
+    logger.info(f"Starting DES computation. Mode: {mode}, G_Norm: {G_norm}")
 
     M, N = G.shape
     all_fault_indices = []

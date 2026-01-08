@@ -54,16 +54,7 @@ class LinearInversionConfig(CommonConfigBase):
         }
 
         # Initialize DES configuration with default values
-        self.des = {
-            'enabled': False,
-            'mode': 'per_patch',
-            'norm': 'l2',
-            'depth_grouping': {
-                'strategy': 'uniform',
-                'interval': 5.0,
-                'tolerance': 1e-6
-            }
-        }
+        self.des = self._parse_des_config(None)
 
         # Initialize Euler constraints with default values
         self.euler_constraints = {
@@ -126,14 +117,14 @@ class LinearInversionConfig(CommonConfigBase):
         """
         Parse DES configuration from a dictionary, merging with default values.
         """
-        # 默认配置结构
+        # Default configuration structure
         default_des = {
             'enabled': False,
             'mode': 'per_patch',
-            'norm': 'l2',
+            'G_norm': 'l2',
             'depth_grouping': {
                 'strategy': 'uniform',
-                'interval': 5.0,
+                'interval': 1.0,
                 'tolerance': 1e-6
             }
         }
@@ -141,20 +132,21 @@ class LinearInversionConfig(CommonConfigBase):
         if des_dict is None:
             return default_des
 
-        # 合并用户配置与默认配置
+        # Merge user configuration with default configuration
         config = default_des.copy()
         config.update(des_dict)
         
-        # 处理嵌套的 depth_grouping
+        # Handle nested depth_grouping
         if 'depth_grouping' in des_dict:
             default_depth = default_des['depth_grouping'].copy()
             default_depth.update(des_dict['depth_grouping'])
             config['depth_grouping'] = default_depth
 
-        # 简单验证
+        # Simple validation
         valid_modes = ['per_patch', 'per_depth', 'per_column']
         if config['mode'] not in valid_modes:
-            logger.warning(f"Invalid DES mode '{config['mode']}'. Fallback to 'per_patch'.")
+            if self.verbose:
+                logger.warning(f"Invalid DES mode '{config['mode']}'. Fallback to 'per_patch'.")
             config['mode'] = 'per_patch'
 
         return config
@@ -491,7 +483,7 @@ class LinearInversionConfig(CommonConfigBase):
                 config_data['faults'][fault_name] = default_fault_parameters.copy()
                 self.faults[fault_name] = config_data['faults'][fault_name]
                 if self.verbose:
-                    print(f"Fault '{fault_name}' not found in config file. Using default parameters.")
+                    logger.info(f"Fault '{fault_name}' not found in config file. Using default parameters.")
 
     def _initialize_faults_and_assemble_data(self, faults_list=None, geodata=None):
         """
@@ -609,7 +601,7 @@ class LinearInversionConfig(CommonConfigBase):
         self.geodata['faults'] = result
 
         if self.verbose:
-            print(f"Data faults set to: {self.geodata['faults']}")
+            logger.info(f"Data faults set to: {self.geodata['faults']}")
 
     def set_alpha_faults(self, alphaFaults=None):
 
@@ -627,7 +619,7 @@ class LinearInversionConfig(CommonConfigBase):
         self.alpha['faults_index'] = self.alphaFaultsIndex
 
         if self.verbose:
-            print(f"Alpha faults set to: {self.alphaFaults} with indices {self.alphaFaultsIndex}")
+            logger.info(f"Alpha faults set to: {self.alphaFaults} with indices {self.alphaFaultsIndex}")
 
     def set_faults_method_parameters(self, method_parameters_dict):
         """
@@ -659,7 +651,7 @@ class LinearInversionConfig(CommonConfigBase):
             if bounds is None:
                 laplacian_config['bounds'] = ['free', 'free', 'free', 'free']
                 if self.verbose:
-                    print(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
+                    logger.info(f"Fault '{fault_name}': bounds is null, setting to ['free', 'free', 'free', 'free']")
             else:
                 # Validate bounds format
                 if not isinstance(bounds, list) or len(bounds) != 4:

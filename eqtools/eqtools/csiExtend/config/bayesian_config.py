@@ -184,7 +184,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 raise ValueError(error_msg)
                 
             if self.verbose:
-                print(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
+                logger.info(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
 
     def load_from_file(self, config_file, encoding='utf-8'):
         """

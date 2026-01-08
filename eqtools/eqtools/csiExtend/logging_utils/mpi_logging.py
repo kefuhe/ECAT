@@ -48,7 +48,8 @@ def setup_parallel_logging(
     log_filename: Optional[str] = "run.log",
     level: int = logging.INFO,
     file_mode: str = 'w',
-    log_format: Optional[str] = None
+    log_format: Optional[str] = None,
+    console_output: bool = True
 ) -> logging.Logger:
     """
     Configure a logging system suitable for MPI parallel environments.
@@ -62,6 +63,7 @@ def setup_parallel_logging(
         level (int): Global logging level (default logging.INFO).
         file_mode (str): File write mode, 'w' for overwrite or 'a' for append.
         log_format (str): Custom log format. If None, use the default format with Rank info.
+        console_output (bool): Whether to print logs to console on Rank 0 (default True). If False, only WARNING/ERROR will be printed.
 
     Returns:
         logging.Logger: Configured root logger.
@@ -89,7 +91,10 @@ def setup_parallel_logging(
 
     # Key trick: set console silence level by Rank
     if rank == 0:
-        console_handler.setLevel(level)  # Main process: normal output
+        if console_output:
+            console_handler.setLevel(level)  # Main process: normal output
+        else:
+            console_handler.setLevel(logging.WARNING) # Main process: quiet mode
     else:
         console_handler.setLevel(logging.ERROR) # Worker process: only serious errors
 

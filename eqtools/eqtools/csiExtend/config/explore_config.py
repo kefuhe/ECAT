@@ -2,6 +2,10 @@ import yaml
 import os
 import glob
 import numpy as np
+import logging
+
+# Setup module-level logger
+logger = logging.getLogger(__name__)
 
 # Load csi and its extensions
 from csi.gps import gps
@@ -35,9 +39,9 @@ class AliasManager:
                 self.user_aliases = [self.user_aliases]
             
             if len(self.user_aliases) != self.num_faults:
-                raise ValueError(
-                    f"Alias count ({len(self.user_aliases)}) != nfaults ({self.num_faults})"
-                )
+                msg = f"Alias count ({len(self.user_aliases)}) != nfaults ({self.num_faults})"
+                logger.error(msg)
+                raise ValueError(msg)
         
         for i in range(self.num_faults):
             fault_id = f'fault_{i}'
@@ -199,9 +203,13 @@ class ExploreFaultConfig(CommonConfigBase):
                         if default_bounds:
                             self.geodata['polys']['boundaries'][boundary_key] = default_bounds
                         else:
-                            raise ValueError(f"Bounds for {boundary_key} must be set as there is no default")
+                            msg = f"Bounds for {boundary_key} must be set as there is no default"
+                            logger.error(msg)
+                            raise ValueError(msg)
                 else:
-                    raise ValueError(f"Data name {data.name} is not in the estimate list")
+                    msg = f"Data name {data.name} is not in the estimate list"
+                    logger.error(msg)
+                    raise ValueError(msg)
 
     @CommonConfigBase.sigmas.setter
     def sigmas(self, value):
@@ -216,7 +224,9 @@ class ExploreFaultConfig(CommonConfigBase):
         if 'defaults' not in bounds:
             # Check if all sigmas are in bounds
             if not set(sigma_names).issubset(bounds.keys()):
-                raise ValueError("The bounds dictionary must have keys for all sigmas or a 'defaults' key")
+                msg = "The bounds dictionary must have keys for all sigmas or a 'defaults' key"
+                logger.error(msg)
+                raise ValueError(msg)
         else:
             # Fill in the missing sigmas with the defaults
             defaults = bounds['defaults']
