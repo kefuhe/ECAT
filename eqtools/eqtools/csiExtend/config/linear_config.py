@@ -666,6 +666,29 @@ class LinearInversionConfig(CommonConfigBase):
                     logger.error(msg)
                     raise ValueError(msg)
     
+    def set_attributes(self, **kwargs):
+        """
+        Set object attributes based on key-value pairs in kwargs.
+        
+        Parameters:
+        -----------
+        **kwargs : dict
+            Dictionary of attribute names and values to set
+            
+        Raises:
+        -------
+        ValueError
+            If an unknown attribute is provided
+        """
+        # Set the attributes based on the key-value pairs in kwargs
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+            else:
+                msg = f"Unknown attribute '{key}'"
+                logger.error(msg)
+                raise ValueError(msg)
+
     def export_config(self, filename=None, format='yaml'):
         """
         Export the current config object's internal state to a file (supports yaml/json).

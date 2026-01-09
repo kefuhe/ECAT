@@ -28,7 +28,7 @@ def setup_des_logging(level=logging.INFO):
         Logging level (e.g., logging.INFO, logging.DEBUG).
     """
     logger.setLevel(level)
-    if not logger.handlers:
+    if not logger.hasHandlers():
         ch = logging.StreamHandler()
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         ch.setFormatter(formatter)

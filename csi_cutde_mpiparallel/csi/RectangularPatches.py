@@ -20,6 +20,7 @@ from scipy.linalg import block_diag
 import copy
 import sys
 import os
+import logging
 
 # Personals
 from .Fault import Fault
@@ -28,6 +29,8 @@ from . import okadafull
 from .geodeticplot import geodeticplot as geoplot
 from .gps import gps as gpsclass
 from .csiutils import colocated
+
+logger = logging.getLogger(__name__)
 
 class RectangularPatches(Fault):
     '''
@@ -4557,9 +4560,12 @@ class RectangularPatches(Fault):
             
         if verbose:
             print("Assembling distance-weighted Laplacian...")
+        
+        logger.debug(f"Building distance-weighted Laplacian with nstrike={nstrike}, ndip={ndip}")
 
         # 2. Parse Bounds
         if bounds is None: bounds = ('free', 'free', 'free', 'free')
+        logger.debug(f"Boundary conditions: {bounds}")
         b_flags = {
             'top': bounds[0].lower() == 'free',
             'bottom': bounds[1].lower() == 'free',
@@ -4586,42 +4592,60 @@ class RectangularPatches(Fault):
             w_top, w_bottom = get_w('top'), get_w('bottom')
             w_right, w_left = get_w('right'), get_w('left')
 
-            # --- Boundary Folding (Neumann) ---
+            diag_extra = 0.0
+
+            # --- Boundary Handling ---
             # Top/Bottom
             if 'top' in geo_info:
                 row_weights[geo_info['top'][0]] = w_top
-            elif b_flags['top'] and 'bottom' in geo_info:
-                w_bottom += w_bottom # Fold Top -> Bottom
+            elif 'bottom' in geo_info: # Top boundary missing
+                if b_flags['top']: # Free
+                    w_bottom += w_bottom # Fold Top -> Bottom
+                else: # Locked
+                    diag_extra += w_bottom
             
             if 'bottom' in geo_info:
                 idx = geo_info['bottom'][0]
                 row_weights[idx] = row_weights.get(idx, 0.0) + w_bottom
-            elif b_flags['bottom'] and 'top' in geo_info:
-                idx = geo_info['top'][0]
-                row_weights[idx] = row_weights.get(idx, 0.0) + w_top # Fold Bottom -> Top
+            elif 'top' in geo_info: # Bottom boundary missing
+                if b_flags['bottom']: # Free
+                    idx = geo_info['top'][0]
+                    row_weights[idx] = row_weights.get(idx, 0.0) + w_top # Fold Bottom -> Top
+                else: # Locked
+                    diag_extra += w_top
 
             # Right/Left
             if 'right' in geo_info:
                 row_weights[geo_info['right'][0]] = w_right
-            elif b_flags['right'] and 'left' in geo_info:
-                w_left += w_left # Fold Right -> Left
+            elif 'left' in geo_info: # Right boundary missing
+                if b_flags['right']: # Free
+                    w_left += w_left # Fold Right -> Left
+                else: # Locked
+                    diag_extra += w_left
                 
             if 'left' in geo_info:
                 idx = geo_info['left'][0]
                 row_weights[idx] = row_weights.get(idx, 0.0) + w_left
-            elif b_flags['left'] and 'right' in geo_info:
-                idx = geo_info['right'][0]
-                row_weights[idx] = row_weights.get(idx, 0.0) + w_right # Fold Left -> Right
+            elif 'right' in geo_info: # Left boundary missing
+                if b_flags['left']: # Free
+                    idx = geo_info['right'][0]
+                    row_weights[idx] = row_weights.get(idx, 0.0) + w_right # Fold Left -> Right
+                else: # Locked
+                    diag_extra += w_right
+
+            if diag_extra != 0.0:
+                logger.debug(f"Patch {i}: Locked boundary contribution to diagonal: {diag_extra}")
 
             # Fill Row
             sum_weights = 0.0
             for n_idx, w in row_weights.items():
                 D[i, n_idx] = w      # Neighbor (+)
                 sum_weights += w
-            D[i, i] = -sum_weights   # Center (-)
+            D[i, i] = -(sum_weights + diag_extra)   # Center (-)
 
         # 4. Normalize (Max Diag = 1.0)
         max_diag = np.max(np.abs(np.diag(D)))
+        logger.debug(f"Max diagonal value before normalization: {max_diag}")
         if max_diag > 0:
             D /= max_diag
             

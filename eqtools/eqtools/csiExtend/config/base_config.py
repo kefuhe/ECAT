@@ -69,7 +69,10 @@ class CommonConfigBase:
             data_files.extend(data_config['files'])
         else:
             # Use file pattern to match files
-            data_files.extend(glob.glob(os.path.join(data_config['directory'], data_config['file_pattern'])))
+            found_files = glob.glob(os.path.join(data_config['directory'], data_config['file_pattern']))
+            if not found_files and self.verbose:
+                logger.debug(f"No files found for pattern: {os.path.join(data_config['directory'], data_config['file_pattern'])}")
+            data_files.extend(found_files)
 
         for data_file in data_files:
             assert self.lon0 is not None and self.lat0 is not None, f"lon0 and lat0 must be set to read {data_type} data"

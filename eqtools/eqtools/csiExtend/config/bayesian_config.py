@@ -390,26 +390,3 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             if self.verbose:
                 logger.info(f"Geometry validation passed: {len(geometry_updating_faults)} faults updating geometry, "
                       f"sample positions [0, {max_pos+1}) complete")
-
-    def set_attributes(self, **kwargs):
-        """
-        Set object attributes based on key-value pairs in kwargs.
-        
-        Parameters:
-        -----------
-        **kwargs : dict
-            Dictionary of attribute names and values to set
-            
-        Raises:
-        -------
-        ValueError
-            If an unknown attribute is provided
-        """
-        # Set the attributes based on the key-value pairs in kwargs
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                msg = f"Unknown attribute '{key}'"
-                logger.error(msg)
-                raise ValueError(msg)

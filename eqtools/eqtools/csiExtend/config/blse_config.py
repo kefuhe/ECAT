@@ -70,16 +70,3 @@ class BoundLSEInversionConfig(LinearInversionConfig):
 
         if self.parallel_rank is None or self.parallel_rank == 0:
             self.export_config()
-
-    def set_attributes(self, **kwargs):
-        """
-        Set object attributes based on key-value pairs in kwargs.
-        
-        Parameters:
-        -----------
-        **kwargs : dict
-            Dictionary of attribute names and values to set
-        """
-        # Set the attributes based on the key-value pairs in kwargs
-        for key, value in kwargs.items():
-            setattr(self, key, value)

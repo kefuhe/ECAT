@@ -44,13 +44,19 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         from .des_utils import setup_des_logging
         import logging
         
+        # Smart logging level detection
+        # 1. If user explicitly configured logging (e.g. to DEBUG), we want to respect that.
+        # 2. If user didn't configure (default WARNING), but verbose=True, we want INFO.
+        root_level = logging.getLogger().getEffectiveLevel()
+        
         if verbose:
-            # Shows High-level info (Alpha, Mode, Ranges)
-            setup_des_logging(logging.INFO)
-            # OR for deep debugging:
-            # setup_des_logging(logging.DEBUG)
+            # If verbose=True, ensure at least INFO. But if root is DEBUG (10 < 20), allow DEBUG.
+            level = min(logging.INFO, root_level)
         else:
-            setup_des_logging(logging.WARNING)
+            # If verbose=False, ensure at least WARNING.
+            level = max(logging.WARNING, root_level)
+            
+        setup_des_logging(level)
 
         # Initialize storage for bounds and constraints
         self._lb = None
