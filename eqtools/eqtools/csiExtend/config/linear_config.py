@@ -44,6 +44,17 @@ class LinearInversionConfig(CommonConfigBase):
         self.rake_angle = None
         self.faults = {}  # Dictionary to store fault parameters
 
+        # Initialize Bayesian/Sampling specific attributes if not already set by subclass
+        # This allows set_attributes to accept these keys from config files even in BLSE mode
+        if not hasattr(self, 'bayesian_sampling_mode'):
+            self.bayesian_sampling_mode = None
+        if not hasattr(self, 'slip_sampling_mode'):
+            self.slip_sampling_mode = None
+        if not hasattr(self, 'nchains'):
+            self.nchains = None
+        if not hasattr(self, 'chain_length'):
+            self.chain_length = None
+
         # Initialize alpha with default values
         self.alpha = {
             'enabled': True,
@@ -112,6 +123,9 @@ class LinearInversionConfig(CommonConfigBase):
         # n_datasets = len(self.geodata.get('data', []))
         data_names = [d.name for d in self.geodata.get('data', [])]
         self.geodata['sigmas'] = parse_sigmas_config(self.geodata['sigmas'], dataset_names=data_names)
+
+        # 
+        self.slip_sampling_mode = 'ss_ds' # Default slip sampling mode for linear inversion
 
     def _parse_des_config(self, des_dict):
         """
