@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from collections import OrderedDict
 import argparse
+import logging
 
 from csi import RectangularPatches as RectFault
 from eqtools.csiExtend.BayesianAdaptiveTriangularPatches import (
@@ -41,6 +42,9 @@ Steps:
 
 
 if __name__ == '__main__':
+    from eqtools.csiExtend.logging_utils.mpi_logging import setup_parallel_logging
+    import logging
+    setup_parallel_logging(log_filename="inversion_run.log", level=logging.INFO, console_output=False)
     # -----------------------------------Parse Arguments---------------------------------------------#
     parser = argparse.ArgumentParser(description='BLSE Inversion Script')
     

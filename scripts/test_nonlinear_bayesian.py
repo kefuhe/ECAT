@@ -5,6 +5,7 @@ from csi.gps import gps
 from csi.insar import insar
 from mpi4py import MPI
 import matplotlib.pyplot as plt
+import logging
 
 import os
 import argparse
@@ -95,6 +96,9 @@ def remove_orbit_error(sar, order=1, exclude_range=None):
 
 
 if __name__ == '__main__':
+    from eqtools.csiExtend.logging_utils.mpi_logging import setup_parallel_logging
+    import logging
+    setup_parallel_logging(log_filename="inversion_run.log", level=logging.INFO, console_output=False)
     # -----------------------------------Parse Arguments--------------------------------------#
     parser = argparse.ArgumentParser(
         description="Perform Bayesian inversion or plot results. Use mpiexec for parallel execution when running the inversion."
