@@ -13,11 +13,14 @@ import matplotlib.path as path
 import scipy.spatial.distance as scidis
 import copy
 import sys, os
+import logging
 
 # Personals
 from .SourceInv import SourceInv
 from .geodeticplot import geodeticplot as geoplot
 from . import csiutils as utils
+
+logger = logging.getLogger(__name__)
 
 # Earth radius in m
 ERADIUS = 6378137.0
@@ -969,9 +972,9 @@ class insar(SourceInv):
             # If strings, they are meant to be grd files
             if type(los[0]) is str:
                 if los[0][-4:] not in ('.grd'):
-                    print('LOS input files do not seem to be grds as the displacement file')
-                    print('There might be some issues...')
-                    print('      Input files: {}, {} and {}'.format(los[0], los[1], los[2]))
+                    logger.warning('LOS input files do not seem to be grds as the displacement file')
+                    logger.warning('There might be some issues...')
+                    logger.warning('      Input files: {}, {} and {}'.format(los[0], los[1], los[2]))
                 try:
                     from netCDF4 import Dataset
                     finx = Dataset(los[0], 'r', format='NETCDF4')
@@ -999,8 +1002,8 @@ class insar(SourceInv):
             self.los[:,2] = losz
 
         else:
-            print('Warning: not enough information to compute LOS')
-            print('LOS will be set to 1,0,0')
+            logger.warning('Warning: not enough information to compute LOS')
+            logger.warning('LOS will be set to 1,0,0')
             self.los = np.zeros((len(self.vel),3))
             self.los[:,0] = 1.0
             self.los[:,1] = 0.0
@@ -1243,7 +1246,7 @@ class insar(SourceInv):
             ivel, ierr, ilos = self.returnAverageNearPoint(ilon, ilat, distance)
 
             if ilos is None or ivel is None or ierr is None:
-                print('Warning: station {} is not in the InSAR data'.format(ista))
+                logger.warning('Warning: station {} is not in the InSAR data'.format(ista))
                 # out.deletestation(ista)
                 continue
 
@@ -1334,7 +1337,7 @@ class insar(SourceInv):
         # Validate input
         assert data in ['data', 'synth'], "Invalid data type. Choose 'data' or 'synth'."
         assert sigma > 0, "Sigma must be a positive number."
-    
+        # logger.info(f"Adding random noise to {data} with mu={mu}, sigma={sigma}, round_digits={round_digits}, seed={seed}")
         # Set the random seed if provided
         if seed is not None:
             np.random.seed(seed)
@@ -1356,7 +1359,7 @@ class insar(SourceInv):
         target += noise
     
         # Print information
-        print(f"Added random noise to {data}: mu={mu}, sigma={sigma}, round_digits={round_digits}, seed={seed}")
+        logger.info(f"Added random noise to {data}: mu={mu}, sigma={sigma}, round_digits={round_digits}, seed={seed}")
     
         # All done
         return
@@ -1499,7 +1502,7 @@ class insar(SourceInv):
         base_max = np.max([normX, normY])
         #print(self.x,self.y)
         if verbose:
-            print('normalizing factors are ', x0,y0,normX,normY)
+            logger.info('normalizing factors are {}, {}, {}, {}'.format(x0, y0, normX, normY))
         self.TransformNormalizingFactor = {}
         self.TransformNormalizingFactor['x'] = normX
         self.TransformNormalizingFactor['y'] = normY
@@ -1706,7 +1709,7 @@ class insar(SourceInv):
 
         # Print Something
         if verbose:
-            print('Correcting insar {} from polynomial function'.format(self.name))
+            logger.info('Correcting insar {} from polynomial function'.format(self.name))
         # Correct
         self.vel -= self.orbit
         # Correct Custom
@@ -2012,7 +2015,7 @@ class insar(SourceInv):
                 tmporb = self.getPolyEstimator(itransformation, computeNormFact=computeNormFact, verbose=verbose)
             # Unknown case
             else:
-                print('No Transformation asked for object {}'.format(self.name))
+                logger.info('No Transformation asked for object {}'.format(self.name))
                 return None
             orb = np.hstack((orb, tmporb))
         
@@ -2150,7 +2153,7 @@ class insar(SourceInv):
         se = 0
         for itransformation in transformation:
             if verbose and self.verbose:
-                print('Computing transformation of type {} on data set {}'.format(itransformation, self.name))
+                logger.info('Computing transformation of type {} on data set {}'.format(itransformation, self.name))
 
             # Get the estimator
             orb = self.getTransformEstimator(itransformation, computeNormFact=computeNormFact, computeIntStrainNormFact=computeIntStrainNormFact, verbose=verbose)
@@ -2314,7 +2317,7 @@ class insar(SourceInv):
                 elif fault.source==("CDM"):
                     Gp = G['pressure']
                     Sp = fault.deltaopening
-                    print("Scaling by opening")
+                    logger.info("Scaling by opening")
                     losdp_synth = Gp*Sp
                     self.synth += losdp_synth
 
@@ -3796,7 +3799,7 @@ class insar(SourceInv):
 
         # plot
         if plot:
-            print('Measured offset: {}'.format(off))
+            logger.info('Measured offset: {}'.format(off))
             plt.show()
 
         # all done
@@ -3816,7 +3819,7 @@ class insar(SourceInv):
         '''
 
         # Display
-        print('Checks the LOS orientation')
+        logger.info('Checks the LOS orientation')
 
         # Create a figure
         fig = plt.figure(figure)
