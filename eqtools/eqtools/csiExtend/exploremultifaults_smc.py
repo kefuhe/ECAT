@@ -518,6 +518,14 @@ class explorefault(SourceInv):
             params = self.build_fault_params(theta, fault_name)
             lon, lat, depth, strike, dip, length, width = params['lon'], params['lat'], params['depth'], params['strike'], params['dip'], params['length'], params['width']
     
+            # Handle dip > 90 or < 0
+            if dip > 90:
+                dip = 180 - dip
+                strike = (strike + 180) % 360
+            elif dip < 0:
+                dip = -dip
+                strike = (strike + 180) % 360
+
             # Build a planar fault
             if updatepatch:
                 fault.buildPatches(lon, lat, depth, strike, dip, length, width, 1, 1, verbose=False)
@@ -704,12 +712,22 @@ class explorefault(SourceInv):
 
             fault = self.faults[fault_name]
             
+            # Handle dip > 90 or < 0 for geometry building
+            build_dip = ispecs['dip']
+            build_strike = ispecs['strike']
+            if build_dip > 90:
+                build_dip = 180 - build_dip
+                build_strike = (build_strike + 180) % 360
+            elif build_dip < 0:
+                build_dip = -build_dip
+                build_strike = (build_strike + 180) % 360
+
             if model not in ['STD', 'std', 'Std']:
                 # Build the fault patches
                 # Use geometry parameters directly from MCMC inversion
                 fault.buildPatches(ispecs['lon'], ispecs['lat'], 
-                                   ispecs['depth'], ispecs['strike'],
-                                   ispecs['dip'], ispecs['length'],
+                                   ispecs['depth'], build_strike,
+                                   build_dip, ispecs['length'],
                                    ispecs['width'], 1, 1, verbose=False)
             else:
                 fault.slip = np.zeros((1, 2), dtype=np.float64)
