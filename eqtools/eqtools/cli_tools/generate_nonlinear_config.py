@@ -40,12 +40,12 @@ bounds:
     lon: [Uniform, 87.3, 0.3]  # Longitude bounds
     lat: [Uniform, 28.6, 0.2]  # Latitude bounds
     depth: [Uniform, 0.0, 10.0]  # Depth bounds (in kilometers)
-    dip: [Uniform, 10, 70]  # Dip angle bounds (in degrees)
+    dip: [Uniform, 10, 70]  # Dip angle bounds (in degrees). Valid range: (0, 180).
     width: [Uniform, 1.0, 39.0]  # Fault width bounds (in kilometers)
     length: [Uniform, 1.0, 199.0]  # Fault length bounds (in kilometers)
-    strike: [Uniform, 270.0, 90.0]  # Strike angle bounds (in degrees)
-    magnitude: [Uniform, 0.0, 10.0]  # Magnitude bounds
-    rake: [Uniform, -150, 120.0]  # Rake angle bounds (in degrees)
+    strike: [Uniform, 270.0, 90.0]  # Strike angle bounds (in degrees). Valid range: [0, 360).
+    slip: [Uniform, 0.0, 10.0]  # Total slip bounds (in meters)
+    rake: [Uniform, -150, 120.0]  # Rake angle bounds (in degrees).
   fault_1:  # Specific bounds for fault_1 or its alias name
     rake: [Uniform, -30, 60.0]  # Rake angle bounds for fault_1 (in degrees)
     strike: [Uniform, 0.0, 270.0]  # Strike angle bounds for fault_1 (in degrees)
@@ -72,6 +72,8 @@ geodata:
       defaults: [Uniform, -200.0, 400.0]  # Default polynomial correction bounds
   faults: null  # Fault names for each geodata (e.g., [null, null, null, null])
   sigmas:  # Standard deviations for geodata
+    # 'individual' for per-dataset sigmas, 'single' for a shared sigma, 'grouped' for grouped sigmas (grouping by 'groups' field)
+    mode: 'individual'
     # Update configuration - multiple formats supported:
     # 1. Boolean: true (update all) or false (update none)
     # 2. List of booleans: [true, false, true] (explicit per-dataset)
@@ -82,7 +84,7 @@ geodata:
     bounds:
       defaults: [Uniform, -3.0, 6.0]  # Default bounds for sigmas
       sigma_0: [Uniform, -3.0, 6.0]  # Bounds for sigma_0
-    values: [0.0, 0.0, 0.0, 0.0]  # Initial values for sigmas
+    values: 0.0  # Initial values for sigmas. Single value or list of values.
     log_scaled: true  # Whether sigmas are log-scaled
 
 # ----------- Data Sources ----------- #
