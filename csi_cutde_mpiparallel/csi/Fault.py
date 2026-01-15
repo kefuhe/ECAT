@@ -953,99 +953,363 @@ class Fault(SourceInv):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def generate_checkboard_slip(self, Mu=3e10, horizontal_discretization=40, depth_ranges=[5, 15], 
-                                 normalize=True, target_moment=None, target_magnitude=None, rake_angle=0):
-        """
-        Generate a checkerboard slip distribution for testing.
+    # def generate_checkboard_slip(self, Mu=3e10, horizontal_discretization=40, depth_ranges=[5, 15], 
+    #                              normalize=True, target_moment=None, target_magnitude=None, rake_angle=0):
+    #     """
+    #     Generate a checkerboard slip distribution for testing.
     
+    #     Parameters:
+    #     - Mu: float, default=3e10
+    #         Shear modulus.
+    #     - horizontal_discretization: int, default=40
+    #         Horizontal discretization distance for the fault trace.
+    #     - depth_ranges: list, default=[5, 15]
+    #         Depth ranges for vertical discretization.
+    #     - normalize: bool, default=True
+    #         Whether to normalize the slip to match a target moment magnitude.
+    #     - target_moment: float, optional
+    #         Target scalar moment for normalization. If None, normalize to the original slip moment.
+    #     - target_magnitude: float, optional
+    #         Target moment magnitude (Mw) for normalization. If provided, it will be converted to scalar moment.
+    #     - rake_angle: float, default=0, unit: degree
+    #         Rake angle for the slip distribution.
+    
+    #     Notes:
+    #     - If both `target_moment` and `target_magnitude` are provided, `target_moment` takes precedence.
+    #     """
+    #     def selectPatches_trans(fault, tvert1, tvert2, mindep, maxdep, tol=0.2):
+    #         '''
+    #         Select patches based on the given criteria.
+    #         '''
+    #         pselect = []
+    #         tx1, ty1 = tvert1[0], tvert1[1]
+    #         tx2, ty2 = tvert2[0], tvert2[1]
+    #         slope = np.arctan2(ty2 - ty1, tx2 - tx1)
+    #         slp_len = np.sqrt((ty2 - ty1)**2 + (tx2 - tx1)**2)
+    #         for p in range(len(fault.patch)):
+    #             x1, x2, x3, width, length, strike, dip = fault.getpatchgeometry(p)
+    #             xy_trans = ((x1 - tx1) + (x2 - ty1) * 1j) * np.exp(-slope * 1j)
+    #             x_trans = xy_trans.real
+    #             if -tol <= x_trans < slp_len + tol and mindep < x3 < maxdep:
+    #                 pselect.append(p)
+    #         return pselect
+    
+    #     from .faultpostproc import faultpostproc
+    
+    #     # Step 1: Compute raw moment
+    #     if normalize:
+    #         if target_moment is None and target_magnitude is None:
+    #             rawmoment = 0.0
+    #             self.type = 'Fault'
+    #             self.computeArea()
+    #             rawproces = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
+    #             rawproces.computeMomentTensor()
+    #             rawmoment += rawproces.computeScalarMoment()
+    #             print(f"Raw moment Mo={rawmoment:.2e}")
+    #         elif target_magnitude is not None and target_moment is None:
+    #             # Mw = 2/3 * (log10(Mo) - 9.1) -> Mo = 10**((Mw * 3/2) + 9.1)
+    #             target_moment = 10**((target_magnitude * 3.0 / 2.0) + 9.1)
+    #             print(f"Converted target magnitude Mw={target_magnitude} to scalar moment Mo={target_moment:.2e}")
+    
+    #     # Step 3: Horizontal discretization
+    #     self.setTrace(0.1)
+    #     self.discretize_trace(every=horizontal_discretization)
+    
+    #     # Step 4: Vertical discretization and slip assignment
+    #     self.initializeslip()
+    #     rake_rad = np.radians(rake_angle)
+    #     for i in range(len(depth_ranges) - 1):
+    #         mindep, maxdep = depth_ranges[i], depth_ranges[i + 1]
+    #         layer_cnt = 0 if i % 2 == 0 else 1
+    #         for k in range(layer_cnt, len(self.xi) - 1, 2):
+    #             # xmin, xmax = np.sort([self.xi[k], self.xi[k+1]])
+    #             # ymin, ymax = np.sort([self.yi[k], self.yi[k+1]])
+    #             pselect = selectPatches_trans(self, [self.xi[k], self.yi[k]], [self.xi[k + 1], self.yi[k + 1]], mindep, maxdep)
+    #             self.slip[pselect, 0] = np.cos(rake_rad) * 1.0  # Strike-slip component
+    #             self.slip[pselect, 1] = np.sin(rake_rad) * 1.0  # Dip-slip component
+    
+    #     # Step 5: Normalize slip to match target moment or original moment
+    #     if normalize:
+    #         # Compute new moment
+    #         newmoment = 0.0
+    #         postfault1 = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
+    #         postfault1.computeMomentTensor()
+    #         newmoment += postfault1.computeScalarMoment()
+    
+    #         # Determine normalization factor
+    #         if target_moment is not None:
+    #             moment_ratio = target_moment / newmoment
+    #         else:
+    #             moment_ratio = rawmoment / newmoment
+    
+    #         print(f"Normalizing slip: Raw moment to New moment ratio = {moment_ratio:.2f}")
+    #         self.slip[:, :] *= moment_ratio
+    #     else:
+    #         print("Slip normalization skipped. Using unit slip (1 m).")
+
+
+    def generate_checkboard_slip(self, Mu=3e10, horizontal_discretization=None, depth_ranges=[5, 15], 
+                                 normalize=True, target_moment=None, target_magnitude=None, rake_angle=0,
+                                 start_with_slip=True):
+        """
+        Generate a checkerboard slip distribution for resolution tests.
+        
+        This method supports flexible horizontal discretization (by count, by distance, or by explicit list)
+        and allows controlling the starting phase (slip vs. no-slip).
+
         Parameters:
-        - Mu: float, default=3e10
-            Shear modulus.
-        - horizontal_discretization: int, default=40
-            Horizontal discretization distance for the fault trace.
-        - depth_ranges: list, default=[5, 15]
-            Depth ranges for vertical discretization.
-        - normalize: bool, default=True
-            Whether to normalize the slip to match a target moment magnitude.
-        - target_moment: float, optional
-            Target scalar moment for normalization. If None, normalize to the original slip moment.
-        - target_magnitude: float, optional
-            Target moment magnitude (Mw) for normalization. If provided, it will be converted to scalar moment.
-        - rake_angle: float, default=0, unit: degree
-            Rake angle for the slip distribution.
-    
+        -----------
+        Mu : float, default=3e10
+            Shear modulus (Pascal).
+        
+        horizontal_discretization : int, float, list, or np.ndarray, optional
+            Controls how the fault is discretized along the strike direction.
+            - If int: Specifies the EXACT NUMBER of columns (e.g., 10).
+            - If float: Specifies the TARGET AVERAGE WIDTH (km) of each column. 
+              The method will calculate the optimal integer number of columns to fit the trace length uniformly.
+            - If list/array: Specifies the EXPLICIT BOUNDARIES (km) along strike (e.g., [0, 5, 10, 20]).
+            - If None: Defaults to dividing the trace into 10 uniform columns.
+
+        depth_ranges : list, default=[5, 15]
+            List of depth boundaries (km) defining the vertical rows. 
+            e.g., [0, 5, 10, 20] defines 3 rows: 0-5, 5-10, 10-20.
+
+        normalize : bool, default=True
+            If True, scales the slip to match a target moment or magnitude.
+
+        target_moment : float, optional
+            Target scalar seismic moment (Nm). Overrides target_magnitude if provided.
+
+        target_magnitude : float, optional
+            Target Moment Magnitude (Mw). Used if target_moment is None.
+
+        rake_angle : float, default=0
+            Rake angle in degrees (0 = Left-lateral, 90 = Reverse, -90 = Normal).
+
+        start_with_slip : bool, default=True
+            Controls the pattern phase of the top-left block (first row, first column).
+            - True: The first block has SLIP ("Black").
+            - False: The first block has NO SLIP ("White").
+
         Notes:
-        - If both `target_moment` and `target_magnitude` are provided, `target_moment` takes precedence.
+        ------
+        This method uses vectorized operations and curvilinear projection for high performance 
+        and geometric accuracy on complex fault surfaces.
         """
-        def selectPatches_trans(fault, tvert1, tvert2, mindep, maxdep, tol=0.2):
-            '''
-            Select patches based on the given criteria.
-            '''
-            pselect = []
-            tx1, ty1 = tvert1[0], tvert1[1]
-            tx2, ty2 = tvert2[0], tvert2[1]
-            slope = np.arctan2(ty2 - ty1, tx2 - tx1)
-            slp_len = np.sqrt((ty2 - ty1)**2 + (tx2 - tx1)**2)
-            for p in range(len(fault.patch)):
-                x1, x2, x3, width, length, strike, dip = fault.getpatchgeometry(p)
-                xy_trans = ((x1 - tx1) + (x2 - ty1) * 1j) * np.exp(-slope * 1j)
-                x_trans = xy_trans.real
-                if -tol <= x_trans < slp_len + tol and mindep < x3 < maxdep:
-                    pselect.append(p)
-            return pselect
-    
+        import numpy as np
         from .faultpostproc import faultpostproc
-    
-        # Step 1: Compute raw moment
-        if normalize:
-            if target_moment is None and target_magnitude is None:
-                rawmoment = 0.0
-                self.type = 'Fault'
-                self.computeArea()
-                rawproces = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
-                rawproces.computeMomentTensor()
-                rawmoment += rawproces.computeScalarMoment()
-                print(f"Raw moment Mo={rawmoment:.2e}")
-            elif target_magnitude is not None and target_moment is None:
-                # Mw = 2/3 * (log10(Mo) - 9.1) -> Mo = 10**((Mw * 3/2) + 9.1)
-                target_moment = 10**((target_magnitude * 3.0 / 2.0) + 9.1)
-                print(f"Converted target magnitude Mw={target_magnitude} to scalar moment Mo={target_moment:.2e}")
-    
-        # Step 3: Horizontal discretization
-        self.setTrace(0.1)
-        self.discretize_trace(every=horizontal_discretization)
-    
-        # Step 4: Vertical discretization and slip assignment
-        self.initializeslip()
-        rake_rad = np.radians(rake_angle)
-        for i in range(len(depth_ranges) - 1):
-            mindep, maxdep = depth_ranges[i], depth_ranges[i + 1]
-            layer_cnt = 0 if i % 2 == 0 else 1
-            for k in range(layer_cnt, len(self.xi) - 1, 2):
-                # xmin, xmax = np.sort([self.xi[k], self.xi[k+1]])
-                # ymin, ymax = np.sort([self.yi[k], self.yi[k+1]])
-                pselect = selectPatches_trans(self, [self.xi[k], self.yi[k]], [self.xi[k + 1], self.yi[k + 1]], mindep, maxdep)
-                self.slip[pselect, 0] = np.cos(rake_rad) * 1.0  # Strike-slip component
-                self.slip[pselect, 1] = np.sin(rake_rad) * 1.0  # Dip-slip component
-    
-        # Step 5: Normalize slip to match target moment or original moment
-        if normalize:
-            # Compute new moment
-            newmoment = 0.0
-            postfault1 = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
-            postfault1.computeMomentTensor()
-            newmoment += postfault1.computeScalarMoment()
-    
-            # Determine normalization factor
-            if target_moment is not None:
-                moment_ratio = target_moment / newmoment
-            else:
-                moment_ratio = rawmoment / newmoment
-    
-            print(f"Normalizing slip: Raw moment to New moment ratio = {moment_ratio:.2f}")
-            self.slip[:, :] *= moment_ratio
+
+        # ==========================================
+        # 1. Trace Validation & Generation
+        # ==========================================
+        # Ensure the fault trace (self.xi, self.yi) exists for distance calculations.
+        trace_valid = False
+        if hasattr(self, 'xi') and self.xi is not None:
+            if np.ndim(self.xi) > 0 and len(self.xi) > 1:
+                trace_valid = True
+                
+        if not trace_valid:
+            print("Trace (xi, yi) not detected or invalid. Automatically building trace...")
+            if hasattr(self, 'setTrace'):
+                self.setTrace(0.1)  # Set trace from top edge
+            
+            # Default discretization for trace construction if not specified
+            trace_step = 5.0
+            if isinstance(horizontal_discretization, (int, float)):
+                trace_step = horizontal_discretization if isinstance(horizontal_discretization, float) else 5.0
+            
+            if hasattr(self, 'discretize_trace'):
+                self.discretize_trace(every=trace_step/10.0)
+                
+            if not hasattr(self, 'xi') or self.xi is None:
+                 raise ValueError("Failed to generate fault trace. Check fault geometry.")
+
+        # ==========================================
+        # 2. Geometry Projection
+        # ==========================================
+        # Get geometric centers of all sub-faults (N, 3)
+        centers = self.getcenters() 
+        n_patches = centers.shape[0]
+
+        trace_x = np.array(self.xi)
+        trace_y = np.array(self.yi)
+        
+        # Calculate the curvilinear coordinate (distance along strike) for each patch
+        # Uses the optimized vectorized projection method
+        patch_along_strike_dist = self._project_to_trace_vectorized(centers[:, :2], trace_x, trace_y)
+
+        # Calculate total length of the fault trace
+        d_segments = np.sqrt(np.diff(trace_x)**2 + np.diff(trace_y)**2)
+        total_trace_len = np.sum(d_segments)
+
+        # ==========================================
+        # 3. Grid Indexing (Discretization Logic)
+        # ==========================================
+        
+        # --- Vertical (Depth) Discretization ---
+        # Map depth to row indices. depth_ranges must be sorted.
+        # digitize returns 1-based index, subtract 1 for 0-based.
+        row_indices = np.digitize(centers[:, 2], depth_ranges) - 1
+        n_rows_defined = len(depth_ranges) - 1
+        
+        # --- Horizontal (Strike) Discretization ---
+        strike_edges = None
+        
+        # Case A: Default (if None)
+        if horizontal_discretization is None:
+            horizontal_discretization = 10 # Default to integer count
+
+        # Case B: Integer -> Number of Columns (Uniform)
+        if isinstance(horizontal_discretization, int):
+            n_cols = max(1, horizontal_discretization)
+            strike_edges = np.linspace(0, total_trace_len, n_cols + 1)
+            print(f"Checkerboard: Dividing trace ({total_trace_len:.2f} km) into {n_cols} uniform columns.")
+
+        # Case C: Float -> Average Distance (Uniform Resampling)
+        elif isinstance(horizontal_discretization, float):
+            target_width = horizontal_discretization
+            raw_n_cols = total_trace_len / target_width
+            n_cols = int(np.round(raw_n_cols))
+            n_cols = max(1, n_cols) # Ensure at least 1 column
+            strike_edges = np.linspace(0, total_trace_len, n_cols + 1)
+            actual_width = total_trace_len / n_cols
+            print(f"Checkerboard: Optimized {target_width} km -> {actual_width:.4f} km width ({n_cols} cols).")
+
+        # Case D: List/Array -> Explicit Edges (Custom/Non-uniform)
+        elif isinstance(horizontal_discretization, (list, np.ndarray, tuple)):
+            strike_edges = np.array(horizontal_discretization)
+            # Basic validation
+            if strike_edges.ndim != 1 or len(strike_edges) < 2:
+                raise ValueError("Explicit horizontal_discretization must be a 1D list with at least 2 points.")
+            print(f"Checkerboard: Using explicit horizontal edges: {strike_edges}")
+        
         else:
-            print("Slip normalization skipped. Using unit slip (1 m).")
+            raise TypeError("horizontal_discretization must be None, int, float, or list/array.")
+
+        # Map strike distance to column indices
+        col_indices = np.digitize(patch_along_strike_dist, strike_edges) - 1
+        n_cols_defined = len(strike_edges) - 1
+
+        # ==========================================
+        # 4. Pattern Generation & Assignment
+        # ==========================================
+        
+        # Create masks for valid patches (those falling within the defined ranges)
+        valid_depth_mask = (row_indices >= 0) & (row_indices < n_rows_defined)
+        valid_strike_mask = (col_indices >= 0) & (col_indices < n_cols_defined)
+        
+        # --- Phase Logic ---
+        # If start_with_slip is True (Black start): (0,0) -> 0%2==0 -> True (Slip)
+        # If start_with_slip is False (White start): (0,0) -> 0%2!=1 -> False (No Slip)
+        remainder_target = 0 if start_with_slip else 1
+        
+        # Determine which patches get slip
+        checker_mask = ((row_indices + col_indices) % 2 == remainder_target) & valid_depth_mask & valid_strike_mask
+
+        # Assign Slip
+        self.initializeslip() # Reset all slip to 0
+        rake_rad = np.radians(rake_angle)
+        
+        self.slip[checker_mask, 0] = np.cos(rake_rad) * 1.0 
+        self.slip[checker_mask, 1] = np.sin(rake_rad) * 1.0 
+        
+        assigned_count = np.sum(checker_mask)
+        print(f"Checkerboard generated: {assigned_count}/{n_patches} patches assigned slip.")
+
+        # ==========================================
+        # 5. Normalization
+        # ==========================================
+        if normalize and assigned_count > 0:
+            postfault = faultpostproc('Calculating_Moment', self, Mu=Mu, lon0=self.lon0, lat0=self.lat0, utmzone=self.utmzone)
+            postfault.computeMomentTensor()
+            current_moment = postfault.computeScalarMoment()
+            
+            target_mo = None
+            if target_moment is not None:
+                target_mo = target_moment
+            elif target_magnitude is not None:
+                target_mo = 10**((target_magnitude * 1.5) + 9.1)
+            
+            if target_mo is not None:
+                if current_moment > 1e-9: # Avoid division by zero
+                    ratio = target_mo / current_moment
+                    self.slip *= ratio
+                    print(f"Normalization: Scaling slip by factor {ratio:.4f} to match Mo={target_mo:.2e}")
+                else:
+                    print("Warning: Current moment is effectively zero despite slip assignment. Check mesh area.")
+            else:
+                print("Normalization: Skipped (No target moment/magnitude specified).")
+        elif normalize and assigned_count == 0:
+            print("Normalization: Skipped (No patches assigned slip).")
+
+    def _project_to_trace_vectorized(self, points, trace_x, trace_y):
+        """
+        Vectorized calculation of curvilinear coordinates (distance along trace).
+        
+        Projects points orthogonally onto the nearest segment of the polyline defined by trace_x, trace_y.
+        Handles degenerate segments (length=0) robustly.
+
+        Parameters:
+        -----------
+        points : np.ndarray (N, 2)
+            The (x, y) coordinates of the points to project.
+        trace_x, trace_y : np.ndarray
+            Coordinates defining the trace vertices.
+
+        Returns:
+        --------
+        s_coords : np.ndarray (N,)
+            Distance along the trace from the start (0) to the projected point.
+        """
+        import numpy as np
+
+        # 1. Prepare segment vectors
+        p_start = np.vstack((trace_x[:-1], trace_y[:-1])).T
+        p_end = np.vstack((trace_x[1:], trace_y[1:])).T
+        
+        seg_vectors = p_end - p_start 
+        seg_lens_sq = np.sum(seg_vectors**2, axis=1) # Shape: (M,)
+        seg_lens = np.sqrt(seg_lens_sq)
+        
+        # 2. Vector from segment start to points
+        # points shape: (N, 2) -> (N, 1, 2)
+        # p_start shape: (M, 2) -> (1, M, 2)
+        diff = points[:, np.newaxis, :] - p_start[np.newaxis, :, :] # Shape: (N, M, 2)
+        
+        # 3. Calculate projection factor t
+        # Using errstate to suppress divide-by-zero warnings for 0-length segments
+        with np.errstate(divide='ignore', invalid='ignore'):
+            # t = Dot(diff, seg) / |seg|^2
+            t = np.sum(diff * seg_vectors[np.newaxis, :, :], axis=2) / seg_lens_sq[np.newaxis, :] # Shape: (N, M)
+            
+            # Fix: Handle zero-length segments by setting their t to 0
+            zero_len_mask = (seg_lens_sq == 0)
+            if np.any(zero_len_mask):
+                t[:, zero_len_mask] = 0 
+        
+        # 4. Clamp t to segment bounds [0, 1]
+        t_clamped = np.clip(t, 0, 1)
+        
+        # 5. Find closest point on each segment and distances
+        closest_points_on_segs = p_start[np.newaxis, :, :] + t_clamped[:, :, np.newaxis] * seg_vectors[np.newaxis, :, :]
+        dist_vecs = points[:, np.newaxis, :] - closest_points_on_segs
+        distances_sq = np.sum(dist_vecs**2, axis=2) # Shape: (N, M)
+        
+        # 6. Identify the nearest segment for each point
+        nearest_seg_indices = np.argmin(distances_sq, axis=1) # Shape: (N,)
+        
+        # 7. Calculate s-coordinate (Cumulative length + projection)
+        segment_cum_dist = np.concatenate(([0], np.cumsum(seg_lens)))
+        base_dist = segment_cum_dist[nearest_seg_indices]
+        
+        # Extract the t-value corresponding to the nearest segment
+        n_range = np.arange(points.shape[0])
+        best_t = t_clamped[n_range, nearest_seg_indices]
+        best_seg_len = seg_lens[nearest_seg_indices]
+        
+        s_coords = base_dist + best_t * best_seg_len
+        
+        return s_coords
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
