@@ -1571,7 +1571,18 @@ class explorefault(SourceInv):
             for j, ax in enumerate(row):
                 if not ax.get_visible(): continue
                 if show_minor_ticks: ax.minorticks_on()
-                ax.tick_params(axis='both', which='major', direction=tick_direction, length=major_tick_length, width=tick_width)
+                
+                # Configure major tick marks
+                ax.tick_params(axis='both', which='major', direction=tick_direction, 
+                               length=major_tick_length, width=tick_width,
+                               bottom=True, left=True, top=False, right=False)
+                
+                # Configure minor tick marks
+                if show_minor_ticks:
+                    ax.tick_params(axis='both', which='minor', direction=tick_direction,
+                                   length=minor_tick_length, width=tick_width,
+                                   bottom=True, left=True, top=False, right=False)
+
                 ax.xaxis.set_major_locator(AutoLocator()); ax.yaxis.set_major_locator(AutoLocator())
                 if i == len(g.axes)-1: apply_smart_formatting(ax.xaxis)
                 if j == 0 and (i != 0 or i==0): apply_smart_formatting(ax.yaxis)
