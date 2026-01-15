@@ -19,7 +19,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
     
     def __init__(self, config_file='default_config.yml', multifaults=None, geodata=None, 
                  verticals=None, polys=None, dataFaults=None, alphaFaults=None, faults_list=None,
-                 gfmethods=None, slip_sampling_mode='ss_ds', bayesian_sampling_mode='SMC_F_J', 
+                 gfmethods=None, slip_sampling_mode='ss_ds', bayesian_sampling_mode='SMC_FJ', 
                  encoding='utf-8', verbose=False, parallel_rank=None, **kwargs):
         """
         Initialize the BayesianMultiFaultsInversionConfig object.
@@ -47,7 +47,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         slip_sampling_mode : str, optional
             Slip sampling mode (default: 'ss_ds')
         bayesian_sampling_mode : str, optional
-            Bayesian sampling mode (default: 'SMC_F_J')
+            Bayesian sampling mode (default: 'SMC_FJ')
         encoding : str, optional
             File encoding for configuration file (default: 'utf-8')
         verbose : bool, optional
@@ -69,7 +69,12 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                         verticals=verticals, polys=polys, dataFaults=dataFaults, 
                         alphaFaults=alphaFaults, faults_list=faults_list, gfmethods=gfmethods,
                         encoding=encoding, verbose=verbose, parallel_rank=parallel_rank, **kwargs)
-        
+
+        # Translate modes to internal settings
+        self._translate_bayesian_sampling_mode()
+        # Translate slip_sampling_mode to internal settings
+        self._translate_slip_sampling_mode()
+
         # Bayesian-specific post-processing
         self._process_bayesian_specific_config()
         
@@ -109,6 +114,31 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Force set sampling mode
         if self.bayesian_sampling_mode == 'SMC_F_J':
             self.slip_sampling_mode = 'ss_ds'
+
+    def _translate_bayesian_sampling_mode(self):
+        """Translate bayesian_sampling_mode to internal settings."""
+        valid_modes = ['SMC_FJ', 'FULLSMC', 'SMC_F_J']
+        # Ensure bayesian_sampling_mode is uppercase
+        self.bayesian_sampling_mode = self.bayesian_sampling_mode.upper()
+        if self.bayesian_sampling_mode not in valid_modes:
+            msg = f"Invalid bayesian_sampling_mode: {self.bayesian_sampling_mode}. Valid options are {valid_modes}."
+            logger.error(msg)
+            raise ValueError(msg)
+        # Map 'SMC_FJ' to 'SMC_F_J'
+        if self.bayesian_sampling_mode == 'SMC_FJ':
+            self.bayesian_sampling_mode = 'SMC_F_J'
+    
+    def _translate_slip_sampling_mode(self):
+        """Translate slip_sampling_mode to internal settings."""
+        valid_modes = ['ss_ds', 'rake_fixed', 'magnitude_rake', 'mag_rake']
+        self.slip_sampling_mode = self.slip_sampling_mode.lower() if isinstance(self.slip_sampling_mode, str) else self.slip_sampling_mode
+        if self.slip_sampling_mode not in valid_modes:
+            msg = f"Invalid slip_sampling_mode: {self.slip_sampling_mode}. Valid options are {valid_modes}."
+            logger.error(msg)
+            raise ValueError(msg)
+        # Map 'mag_rake' to 'magnitude_rake'
+        if self.slip_sampling_mode == 'mag_rake':
+            self.slip_sampling_mode = 'magnitude_rake'
 
     def _validate_perturbation_config(self):
         """

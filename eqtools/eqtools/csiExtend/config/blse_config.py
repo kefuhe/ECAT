@@ -53,6 +53,9 @@ class BoundLSEInversionConfig(LinearInversionConfig):
         # BLSE-specific configuration
         # self.alpha['update'] = False  # BLSE does not update alpha by default
         
+        # Force slip_sampling_mode to 'ss_ds' for BLSE
+        self.slip_sampling_mode = 'ss_ds'
+
         # BLSE-specific validation
         self._validate_laplacian_bounds()
         

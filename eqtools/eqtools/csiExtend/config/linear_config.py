@@ -124,9 +124,6 @@ class LinearInversionConfig(CommonConfigBase):
         data_names = [d.name for d in self.geodata.get('data', [])]
         self.geodata['sigmas'] = parse_sigmas_config(self.geodata['sigmas'], dataset_names=data_names)
 
-        # 
-        self.slip_sampling_mode = 'ss_ds' # Default slip sampling mode for linear inversion
-
     def _parse_des_config(self, des_dict):
         """
         Parse DES configuration from a dictionary, merging with default values.
@@ -796,9 +793,9 @@ class LinearInversionConfig(CommonConfigBase):
         def add_field(key, value):
             export_dict[key] = _to_serializable(value)
 
-        def add_optional(attr_name, export_key=None):
+        def add_optional(attr_name, export_key=None, export_value=None):
             if hasattr(self, attr_name):
-                add_field(export_key or attr_name, getattr(self, attr_name))
+                add_field(export_key or attr_name, export_value if export_value is not None else getattr(self, attr_name))
 
         add_field('class', self.__class__.__name__)
         add_field('config_file', self.config_file)
@@ -808,9 +805,17 @@ class LinearInversionConfig(CommonConfigBase):
 
         # Add optional fields if they exist
         if is_bayesian:
-            add_optional('bayesian_sampling_mode')
+            # Force 'SMC_F_J' to 'SMC_FJ' for export
+            bay_export_value = getattr(self, 'bayesian_sampling_mode', None)
+            if bay_export_value == 'SMC_F_J':
+                bay_export_value = 'SMC_FJ'
+            add_optional('bayesian_sampling_mode', export_value=bay_export_value)
             add_optional('nonlinear_inversion')
-            add_optional('slip_sampling_mode')
+            # Force 'magnitude_rake' to 'mag_rake' for export
+            slip_export_value = getattr(self, 'slip_sampling_mode', None)
+            if slip_export_value == 'magnitude_rake':
+                slip_export_value = 'mag_rake'
+            add_optional('slip_sampling_mode', export_value=slip_export_value)
             add_optional('nchains')
             add_optional('chain_length')
         else:

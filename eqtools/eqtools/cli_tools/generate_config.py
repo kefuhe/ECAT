@@ -24,9 +24,9 @@ shear_modulus: 3.0e10  # Shear modulus in Pa
 # ----------- Bayesian Inversion Parameters ----------- #
 # Parameters related to Bayesian inversion
 nonlinear_inversion: false  # Whether to use nonlinear inversion
-slip_sampling_mode: magnitude_rake  # Slip sampling mode: 'ss_ds', 'magnitude_rake', 'rake_fixed'
+slip_sampling_mode: mag_rake  # Slip sampling mode: 'ss_ds', 'rake_fixed', 'magnitude_rake' or its alias 'mag_rake'
 rake_angle: 0  # Rake angle to be used when slip_sampling_mode is 'rake_fixed'
-bayesian_sampling_mode: 'SMC_F_J'  # Sampling mode: 'FULLSMC' or 'SMC_F_J'
+bayesian_sampling_mode: 'SMC_FJ'  # Sampling mode: 'FULLSMC' or 'SMC_F_J' or its alias 'SMC_FJ'
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain
 use_bounds_constraints: true  # Whether to use bounds constraints
