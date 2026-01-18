@@ -625,7 +625,7 @@ class FaultAnalysisMixin:
                              ztickpad=None, elevation=None, azimuth=None, shape=(1.0, 1.0, 1.0), 
                              zratio=None, plotTrace=True, depth=None, zticks=None, map_expand=0.2, 
                              fault_expand=0.1, plot_faultEdges=False, faultEdges_color='k', 
-                             faultEdges_linewidth=1.0, suffix='', remove_direction_labels=False, 
+                             faultEdges_linewidth=1.0, suffix='', outdir=None, remove_direction_labels=False, 
                              zaxis_position='bottom-left', show_grid=True, grid_color='#bebebe',
                              background_color='white', axis_color=None, cbticks=None, 
                              cblinewidth=None, cbfontsize=None, cb_label_side='opposite',
@@ -676,6 +676,7 @@ class FaultAnalysisMixin:
             faultEdges_linewidth (float, optional): Line width for the fault edges. 
                                                   Defaults to 1.0.
             suffix (str, optional): Suffix for the saved figure filename. Defaults to ''.
+            outdir (str, optional): Output directory for saving the figure. Defaults to None.
             remove_direction_labels (bool, optional): If True, remove E, N, S, W from axis labels. 
                                                     Defaults to False.
             zaxis_position (str, optional): Position of the z-axis ('bottom-left', 'top-right'). 
@@ -756,7 +757,7 @@ class FaultAnalysisMixin:
                              plotTrace=plotTrace, depth=depth, zticks=zticks, 
                              map_expand=map_expand, fault_expand=fault_expand, 
                              plot_faultEdges=plot_faultEdges, faultEdges_color=faultEdges_color,
-                             faultEdges_linewidth=faultEdges_linewidth, suffix=suffix, 
+                             faultEdges_linewidth=faultEdges_linewidth, suffix=suffix, outdir=outdir,
                              show_grid=show_grid, grid_color=grid_color, 
                              background_color=background_color, axis_color=axis_color,
                              zaxis_position=zaxis_position)

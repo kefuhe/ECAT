@@ -751,7 +751,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 xlabelpad=15, ylabelpad=15, zlabelpad=15,
                                                 shape=axis_shape, elevation=elevation, azimuth=azimuth,
                                                 depth=depth_range, zticks=z_ticks, fault_expand=0.0,
-                                                plot_faultEdges=False, suffix='_slip', ftype=file_type,
+                                                plot_faultEdges=False, suffix='_slip', outdir='output', ftype=file_type,
                                                 remove_direction_labels=remove_direction_labels,
                                                 )
 

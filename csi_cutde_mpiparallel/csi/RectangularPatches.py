@@ -3728,7 +3728,7 @@ class RectangularPatches(Fault):
              norm=None, linewidth=1.0, plot_on_2d=True, 
              colorbar=True, cbaxis=[0.1, 0.2, 0.1, 0.02], cborientation='horizontal', cblabel='',
              drawCoastlines=True, expand=0.2, figsize=(None, None),
-             cmap='jet', edgecolor='slip', ftype='png', dpi=300, bbox_inches=None, savefig=False, suffix='', 
+             cmap='jet', edgecolor='slip', ftype='png', dpi=300, bbox_inches=None, savefig=False, suffix='', outdir=None,
              remove_direction_labels=False, cbticks=None, cblinewidth=1, cbfontsize=10, cb_label_side='opposite', map_cbaxis=None):
         '''
         Plot the available elements of the fault.
@@ -3758,6 +3758,7 @@ class RectangularPatches(Fault):
             * bbox_inches   : Bounding box for saved figure
             * savefig       : Save the figure
             * suffix        : Suffix for the saved figure filename
+            * outdir       : Output directory for saved figure
             * remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
             * cbticks       : List of ticks to set on the colorbar
             * cblinewidth   : Width of the colorbar label border and tick lines
@@ -3812,7 +3813,16 @@ class RectangularPatches(Fault):
                 fig.titlemap(title=title)
         # Savefigs?
         if savefig:
-            prefix = self.name.replace(' ','_')
+            clean_name = self.name.replace(' ','_')
+            if outdir is not None:
+                # Create outdir if it does not exist
+                if not os.path.exists(outdir):
+                    os.makedirs(outdir)
+                prefix = os.path.join(outdir, clean_name)
+            else:
+                # Backward compatibility
+                prefix = clean_name
+            
             suffix = f'_{suffix}' if suffix != '' else ''
             
             # Determine slip name for filename

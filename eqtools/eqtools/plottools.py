@@ -1,3 +1,4 @@
+import os
 from os import listdir
 from os.path import isdir, join
 import matplotlib.pyplot as plt
@@ -395,7 +396,7 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
                            xtickpad=None, ytickpad=None, ztickpad=None, elevation=None, azimuth=None,
                            shape=(1.0, 1.0, 1.0), zratio=None, plotTrace=True, depth=None, zticks=None,
                            map_expand=0.2, fault_expand=0.1, plot_faultEdges=False, faultEdges_color='k',
-                           faultEdges_linewidth=1.0, suffix='', show_grid=True, grid_color='#bebebe',
+                           faultEdges_linewidth=1.0, suffix='', outdir=None, show_grid=True, grid_color='#bebebe',
                            background_color='white', axis_color=None, zaxis_position='bottom-left', figname=None,
                            show_xy_grid=True, show_xz_grid=True, show_yz_grid=True):
     """
@@ -444,6 +445,7 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
     - faultEdges_color (str): Color for the fault edges (default is 'k').
     - faultEdges_linewidth (float): Line width for the fault edges (default is 1.0).
     - suffix (str): Suffix for the saved figure filename (default is '').
+    - outdir (str): Output directory for saving the figure (default is None).
     - show_grid (bool): Whether to show grid lines (default is True).
     - grid_color (str): Color of the grid lines (default is 'gray').
     - background_color (str): Background color of the plot (default is 'white').
@@ -625,9 +627,23 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
             if savefig:
                 saveFig = ['fault']
                 if figname is None:
-                    prefix = name.replace(' ', '_')
+                    clean_name = name.replace(' ','_')
+                    if outdir is not None:
+                        # Create outdir if it does not exist
+                        if not os.path.exists(outdir):
+                            os.makedirs(outdir)
+                        prefix = os.path.join(outdir, clean_name)
+                    else:
+                        # Backward compatibility
+                        prefix = clean_name
                     suffix = f'_{suffix}' if suffix != '' else ''
                     figname = prefix + '{0}_{1}'.format(suffix, slip_type)
+                else:
+                    if outdir is not None:
+                        # Create outdir if it does not exist
+                        if not os.path.exists(outdir):
+                            os.makedirs(outdir)
+                    figname = os.path.join(outdir, figname) if outdir is not None else figname
                 if plot_on_2d:
                     saveFig.append('map')
                 fig.savefig(figname, ftype=ftype, dpi=dpi, bbox_inches=bbox_inches, saveFig=saveFig)
