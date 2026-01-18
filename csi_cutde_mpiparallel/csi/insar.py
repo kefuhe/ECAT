@@ -3509,6 +3509,165 @@ class insar(SourceInv):
         # All done
         return
 
+    # ----------------------------------------------------------------------
+    # New method: Row Plot for Data/Synth/Res comparison
+    # ----------------------------------------------------------------------
+    def plot_fit_comparison(self, faults=None, cmap='RdBu_r', 
+                            figsize='double', unit='inch', 
+                            fig_height=None, aspect=0.33,
+                            style=['science', 'no-latex'], style_kwargs=None,
+                            vmin=None, vmax=None,
+                            res_vmin=None, res_vmax=None,
+                            share_colorbar=False,
+                            cbaxis=[0.1, 0.15, 0.35, 0.04],
+                            decim=1, markersize=2,
+                            alpha=1.0,
+                            save_path=None, show=True):
+        '''
+        Plot Data, Synthetics, and Residuals in a single row (1x3).
+        
+        Kwargs:
+            * faults: List of fault objects.
+            * cmap: Colormap name (default 'RdBu_r'). Optional: any cmap from cmcrameri (e.g., 'cmc.roma_r').
+            * figsize: passed to publication_figsize as 'column'. 
+                       Can be 'double', 'single', float (width), or (w,h) tuple.
+            * unit: 'inch' (default) or 'cm'. Passed to publication_figsize.
+            * fig_height: Explicit height. If None, calculated via aspect.
+            * aspect: Height-to-width ratio. Default 0.33 (suited for 1x3 row).
+            * style: Style for sci_plot_style (default ['science', 'no-latex']).
+            * style_kwargs: Additional kwargs for sci_plot_style.
+            * vmin, vmax: Color limits for Data and Synth plots. If None, auto-calculated symmetrically.
+            * res_vmin, res_vmax: Color limits for Residuals plot. If None, auto-calculated symmetrically.
+            * share_colorbar: Whether to share a single colorbar across all plots (default False).
+            * cbaxis: Colorbar axis position for inset colorbars.
+            * decim: Decimation factor for plotting (default 1, no decimation).
+            * markersize: Marker size for scatter plots (default 2).
+            * alpha: Marker alpha (default 1.0).
+            * save_path: If provided, saves the figure to this path.
+            * show: Whether to show the figure (default True).
+
+        '''
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        from eqtools.plottools import sci_plot_style, set_degree_formatter, publication_figsize
+        import cmcrameri as cmc
+
+        # --- Helper: Round up to nice significant digits ---
+        def get_nice_limit(val, digits=2):
+            """Round up absolute value to 'digits' significant figures."""
+            import math
+            val = np.nanmax(np.abs(val))
+            if np.isnan(val) or val == 0:
+                return 1e-3 # Default fallback
+            
+            # Calculate magnitude: 0.053 -> -2
+            exponent = math.floor(math.log10(val))
+            # Factor to shift decimal: 0.053 * 10^(2-1 - (-2)) = 0.053 * 10^3 = 53
+            factor = 10 ** (digits - 1 - exponent)
+            # Ceil and shift back: ceil(53.something) / factor
+            nice_val = math.ceil(val * factor) / factor
+            return nice_val
+
+        # --- Helper: Format float string (remove trailing zeros) ---
+        def format_tick(val):
+            """Format float to string, removing trailing zeros and decimal point if integer."""
+            # Use general format with high precision, then strip
+            s = f"{val:.6g}" 
+            if 'e' not in s:
+                s = s.rstrip('0').rstrip('.')
+            return s
+
+        # 3. Figure Size Logic (Using your publication_figsize)
+        # It returns (w, h) in inches, which is exactly what subplots needs.
+        final_figsize = publication_figsize(column=figsize, 
+                                            height=fig_height, 
+                                            aspect=aspect, 
+                                            unit=unit)
+
+        # 4. Data Limits (Symmetric)
+        # Auto calculate nice limit
+        if vmin is None or vmax is None:
+            nice_max = get_nice_limit(self.vel, digits=2) # 2 sig digits: 0.0538 -> 0.054
+            vmax = nice_max if vmax is None else vmax
+            vmin = -nice_max if vmin is None else vmin
+        else:
+            nice_max = get_nice_limit(np.array([vmin, vmax]), digits=2)
+            vmin = -nice_max
+            vmax = nice_max
+        
+        # Calculate residuals
+        if self.synth is None:
+            residuals = self.vel
+        else:
+            residuals = self.vel - self.synth
+
+        # Calculate limits for Residuals
+        if share_colorbar:
+            res_vmin, res_vmax = vmin, vmax
+        else:
+            if res_vmin is None or res_vmax is None:
+                nice_res_max = get_nice_limit(residuals, digits=2)
+                res_vmax = nice_res_max if res_vmax is None else res_vmax
+                res_vmin = -nice_res_max if res_vmin is None else res_vmin
+
+        plot_items = [
+            {'title': f'{self.name} Data', 'data': self.vel, 'clim': (vmin, vmax)},
+            {'title': 'Model', 'data': self.synth, 'clim': (vmin, vmax)},
+            {'title': 'Residuals', 'data': residuals, 'clim': (res_vmin, res_vmax)}
+        ]
+
+        # 5. Plotting
+        if style_kwargs is None: style_kwargs = {}
+        
+        with sci_plot_style(style=style, **style_kwargs):
+            fig, axes = plt.subplots(1, 3, figsize=final_figsize, constrained_layout=True)
+            
+            lon_min, lon_max = np.min(self.lon), np.max(self.lon)
+            lat_min, lat_max = np.min(self.lat), np.max(self.lat)
+
+            for ax, item in zip(axes, plot_items):
+                # Scatter
+                lons = self.lon[::decim]
+                lats = self.lat[::decim]
+                vals = item['data'][::decim]
+                
+                sc = ax.scatter(lons, lats, c=vals, s=markersize, cmap=cmap, 
+                                vmin=item['clim'][0], vmax=item['clim'][1], 
+                                alpha=alpha, edgecolors='none', rasterized=True)
+                
+                ax.set_aspect('equal')
+                ax.set_xlim(lon_min, lon_max)
+                ax.set_ylim(lat_min, lat_max)
+
+                # Faults
+                if faults is not None:
+                    if not isinstance(faults, list): faults = [faults]
+                    for f in faults:
+                        if hasattr(f, 'lon') and hasattr(f, 'lat'): 
+                            ax.plot(f.lon, f.lat, 'k-', linewidth=0.5, zorder=2, alpha=0.7)
+
+                ax.set_title(item['title'])
+                set_degree_formatter(ax) 
+                # Off minor ticks
+                ax.minorticks_off()
+                
+                # Inset Colorbar
+                axins = ax.inset_axes(cbaxis)  # [0.15, 0.25, 0.25, 0.02]
+                cbar = plt.colorbar(sc, cax=axins, orientation='horizontal')
+                cbar.set_ticks([item['clim'][0], 0, item['clim'][1]])
+                cbar.ax.tick_params(labelsize=7, length=2, pad=1)
+                cbar.outline.set_linewidth(0.5)
+
+            if save_path:
+                plt.savefig(save_path, dpi=300)
+                print(f"Saved fit check: {save_path}")
+            
+            if show:
+                plt.show()
+            else:
+                plt.close(fig)
+    # ----------------------------------------------------------------------
+
     def write2grd(self, fname, oversample=1, data='data', interp=100, cmd='surface',
                         tension=None, useGMT=False, verbose=False, outDir='./'):
         '''

@@ -1722,19 +1722,31 @@ class explorefault(SourceInv):
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))
                     data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
-                    for data in ['data', 'synth', 'res']:
-                        if data == 'res':
-                            cosar.res = cosar.vel - cosar.synth
-                            absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
-                            res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
-                            res_norm = data_norm if res_use_data_norm else res_norm
-                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=res_norm, cmap=cmap,
-                                cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
-                        else:
-                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=data_norm, cmap=cmap,
-                                    cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
-                        cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
-                                        bbox_inches='tight', mapaxis=None)
+                    # for data in ['data', 'synth', 'res']:
+                    #     if data == 'res':
+                    #         cosar.res = cosar.vel - cosar.synth
+                    #         absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
+                    #         res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
+                    #         res_norm = data_norm if res_use_data_norm else res_norm
+                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=res_norm, cmap=cmap,
+                    #             cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
+                    #     else:
+                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=(3.5, 2.7), norm=data_norm, cmap=cmap,
+                    #                 cbaxis=[0.15, 0.25, 0.25, 0.02], drawCoastlines=True, titleyoffset=1.02)
+                    #     cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype='png', dpi=600, saveFig=['map'], 
+                    #                     bbox_inches='tight', mapaxis=None)
+
+                    if not os.path.exists('Modeling'):
+                        os.makedirs('Modeling')
+                    cosar.plot_fit_comparison(
+                                                faults=faults,
+                                                cmap=cmap,
+                                                vmin=data_norm[0],
+                                                vmax=data_norm[1],
+                                                share_colorbar=True,
+                                                save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
+                                                show=True
+                                            )
 
     def save2h5(self, filename, datasets=None):
         '''

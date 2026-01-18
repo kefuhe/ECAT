@@ -1,6 +1,7 @@
 import scipy
 import numpy as np
 import copy
+import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -688,11 +689,11 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
 
     def extract_and_plot_blse_results(self, rank=0, 
                                           plot_faults=True, plot_data=True,
-                                          antisymmetric=True, res_use_data_norm=True, cmap='jet', azimuth=None, elevation=None,
+                                          antisymmetric=True, res_use_data_norm=True, cmap='RdBu_r', azimuth=None, elevation=None,
                                           slip_cmap='precip3_16lev_change.cpt', depth_range=None, z_ticks=None, 
                                           axis_shape=(1.0, 1.0, 0.6), 
-                                          gps_title=True, sar_title=True, sar_cbaxis=[0.15, 0.25, 0.25, 0.02],
-                                          gps_figsize=None, sar_figsize=(3.5, 2.7), gps_scale=0.05, gps_legendscale=0.2,
+                                          gps_title=True, sar_title=True, sar_cbaxis=[0.1, 0.15, 0.35, 0.04], # [0.15, 0.25, 0.25, 0.02],
+                                          gps_figsize=None, sar_figsize='double', gps_scale=0.05, gps_legendscale=0.2,
                                           file_type='png',
                                           remove_direction_labels=False,
                                           fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
@@ -710,13 +711,13 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         plot_data: whether to plot data (default is True)
         antisymmetric: whether to set the colormap to be antisymmetric (default is True)
         res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
-        cmap: colormap to use (default is 'jet')
+        cmap: colormap to use (default is 'RdBu_r')
         slip_cmap: colormap for slip (default is 'precip3_16lev_change.cpt')
         depth_range: depth range for the plot (default is None)
         z_ticks: z-axis ticks for the plot (default is None)
         gps_title: whether to show title for GPS data plots (default is True)
         sar_title: whether to show title for SAR data plots (default is True)
-        sar_cbaxis: colorbar axis position for SAR data plots (default is [0.15, 0.25, 0.25, 0.02])
+        sar_cbaxis: colorbar axis position for SAR data plots (default is [0.1, 0.15, 0.35, 0.04])
         gps_figsize: figure size for GPS data plots (default is None)
         sar_figsize: figure size for SAR data plots (default is (3.5, 2.7))
         gps_scale: scale for GPS data plots (default is 0.05)
@@ -791,21 +792,35 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))
                     data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
-                    for data in ['data', 'synth', 'res']:
-                        if data == 'res':
-                            cosar.res = cosar.vel - cosar.synth
-                            absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
-                            res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
-                            res_norm = data_norm if res_use_data_norm else res_norm
-                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=res_norm, cmap=cmap,
-                                cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                                remove_direction_labels=remove_direction_labels)
-                        else:
-                            cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=data_norm, cmap=cmap,
-                                    cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                                    remove_direction_labels=remove_direction_labels)
-                        cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
-                                        bbox_inches='tight', mapaxis=None)
+                    # for data in ['data', 'synth', 'res']:
+                    #     if data == 'res':
+                    #         cosar.res = cosar.vel - cosar.synth
+                    #         absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
+                    #         res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
+                    #         res_norm = data_norm if res_use_data_norm else res_norm
+                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=res_norm, cmap=cmap,
+                    #             cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
+                    #             remove_direction_labels=remove_direction_labels)
+                    #     else:
+                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=data_norm, cmap=cmap,
+                    #                 cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
+                    #                 remove_direction_labels=remove_direction_labels)
+                    #     cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
+                    #                     bbox_inches='tight', mapaxis=None)
+                    
+                    if not os.path.exists('Modeling'):
+                        os.makedirs('Modeling')
+                    cosar.plot_fit_comparison(
+                                                faults=faults,
+                                                cmap=cmap,
+                                                vmin=data_norm[0],
+                                                vmax=data_norm[1],
+                                                share_colorbar=True,
+                                                cbaxis=sar_cbaxis,
+                                                save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
+                                                figsize=sar_figsize,
+                                                show=True
+                                            )
 
     def calculate_tectonic_loading_rate(self, fault_name, euler_params1=None, euler_params2=None):
         """

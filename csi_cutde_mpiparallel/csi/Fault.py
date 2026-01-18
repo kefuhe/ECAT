@@ -1118,6 +1118,7 @@ class Fault(SourceInv):
             if isinstance(horizontal_discretization, (int, float)):
                 trace_step = horizontal_discretization if isinstance(horizontal_discretization, float) else 5.0
             
+            # Discretize the trace to  target step/10 for better accuracy
             if hasattr(self, 'discretize_trace'):
                 self.discretize_trace(every=trace_step/10.0)
                 
