@@ -1658,6 +1658,7 @@ class explorefault(SourceInv):
             
             # Plot Faults
             if plot_faults:
+                fault_figsize = fault_figsize if fault_figsize is not None else (7.5, 6.5)
                 for ifault, faultname in enumerate(self.faultnames):
                     if_name = self.fault_alias_map.get(faultname, faultname) if hasattr(self, 'fault_alias_map') else faultname
                     self.plot_kde_matrix(save=True, plot_faults=True, faults=faultname, fill=True, 
@@ -1666,6 +1667,7 @@ class explorefault(SourceInv):
             
             # Plot Sigmas
             if plot_sigmas and hasattr(self, 'sigmas_keys') and hasattr(self, 'sigmas_index'):
+                sigmas_figsize = sigmas_figsize if sigmas_figsize is not None else (2.625, 2.625)
                 self.plot_kde_matrix(save=True, plot_faults=False, plot_sigmas=True, fill=True, 
                                     scatter=False, filename='kde_matrix_sigmas.png', figsize=sigmas_figsize,
                                     hspace=0.05, wspace=0.05)
