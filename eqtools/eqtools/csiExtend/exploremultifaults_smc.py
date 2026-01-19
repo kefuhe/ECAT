@@ -1745,7 +1745,7 @@ class explorefault(SourceInv):
                                                 cmap=cmap,
                                                 vmin=data_norm[0],
                                                 vmax=data_norm[1],
-                                                share_colorbar=True,
+                                                share_colorbar=res_use_data_norm,
                                                 save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
                                                 show=True
                                             )

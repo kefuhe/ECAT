@@ -815,7 +815,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 cmap=cmap,
                                                 vmin=data_norm[0],
                                                 vmax=data_norm[1],
-                                                share_colorbar=True,
+                                                share_colorbar=res_use_data_norm,
                                                 cbaxis=sar_cbaxis,
                                                 save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
                                                 figsize=sar_figsize,
