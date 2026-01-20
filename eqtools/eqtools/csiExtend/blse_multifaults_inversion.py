@@ -2,6 +2,7 @@ import scipy
 import numpy as np
 import copy
 import os
+import pathlib
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -690,7 +691,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
     def extract_and_plot_blse_results(self, rank=0, 
                                           plot_faults=True, plot_data=True,
                                           antisymmetric=True, res_use_data_norm=True, cmap='RdBu_r', azimuth=None, elevation=None,
-                                          slip_cmap='precip3_16lev_change.cpt', depth_range=None, z_ticks=None, 
+                                          slip_cmap='cmc.roma_r', depth_range=None, z_ticks=None, 
                                           axis_shape=(1.0, 1.0, 0.6), 
                                           gps_title=True, sar_title=True, sar_cbaxis=[0.1, 0.15, 0.35, 0.04], # [0.15, 0.25, 0.25, 0.02],
                                           gps_figsize=None, sar_figsize='double', gps_scale=0.05, gps_legendscale=0.2,
@@ -734,6 +735,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             from ..getcpt import get_cpt 
     
             if slip_cmap is not None and slip_cmap.endswith('.cpt'):
+                # 'precip3_16lev_change.cpt'
                 cmap_slip = get_cpt.get_cmap(slip_cmap, method='list', N=15)
             else:
                 cmap_slip = slip_cmap
@@ -808,8 +810,9 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     #     cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
                     #                     bbox_inches='tight', mapaxis=None)
                     
-                    if not os.path.exists('Modeling'):
-                        os.makedirs('Modeling')
+                    # Make directory for fit comparison plots
+                    out_modeling_dir = pathlib.Path('Modeling')
+                    out_modeling_dir.mkdir(parents=True, exist_ok=True)
                     cosar.plot_fit_comparison(
                                                 faults=faults,
                                                 cmap=cmap,
@@ -817,7 +820,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 vmax=data_norm[1],
                                                 share_colorbar=res_use_data_norm,
                                                 cbaxis=sar_cbaxis,
-                                                save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
+                                                save_path=out_modeling_dir / f'{cosar.name}_fit_comparison.pdf',
                                                 figsize=sar_figsize,
                                                 show=True
                                             )
