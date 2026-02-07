@@ -19,14 +19,20 @@ __copyright__ = """(c) 2020 Dimitrios Bouziotas"""
 __license__ = "GGNU General Public License v3 (GPL-3)"
 
 import os
+import sys
 import numpy as np
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from urllib.request import urlopen
-from pkg_resources import resource_filename
 
-# 更新basedir以使用pkg_resources找到cpt文件夹
-basedir = resource_filename('eqtools', 'cpt')
+# 使用 importlib.resources 替代 pkg_resources
+if sys.version_info >= (3, 9):
+    from importlib.resources import files
+    basedir = str(files('eqtools').joinpath('cpt'))
+else:
+    from importlib.resources import path
+    with path('eqtools', 'cpt') as p:
+        basedir = str(p)
 
 # basedir = os.path.join(os.getcwd(),'cpt') # base path from where cpt files are fetched
 
