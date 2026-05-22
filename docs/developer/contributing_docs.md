@@ -1,0 +1,46 @@
+# 文档维护规范
+
+用户手册的目标是帮助科研用户完成可重复工作流，而不是展示所有实现细节。
+
+## 基本规则
+
+- 用户手册放在 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs)。
+- 不删除、不重写 [ECAT 仓库 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs)。
+- 优先写经过整理的工作流，不直接堆脚本。
+- 每个案例都要有可复现命令、输入说明和输出说明。
+- 每个案例的教学重点都要落到脚本或配置片段上，说明“这段代码做什么、为什么要这样写、下一步接到哪里”。
+- 大型 HDF5 样本和图件应放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)，不要放进 [ECAT](https://github.com/kefuhe/ECAT) 主代码仓库。
+
+## 案例页面模板
+
+```markdown
+# 事件名：工作流类型
+
+## 位置
+
+## 为什么选这个案例
+
+## 数据入口
+
+## 运行方式
+
+## 脚本对照
+
+### 1. 第一步对应的代码
+
+### 2. 第二步对应的配置
+
+## 应保留输出
+
+## 已知限制
+```
+
+## 从技术材料迁移时
+
+可以参考 [ECAT 仓库 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs)，但要按用户学习路线重写：
+
+- 从用户动作开始。
+- 先给最小可运行命令。
+- 当前阶段只解释必要参数。
+- 复杂选项链接到 reference 页。
+- 避免把未经整理的实验脚本直接写成教程。
