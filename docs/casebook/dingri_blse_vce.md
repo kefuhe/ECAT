@@ -68,7 +68,7 @@ insardata = [sar_t012a, sar_t121d]
 geodata = [sar_t012a, sar_t121d]
 ```
 
-这一段要和 [InSAR 降采样](../workflows/02_insar_downsampling.md#后续反演中读取) 对应起来讲：降采样输出的标准前缀如何进入线性反演，协方差是完整矩阵还是对角阵。
+降采样输出进入线性反演时，脚本读取的是标准前缀对应的 `.txt/.rsp/.cov` 文件组；协方差可按完整矩阵或对角阵进入求解。格式约定见 [InSAR 降采样](../workflows/02_insar_downsampling.md#后续反演中读取)。
 
 ### 2. 建立固定三角断层网格
 
@@ -90,7 +90,7 @@ fault_em1.generate_mesh(top_size=1.0, bottom_size=1.5, show=False, verbose=0)
 fault_em1.initializeslip(values="depth")
 ```
 
-这一段要和 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#结果进入线性反演) 对应起来讲，避免把 `cdepth` 和线性网格的 `top/depth` 混写。
+这里的 `cdepth` 与 `clon/clat` 一起表示非线性反演得到的顶边中点三维坐标；`top/depth` 才是线性滑动网格向上、向下扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#结果进入线性反演)。
 
 ### 3. 加载配置并构造 BLSE 反演对象
 
@@ -172,3 +172,20 @@ for sardata in insardata:
 - `output/slip_Dingri_2020.gmt`
 - `output/slipdir_Dingri_2020.txt`
 - loop 模式下的 `run_loop_covdiag.dat`
+
+## 跑通判据
+
+`--mode single` 跑通后，至少应能看到：
+
+- `output/slip_Dingri_2020.gmt`
+- `output/slipdir_Dingri_2020.txt`
+- `output/stat_infos/Dingri_2020_top.gmt`
+- `output/stat_infos/Dingri_2020_bottom.gmt`
+- `Modeling/T012A_data.txt`
+- `Modeling/T012A_synth.txt`
+- `Modeling/T012A_resid.txt`
+- `Modeling/T121D_data.txt`
+- `Modeling/T121D_synth.txt`
+- `Modeling/T121D_resid.txt`
+
+`--mode loop` 跑通后，应生成 `run_loop_covdiag.dat`，用于检查平滑权重、数据拟合和模型粗糙度的权衡。

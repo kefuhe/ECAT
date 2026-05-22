@@ -43,6 +43,7 @@
 
 案例放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 仓库中，主仓库 [ECAT](https://github.com/kefuhe/ECAT) 维护代码、方法手册与接口参考。
 
+- [案例选择表](casebook/index.md)
 - [Wushi：InSAR-only 非线性几何反演](casebook/wushi_nonlinear_geometry.md)
 - [Ridgecrest：GPS+InSAR 非线性几何反演](casebook/ridgecrest_gps_insar.md)
 - [Dingri 2020：BLSE/VCE 线性滑动反演](casebook/dingri_blse_vce.md)

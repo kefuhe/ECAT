@@ -21,6 +21,17 @@ ConstraintManagerBase
 └── validate / print_summary / sync_to_solver
 ```
 
+## 快速阅读路径
+
+如果只做入门同震 BLSE/VCE，优先读：
+
+1. [Bounds 配置键](#bounds-配置键)：确认 `strikeslip/dipslip/poly/sigmas/alpha` 的边界写法。
+2. [Rake 约束](#rake-约束)：用机制角范围限制 `strikeslip/dipslip`。
+3. [零滑与边界零滑约束](#零滑与边界零滑约束)：设置整段零滑、top/bottom/left/right 边界零滑。
+4. [注意事项](#注意事项)：检查适用模式、断层名和正负号。
+
+`FULLSMC`、`SMC_F_J`、Euler 和自定义矩阵约束属于进阶配置，可在需要时再查。
+
 ## 模式矩阵
 
 | 模式 | 滑动参数化 | 超参数处理 | 线性参数处理 | 支持的约束 |
@@ -420,4 +431,4 @@ inversion.add_patch_slip_constraint(
 - `zero_edge_slip(...)` 只适用于 `Fault` 源，并要求断层对象已有 `edge_triangles_indices`。
 - `strikeslip == 0` 或 `dipslip == 0` 会固定该断层所有 patch 的对应滑动分量；若只想固定部分 patch，应使用脚本级 `add_patch_slip_constraint(...)`。
 - 断层名、数据集名和 source 名必须与 Python 对象名一致。
-- 当前文档中的滑动正负号应与案例机制和底层 CSI 约定一致；案例文档需要明确写出符号约定。
+- 当前文档中的滑动正负号应与案例机制和底层 CSI 约定一致；案例页应明确写出符号约定。

@@ -155,3 +155,20 @@ expfault.plot_kde_matrix(
 ### 6. 进入线性滑动反演
 
 非线性输出中的 `model_results_median.txt` 或等价摘要提供优选几何。进入 BLSE/VCE 时，`lon/lat/depth` 要作为断层顶边中点三维坐标传给 `clon/clat/cdepth`；`top/depth` 则是线性滑动面扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#结果进入线性反演)。
+
+## 跑通判据
+
+一次完整运行后，至少应能看到：
+
+- `samples_mag_rake_multifaults.h5` 或 `samples_final.h5`
+- `model_results_median.txt`
+- `kde_matrix_faults.png` 或对应断层几何 KDE 图
+- `kde_matrix_sigmas.png`
+- `Modeling/S1T034D_ifg_data.txt`
+- `Modeling/S1T034D_ifg_synth.txt`
+- `Modeling/S1T034D_ifg_resid.txt`
+- `Modeling/S1T056A_ifg_data.txt`
+- `Modeling/S1T056A_ifg_synth.txt`
+- `Modeling/S1T056A_ifg_resid.txt`
+
+如果只重新绘图而不重新采样，应确认脚本能读取已有 HDF5 样本并重新生成 KDE 与 data/synth/resid 输出。

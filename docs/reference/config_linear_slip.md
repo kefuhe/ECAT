@@ -88,7 +88,7 @@ geodata:
 | `geodata.polys` | 每个数据集的 ramp/poly 参数 | InSAR 常用 `3`，GPS 通常 `null` |
 | `geodata.faults` | 每个数据集关联哪些断层 | 单事件可 `null`；多事件/多断层建议显式写 |
 
-`geodata.faults` 与脚本中的数据顺序一一对应。多事件场景中，如果某些数据只覆盖其中一个事件，就应显式指定数据关联的断层子集；这种写法见 [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md#数据覆盖两个事件与单事件的区别)。
+`geodata.faults` 与脚本中的数据顺序一一对应。多事件场景中，如果某些数据只覆盖其中一个事件，就应显式指定数据关联的断层子集；这种写法见 [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md#多事件覆盖关系)。
 
 ## Sigmas
 
