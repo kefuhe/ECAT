@@ -72,13 +72,15 @@ git clone [https://github.com/kefuhe/ECAT-cases.git](https://github.com/kefuhe/E
 
 | 🏷️ Category | ⚡ Earthquake Example | 📝 Description (Date, Magnitude, Type) | 📁 Directory (in `ECAT-Cases`) |
 | :--- | :--- | :--- | :--- |
-| **Downsampling** | InSAR Downsampling | Example code for InSAR downsampling | [Details](https://www.google.com/search?q=./Cases/InSAR_Downsampling/) |
+| **Data preparation & Downsampling** | InSAR / offset downsampling | GAMMA, GeoTIFF, GMTSAR direct-projection, and adapter examples; converts dense SAR/offset rasters to CSI-style `.txt/.rsp/.cov` inputs | [Cases](https://github.com/kefuhe/ECAT-Cases/tree/main/InSAR_Downsampling) · [Guide](docs/workflows/02_insar_downsampling.md) |
 | **Nonlinear Inversion** | [Hotan Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000abmk/executive) | 2020-06-25, Mw6.3, Normal | [Details](https://www.google.com/search?q=./Cases/Hotan_20200625M6_3/) |
 | | [Iran Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us10008ei0/executive) | 2017-04-05, Mw6.1, Reverse | [Details](https://www.google.com/search?q=./Cases/Iran_20170405M6_1/) |
 | | [Taiwan Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000m9g4/executive) | 2024-04-05, Mw7.4, Reverse | [Details](https://www.google.com/search?q=./Cases/Taiwan_20240405Mw7_4/) |
 | | [Wushi Earthquake](https://earthquake.usgs.gov/earthquakes/eventpage/us7000lsze/executive) | 2024-01-22, Mw7.0, Strike-slip | [Details](https://www.google.com/search?q=./Cases/Wushi_20240122M7_0/) |
 | | [Western Xizang](https://earthquake.usgs.gov/earthquakes/eventpage/us6000b26j/executive) | 2020-07-22, Mw6.3, Normal | [Details](https://www.google.com/search?q=./Cases/Western_Xizang_20200722M6_3/) |
 | **BLSE Linear Inversion** |  [Dingri Earthquake  2020](https://www.globalcmt.org/cgi-bin/globalcmt-cgi-bin/CMT5/form?itype=ymd&yr=2020&mo=3&day=18&otype=ymd&oyr=2020&omo=3&oday=21&jyr=1976&jday=1&ojyr=1976&ojday=1&nday=1&lmw=5&umw=10&lms=0&ums=10&lmb=0&umb=10&llat=28&ulat=29&llon=87&ulon=88&lhd=0&uhd=20&lts=-9999&uts=9999&lpe1=0&upe1=90&lpe2=0&upe2=90&list=5)                                                                            | 2020-03-20, Mw5.7, Normal                         | [Details](https://www.google.com/search?q=./Cases/Dingri_Events/Dingri_20200320Mw5_6/LinearInv/)     |
+
+For detailed data-format notes, use the [ECAT-Cases README](https://github.com/kefuhe/ECAT-Cases) and the ECAT docs: [InSAR downsampling](docs/workflows/02_insar_downsampling.md), [adapter workflow](docs/workflows/02b_adapter_downsampling.md), and [SAR reader reference](docs/reference/sar_reader.md).
 
 ### 3.3 Real Earthquake Case Studies (Visual Gallery)
 
