@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import pathlib
 import matplotlib.pyplot as plt
 from mpi4py import MPI
 
@@ -28,8 +29,8 @@ def main():
     
     # Modify the path according to your actual situation
     # Only read data structure (lon/lat positions) here, values will be overwritten by synthetic data
-    sar_t012a_file = os.path.join('..', 'InSAR', 'downsample', 'T012A', 'S1_T012A_ifg')
-    sar_t121d_file = os.path.join('..', 'InSAR', 'downsample', 'T121D', 'S1_T121D_ifg')
+    sar_t012a_file = pathlib.Path('..') / 'InSAR' / 'downsample' / 'T012A' / 'S1_T012A_ifg'
+    sar_t121d_file = pathlib.Path('..') / 'InSAR' / 'downsample' / 'T121D' / 'S1_T121D_ifg'
 
     if verbose: print("Loading Geodata structures...")
 

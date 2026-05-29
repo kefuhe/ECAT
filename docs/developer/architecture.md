@@ -18,7 +18,7 @@
 
 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs) 是用户手册，目标读者是科研用户和新学生。它应该稳定、有顺序、可学习。
 
-[ECAT 仓库 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs) 是技术材料目录。可以作为用户手册的素材来源，但不要把设计笔记原样堆到手册中。
+公开手册应尽量自洽，不依赖未整理的本地笔记或未随手册发布的材料。需要引用实现细节时，优先链接到公开源码、案例脚本或本手册 reference 页面。
 
 ## 手册当前覆盖
 

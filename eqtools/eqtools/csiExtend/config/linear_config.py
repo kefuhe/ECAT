@@ -1,3 +1,4 @@
+import warnings
 import yaml
 import os
 import numpy as np
@@ -9,6 +10,8 @@ logger = logging.getLogger(__name__)
 # Load csi and its extensions
 from csi.gps import gps
 from csi.insar import insar
+from csi import VALID_GF_METHODS
+from csi.gf_options import resolve_gf_options
 from ..multifaults_base import MyMultiFaultsInversion
 
 # Import utility functions for parsing configuration updates
@@ -16,6 +19,18 @@ from .config_utils import parse_update, parse_initial_values
 from .config_utils import parse_alpha_faults, parse_data_faults, parse_sigmas_config, parse_alpha_config
 from .config_utils import parse_euler_constraints_config, parse_euler_units
 from .base_config import CommonConfigBase
+
+
+def _validate_gf_options(method, options):
+    """Validate method-specific GF options using the Options registry.
+
+    Delegates to ``resolve_gf_options`` which constructs the typed Options
+    object.  The ``__post_init__`` on each Options class performs all
+    semantic validation (engine names, positive values, n_jobs, etc.).
+    """
+    if not options:
+        return
+    resolve_gf_options(method, options)
 
 
 class LinearInversionConfig(CommonConfigBase):
@@ -61,7 +76,8 @@ class LinearInversionConfig(CommonConfigBase):
             'update': True,
             'initial_value': 0.0,
             'log_scaled': True,
-            'faults': None
+            'faults': None,
+            'mode': 'single', # 'individual' or 'single' or 'grouped'
         }
 
         # Initialize DES configuration with default values
@@ -101,6 +117,10 @@ class LinearInversionConfig(CommonConfigBase):
 
         # Set fault-related data
         self.set_data_faults(dataFaults)
+
+        # Build list of smoothing-capable source names via adapter class method
+        self._smoothing_faultnames = self._get_smoothing_faultnames()
+
         self.set_alpha_faults(alphaFaults)
 
         # [New] Parse DES configuration from kwargs
@@ -109,7 +129,8 @@ class LinearInversionConfig(CommonConfigBase):
 
         # Parse alpha parameters
         fault_names = self.faultnames
-        self.alpha = parse_alpha_config(self.alpha, faultnames=fault_names)
+        self.alpha = parse_alpha_config(self.alpha, faultnames=fault_names,
+                                        smoothing_faultnames=self._smoothing_faultnames)
 
         # Parse Euler constraints if enabled
         if self.use_euler_constraints:
@@ -232,6 +253,20 @@ class LinearInversionConfig(CommonConfigBase):
         alphaFaults = value if value is not None else self.alpha['faults']
         result = parse_alpha_faults(alphaFaults, all_faultnames, param_name='alphaFaults')
         self.alpha['faults'] = result
+
+    @property
+    def alpha_enabled(self) -> bool:
+        """Whether alpha smoothing is enabled."""
+        return self.alpha.get('enabled', True)
+
+    @property
+    def alphaFaultsIndex(self):
+        """Alias for alpha['fault_param_indices'] — kept for backward compatibility."""
+        return self.alpha['fault_param_indices']
+
+    @alphaFaultsIndex.setter
+    def alphaFaultsIndex(self, value):
+        self.alpha['fault_param_indices'] = value
 
     def load_from_file(self, config_file, encoding='utf-8'):
         """
@@ -455,7 +490,20 @@ class LinearInversionConfig(CommonConfigBase):
     def _process_faults_config(self, config_data):
         """
         Process fault configuration from the config file.
+        Also handles pressure_sources and sbarbot_sources sections (Scheme B).
+
+        Each source type has its own YAML section with type-appropriate defaults:
+        - ``faults:`` — Fault sources (geometry, mesh, Laplacian, GFs)
+        - ``pressure_sources:`` — Pressure sources (GFs only, method defaults to 'homogeneous')
+        - ``sbarbot_sources:`` — Sbarbot sources (GFs only, method must be explicitly set)
+
+        All processed sources are stored into ``self.faults[name]`` for downstream
+        compatibility.  Non-Fault sources always carry a minimal ``geometry`` and
+        ``method_parameters.update_Laplacian`` entry so that downstream code that
+        accesses these keys (e.g. ``_update_faults``, ``_validate_laplacian_bounds``)
+        will not raise ``KeyError``.
         """
+        # ---- 1. Process Fault sources (existing logic) ----
         default_fault_parameters = config_data.get('faults', {}).get('defaults', {})
 
         for fault_name, fault_parameters in config_data.get('faults', {}).items():
@@ -487,20 +535,155 @@ class LinearInversionConfig(CommonConfigBase):
                 config_data['faults'][fault_name] = merged_parameters
 
             self.faults[fault_name] = config_data['faults'][fault_name]
-        
-        # Ensure all faults in faultnames are configured
+
+        # ---- 2. Process Pressure sources ----
+        _PRESSURE_BUILTIN_DEFAULTS = {
+            'geometry': {'update': False, 'sample_positions': [0, 0]},
+            'method_parameters': {
+                'update_GFs': {'method': 'homogeneous'},
+                'update_Laplacian': {},
+            },
+        }
+        self._process_non_fault_source_section(
+            config_data, 'pressure_sources', _PRESSURE_BUILTIN_DEFAULTS
+        )
+
+        # ---- 3. Process Sbarbot sources ----
+        _SBARBOT_BUILTIN_DEFAULTS = {
+            'geometry': {'update': False, 'sample_positions': [0, 0]},
+            'method_parameters': {
+                'update_GFs': {'method': None},
+                'update_Laplacian': {},
+            },
+        }
+        self._process_non_fault_source_section(
+            config_data, 'sbarbot_sources', _SBARBOT_BUILTIN_DEFAULTS
+        )
+
+        # Pop new sections so set_attributes won't try to assign unknown attrs
+        config_data.pop('pressure_sources', None)
+        config_data.pop('sbarbot_sources', None)
+
+        # ---- 4. Ensure all faults in faultnames are configured ----
+        # Build a type lookup from actual source objects
+        source_type_map = {fault.name: getattr(fault, 'type', 'Fault')
+                           for fault in self.faults_list}
         for fault_name in self.faultnames:
             if fault_name not in self.faults:
-                config_data['faults'][fault_name] = default_fault_parameters.copy()
-                self.faults[fault_name] = config_data['faults'][fault_name]
+                stype = source_type_map.get(fault_name, 'Fault')
+                if stype == 'Pressure':
+                    import copy
+                    self.faults[fault_name] = copy.deepcopy(_PRESSURE_BUILTIN_DEFAULTS)
+                elif stype == 'Sbarbot':
+                    import copy
+                    self.faults[fault_name] = copy.deepcopy(_SBARBOT_BUILTIN_DEFAULTS)
+                else:
+                    self.faults[fault_name] = default_fault_parameters.copy()
+                    config_data.setdefault('faults', {})[fault_name] = self.faults[fault_name]
                 if self.verbose:
-                    logger.info(f"Fault '{fault_name}' not found in config file. Using default parameters.")
+                    logger.info(
+                        f"Source '{fault_name}' (type={stype}) not found in config file. "
+                        f"Using {stype} default parameters."
+                    )
+
+    def _process_non_fault_source_section(self, config_data, section_key, builtin_defaults):
+        """
+        Process a non-Fault source section (pressure_sources / sbarbot_sources).
+
+        Merges each source entry with the section's own ``defaults`` (which in turn
+        is overlaid on ``builtin_defaults``).  The result is stored in
+        ``self.faults[name]`` for downstream compatibility.
+
+        Parameters
+        ----------
+        config_data : dict
+            The full parsed YAML config dict.
+        section_key : str
+            Top-level YAML key, e.g. ``'pressure_sources'`` or ``'sbarbot_sources'``.
+        builtin_defaults : dict
+            Hard-coded defaults that are always present as a base layer.
+        """
+        import copy
+
+        section = config_data.get(section_key, {})
+        if not section:
+            return
+
+        # Merge YAML-level defaults on top of builtin defaults
+        yaml_defaults = section.get('defaults', {})
+        effective_defaults = copy.deepcopy(builtin_defaults)
+        # Deep-merge method_parameters
+        if 'method_parameters' in yaml_defaults:
+            for mp_key, mp_val in yaml_defaults['method_parameters'].items():
+                if mp_key in effective_defaults.get('method_parameters', {}):
+                    effective_defaults['method_parameters'][mp_key].update(mp_val or {})
+                else:
+                    effective_defaults.setdefault('method_parameters', {})[mp_key] = mp_val
+        # Merge any other top-level keys from yaml defaults
+        for key, val in yaml_defaults.items():
+            if key != 'method_parameters':
+                effective_defaults[key] = val
+
+        for src_name, src_params in section.items():
+            if src_name == 'defaults':
+                continue
+
+            if src_params is None:
+                merged = copy.deepcopy(effective_defaults)
+            else:
+                merged = copy.deepcopy(effective_defaults)
+                # Merge method_parameters
+                if 'method_parameters' in (src_params or {}):
+                    for mp_key, mp_val in src_params['method_parameters'].items():
+                        if mp_key in merged.get('method_parameters', {}):
+                            merged['method_parameters'][mp_key].update(mp_val or {})
+                        else:
+                            merged.setdefault('method_parameters', {})[mp_key] = mp_val
+                # Merge other top-level keys from source config
+                for key, val in (src_params or {}).items():
+                    if key != 'method_parameters':
+                        merged[key] = val
+
+            # Ensure required keys always exist
+            merged.setdefault('geometry', {'update': False, 'sample_positions': [0, 0]})
+            merged.setdefault('method_parameters', {}).setdefault('update_Laplacian', {})
+
+            if src_name in self.faults:
+                logger.warning(
+                    f"Source '{src_name}' appears in both 'faults' and '{section_key}'. "
+                    f"The '{section_key}' entry will overwrite the 'faults' entry."
+                )
+            self.faults[src_name] = merged
+
+    def _get_adapter_kwargs(self, fault_name):
+        """Extract adapter constructor kwargs from per-source config.
+
+        Looks for ``slipdir`` and ``strain_components`` inside
+        ``self.faults[fault_name]['method_parameters']['update_GFs']``.
+
+        Returns
+        -------
+        dict
+            Keyword arguments suitable for ``make_adapter(source, **kwargs)``.
+            Empty dict if nothing is configured.
+        """
+        fault_cfg = self.faults.get(fault_name, {})
+        gf_cfg = fault_cfg.get('method_parameters', {}).get('update_GFs', {})
+        kwargs = {}
+        if 'slipdir' in gf_cfg:
+            kwargs['slipdir'] = gf_cfg['slipdir']
+        if 'strain_components' in gf_cfg:
+            kwargs['strain_components'] = gf_cfg['strain_components']
+        return kwargs
 
     def _initialize_faults_and_assemble_data(self, faults_list=None, geodata=None):
         """
         Set up faults by building Green's functions, assembling data and Green's functions for inversion,
         and building covariance matrices for GPS/InSAR data.
+        Uses source adapters for type-safe call routing.
         """
+        from ..source_adapters import make_adapter
+
         # Build Green's functions for all faults
         faults_list = faults_list or self.faults_list
         geodata = self.geodata['data'] or geodata
@@ -510,90 +693,82 @@ class LinearInversionConfig(CommonConfigBase):
 
         for ifault in faults_list:
             faultname = ifault.name
+            adapter = make_adapter(ifault, **self._get_adapter_kwargs(faultname))
             gfconf = self.faults[faultname]['method_parameters']['update_GFs']
             gfmethod = gfconf.get('method', 'homogeneous')  # Default method is 'homogeneous'
             gfopts = gfconf.get('options', {})
             for obsdata, vertical in zip(geodata, verticals):
-                ifault.buildGFs(obsdata, vertical=vertical, slipdir='sd',
-                                method=gfmethod, verbose=False, **gfopts)
-            ifault.initializeslip()
+                adapter.build_gfs(obsdata, vertical, method=gfmethod,
+                                  options=gfopts, verbose=self.verbose)
+            adapter.initialize_solution()
 
-            # Set options['force_recompute'] to False after first computation if present
+            # After the first dataset's GF computation, disable force_recompute
+            # so subsequent datasets reuse cached results for the same fault.
+            # gfopts is a reference to the per-fault options dict that persists
+            # across datasets within this loop.
             if 'force_recompute' in gfopts:
                 gfopts['force_recompute'] = False
 
         # Assemble data and Green's functions for inversion
         poly_assembled = False  # Flag to check if the polynomial is assembled
         for ifault in faults_list:
+            adapter = make_adapter(ifault, **self._get_adapter_kwargs(ifault.name))
             # Assemble data
-            ifault.assembled(geodata, verbose=False)
+            adapter.assemble_data(geodata, verbose=False)
             # Assemble Green's functions
             if not poly_assembled:
-                ifault.assembleGFs(geodata, polys=polys, slipdir='sd', verbose=False, custom=False)
+                adapter.assemble_gfs(geodata, polys=polys, verbose=False, custom=False)
                 poly_assembled = True
             else:
-                ifault.assembleGFs(geodata, polys=nonpolys, slipdir='sd', verbose=False, custom=False)
+                adapter.assemble_gfs(geodata, polys=nonpolys, verbose=False, custom=False)
 
         # Build covariance matrices for GPS/InSAR data
         for ifault in faults_list:
+            adapter = make_adapter(ifault, **self._get_adapter_kwargs(ifault.name))
             # Note: verbose=True may cause errors
-            ifault.assembleCd(geodata, verbose=False, add_prediction=None)
+            adapter.assemble_cd(geodata, verbose=False, add_prediction=None)
 
     def update_GFs_parameters(self, geodata, verticals, dataFaults=None, gfmethods=None):
         """
         Update the update_GFs method parameters for all faults.
+        Uses source adapters for type-safe default method inference.
         """
-        allowed_methods = (
-            'okada', 'Okada', 'OKADA', 'ok92', 'meade', 'Meade', 'MEADE',
-            'edks', 'EDKS',
-            'PSCMP', 'pscmp', 'PSGRN', 'psgrn',
-            'EDCMP', 'edcmp', 'EDGRN', 'edgrn',
-            'cutde', 'CUTDE',
-            'empty'
-        )
-    
+        from ..source_adapters import make_adapter
+
         if len(geodata) != len(verticals):
             msg = "Length of 'geodata' and 'verticals' should be the same."
             logger.error(msg)
             raise ValueError(msg)
-        
+
         if gfmethods is not None and len(self.faultnames) != len(gfmethods):
             msg = "Length of faultnames and gfmethods should be the same."
             logger.error(msg)
             raise ValueError(msg)
-        
+
         for i, fault_name in enumerate(self.faultnames):
             fault_parameters = self.faults[fault_name]
             method = gfmethods[i] if gfmethods is not None else None
-            
-            # If method is None, try to get from config or use default by patchType
+
+            # If method is None, try to get from config or infer via adapter
             if method is None:
                 ifault = self.faults_list[i]
                 method = fault_parameters['method_parameters']['update_GFs'].get('method')
                 if method is None:
-                    if hasattr(ifault, 'patchType'):
-                        if ifault.patchType == 'triangle':
-                            method = 'cutde'
-                        elif ifault.patchType == 'rectangle':
-                            method = 'okada'
-                        else:
-                            msg = f"Unknown patchType '{ifault.patchType}' for fault '{fault_name}'"
-                            logger.error(msg)
-                            raise ValueError(msg)
-                    else:
-                        msg = f"Cannot determine default method for fault '{fault_name}' (missing patchType)"
+                    adapter = make_adapter(ifault, **self._get_adapter_kwargs(fault_name))
+                    method = adapter.infer_gf_method()
+                    if method is None:
+                        msg = f"Cannot determine default GF method for source '{fault_name}' (type='{ifault.type}')"
                         logger.error(msg)
                         raise ValueError(msg)
-            
-            # Check whether the method is allowed or not
-            if method not in allowed_methods:
+
+            if method.lower() not in VALID_GF_METHODS:
                 msg = (
                     f"Invalid Green's function method '{method}' for fault '{fault_name}'. "
-                    f"Allowed methods are: {allowed_methods}"
+                    f"Allowed methods are: {sorted(VALID_GF_METHODS)}"
                 )
                 logger.error(msg)
                 raise ValueError(msg)
-    
+
             fault_parameters['method_parameters']['update_GFs'] = {
                 'geodata': geodata,
                 'verticals': verticals,
@@ -601,7 +776,25 @@ class LinearInversionConfig(CommonConfigBase):
                 'method': method,
                 'options': fault_parameters['method_parameters']['update_GFs'].get('options', {})
             }
-            # print(fault_name, fault_parameters['method_parameters']['update_GFs']['dataFaults'])
+            _validate_gf_options(
+                method,
+                fault_parameters['method_parameters']['update_GFs'].get('options', {})
+            )
+
+    def _get_smoothing_faultnames(self):
+        """Return names of sources that support Laplacian smoothing.
+
+        Uses the adapter class method ``supports_smoothing()`` so that no
+        adapter instance is needed.
+        """
+        from ..source_adapters import _ADAPTER_MAP
+        result = []
+        for fault in self.faults_list:
+            stype = getattr(fault, 'type', 'Fault')
+            adapter_cls = _ADAPTER_MAP.get(stype)
+            if adapter_cls is not None and adapter_cls.supports_smoothing():
+                result.append(fault.name)
+        return result
 
     def set_data_faults(self, dataFaults=None):
 
@@ -618,16 +811,18 @@ class LinearInversionConfig(CommonConfigBase):
 
         all_faultnames = self.faultnames
         alphaFaults = alphaFaults if alphaFaults is not None else self.alpha['faults']
-        result = parse_alpha_faults(alphaFaults, all_faultnames, param_name='alphaFaults')
+        smoothing_faultnames = getattr(self, '_smoothing_faultnames', None)
+        result = parse_alpha_faults(alphaFaults, all_faultnames, param_name='alphaFaults',
+                                    smoothing_faultnames=smoothing_faultnames)
         self.alpha['faults'] = result
-        if None in result:
-            self.alphaFaultsIndex = [0] * len(self.faultnames)
-        else:
-            # Create a dictionary to map fault names to their indices
-            fault_index_map = {fault: idx for idx, sublist in enumerate(result) for fault in sublist}
-            # Generate the alphaFaultsIndex based on the order of faultnames
-            self.alphaFaultsIndex = [fault_index_map[fault] for fault in self.faultnames]
-        self.alpha['faults_index'] = self.alphaFaultsIndex
+        # fault_param_indices will be authoritatively set by parse_alpha_config later;
+        # set a provisional value here so that pre-parse code can reference it.
+        # Use .get(fn, 0) to keep length == len(self.faultnames), matching
+        # parse_alpha_config's expansion logic (non-smoothing sources → group 0).
+        fault_index_map = {fault: idx for idx, sublist in enumerate(result)
+                           for fault in sublist}
+        self.alpha['fault_param_indices'] = [fault_index_map.get(fn, 0)
+                                             for fn in self.faultnames]
 
         if self.verbose:
             logger.info(f"Alpha faults set to: {self.alphaFaults} with indices {self.alphaFaultsIndex}")
@@ -748,6 +943,12 @@ class LinearInversionConfig(CommonConfigBase):
         # Deepcopy to avoid modifying self.geodata/self.faults
         geodata_export = copy.deepcopy(self.geodata)
         faults_export_src = copy.deepcopy(self.faults)
+
+        # Strip internal keys (e.g. _method_params_origin) before export
+        for _fval in faults_export_src.values():
+            if isinstance(_fval, dict):
+                for _k in [k for k in _fval if k.startswith('_')]:
+                    del _fval[_k]
 
         # geodata['data'] -> dataset names
         if 'data' in geodata_export and isinstance(geodata_export['data'], list):

@@ -5,7 +5,7 @@
 ## 基本规则
 
 - 用户手册放在 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs)。
-- 不删除、不重写 [ECAT 仓库 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs)。
+- 不在公开手册中引用本地绝对路径、未整理笔记或未随手册发布的材料。
 - 优先写经过整理的工作流，不直接堆脚本。
 - 每个案例都要有可复现命令、输入说明和输出说明。
 - 每个案例的教学重点都要落到脚本或配置片段上，说明“这段代码做什么、为什么要这样写、下一步接到哪里”。
@@ -35,9 +35,9 @@
 ## 已知限制
 ```
 
-## 从技术材料迁移时
+## 整理技术材料时
 
-可以参考 [ECAT 仓库 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs)，但要按用户学习路线重写：
+从实现笔记、调试记录或案例脚本整理到公开手册时，要按用户学习路线重写：
 
 - 从用户动作开始。
 - 先给最小可运行命令。

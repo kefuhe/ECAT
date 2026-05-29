@@ -891,6 +891,44 @@ class opticorr(SourceInv):
         # All done
         return
 
+    def getNumberOfTransformParameters(self, transformation):
+        '''
+        Returns the number of transform parameters for the given transformation.
+
+        Args:
+            * transformation : int (polynomial order) or str ('strain',
+                               'eulerrotation', 'internalstrain') or list thereof.
+
+        Returns:
+            * Integer
+        '''
+
+        # Get the transformation
+        if type(transformation) is list:
+            transformation = transformation
+
+        if transformation.__class__ in (str, int, type(None)):
+            transformation = [transformation]
+
+        Npo = 0
+        for itransformation in transformation:
+            if itransformation == 'strain':
+                tmpNpo = 3
+            elif itransformation == 'eulerrotation':
+                tmpNpo = 3
+            elif itransformation == 'internalstrain':
+                tmpNpo = 3
+            elif type(itransformation) is int:
+                tmpNpo = itransformation
+            # Unknown
+            else:
+                return 0
+
+            Npo += tmpNpo
+
+        # All done
+        return Npo
+
     def getTransformEstimator(self, trans, computeNormFact=True, verbose=True):
         '''
         Returns the Estimator for the transformation to estimate in the InSAR data.
@@ -1993,6 +2031,95 @@ class opticorr(SourceInv):
         data.tofile(fname)
 
         # All done
+        return
+
+    def write2file(self, fname, data='data', outDir='./', write_err=False, err_value=None, component=None, write_header=False, precision=None):
+        '''
+        Write to an ascii file.
+
+        Args:
+            * fname     : Filename
+
+        Kwargs:
+            * data      : can be 'data', 'synth' or 'res'
+            * outDir    : output Directory
+            * write_err : whether to write error columns (default: False)
+            * err_value : if provided, use this value for all errors if self.err_east/err_north are None
+            * component : 'east', 'north', or None (default). None writes both components.
+            * write_header : write a header line as the first line (default: False)
+            * precision : dict of decimal places, e.g. {'coord': 4, 'data': 4}.
+                          Keys: 'coord' (lon/lat), 'data' (east/north/err).
+                          Default None keeps the original str() behavior.
+
+        Returns:
+            * None
+        '''
+
+        # Format helper
+        def _fmt(val, key):
+            if precision is not None and key in precision:
+                return '{:.{}f}'.format(val, precision[key])
+            return str(val)
+
+        # Check component
+        if component is not None:
+            assert component in ('east', 'north'), \
+                "component must be 'east', 'north', or None, got '{}'".format(component)
+
+        # Get variables
+        x = self.lon
+        y = self.lat
+        if data == 'data':
+            east = self.east
+            north = self.north
+        elif data == 'synth':
+            east = self.east_synth
+            north = self.north_synth
+        elif data in ('res', 'resid', 'residuals'):
+            east = self.east - self.east_synth
+            north = self.north - self.north_synth
+
+        # Prepare error columns if needed
+        if write_err:
+            if self.err_east is not None:
+                err_east = self.err_east
+            elif err_value is not None:
+                err_east = np.full_like(east, err_value, dtype=float)
+            else:
+                err_east = np.full_like(east, 1.0, dtype=float)
+            if self.err_north is not None:
+                err_north = self.err_north
+            elif err_value is not None:
+                err_north = np.full_like(north, err_value, dtype=float)
+            else:
+                err_north = np.full_like(north, 1.0, dtype=float)
+
+        # Write to file
+        fout = open(os.path.join(outDir, fname), 'w')
+        if write_header:
+            header = ['lon', 'lat']
+            if component is None or component == 'east':
+                header.append('east' if data == 'data' else 'east_{}'.format(data))
+                if write_err:
+                    header.append('err_east')
+            if component is None or component == 'north':
+                header.append('north' if data == 'data' else 'north_{}'.format(data))
+                if write_err:
+                    header.append('err_north')
+            fout.write(' '.join(header) + '\n')
+        for i in range(x.shape[0]):
+            line = [_fmt(x[i], 'coord'), _fmt(y[i], 'coord')]
+            if component is None or component == 'east':
+                line.append(_fmt(east[i], 'data'))
+                if write_err:
+                    line.append(_fmt(err_east[i], 'data'))
+            if component is None or component == 'north':
+                line.append(_fmt(north[i], 'data'))
+                if write_err:
+                    line.append(_fmt(err_north[i], 'data'))
+            fout.write(' '.join(line) + '\n')
+        fout.close()
+
         return
 
     def write2grd(self, fname, oversample=1, data='data', interp=100, cmd='surface', useGMT=False):

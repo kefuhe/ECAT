@@ -19,6 +19,10 @@ import logging
 from .SourceInv import SourceInv
 from .geodeticplot import geodeticplot as geoplot
 from . import csiutils as utils
+from .projection import (
+    projection_from_heading_incidence,
+    projection_from_look_incidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -547,6 +551,7 @@ class insar(SourceInv):
 
     def read_from_binary(self, data, lon, lat, err=None, factor=1.0,
                                step=0.0, incidence=None, heading=None, azimuth=None, los=None,
+                               projection=None,
                                dtype=np.float32, remove_nan=True, downsample=1,
                                remove_zeros=True):
         '''
@@ -564,7 +569,9 @@ class insar(SourceInv):
             * incidence     : incidence angle (degree)
             * heading       : heading angle (degree)
             * azimuth       : Azimuth angle (degree)
-            * los           : LOS unit vector 3 component array (3-column array)
+            * los           : LOS/projection unit vector 3 component array (3-column array)
+            * projection    : Preferred alias for los. It is the ENU projection
+                              vector for any scalar observation.
             * dtype         : data type (default is np.float32 if data is a file)
             * remove_nan    : True/False
             * downsample    : default is 1 (take one pixel out of those)
@@ -577,9 +584,11 @@ class insar(SourceInv):
         # Get the data
         if type(data) is str:
             vel = np.fromfile(data, dtype=dtype)[::downsample]*factor + step
+            raw_data_size = None
         else:
+            raw_data_size = np.asarray(data).size
             vel = data.flatten()[::downsample]*factor + step
-
+        downsampled_data_size = vel.shape[0]
         # Get the lon
         if type(lon) is str:
             lon = np.fromfile(lon, dtype=dtype)[::downsample]
@@ -637,7 +646,32 @@ class insar(SourceInv):
         self.lon = lon
         self.lat = lat
 
-        # Compute the LOS
+        if projection is not None:
+            if los is not None:
+                raise ValueError("Use either projection or los, not both.")
+            los = projection
+
+        los_already_filtered = False
+
+        def _prepare_projection_array(vectors):
+            vectors = np.asarray(vectors)
+            if vectors.ndim == 1:
+                if vectors.shape[0] != 3:
+                    raise ValueError("projection vector must have three ENU components.")
+                return np.ones((len(iKeep), 3)) * vectors.reshape((1, 3))
+            if vectors.ndim != 2 or vectors.shape[1] != 3:
+                raise ValueError("projection must be a 3-column ENU array.")
+
+            if raw_data_size is not None and vectors.shape[0] == raw_data_size:
+                vectors = vectors[::downsample, :]
+            elif vectors.shape[0] != downsampled_data_size:
+                raise ValueError(
+                    "projection row count must match either the raw data size "
+                    "or the downsampled data size."
+                )
+            return vectors[iKeep, :]
+
+        # Compute the LOS/projection vector
         if heading is not None:
             if type(incidence) is np.ndarray:
                 self.inchd2los(incidence, heading, origin='binaryfloat')
@@ -660,12 +694,15 @@ class insar(SourceInv):
                 self.los = self.los[::downsample,:]
         elif los is not None:
             if type(los) is np.ndarray:
-                self.los = los[::downsample,:]
+                self.los = _prepare_projection_array(los)
+                los_already_filtered = True
             elif type(los) is str:
-                self.los = np.fromfile(los, 'f').reshape((len(vel), 3))
+                self.los = _prepare_projection_array(np.fromfile(los, 'f').reshape((-1, 3)))
+                los_already_filtered = True
         else:
             self.los = None
-        if self.los is not None:
+
+        if self.los is not None and not los_already_filtered:
             self.los = self.los[iKeep,:]
 
         # Keep track of factor
@@ -749,8 +786,8 @@ class insar(SourceInv):
         From the incidence and the heading, defines the LOS vector.
 
         Args:
-            * incidence : Incidence angle.
-            * azimuth   : Azimuth angle of the LOS
+            * incidence : Incidence angle, 0 is at zenith, 90 is at horizon.
+            * azimuth   : Azimuth angle of the satellite flight path, 0 is East, 90 is North, 180 is West, 270 is South.
 
         Kwargs:
             * origin    : What are these numbers
@@ -792,23 +829,15 @@ class insar(SourceInv):
         self.Incidence = incidence
         self.Azimuth = azimuth
 
-        # Convert angles
-        alpha = azimuth*np.pi/180. # Azimuth angle, 0 is East, 90 is North
-        phi = incidence*np.pi/180. # Elevation angle, 0 is at zenith, 90 is at horizon
-
-        # Compute LOS with alpha - 90
-        Se = -1.0 * np.sin(alpha) * np.sin(phi)
-        Sn = np.cos(alpha) * np.sin(phi)
-        Su = np.cos(phi)
-
-        # Store it
-        if origin in ('grd', 'GRD', 'binary', 'bin', 'binaryfloat'):
-            self.los = np.ones((alpha.shape[0],3))
-        else:
-            self.los = np.ones((self.lon.shape[0],3))
-        self.los[:,0] *= Se
-        self.los[:,1] *= Sn
-        self.los[:,2] *= Su
+        # Legacy behavior: azimuth is converted to a toward-satellite
+        # horizontal projection by using azimuth + 90 degrees.
+        self.los = projection_from_look_incidence(
+            np.asarray(azimuth) + 90.0,
+            incidence,
+            look_sense='toward',
+        )
+        if origin not in ('grd', 'GRD', 'binary', 'bin', 'binaryfloat') and self.los.shape[0] == 1:
+            self.los = np.ones((self.lon.shape[0], 3)) * self.los
 
         # all done
         return
@@ -818,8 +847,8 @@ class insar(SourceInv):
         From the incidence and the heading, defines the LOS vector.
 
         Args:
-            * incidence : Incidence angle.
-            * heading   : Heading angle.
+            * incidence : Incidence angle, 0 is at zenith, 90 is at horizon.
+            * heading   : Heading angle of the satellite flight path, 0 is North, 90 is East, 180 is South, 270 is West.
 
         Kwargs:
             * origin    : What are these numbers
@@ -859,23 +888,14 @@ class insar(SourceInv):
         self.Incidence = incidence
         self.Heading = heading
 
-        # Convert heading angle with North as 0 degree and clockwise as positive to right-hand los direction
-        alpha = (heading+90.)*np.pi/180.
-        phi = incidence *np.pi/180.
-
-        # Compute LOS where negative is to convert right-hand los to left-hand los
-        Se = -1.0 * np.sin(alpha) * np.sin(phi)
-        Sn = -1.0 * np.cos(alpha) * np.sin(phi)
-        Su = np.cos(phi)
-
-        # Store it
-        if origin in ('grd', 'GRD', 'binary', 'bin', 'binaryfloat'):
-            self.los = np.ones((alpha.shape[0],3))
-        else:
-            self.los = np.ones((self.lon.shape[0],3))
-        self.los[:,0] *= Se
-        self.los[:,1] *= Sn
-        self.los[:,2] *= Su
+        self.los = projection_from_heading_incidence(
+            heading,
+            incidence,
+            look_side='right',
+            output='toward_satellite',
+        )
+        if origin not in ('grd', 'GRD', 'binary', 'bin', 'binaryfloat') and self.los.shape[0] == 1:
+            self.los = np.ones((self.lon.shape[0], 3)) * self.los
 
         # all done
         return
@@ -3660,7 +3680,7 @@ class insar(SourceInv):
 
             if save_path:
                 plt.savefig(save_path, dpi=300)
-                print(f"Saved fit check: {save_path}")
+                logger.info(f"Saved fit check: {save_path}")
             
             if show:
                 plt.show()
@@ -3759,24 +3779,34 @@ class insar(SourceInv):
         return
 
 
-    def write2file(self, fname, data='data', outDir='./', write_los=False, write_err=False, err_value=None):
+    def write2file(self, fname, data='data', outDir='./', write_los=False, write_err=False, err_value=None, write_header=False, precision=None):
         '''
         Write to an ascii file
-    
+
         Args:
             * fname     : Filename
-    
+
         Kwargs:
             * data      : can be 'data', 'synth' or 'resid'
             * outDir    : output Directory
             * write_los : write the los vector as well
             * write_err : whether to write error column (default: False)
             * err_value : if provided, use this value for all errors if self.err is None
-    
+            * write_header : write a header line as the first line (default: False)
+            * precision : dict of decimal places, e.g. {'coord': 4, 'data': 4, 'vector': 3}.
+                          Keys: 'coord' (lon/lat), 'data' (vel/err), 'vector' (los).
+                          Default None keeps the original str() behavior.
+
         Returns:
             * None
         '''
-    
+
+        # Format helper
+        def _fmt(val, key):
+            if precision is not None and key in precision:
+                return '{:.{}f}'.format(val, precision[key])
+            return str(val)
+
         # Get variables
         x = self.lon
         y = self.lat
@@ -3788,7 +3818,7 @@ class insar(SourceInv):
             z = self.orbit
         elif data in ('res', 'resid', 'residuals'):
             z = self.vel - self.synth
-    
+
         # Prepare error column if needed
         if write_err:
             if self.err is not None:
@@ -3797,16 +3827,23 @@ class insar(SourceInv):
                 err = np.full_like(z, err_value, dtype=float)
             else:
                 err = np.full_like(z, 1.0, dtype=float)
-    
+
         # Write to file
         fout = open(os.path.join(outDir, fname), 'w')
-        for i in range(x.shape[0]):
-            line = [x[i], y[i], z[i]]
+        if write_header:
+            header = ['lon', 'lat', data]
             if write_err:
-                line.append(err[i])
+                header.append('err')
             if write_los:
-                line.extend(self.los[i, :])
-            fout.write(' '.join(str(val) for val in line) + '\n')
+                header.extend(['los_e', 'los_n', 'los_u'])
+            fout.write(' '.join(header) + '\n')
+        for i in range(x.shape[0]):
+            line = [_fmt(x[i], 'coord'), _fmt(y[i], 'coord'), _fmt(z[i], 'data')]
+            if write_err:
+                line.append(_fmt(err[i], 'data'))
+            if write_los:
+                line.extend([_fmt(v, 'vector') for v in self.los[i, :]])
+            fout.write(' '.join(line) + '\n')
         fout.close()
     
         return

@@ -12,6 +12,7 @@ Changed by Kefeng He on 2023-11-16 for the parallelization of the SMC sampling
 We introduce numba to accelerate the code, and use the MPI parallelization to speed up the code.
 """
 import numpy as np
+import warnings
 from numba import jit, njit
 from multiprocessing import Pool
 from joblib import Parallel, delayed
@@ -23,6 +24,13 @@ import h5py
 
 # @njit
 def deterministicR(inIndex, q):
+    """
+    [DEPRECATED] Deterministic resampling algorithm (Kitagawa 1996).
+    
+    Legacy pure Python implementation. 
+    Replaced by `deterministicR_optimized` for better performance.
+    """
+    warnings.warn("deterministicR is deprecated. Use deterministicR_optimized instead.", DeprecationWarning, stacklevel=2)
     n_chains = inIndex.shape[0]
     parents = np.arange(n_chains)
     N_childs = np.zeros(n_chains, dtype=np.int64)
@@ -76,7 +84,7 @@ def deterministicR_optimized(inIndex, q):
 
 def AMH(X,target,covariance,mrun,beta,LB,UB):
     """
-    Adaptive Metropolis algorithm
+    [DEPRECATED] Adaptive Metropolis algorithm
     scales the covariance matrix according to the acceptance rate 
     cov of proposal = (a+ bR)*sigma;  R = acceptance rate
     returns the last sample of the chain
@@ -99,6 +107,7 @@ def AMH(X,target,covariance,mrun,beta,LB,UB):
      Matlab version written on 12 Mar 2016
      (Don't forget to acknowledge)
     """
+    warnings.warn("AMH is deprecated. Use AMH_optimized_jit instead.", DeprecationWarning, stacklevel=2)
     
     Dims = covariance.shape[0]
     logpdf = target(X) 
@@ -211,7 +220,7 @@ def run_amh(X, covariance_chol, mrun, beta, LB, UB, target, a=1.0/9.0, b=8.0/9.0
         X_new = X + s * Z[i]  # Add X and multiply by s inside the loop
         X_new[sameind] = LB[sameind]
 
-        # 在run_amh函数中使用新的函数
+        # Apply bound adjustments using the updated helper function
         X_new = adjust_bounds(X_new, LB, UB, avg_acc)
 
         P_new = beta * target(X_new)
@@ -305,11 +314,14 @@ class SMCclass:
                     
     def prior_samples(self):
         '''
-        determines the prior posterior values 
-        the prior samples are estimated from lower and upper bounds
+        [DEPRECATED] Determines the prior posterior values.
+        
+        Legacy method using a pure Python for-loop over chains.
+        Replaced by `prior_samples_vectorize` which uses vectorized operations for speedup.
         
         Output : samples (NT2 object with estimated posterior values)
         '''
+        warnings.warn("prior_samples is deprecated. Use prior_samples_vectorize instead.", DeprecationWarning, stacklevel=2)
         numpars = self.opt.LB.shape[0]
         diffbnd = self.opt.UB - self.opt.LB
         diffbndN = np.tile(diffbnd,(self.opt.N,1))
@@ -344,7 +356,7 @@ class SMCclass:
         beta = np.array([0]) 
         stage = np.array([1]) 
         
-        # 使用NumPy的向量化操作替换for循环
+        # Use NumPy vectorized operations to replace the for loop
         logpost = np.apply_along_axis(self.opt.target, 1, sampzero)
         postval = logpost.reshape(-1, 1)
             
@@ -354,8 +366,13 @@ class SMCclass:
     
     def find_beta(self): 
         """
-        Calculates the beta parameter for the next stage
+        [DEPRECATED] Calculates the beta parameter for the next stage.
+        
+        Legacy method. Kept for educational and algorithmic evolution purposes.
+        Replaced by `find_beta_welford` (for better numerical stability) and subsequently
+        `find_beta_numpy` (vectorized, 100x+ faster).
         """
+        warnings.warn("find_beta is deprecated. Use find_beta_numpy instead.", DeprecationWarning, stacklevel=2)
         beta1 = self.samples.beta[-1]       #prev_beta
         beta2 = self.samples.beta[-1]       #prev_beta
         max_post = np.max(self.samples.postval) 
@@ -390,10 +407,16 @@ class SMCclass:
     
         return samples
     
-    def find_beta_optimized(self): 
+    def find_beta_welford(self): 
         """
-        Calculates the beta parameter for the next stage
+        [DEPRECATED] Calculates the beta parameter using the online Welford algorithm.
+        
+        Legacy method. Kept to illustrate the mathematical equivalence with NumPy's ddof=1
+        and how Welford's algorithm avoids numerical catastrophic cancellation.
+        Replaced by `find_beta_numpy` which eliminates the pure Python loop for ~100x+ speedup
+        while maintaining exact mathematical equivalence.
         """
+        warnings.warn("find_beta_welford is deprecated. Use find_beta_numpy instead.", DeprecationWarning, stacklevel=2)
         beta1 = self.samples.beta[-1]       #prev_beta
         beta2 = self.samples.beta[-1]       #prev_beta
         max_post = np.max(self.samples.postval) 
@@ -411,7 +434,7 @@ class SMCclass:
             logwght = diffbeta*logpst
             wght = np.exp(logwght)
 
-            # Use online algorithm to calculate standard deviation and mean
+            # Use online welford algorithm to calculate standard deviation and mean
             mean = 0
             M2 = 0
             for i in range(len(wght)):
@@ -437,56 +460,64 @@ class SMCclass:
 
         return samples
 
-    def find_beta_brentq(self): 
+    def find_beta_numpy(self):
         """
-        Calculates the beta parameter for the next stage using Brent's method
-        Bug to be fixed: The function may not converge for some cases
+        Calculates the beta parameter for the next stage using numpy built-in
+        functions (numpy-optimized version).
+
+        Comparison with find_beta_welford:
+        - find_beta_welford: uses the Welford online algorithm (8-line loop)
+          to manually compute standard deviation
+        - This method: directly calls np.std(ddof=1) / np.mean(), replacing the
+          loop with a single line; results are numerically identical
+
+        Equivalence proof (Welford <-> numpy):
+          Welford recurrence: M_{2,n} = M_{2,n-1} + (x_n - mu_{n-1})(x_n - mu_n)
+          Mathematical induction proves M_{2,N} = sum_i (x_i - mu)^2 = N * np.var(x, ddof=0)
+          Therefore M_{2,N} / (N-1) = np.var(x, ddof=1)
+          See docs/SMC_MPI_PERFORMANCE_ANALYSIS.md section 4.5 for the full proof.
+
+        Note on ddof:
+          ddof=1 (sample std) is used to align exactly with find_beta_welford,
+          which divides M2 by (N-1). In practice, ddof=0 and ddof=1 converge to
+          the same beta value within the 1e-6 bisection tolerance.
+
+        Returns
+        -------
+        samples : namedtuple
+            Updated samples with new beta and stage fields.
         """
-        beta1 = self.samples.beta[-1]       # prev_beta
-        max_post = np.max(self.samples.postval) 
+        beta1 = self.samples.beta[-1]       #prev_beta
+        max_post = np.max(self.samples.postval)
         logpst = self.samples.postval - max_post
-    
-        def objective(beta):
+        beta = beta1 + .5
+
+        if beta > 1:
+            beta = 1
+
+        refcov = 1
+
+        while beta - beta1 > 1e-6:
+            curr_beta = (beta + beta1) / 2
             diffbeta = beta - beta1
             logwght = diffbeta * logpst
             wght = np.exp(logwght)
-    
-            # Use online algorithm to calculate standard deviation and mean
-            mean = 0
-            M2 = 0
-            for i in range(len(wght)):
-                delta = wght[i] - mean
-                mean += delta / (i + 1)
-                delta2 = wght[i] - mean
-                M2 += delta * delta2
-            var = M2 / (len(wght) - 1)
-            std_dev = np.sqrt(var)
-            covwght = std_dev / mean
-    
-            return covwght - 1  # We want covwght to be 1
-    
-        # Check the signs of the objective function at the endpoints
-        f_beta1 = objective(beta1)
-        f_1 = objective(1)
-    
-        # Adjust the interval if necessary
-        if f_beta1 * f_1 > 0:
-            if f_beta1 < 0:
-                # If f_beta1 < 0 and f_1 < 0, set beta to 1
-                betanew = 1
+
+            # Single numpy call replaces the 8-line Welford loop; results are identical
+            covwght = np.std(wght, ddof=1) / np.mean(wght)
+
+            if covwght > refcov:
+                beta = curr_beta
             else:
-                # If f_beta1 > 0 and f_1 > 0, raise an error
-                raise ValueError("The objective function must have different signs at the endpoints beta1 and 1.")
-        else:
-            # Use Brent's method to find the root of the objective function
-            betanew = brentq(objective, beta1, 1, xtol=1e-6)
-    
+                beta1 = curr_beta
+
+        betanew = np.min(np.array([1, beta]))
         betaarray = np.append(self.samples.beta, betanew)
         newstage = np.arange(1, self.samples.stage[-1] + 2)
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, 
-                        betaarray, newstage, self.samples.covsmpl, 
-                        self.samples.resmpl)
-    
+        samples = self.NT2(self.samples.allsamples, self.samples.postval, \
+                           betaarray, newstage, self.samples.covsmpl, \
+                           self.samples.resmpl)
+
         return samples
     
     def resample_stage(self):
@@ -514,9 +545,12 @@ class SMCclass:
 
     def resample_stage_optimized(self):
         '''
-        Resamples the model samples at a certain stage 
-        Uses Kitagawa's deterministic resampling algorithm
+        [DEPRECATED] Resamples the model samples at a certain stage.
+        
+        Legacy experimental method using an external @njit calculate_weights function.
+        Replaced by `resample_stage` which uses clean vectorized NumPy operations.
         '''
+        warnings.warn("resample_stage_optimized is deprecated. Use resample_stage instead.", DeprecationWarning, stacklevel=2)
         
         # calculate the weight for model samples
         logpst = self.samples.postval - np.max(self.samples.postval)
@@ -534,9 +568,15 @@ class SMCclass:
         
     def make_covariance(self):
         '''
-        make the model covariance using the weights and samples from previous 
-        stage
+        [DEPRECATED] Make the model covariance using pure Python for-loop.
+        
+        Legacy method. Kept for educational and baseline benchmarking purposes.
+        It shows the fundamental math of weighted covariance matrix calculation.
+        Replaced by `make_covariance_optimized` and finally `make_covariance_numpy`
+        for extreme BLAS acceleration.
         '''
+        warnings.warn("make_covariance is deprecated. Use make_covariance_numpy instead.", DeprecationWarning, stacklevel=2)
+        
         # calculate the weight for model samples
         
         dims = self.samples.allsamples.shape[1]
@@ -567,9 +607,16 @@ class SMCclass:
 
     def make_covariance_optimized(self, epsilon = 1e-6):
         '''
-        make the model covariance using the weights and samples from previous 
-        stage
+        [DEPRECATED] Make the model covariance using numpy.einsum.
+        
+        Legacy method. Kept to illustrate the memory bottleneck of intermediate 
+        O(N*D^2) tensors (`smpdsq`). While faster than the pure Python loop, it 
+        causes MemoryError (OOM) when the parameter dimension (D) is large.
+        Replaced by `make_covariance_numpy` which reduces memory to O(N*D) and uses BLAS DGEMM.
         '''
+        warnings.warn("make_covariance_optimized is deprecated due to OOM risks. Use make_covariance_numpy instead.", 
+                      DeprecationWarning, stacklevel=2)
+        
         # calculate the weight for model samples
         
         dims = self.samples.allsamples.shape[1]
@@ -594,7 +641,7 @@ class SMCclass:
         # for i in range(smpldiff.shape[0]):
         #     covariance += probwght[i] * np.outer(smpldiff[i], smpldiff[i])
 
-        # 在计算协方差矩阵后添加一个小的正数到对角线上
+        # Add a small positive value to the diagonal to regularize the covariance matrix
         epsilon = epsilon
         covariance += epsilon * np.eye(dims)
 
@@ -603,77 +650,75 @@ class SMCclass:
                         covariance, self.samples.resmpl)
         return samples
 
-    def make_covariance_lowerTriangular(self, epsilon=1e-6):
-        '''
-        make the model covariance using the weights and samples from previous 
-        stage
-        '''
-        # calculate the weight for model samples
+    def make_covariance_numpy(self, epsilon=1e-6):
+        """
+        Computes the model covariance matrix using BLAS matrix multiplication
+        (numpy-optimized version).
+
+        Comparison with make_covariance_optimized (einsum):
+        - einsum version: creates an O(N*D^2) intermediate tensor
+          smpdsq[i,j,k] = smpldiff[i,j]*smpldiff[i,k], then reduces by weight sum;
+          memory footprint grows with N*D^2
+        - This method: absorbs weights into the difference matrix and reduces the
+          problem to a standard matrix multiply C = E^T @ E, requiring only O(N*D)
+          memory and dispatching to the BLAS DGEMM kernel
+
+        Mathematical derivation:
+          C = sum_i w_i * (x_i - mu)(x_i - mu)^T
+            = sum_i [sqrt(w_i)*(x_i - mu)] * [sqrt(w_i)*(x_i - mu)]^T
+            = E^T @ E,  where  E[i,:] = sqrt(w_i) * (x_i - mu)
+
+        Performance characteristics:
+        - Still 17-35x faster than einsum at 1 thread (OMP_NUM_THREADS=1, typical MPI config)
+        - Advantage comes from the algorithm itself (O(ND) memory, cache-friendly),
+          not from multi-threading
+        - See docs/SMC_MPI_PERFORMANCE_ANALYSIS.md section 4.7 for benchmark details
+
+        Parameters
+        ----------
+        epsilon : float, optional
+            Regularization term added to the diagonal to prevent a singular
+            covariance matrix. Default is 1e-6.
+
+        Returns
+        -------
+        samples : namedtuple
+            Updated samples with the new covsmpl field.
+        """
+        # Calculate model weights
         dims = self.samples.allsamples.shape[1]
         logpst = self.samples.postval - np.max(self.samples.postval)
         logwght = (self.samples.beta[-1] - self.samples.beta[-2]) * logpst
         wght = np.exp(logwght)
-        
+
         probwght = wght / np.sum(wght)
-        
-        # calculate the mean samples
-        meansmpl = np.sum(probwght[:, None] * self.samples.allsamples, axis=0)
-        
-        # calculate the model covariance
-        smpldiff = self.samples.allsamples - meansmpl
-        covariance = np.zeros((dims, dims))
-        
-        # Calculate the lower triangle of the covariance matrix using vectorized operations
-        for i in range(dims):
-            covariance[i, :i+1] = np.sum(probwght[:, None] * smpldiff[:, i:i+1] * smpldiff[:, :i+1], axis=0)
-        
-        # Symmetric assignment
-        covariance = covariance + np.tril(covariance, -1).T
-        
-        # Add a small positive number to the diagonal
-        covariance += epsilon * np.eye(dims)
-
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, 
-                        self.samples.beta, self.samples.stage, 
-                        covariance, self.samples.resmpl)
-        return samples
-
-    def make_covariance_optimized_jit(self, epsilon = 1e-6):
-        '''
-        make the model covariance using the weights and samples from previous 
-        stage
-        '''
-        # calculate the weight for model samples
-        
-        dims = self.samples.allsamples.shape[1]
-        logpst = self.samples.postval - np.max(self.samples.postval)
-        logwght = (self.samples.beta[-1] - self.samples.beta[-2])* logpst
-        wght = np.exp(logwght)
-        
-        probwght = wght/np.sum(wght)
-        weightmat = np.tile(probwght,(1,dims))
+        weightmat = np.tile(probwght, (1, dims))
         multmat = weightmat * self.samples.allsamples
-        
-        # calculate the mean samples
-        meansmpl = multmat.sum(axis=0, dtype='float')
-        
-        # calculate the model covariance
-        smpldiff = self.samples.allsamples - meansmpl  # Calculate smpldiff outside the loop
-        covariance = calculate_covariance(smpldiff, probwght)
 
-        # 在计算协方差矩阵后添加一个小的正数到对角线上
-        epsilon = epsilon
+        # Weighted mean
+        meansmpl = multmat.sum(axis=0, dtype='float')
+
+        # Compute covariance: C = E^T @ E, where E = sqrt(w) * (x - mu)
+        smpldiff = self.samples.allsamples - meansmpl     # (N, dims)
+        weighted_diff = smpldiff * np.sqrt(probwght)      # (N, dims), broadcast sqrt(w)
+        covariance = weighted_diff.T @ weighted_diff       # (dims, dims), calls BLAS DGEMM
+
+        # Regularization: prevent singular covariance matrix
         covariance += epsilon * np.eye(dims)
 
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, \
-                        self.samples.beta, self.samples.stage, \
-                        covariance, self.samples.resmpl)
+        samples = self.NT2(self.samples.allsamples, self.samples.postval,
+                           self.samples.beta, self.samples.stage,
+                           covariance, self.samples.resmpl)
         return samples
         
     def MCMC_samples(self):
         """
-        Nothing
+        [DEPRECATED] MCMC sampling for the next stage (Sequential).
+        
+        Legacy non-parallel method. 
+        Replaced by `MCMC_samples_parallel_mpi` for MPI-based parallelization.
         """
+        warnings.warn("MCMC_samples is deprecated. Use MCMC_samples_parallel_mpi instead.", DeprecationWarning, stacklevel=2)
         dims = self.samples.allsamples.shape[1]
         
         mhsmpl = np.zeros([self.opt.N,dims])
@@ -738,8 +783,8 @@ class SMCclass:
 
 def SMC_samples(opt,samples, NT1, NT2):
     '''
-    Sequential Monte Carlo technique
-    < a subset of CATMIP by Sarah Minson>
+    [DEPRECATED] Sequential Monte Carlo technique (Sequential)
+    <a subset of CATMIP by Sarah Minson>
     The method samples the target distribution through several stages (called 
     transitioning of simulated annealing). At each stage the samples corresponds
     to the intermediate PDF between the prior PDF and final target PDF. 
@@ -785,6 +830,7 @@ def SMC_samples(opt,samples, NT1, NT2):
     written by: Rishabh Dutta, Mar 25 2019
     (Don't forget to acknowledge)
     '''
+    warnings.warn("SMC_samples is deprecated. Use SMC_samples_parallel_mpi instead.", DeprecationWarning, stacklevel=2)
     current = SMCclass(opt, samples, NT1, NT2)
     current.initialize()            # prints the initialization
     
@@ -804,7 +850,7 @@ def SMC_samples(opt,samples, NT1, NT2):
         
         # make the model covariance 
         current = SMCclass(opt, samples, NT1, NT2)
-        samples = current.make_covariance_optimized()       
+        samples = current.make_covariance_numpy() # make_covariance_optimized() changed to make_covariance_numpy() for further optimization   
         
         # use the resampled model samples as starting point for MCMC sampling 
         # we use adaptive Metropolis sampling 
@@ -889,27 +935,27 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
         if rank == 0:
             start_time = time.time()
         
-    # 等待所有进程完成计算
+    # Wait for all processes to complete
     comm.Barrier()
-    # 广播samples到所有的进程
+    # Broadcast samples to all processes
     samples = comm.bcast(samples, root=0)
         
     while samples.beta[-1] != 1:
         if rank == 0:
             current = SMCclass(opt, samples, NT1, NT2)
-            samples = current.find_beta_optimized() # find_beta_optimized() changed to find_beta_brentq()
+            samples = current.find_beta_numpy() # find_beta_welford() changed to find_beta_numpy() for further optimization
         
             current = SMCclass(opt, samples, NT1, NT2)
             samples = current.resample_stage() # resample_stage_optimized
         
             current = SMCclass(opt, samples, NT1, NT2)
-            samples = current.make_covariance_optimized(epsilon=covariance_epsilon)
+            samples = current.make_covariance_numpy(epsilon=covariance_epsilon) # make_covariance_optimized() changed to make_covariance_numpy() for further optimization
         
             print(f'Starting metropolis chains at stage = {samples.stage[-1] :3d} and beta = {samples.beta[-1] :.6f}.', flush=True)
 
             end_time = time.time()
 
-            # 计算并打印执行时间
+            # Calculate and print execution time
             execution_time = end_time - start_time
             current_time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
             print(f'The while loop took {execution_time:.6f} seconds to execute. Current time: {current_time}', flush=True)
@@ -922,17 +968,17 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             samples = None
 
 
-        # 等待所有进程完成计算
+        # Wait for all processes to complete
         comm.Barrier()
-        # 广播samples到所有的进程
+        # Broadcast samples to all processes
         samples = comm.bcast(samples, root=0)
 
         current = SMCclass(opt, samples, NT1, NT2)
         samples = current.MCMC_samples_parallel_mpi(comm=comm, a=amh_a, b=amh_b)
 
-        # 等待所有进程完成计算
+        # Wait for all processes to complete
         comm.Barrier()
-        # 广播samples到所有的进程
+        # Broadcast samples to all processes
         samples = comm.bcast(samples, root=0)
 
     if rank == 0 and save_at_final_stage:

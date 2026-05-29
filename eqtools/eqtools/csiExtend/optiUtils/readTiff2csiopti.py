@@ -17,7 +17,7 @@ class TiffoptiReader(csiopticorr):
     def extract_raw_grd(self, directory_name=None, filename=None, ew_band=1, sn_band=2, vert_band=None,
                         factor_to_m=1.0, zero2nan=True, wavelength=None):
         """
-        Extract SAR raw images and process azimuth and incidence angles.
+        Extract raw optical offset images.
     
         Parameters:
             * directory_name (str, optional): The directory name where the raw images are stored. Defaults to None.
@@ -64,9 +64,99 @@ class TiffoptiReader(csiopticorr):
         north = self.raw_north
         mesh_lon = self.raw_mesh_lon
         mesh_lat = self.raw_mesh_lat
-        # Read SAR data from binary files using inherited method
+        # Read optical offset data using the inherited CSI binary reader.
         self.read_from_binary(east, north, lon=mesh_lon, lat=mesh_lat, 
                              remove_nan=remove_nan)
+
+    @staticmethod
+    def _finite_value_diagnostics(values, central_percentile=99.0):
+        values = np.asarray(values, dtype=float).ravel()
+        finite = values[np.isfinite(values)]
+        result = {
+            "total_count": int(values.size),
+            "valid_count": int(finite.size),
+            "full_min": np.nan,
+            "full_max": np.nan,
+            "robust_min": np.nan,
+            "robust_max": np.nan,
+            "central_percentile": float(central_percentile),
+        }
+        if finite.size == 0:
+            return result
+        central_percentile = float(central_percentile)
+        tail = max(0.0, min(100.0, 100.0 - central_percentile)) / 2.0
+        result.update(
+            {
+                "full_min": float(np.nanmin(finite)),
+                "full_max": float(np.nanmax(finite)),
+                "robust_min": float(np.nanpercentile(finite, tail)),
+                "robust_max": float(np.nanpercentile(finite, 100.0 - tail)),
+            }
+        )
+        return result
+
+    @staticmethod
+    def _format_range(vmin, vmax):
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return "[nan, nan]"
+        return f"[{vmin:.6g}, {vmax:.6g}]"
+
+    def input_summary(self, central_percentile=99.0):
+        east = np.asarray(self.east, dtype=float).ravel()
+        north = np.asarray(self.north, dtype=float).ravel()
+        lon = np.asarray(self.lon, dtype=float).ravel()
+        lat = np.asarray(self.lat, dtype=float).ravel()
+        norm = np.sqrt(east**2 + north**2)
+        valid_pair = (
+            np.isfinite(east)
+            & np.isfinite(north)
+            & np.isfinite(lon)
+            & np.isfinite(lat)
+        )
+        return {
+            "name": self.name,
+            "factor_to_m": getattr(self, "factor_to_m", None),
+            "total_count": int(east.size),
+            "valid_pair_count": int(np.count_nonzero(valid_pair)),
+            "lon_range": self._finite_value_diagnostics(lon, central_percentile=100.0),
+            "lat_range": self._finite_value_diagnostics(lat, central_percentile=100.0),
+            "components": {
+                "east": self._finite_value_diagnostics(east, central_percentile=central_percentile),
+                "north": self._finite_value_diagnostics(north, central_percentile=central_percentile),
+                "horizontal_norm": self._finite_value_diagnostics(norm, central_percentile=central_percentile),
+            },
+        }
+
+    def format_input_summary(self, central_percentile=99.0):
+        summary = self.input_summary(central_percentile=central_percentile)
+        lines = [
+            f"Optical observation summary for {summary['name']}:",
+            f"  factor_to_m          : {summary['factor_to_m']}",
+            f"  valid east/north pair: {summary['valid_pair_count']}/{summary['total_count']}",
+        ]
+        lon_stats = summary["lon_range"]
+        lat_stats = summary["lat_range"]
+        lines.extend(
+            [
+                "  Coordinate range:",
+                f"    lon : {self._format_range(lon_stats['full_min'], lon_stats['full_max'])}",
+                f"    lat : {self._format_range(lat_stats['full_min'], lat_stats['full_max'])}",
+                f"  Component ranges (central {central_percentile:g}%):",
+            ]
+        )
+        for name, stats in summary["components"].items():
+            lines.append(
+                f"    {name:<15}: "
+                f"{self._format_range(stats['robust_min'], stats['robust_max'])} "
+                f"(full {self._format_range(stats['full_min'], stats['full_max'])}, "
+                f"valid {stats['valid_count']}/{stats['total_count']})"
+            )
+        return "\n".join(lines)
+
+    def print_input_summary(self, central_percentile=99.0, file=None):
+        text = self.format_input_summary(central_percentile=central_percentile)
+        print(text, file=file)
+        return self.input_summary(central_percentile=central_percentile)
 
     def to_xarray_dataarray(self, data='east'):
         '''
@@ -87,7 +177,7 @@ class TiffoptiReader(csiopticorr):
     
     def cut_raw_sar(self, lon_range, lat_range, inplace=False):
         """
-        Cut the raw SAR data based on the given longitude and latitude ranges.
+        Cut the raw optical data based on the given longitude and latitude ranges.
 
         Parameters:
         lon_range (list): The longitude range [min, max].
@@ -98,7 +188,7 @@ class TiffoptiReader(csiopticorr):
         numpy.ndarray: The meshgrid of latitude.
         list: The coordinate range [lon_min, lon_max, lat_min, lat_max].
         """
-        # Cut the raw SAR data based on the given longitude and latitude ranges
+        # Cut the raw optical data based on the given longitude and latitude ranges.
         lon_min, lon_max = lon_range
         lat_min, lat_max = lat_range
         lon_idx = np.where((self.raw_lon >= lon_min) & (self.raw_lon <= lon_max))[0]
@@ -117,20 +207,25 @@ class TiffoptiReader(csiopticorr):
             self.raw_lon = mesh_lon[0, :]
             self.raw_lat = mesh_lat[:, 0]
         return raw_east, raw_north, mesh_lon, mesh_lat, coordrange
+
+    def cut_raw_optical(self, lon_range, lat_range, inplace=False):
+        return self.cut_raw_sar(lon_range, lat_range, inplace=inplace)
     
     def select_pixels(self, minlon, maxlon, minlat, maxlat):
         self.cut_raw_sar([minlon, maxlon], [minlat, maxlat], inplace=True)
         return super().select_pixels(minlon, maxlon, minlat, maxlat)
     
-    def plot_raw_sar(self, data=['east'], coordrange=None, cmap='jet', vmin=None, vmax=None, 
-                     title=None, savefig=None, figsize=(7, 4), dpi=300, show=True, 
-                     add_colorbar=True, cb_label='Amplitude', faults=None, 
-                     trace_color='red', trace_linewidth=0.5, style=['science'], fontsize=None,
-                     colorbar_length=0.4, colorbar_height=0.02, colorbar_x=0.1, colorbar_y=0.1,
-                     colorbar_orientation='vertical', cb_label_loc=None, tickfontsize=10, labelfontsize=10,
-                     unified_colorbar=False, sharey=True, equal_aspect=False):
+    def plot_optical_values(self, data=['east'], coordrange=None, cmap='jet', vmin=None, vmax=None,
+                            title=None, savefig=None, save_fig=None, file_path=None,
+                            rawdownsample4plot=None, factor4plot=1.0, symmetry=True,
+                            figsize=(7, 4), dpi=300, show=True,
+                            add_colorbar=True, cb_label='Amplitude', faults=None,
+                            trace_color='red', trace_linewidth=0.5, style=['science'], fontsize=None,
+                            colorbar_length=0.4, colorbar_height=0.02, colorbar_x=0.1, colorbar_y=0.1,
+                            colorbar_orientation='vertical', cb_label_loc=None, tickfontsize=10, labelfontsize=10,
+                            unified_colorbar=False, sharey=True, equal_aspect=False):
         """
-        Plot the raw optical or SAR data.
+        Plot raw optical offset data.
     
         Parameters:
             data (str or list): The type(s) of data to plot ('east', 'north', or 'vertical').
@@ -141,6 +236,9 @@ class TiffoptiReader(csiopticorr):
             vmax (float or list, optional): The maximum value(s) for the color scale. If a single value is provided, all subplots share it.
             title (str or list, optional): The title(s) of the plot(s). If multiple data are plotted, provide a list of titles.
             savefig (str, optional): The filename to save the plot. If None, the plot will not be saved.
+            save_fig (bool, optional): If False, disable saving; if True and file_path is set, save there.
+            file_path (str, optional): Output path used when save_fig is enabled.
+            factor4plot (float): Scale factor applied to plotted east/north values.
             figsize (tuple): The size of the figure.
             dpi (int): The resolution of the figure.
             show (bool): Whether to display the plot.
@@ -166,6 +264,11 @@ class TiffoptiReader(csiopticorr):
         Returns:
             matplotlib.figure.Figure: The figure object of the plot.
         """
+        if save_fig is False:
+            savefig = None
+        elif savefig is None and file_path is not None:
+            savefig = file_path
+
         # Ensure data is a list for consistent handling
         if isinstance(data, str):
             data = [data]
@@ -173,8 +276,12 @@ class TiffoptiReader(csiopticorr):
             title = [title] * len(data)
         if isinstance(cb_label, str):
             cb_label = [cb_label] * len(data)
+        if vmin is None:
+            vmin = [None] * len(data)
         if isinstance(vmin, (int, float)):
             vmin = [vmin] * len(data)
+        if vmax is None:
+            vmax = [None] * len(data)
         if isinstance(vmax, (int, float)):
             vmax = [vmax] * len(data)
     
@@ -197,6 +304,13 @@ class TiffoptiReader(csiopticorr):
             mesh_lon = self.raw_mesh_lon
             mesh_lat = self.raw_mesh_lat
             cut_data = {d: valid_data_types[d] for d in data}
+
+        try:
+            factor4plot = float(factor4plot)
+        except (TypeError, ValueError):
+            factor4plot = 1.0
+        if not np.isclose(factor4plot, 1.0):
+            cut_data = {d: values * factor4plot for d, values in cut_data.items()}
     
         # Determine unified vmin and vmax if unified_colorbar is True
         if unified_colorbar:

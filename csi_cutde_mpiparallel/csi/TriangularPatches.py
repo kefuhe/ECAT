@@ -1,4 +1,4 @@
-'''
+﻿'''
 A parent class that deals with triangular patches fault
 
 Written by Bryan Riel, Z. Duputel and R. Jolivet November 2013
@@ -17,6 +17,7 @@ import copy
 import sys
 import os
 from numba import jit
+import logging
 
 # Personals
 from .Fault import Fault
@@ -54,6 +55,9 @@ class TriangularPatches(Fault):
 
     # ----------------------------------------------------------------------
     def __init__(self, name, utmzone=None, ellps='WGS84', verbose=True, lon0=None, lat0=None):
+
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
 
         # Base class init
         super(TriangularPatches,self).__init__(name, utmzone=utmzone, ellps=ellps, lon0=lon0, lat0=lat0, verbose=verbose)
@@ -360,7 +364,9 @@ class TriangularPatches(Fault):
                 ps = (t1, t2)
             
             else:
-                assert False, 'numberOfTriangles should be 2 or 4'
+                msg = 'numberOfTriangles should be 2 or 4'
+                self.logger.error(msg)
+                assert False, msg
 
             for f,p in zip(fs, ps):
                 faces.append(f)
@@ -445,6 +451,9 @@ class TriangularPatches(Fault):
         while i<len(A):
             
             # Assert it works
+            if A[i].split()[0] != '>':
+                msg = 'Not a patch, reformat your file...'
+                self.logger.error(msg)
             assert A[i].split()[0] == '>', 'Not a patch, reformat your file...'
             # Get the Patch Id
             ids = 0
@@ -560,7 +569,9 @@ class TriangularPatches(Fault):
             self._finalize_fault_setup(Vertices[:, 2])
             
         except Exception as e:
-            raise RuntimeError(f"Failed to read Abaqus files: {e}") from e
+            msg = f"Failed to read Abaqus files: {e}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
     
     def _load_and_preprocess_files(self, vertexfile, topofile, readpatchindex):
         """Load and preprocess input files"""
@@ -599,8 +610,8 @@ class TriangularPatches(Fault):
         self.projection_info = proj_info  # Save projection info for later use
         
         if hasattr(self, 'verbose') and self.verbose:
-            print(f"Projection info: {proj_info}")
-            print(f"Coordinate ranges: "
+            self.logger.info(f"Projection info: {proj_info}")
+            self.logger.info(f"Coordinate ranges: "
                   f"Longitude {Vertices_ll[:, 0].min():.6f} - {Vertices_ll[:, 0].max():.6f}, "
                   f"Latitude {Vertices_ll[:, 1].min():.6f} - {Vertices_ll[:, 1].max():.6f}")
     
@@ -698,10 +709,10 @@ class TriangularPatches(Fault):
                 lon0 = float(lon0_match.group(1))
                 lat0 = float(lat0_match.group(1))
             else:
-                raise ValueError(
-                    "UTM zone not specified and cannot extract lon0 and lat0 from projstr, "
-                    "please provide lon0 and lat0 parameters"
-                )
+                msg = ("UTM zone not specified and cannot extract lon0 and lat0 from projstr, "
+                       "please provide lon0 and lat0 parameters")
+                self.logger.error(msg)
+                raise ValueError(msg)
         
         # Query optimal UTM zone
         utm_crs_list = query_utm_crs_info(
@@ -849,11 +860,11 @@ class TriangularPatches(Fault):
         self.Vertices_ll = vertices
         self.Faces = faces
         if verbose:
-            print('min/max depth: {} km/ {} km'.format(vz.min(),vz.max()))
-            print('min/max lat: {} deg/ {} deg'.format(vertices[:,1].min(),vertices[:,1].max()))
-            print('min/max lon: {} deg/ {} deg'.format(vertices[:,0].min(),vertices[:,0].max()))
-            print('min/max x: {} km/ {} km'.format(vx.min(),vx.max()))
-            print('min/max y: {} km/ {} km'.format(vy.min(),vy.max()))
+            self.logger.info('min/max depth: {} km/ {} km'.format(vz.min(),vz.max()))
+            self.logger.info('min/max lat: {} deg/ {} deg'.format(vertices[:,1].min(),vertices[:,1].max()))
+            self.logger.info('min/max lon: {} deg/ {} deg'.format(vertices[:,0].min(),vertices[:,0].max()))
+            self.logger.info('min/max x: {} km/ {} km'.format(vx.min(),vx.max()))
+            self.logger.info('min/max y: {} km/ {} km'.format(vy.min(),vy.max()))
 
         # Loop over faces and create a triangular patch consisting of coordinate tuples
         self.numpatch = faces.shape[0]
@@ -1073,7 +1084,7 @@ class TriangularPatches(Fault):
             raise NotImplementedError('Only works for len(slip)==len(patch)')
     
         # Write something
-        print('Writing geometry to file {}'.format(filename))
+        self.logger.info('Writing geometry to file {}'.format(filename))
     
         # Open the file
         fout = open(filename, 'w')
@@ -1098,15 +1109,21 @@ class TriangularPatches(Fault):
                 elif add_slip.shape[1] == 1:
                     custom_values = add_slip.flatten()
                 else:
-                    raise ValueError(f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}")
+                    msg = f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}"
+                    self.logger.error(msg)
+                    raise ValueError(msg)
             else:
-                raise ValueError(f"Array must be 1D or 2D, got {add_slip.ndim}D")
+                msg = f"Array must be 1D or 2D, got {add_slip.ndim}D"
+                self.logger.error(msg)
+                raise ValueError(msg)
             
             # Verify length matches number of patches
             nPatches = len(self.patch)
             if len(custom_values) != nPatches:
-                raise ValueError(f"Custom values length ({len(custom_values)}) must match "
-                               f"number of patches ({nPatches})")
+                msg = (f"Custom values length ({len(custom_values)}) must match "
+                       f"number of patches ({nPatches})")
+                self.logger.error(msg)
+                raise ValueError(msg)
     
         # Loop over the patches
         nPatches = len(self.patch)
@@ -1149,9 +1166,13 @@ class TriangularPatches(Fault):
                             slp = np.sqrt(self.slip[pIndex,0]**2 + self.slip[pIndex,1]**2)*scale
                         string = '-Z{}'.format(slp)
                     else:
-                        raise ValueError(f"Unknown add_slip option: {add_slip}")
+                        msg = f"Unknown add_slip option: {add_slip}"
+                        self.logger.error(msg)
+                        raise ValueError(msg)
                 else:
-                    raise TypeError(f"add_slip must be str or np.ndarray, got {type(add_slip)}")
+                    msg = f"add_slip must be str or np.ndarray, got {type(add_slip)}"
+                    self.logger.error(msg)
+                    raise TypeError(msg)
     
             # Put the parameter number in the file as well if it exists
             parameter = ' '
@@ -1230,7 +1251,7 @@ class TriangularPatches(Fault):
         self.computeSlipDirection(scale=scale, factor=factor, ellipse=ellipse, nsigma=nsigma, neg_depth=neg_depth, reference_strike=reference_strike, threshold=threshold)
     
         # Write something
-        print('Writing slip direction to file {}'.format(filename))
+        self.logger.info('Writing slip direction to file {}'.format(filename))
     
         # Open the file
         fout = open(filename, 'w')
@@ -1311,7 +1332,7 @@ class TriangularPatches(Fault):
         '''
 
         # Write something
-        print('Writing slip at patch centers to file {}'.format(filename))
+        self.logger.info('Writing slip at patch centers to file {}'.format(filename))
 
         # Open the file
         fout = open(filename, 'w')
@@ -1451,14 +1472,14 @@ class TriangularPatches(Fault):
         from scipy.interpolate import griddata
         
         if verbose:
-            print(f"Interpolating curve at depth {target_depth:.2f} km for triangular fault {self.name}")
+            self.logger.info(f"Interpolating curve at depth {target_depth:.2f} km for triangular fault {self.name}")
         
         target_depth = abs(target_depth)  # Ensure positive depth
         
         # First, find the four edge vertices if not already found
         if not hasattr(self, 'edge_vertices') or not hasattr(self, 'edge_vertex_indices'):
             if verbose:
-                print("Finding fault four edge vertices...")
+                self.logger.info("Finding fault four edge vertices...")
             self.find_fault_fouredge_vertices(
                 top_tolerance=top_tolerance, 
                 bottom_tolerance=bottom_tolerance,
@@ -1474,11 +1495,11 @@ class TriangularPatches(Fault):
         bottom_vertices = self.edge_vertices['bottom']
         
         if verbose:
-            print(f"Found edge vertices:")
-            print(f"  Left edge: {len(left_vertices)} vertices")
-            print(f"  Right edge: {len(right_vertices)} vertices")
-            print(f"  Top edge: {len(top_vertices)} vertices")
-            print(f"  Bottom edge: {len(bottom_vertices)} vertices")
+            self.logger.info(f"Found edge vertices:")
+            self.logger.info(f"  Left edge: {len(left_vertices)} vertices")
+            self.logger.info(f"  Right edge: {len(right_vertices)} vertices")
+            self.logger.info(f"  Top edge: {len(top_vertices)} vertices")
+            self.logger.info(f"  Bottom edge: {len(bottom_vertices)} vertices")
         
         # Determine variable axis based on edge span
         if variable_axis == 'auto':
@@ -1493,8 +1514,8 @@ class TriangularPatches(Fault):
             variable_axis = 'x' if x_range_avg >= y_range_avg else 'y'
 
             if verbose:
-                print(f"Auto-selected variable axis: {variable_axis}")
-                print(f"Average X span: {x_range_avg:.2f} km, Average Y span: {y_range_avg:.2f} km")
+                self.logger.info(f"Auto-selected variable axis: {variable_axis}")
+                self.logger.info(f"Average X span: {x_range_avg:.2f} km, Average Y span: {y_range_avg:.2f} km")
 
         axis_idx = 0 if variable_axis.lower() == 'x' else 1
         other_idx = 1 if variable_axis.lower() == 'x' else 0
@@ -1519,7 +1540,7 @@ class TriangularPatches(Fault):
             num_points = max(10, num_points)  # Minimum 10 points
             
             if verbose:
-                print(f"Interpolated point count: {num_points} (top: {top_count}, bottom: {bottom_count})")
+                self.logger.info(f"Interpolated point count: {num_points} (top: {top_count}, bottom: {bottom_count})")
         
         # Find boundary coordinates at target depth by interpolating left and right edges
         # Interpolate left boundary
@@ -1542,9 +1563,9 @@ class TriangularPatches(Fault):
         
         if verbose:
             coord_name = 'X' if variable_axis.lower() == 'x' else 'Y'
-            print(f"Boundary {coord_name} coordinates at depth {target_depth:.2f} km:")
-            print(f"  Left boundary: {left_boundary_coord:.3f}")
-            print(f"  Right boundary: {right_boundary_coord:.3f}")
+            self.logger.info(f"Boundary {coord_name} coordinates at depth {target_depth:.2f} km:")
+            self.logger.info(f"  Left boundary: {left_boundary_coord:.3f}")
+            self.logger.info(f"  Right boundary: {right_boundary_coord:.3f}")
         
         # Generate interpolation points along the independent axis
         if ascending:
@@ -1569,7 +1590,7 @@ class TriangularPatches(Fault):
         all_vertices = np.array(unique_vertices)
         
         if verbose:
-            print(f"Using {len(all_vertices)} unique vertices for interpolation")
+            self.logger.info(f"Using {len(all_vertices)} unique vertices for interpolation")
         
         # Perform 2D interpolation to get the other coordinate
         points = np.column_stack([all_vertices[:, axis_idx], all_vertices[:, 2]])  # (variable_axis, depth)
@@ -1586,12 +1607,12 @@ class TriangularPatches(Fault):
             nan_mask = np.isnan(target_other_coords)
             if np.any(nan_mask):
                 if verbose:
-                    print(f"Found {np.sum(nan_mask)} NaN values, using nearest neighbor fallback")
+                    self.logger.info(f"Found {np.sum(nan_mask)} NaN values, using nearest neighbor fallback")
                 target_other_coords[nan_mask] = griddata(points, values, target_points[nan_mask], method='nearest')
             
         except Exception as e:
             if verbose:
-                print(f"Interpolation failed: {e}, using linear interpolation between boundaries")
+                self.logger.info(f"Interpolation failed: {e}, using linear interpolation between boundaries")
             # Fallback: linear interpolation between left and right boundaries
             target_other_coords = np.linspace(left_other_coord, right_other_coord, num_points)
         
@@ -1606,11 +1627,13 @@ class TriangularPatches(Fault):
         curve_points = curve_points[valid_mask]
         
         if len(curve_points) == 0:
-            raise ValueError("Interpolation failed - no valid points generated")
+            msg = "Interpolation failed - no valid points generated"
+            self.logger.error(msg)
+            raise ValueError(msg)
         
         if verbose:
-            print(f"Generated {len(curve_points)} valid curve points")
-            print(f"Depth range: {curve_points[:, 2].min():.3f} - {curve_points[:, 2].max():.3f} km")
+            self.logger.info(f"Generated {len(curve_points)} valid curve points")
+            self.logger.info(f"Depth range: {curve_points[:, 2].min():.3f} - {curve_points[:, 2].max():.3f} km")
         
         # Convert to longitude/latitude coordinates
         x_coords = curve_points[:, 0]
@@ -1621,9 +1644,9 @@ class TriangularPatches(Fault):
         curve_lonlat = np.column_stack([lon_coords, lat_coords, depths])
         
         if verbose:
-            print(f"Coordinate conversion completed")
-            print(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
-            print(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
+            self.logger.info(f"Coordinate conversion completed")
+            self.logger.info(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
+            self.logger.info(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
         
         # Create curve info
         curve_info = {
@@ -1689,11 +1712,11 @@ class TriangularPatches(Fault):
                     f.write(f"{point[0]:.8f} {point[1]:.8f} {point[2]:.3f}\n")
             
             if verbose:
-                print(f"Triangular mesh curve written to GMT file: {output_file}")
-                print(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
+                self.logger.info(f"Triangular mesh curve written to GMT file: {output_file}")
+                self.logger.info(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
                 
         except Exception as e:
-            print(f"Error writing GMT file: {e}")
+            self.logger.error(f"Error writing GMT file: {e}")
             raise
     # ----------------------------------------------------------------------
 
@@ -1831,7 +1854,7 @@ class TriangularPatches(Fault):
                 elif scale == 'tensile':
                     sca = np.abs(slip[2])
                 else:
-                    print('Unknown Slip Direction in computeSlipDirection')
+                    self.logger.warning('Unknown Slip Direction in computeSlipDirection')
                     sys.exit(1)
             
             # Check if sca exceeds the threshold
@@ -2089,6 +2112,9 @@ class TriangularPatches(Fault):
         # Check that patch is an array
         if type(patch) is list:
             patch = np.array(patch)
+        if type(patch) is not np.ndarray:
+            msg = 'addPatch: Patch has to be a numpy array'
+            self.logger.error(msg)
         assert type(patch) is np.ndarray, 'addPatch: Patch has to be a numpy array'
 
         # append the patch
@@ -2150,7 +2176,13 @@ class TriangularPatches(Fault):
         '''
 
         # Check
+        if type(sign) not in (float, int):
+            msg = 'sign must be a float or int: {}'.format(sign)
+            self.logger.error(msg)
         assert type(sign) in (float, int), 'sign must be a float or int: {}'.format(sign)
+        if float(sign) == 0.:
+            msg = 'sign must be different from 0'
+            self.logger.error(msg)
         assert float(sign)!=0., 'sign must be different from 0'
 
         # Compute normals
@@ -2191,6 +2223,9 @@ class TriangularPatches(Fault):
         # Replace
         if type(patch) is list:
             patch = np.array(patch)
+        if type(patch) is not np.ndarray:
+            msg = 'replacePatch: Patch must be an array'
+            self.logger.error(msg)
         assert type(patch) is np.ndarray, 'replacePatch: Patch must be an array'
         self.patch[iPatch] = patch
 
@@ -2279,7 +2314,7 @@ class TriangularPatches(Fault):
             * rotated patch
         '''
         if verbose:
-            print('Rotating patch {} '.format(iPatch))
+            self.logger.info('Rotating patch {} '.format(iPatch))
         
         # Calculate rotated patch
         rotated_patch = [self.pointRotation3D(iPatch,0, theta, p_axis1, p_axis2),
@@ -2678,18 +2713,18 @@ class TriangularPatches(Fault):
         from .edge_utils.mesh_edge_finder  import find_adjacent_triangles
 
         if verbose:
-            print("------------------------------------------")
-            print("------------------------------------------")
-            print("Building the adjacency map for all patches")
+            self.logger.info("------------------------------------------")
+            self.logger.info("------------------------------------------")
+            self.logger.info("Building the adjacency map for all patches")
 
         # cache the  vertex indices from the faces
         vertex_indices = self.Faces.astype(np.int_)
         # build the adjacency map
         self.adjacencyMap = find_adjacent_triangles(vertex_indices)
-        # 将不规则列表转换为固定长度的数组
+        # 灏嗕笉瑙勫垯鍒楄〃杞崲涓哄浐瀹氶暱搴︾殑鏁扮粍
         self.adjacencyMap_array = np.array([x + [-1]*(3-len(x)) for x in self.adjacencyMap], dtype=np.int_)
         if verbose:
-            print('')
+            self.logger.info('')
         return
     # ----------------------------------------------------------------------
 
@@ -2711,9 +2746,9 @@ class TriangularPatches(Fault):
             self.buildAdjacencyMap(verbose=verbose)
 
         if verbose:
-            print("------------------------------------------")
-            print("------------------------------------------")
-            print("Building the Laplacian matrix based on CSI")
+            self.logger.info("------------------------------------------")
+            self.logger.info("------------------------------------------")
+            self.logger.info("Building the Laplacian matrix based on CSI")
 
         # Pre-compute patch centers
         centers = self.getcenters()
@@ -2764,7 +2799,7 @@ class TriangularPatches(Fault):
             D[i,i] = sumProd
 
         if verbose:
-            print('')
+            self.logger.info('')
         D = D / np.max(np.abs(np.diag(D)))
         return D
     # ----------------------------------------------------------------------
@@ -2950,37 +2985,37 @@ class TriangularPatches(Fault):
         free_corner_dict = {corner_dict[flag]: bounds_mark[idx].sum() for flag, idx in zip(['left_top', 'right_top', 'left_bottom', 'right_bottom'], [[0, 2], [0, 3], [1, 2], [1, 3]]) if corner_dict[flag] is not None}
 
         if verbose:
-            print("------------------------------------------")
-            print("------------------------------------------")
-            print("Building the Laplacian matrix based on Mudpy")
+            self.logger.info("------------------------------------------")
+            self.logger.info("------------------------------------------")
+            self.logger.info("Building the Laplacian matrix based on Mudpy")
 
         # Pre-compute patch centers
         centers = np.array(self.getcenters())
-        # 预计算所有可能需要的值
+        # 棰勮绠楁墍鏈夊彲鑳介渶瑕佺殑鍊?
         npatch = len(self.patch)
         hvals_all = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=-1)
         free_edge_tris_set = set(free_edge_tris)
         free_corner_dict_keys_set = set(free_corner_dict.keys())
 
-        # 初始化D
+        # 鍒濆鍖朌
         D = np.zeros((npatch,npatch))
 
-        # 对于每个patch，计算其邻接patch的数量
+        # 瀵逛簬姣忎釜patch锛岃绠楀叾閭绘帴patch鐨勬暟閲?
         adjacents_counts = np.array([len(adjacents) for adjacents in self.adjacencyMap])
 
-        # 对于邻接patch数量为3的patch，使用向量化操作进行计算
+        # 瀵逛簬閭绘帴patch鏁伴噺涓?鐨刾atch锛屼娇鐢ㄥ悜閲忓寲鎿嶄綔杩涜璁＄畻
         mask = adjacents_counts == 3
         adjacents = self.adjacencyMap_array[mask]
         hvals = np.take_along_axis(hvals_all[mask], adjacents, axis=1)
         h12, h13, h14 = hvals.T
-        # 创建一个广播的索引数组
+        # 鍒涘缓涓€涓箍鎾殑绱㈠紩鏁扮粍
         rows = np.arange(D.shape[0])[:, None]
-        # 使用广播的索引数组来赋值
+        # 浣跨敤骞挎挱鐨勭储寮曟暟缁勬潵璧嬪€?
         D[rows[mask], adjacents] = -np.array([h13*h14, h12*h14, h12*h13]).T
         sumProd = h13*h14 + h12*h14 + h12*h13
         D[mask, mask] = sumProd
 
-        # 对于邻接patch数量为2的patch，使用向量化操作进行计算
+        # 瀵逛簬閭绘帴patch鏁伴噺涓?鐨刾atch锛屼娇鐢ㄥ悜閲忓寲鎿嶄綔杩涜璁＄畻
         mask = adjacents_counts == 2
         adjacents = self.adjacencyMap_array[mask][:, :2]
         hvals = np.take_along_axis(hvals_all[mask], adjacents, axis=1)
@@ -2988,13 +3023,13 @@ class TriangularPatches(Fault):
         h14 = np.maximum(h12, h13)
         sumProd = h13*h14 + h12*h14 + h12*h13
         scale = np.where(np.isin(mask.nonzero()[0], list(free_edge_tris_set)), sumProd/(h13*h14 + h12*h14), 1.0)
-        # 创建一个广播的索引数组
+        # 鍒涘缓涓€涓箍鎾殑绱㈠紩鏁扮粍
         rows = np.arange(D.shape[0])[:, None]
-        # 使用广播的索引数组来赋值
+        # 浣跨敤骞挎挱鐨勭储寮曟暟缁勬潵璧嬪€?
         D[rows[mask], adjacents] = (-np.array([h13*h14, h12*h14])*scale).T
         D[mask, mask] = sumProd
 
-        # 对于邻接patch数量为1的patch，使用向量化操作进行计算
+        # 瀵逛簬閭绘帴patch鏁伴噺涓?鐨刾atch锛屼娇鐢ㄥ悜閲忓寲鎿嶄綔杩涜璁＄畻
         mask = adjacents_counts == 1
         adjacents = self.adjacencyMap_array[mask][:, :1]
         hvals = np.take_along_axis(hvals_all[mask], adjacents, axis=1)
@@ -3003,15 +3038,15 @@ class TriangularPatches(Fault):
         sumProd = h13*h14 + h12*h14 + h12*h13
         scale_cor = np.array([free_corner_dict[i] for i in mask.nonzero()[0] if i in free_corner_dict_keys_set])
         scale = np.where(scale_cor > 0, np.where(scale_cor == 1, sumProd/(h13*h14) * 2./3., sumProd/(h13*h14)), 1.0)
-        # 创建一个广播的索引数组
+        # 鍒涘缓涓€涓箍鎾殑绱㈠紩鏁扮粍
         rows = np.arange(D.shape[0])[:, None]
-        # 使用广播的索引数组来赋值
+        # 浣跨敤骞挎挱鐨勭储寮曟暟缁勬潵璧嬪€?
         D[rows[mask], adjacents] = (-h13*h14*scale)[:, np.newaxis]
         D[mask, mask] = sumProd
 
         D = D / np.max(np.abs(np.diag(D)))
         if verbose:
-            print('')
+            self.logger.info('')
         return D
     # ----------------------------------------------------------------------
 
@@ -3032,7 +3067,8 @@ class TriangularPatches(Fault):
             D = self.buildLaplacian_csi(verbose=verbose, irregular=irregular)
         elif method in ('Mudpy', 'MUDPY', 'mudpy', 'mud', 'Diego'):
             if bounds is None:
-                print('Bounds must be given for the method of Mudpy!!!')
+                msg = 'Bounds must be given for the method of Mudpy!!!'
+                self.logger.error(msg)
                 sys.exit(1)
             D = self.buildLaplacian_mudpy(verbose=verbose, irregular=irregular, bounds=bounds, corner=corner, topscale=topscale, bottomscale=bottomscale)
         return D
@@ -3059,7 +3095,9 @@ class TriangularPatches(Fault):
         elif slip == 'dipslip':
             slip_values = self.slip[:, 1]
         else:
-            raise ValueError("Invalid slip type. Choose from 'total', 'strikeslip', or 'dipslip'.")
+            msg = "Invalid slip type. Choose from 'total', 'strikeslip', or 'dipslip'."
+            self.logger.error(msg)
+            raise ValueError(msg)
     
         coordinates = np.mean(self.patch, axis=1)
         tree = KDTree(coordinates)
@@ -3254,7 +3292,7 @@ class TriangularPatches(Fault):
         # Load the slip values if provided
         if slipVec is not None:
             nPatches = len(self.patch)
-            print(nPatches, slipVec.shape)
+            self.logger.info(f"nPatches={nPatches}, slipVec.shape={slipVec.shape}")
             assert slipVec.shape == (nPatches,3), 'mismatch in shape for input slip vector'
             self.slip = slipVec
 
@@ -3367,7 +3405,7 @@ class TriangularPatches(Fault):
                 available_gb = psutil.virtual_memory().available / (1024**3)
                 target_mem_gb = available_gb * 0.6
                 if verbose:
-                    print(f"Auto-detected target memory: {target_mem_gb:.2f} GB (60% of {available_gb:.2f} GB available)")
+                    self.logger.info(f"Auto-detected target memory: {target_mem_gb:.2f} GB (60% of {available_gb:.2f} GB available)")
             
             # Memory calculation constants
             bytes_per_element = 8
@@ -3388,7 +3426,7 @@ class TriangularPatches(Fault):
             if not user_provided_obs and not user_provided_tri:
                 # Case 1: Both not provided - fully automatic calculation
                 if verbose:
-                    print("\nBoth batch sizes not provided - using automatic calculation")
+                    self.logger.info("\nBoth batch sizes not provided - using automatic calculation")
                 
                 if max_obs_with_full_tri >= n_obs:
                     # Can compute all observations in one pass
@@ -3416,15 +3454,15 @@ class TriangularPatches(Fault):
             elif user_provided_obs and not user_provided_tri:
                 # Case 2: Only obs_batch provided - auto-calculate tri_batch
                 if verbose:
-                    print(f"\nUser provided obs_batch={max_obs_batch:,}, calculating tri_batch")
+                    self.logger.info(f"\nUser provided obs_batch={max_obs_batch:,}, calculating tri_batch")
                 
                 # Check if user-provided obs_batch exceeds memory limit
                 mem_per_batch = (max_obs_batch * n_tri * mem_per_obs_tri) / (1024**3)
                 
                 if mem_per_batch > target_mem_gb:
                     if verbose:
-                        print(f"WARNING: obs_batch={max_obs_batch:,} with all triangles requires {mem_per_batch:.2f} GB")
-                        print(f"         Exceeds target {target_mem_gb:.2f} GB, calculating tri_batch")
+                        self.logger.warning(f" obs_batch={max_obs_batch:,} with all triangles requires {mem_per_batch:.2f} GB")
+                        self.logger.warning(f"         Exceeds target {target_mem_gb:.2f} GB, calculating tri_batch")
                     
                     max_tri_batch = int((target_mem_gb * (1024**3)) / (max_obs_batch * mem_per_obs_tri))
                     max_tri_batch = max(100, min(max_tri_batch, n_tri))
@@ -3434,7 +3472,7 @@ class TriangularPatches(Fault):
             elif not user_provided_obs and user_provided_tri:
                 # Case 3: Only tri_batch provided - auto-calculate obs_batch
                 if verbose:
-                    print(f"\nUser provided tri_batch={max_tri_batch:,}, calculating obs_batch")
+                    self.logger.info(f"\nUser provided tri_batch={max_tri_batch:,}, calculating obs_batch")
                 
                 # Calculate maximum obs_batch based on tri_batch
                 max_obs_with_tri = int((target_mem_gb * (1024**3)) / (max_tri_batch * mem_per_obs_tri))
@@ -3457,9 +3495,9 @@ class TriangularPatches(Fault):
                 
                 if mem_per_batch > target_mem_gb:
                     if verbose:
-                        print(f"\nWARNING: User-provided batch sizes require {mem_per_batch:.2f} GB")
-                        print(f"         Exceeds target {target_mem_gb:.2f} GB")
-                        print(f"         Switching to automatic calculation")
+                        self.logger.warning(f"\nWARNING: User-provided batch sizes require {mem_per_batch:.2f} GB")
+                        self.logger.warning(f"         Exceeds target {target_mem_gb:.2f} GB")
+                        self.logger.warning(f"         Switching to automatic calculation")
                     
                     # Recalculate both values automatically
                     if max_obs_with_full_tri >= n_obs:
@@ -3480,9 +3518,9 @@ class TriangularPatches(Fault):
                             max_tri_batch = max(100, min(max_tri_batch, n_tri))
                 else:
                     if verbose:
-                        print(f"\nUsing user-provided batch sizes:")
-                        print(f"  obs_batch={max_obs_batch:,}, tri_batch={max_tri_batch:,}")
-                        print(f"  Memory per iteration: {mem_per_batch:.2f} GB")
+                        self.logger.info(f"\nUsing user-provided batch sizes:")
+                        self.logger.info(f"  obs_batch={max_obs_batch:,}, tri_batch={max_tri_batch:,}")
+                        self.logger.info(f"  Memory per iteration: {mem_per_batch:.2f} GB")
             
             # Calculate final batch information
             n_obs_batches = (n_obs + max_obs_batch - 1) // max_obs_batch
@@ -3490,45 +3528,45 @@ class TriangularPatches(Fault):
             mem_per_iter = (max_obs_batch * max_tri_batch * mem_per_obs_tri) / (1024**3)
             
             if verbose:
-                print(f"\n{'='*70}")
-                print(f"Batch Size Summary")
-                print(f"{'='*70}")
-                print(f"Observation batch size: {max_obs_batch:,}")
-                print(f"Triangle batch size: {max_tri_batch:,}")
-                print(f"Memory per iteration: {mem_per_iter:.2f} GB")
-                print(f"Total batches: {n_obs_batches} obs × {n_tri_batches} tri = {n_obs_batches * n_tri_batches} iterations")
+                self.logger.info(f"\n{'='*70}")
+                self.logger.info(f"Batch Size Summary")
+                self.logger.info(f"{'='*70}")
+                self.logger.info(f"Observation batch size: {max_obs_batch:,}")
+                self.logger.info(f"Triangle batch size: {max_tri_batch:,}")
+                self.logger.info(f"Memory per iteration: {mem_per_iter:.2f} GB")
+                self.logger.info(f"Total batches: {n_obs_batches} obs 脳 {n_tri_batches} tri = {n_obs_batches * n_tri_batches} iterations")
             
             if verbose:
-                print(f"\n{'='*70}")
-                print(f"Surface Displacement Calculation Summary")
-                print(f"{'='*70}")
-                print(f"Observation points: {n_obs:,}")
-                print(f"Source triangles: {n_tri:,}")
-                print(f"Estimated memory for full matrix: {gb_needed:.2f} GB")
-                print(f"Target memory limit: {target_mem_gb:.2f} GB")
-                print(f"Memory efficiency: {(gb_needed/target_mem_gb)*100:.1f}% of target")
+                self.logger.info(f"\n{'='*70}")
+                self.logger.info(f"Surface Displacement Calculation Summary")
+                self.logger.info(f"{'='*70}")
+                self.logger.info(f"Observation points: {n_obs:,}")
+                self.logger.info(f"Source triangles: {n_tri:,}")
+                self.logger.info(f"Estimated memory for full matrix: {gb_needed:.2f} GB")
+                self.logger.info(f"Target memory limit: {target_mem_gb:.2f} GB")
+                self.logger.info(f"Memory efficiency: {(gb_needed/target_mem_gb)*100:.1f}% of target")
             
             # Choose calculation strategy
             use_direct = gb_needed <= target_mem_gb and n_obs <= max_obs_batch and n_tri <= max_tri_batch
             
             if use_direct:
                 if verbose:
-                    print(f"Method: Direct disp_matrix calculation (single pass)")
-                    print(f"{'='*70}\n")
-                    print("Computing displacement matrix...")
+                    self.logger.info(f"Method: Direct disp_matrix calculation (single pass)")
+                    self.logger.info(f"{'='*70}\n")
+                    self.logger.info("Computing displacement matrix...")
                 disp_mat = disp_matrix(obs_pts, src_tris, nu)
                 if verbose:
-                    print("Applying slip vector via einsum...")
+                    self.logger.info("Applying slip vector via einsum...")
                 disp_total = np.einsum('ijkl,kl->ij', disp_mat, slips)
                 if verbose:
-                    print("Computation completed successfully!\n")
+                    self.logger.info("Computation completed successfully!\n")
             else:
                 if verbose:
-                    print(f"Method: Batched disp_matrix calculation")
-                    print(f"  Observation batches: {n_obs_batches} (batch size: {max_obs_batch:,})")
-                    print(f"  Triangle batches: {n_tri_batches} (batch size: {max_tri_batch:,})")
-                    print(f"  Total iterations: {n_obs_batches * n_tri_batches}")
-                    print(f"{'='*70}\n")
+                    self.logger.info(f"Method: Batched disp_matrix calculation")
+                    self.logger.info(f"  Observation batches: {n_obs_batches} (batch size: {max_obs_batch:,})")
+                    self.logger.info(f"  Triangle batches: {n_tri_batches} (batch size: {max_tri_batch:,})")
+                    self.logger.info(f"  Total iterations: {n_obs_batches * n_tri_batches}")
+                    self.logger.info(f"{'='*70}\n")
                 
                 disp_total = self._batched_disp_matrix(
                     obs_pts, src_tris, slips, nu, 
@@ -3540,7 +3578,9 @@ class TriangularPatches(Fault):
         elif method == 'edcmp':
             disp_total = self._edcmp_surface_displacement(obs_pts, src_tris, slips, nu, **kwargs)
         else:
-            raise ValueError(f"Unknown method: {method}")
+            msg = f"Unknown method: {method}. Choose 'cutde' or 'edcmp'."
+            self.logger.error(msg)
+            raise ValueError(msg)
     
         # Save output if requested
         if output_file is not None:
@@ -3636,7 +3676,7 @@ class TriangularPatches(Fault):
             os.makedirs(output_dir)
         
         if verbose:
-            print(f"\nSaving results to HDF5 file: {output_file}")
+            self.logger.info(f"\nSaving results to HDF5 file: {output_file}")
         
         with h5py.File(output_file, 'w') as f:
             # Create groups
@@ -3679,8 +3719,8 @@ class TriangularPatches(Fault):
                     dset.attrs['units'] = 'meters'
         
         if verbose:
-            print(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
-            print(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
+            self.logger.info(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
+            self.logger.info(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
     
     def _save_to_text(self, coords, disp_total, output_file, 
                       coord_labels, coord_units, verbose):
@@ -3715,7 +3755,7 @@ class TriangularPatches(Fault):
             os.makedirs(output_dir)
         
         if verbose:
-            print(f"\nSaving results to text file: {output_file}")
+            self.logger.info(f"\nSaving results to text file: {output_file}")
         
         with open(output_file, 'w') as f:
             # Write header
@@ -3745,8 +3785,8 @@ class TriangularPatches(Fault):
                 f.write(f"{disp_total[i, 2]:14.8e}\n")
         
         if verbose:
-            print(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
-            print(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
+            self.logger.info(f"Successfully saved {coords.shape[0]:,} points to {output_file}")
+            self.logger.info(f"File size: {os.path.getsize(output_file) / 1024**2:.2f} MB")
     
     def _batched_disp_matrix(self, obs_pts, src_tris, slips, nu, 
                              max_obs_batch=50000, max_tri_batch=1000, verbose=True):
@@ -3790,8 +3830,8 @@ class TriangularPatches(Fault):
         disp_total = np.zeros((n_obs, 3), dtype=obs_pts.dtype)
         
         if verbose:
-            print(f"Processing {n_obs:,} observation points and {n_tri:,} triangles")
-            print(f"Batching: {n_obs_batches} obs batches × {n_tri_batches} triangle batches = {total_iterations} iterations")
+            self.logger.info(f"Processing {n_obs:,} observation points and {n_tri:,} triangles")
+            self.logger.info(f"Batching: {n_obs_batches} obs batches x {n_tri_batches} triangle batches = {total_iterations} iterations")
             pbar = tqdm(total=total_iterations, desc="Computing displacement", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         
@@ -3813,7 +3853,7 @@ class TriangularPatches(Fault):
                 disp_mat = disp_matrix(obs_chunk, tri_chunk, nu)
                 
                 # Apply slip and accumulate
-                # einsum: (obs, 3, tri, 3) × (tri, 3) -> (obs, 3)
+                # einsum: (obs, 3, tri, 3) 脳 (tri, 3) -> (obs, 3)
                 obs_disp += np.einsum('ijkl,kl->ij', disp_mat, slip_chunk)
                 
                 if verbose:
@@ -3824,7 +3864,7 @@ class TriangularPatches(Fault):
         
         if verbose:
             pbar.close()
-            print("Batched computation completed successfully!\n")
+            self.logger.info("Batched computation completed successfully!\n")
         
         return disp_total
     
@@ -4491,7 +4531,7 @@ class TriangularPatches(Fault):
         try:
             from mayavi import mlab
         except ImportError:
-            print('mayavi module not installed. skipping plotting...')
+            self.logger.warning('mayavi module not installed. skipping plotting...')
             return
 
         # Sign factor for negative depths
@@ -4938,7 +4978,7 @@ class TriangularPatches(Fault):
         elif slip == 'coupling':
             values = self.coupling
         else:
-            print('findAsperities: Unknown type slip vector...')
+            self.logger.warning('findAsperities: Unknown type slip vector...')
 
         # Get the bolean array
         test = function(values).astype(float)
@@ -4964,7 +5004,7 @@ class TriangularPatches(Fault):
 
             # Talk to me
             if verbose:
-                print('Dealing with asperity #{}'.format(i))
+                self.logger.info('Dealing with asperity #{}'.format(i))
 
             # Build the list of new triangles to check
             toCheck = _checkUpdate(test, iTriangle, i, self)

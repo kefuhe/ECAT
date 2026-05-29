@@ -27,8 +27,197 @@ from .opticorr import opticorr
 from .imagecovariance import imagecovariance as imcov
 from .csiutils import _split_seq
 
-# Import sci_plot_style
-from eqtools.plottools import sci_plot_style
+# Plot styling helpers
+from eqtools.viztools import sci_plot_style
+
+
+class _SerialQueue:
+    """Minimal queue interface for running worker logic in-process."""
+
+    def __init__(self):
+        self._items = []
+
+    def put(self, item):
+        self._items.append(item)
+
+    def get(self):
+        return self._items.pop(0)
+
+
+DEFAULT_EXTRACTION_CONFIG = {
+    "value_statistic": "mean",
+    "error_statistic": "std",
+    "coordinate_statistic": "mean",
+    "projection_statistic": "mean_normalized",
+    "trim_fraction": 0.1,
+}
+
+VALUE_STATISTICS = ("mean", "median", "center_nearest", "trimmed_mean")
+ERROR_STATISTICS = ("std", "mad", "sem", "none")
+COORDINATE_STATISTICS = ("mean", "block_center", "center_nearest")
+PROJECTION_STATISTICS = ("mean_normalized", "center_nearest")
+STD_CORRECTIONS = ("std", "mean", "median", "bilinear")
+
+
+def _stat_key(value):
+    return str(value).replace("-", "_").lower()
+
+
+def _std_correction_key(value):
+    correction = _stat_key(value)
+    if correction not in STD_CORRECTIONS:
+        raise ValueError(f"std correction must be one of {STD_CORRECTIONS}; got {correction!r}.")
+    return correction
+
+
+def normalize_extraction_config(config=None):
+    normalized = dict(DEFAULT_EXTRACTION_CONFIG)
+    if config:
+        normalized.update(config)
+
+    for key in ("value_statistic", "error_statistic", "coordinate_statistic", "projection_statistic"):
+        normalized[key] = _stat_key(normalized[key])
+
+    choices = {
+        "value_statistic": VALUE_STATISTICS,
+        "error_statistic": ERROR_STATISTICS,
+        "coordinate_statistic": COORDINATE_STATISTICS,
+        "projection_statistic": PROJECTION_STATISTICS,
+    }
+    for key, allowed in choices.items():
+        if normalized[key] not in allowed:
+            raise ValueError(f"extraction {key} must be one of {allowed}; got {normalized[key]!r}.")
+
+    try:
+        trim_fraction = float(normalized.get("trim_fraction", 0.1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("extraction trim_fraction must be numeric.") from exc
+    if not 0.0 <= trim_fraction < 0.5:
+        raise ValueError("extraction trim_fraction must be in [0, 0.5).")
+    normalized["trim_fraction"] = trim_fraction
+    return normalized
+
+
+def _center_nearest_index(x, y, center):
+    distances = (x - center[0])**2 + (y - center[1])**2
+    return int(np.argmin(distances))
+
+
+def _trimmed_mean(values, trim_fraction):
+    values = np.sort(np.asarray(values))
+    if values.size == 0:
+        return np.nan
+    ntrim = int(np.floor(values.size * trim_fraction))
+    if ntrim <= 0:
+        return np.mean(values)
+    if values.size <= 2 * ntrim:
+        return np.mean(values)
+    return np.mean(values[ntrim:-ntrim])
+
+
+def _extract_value(values, statistic, x=None, y=None, center=None, trim_fraction=0.1):
+    values = np.asarray(values)
+    if statistic == "mean":
+        return np.mean(values)
+    if statistic == "median":
+        return np.median(values)
+    if statistic == "trimmed_mean":
+        return _trimmed_mean(values, trim_fraction)
+    if statistic == "center_nearest":
+        if x is None or y is None or center is None:
+            raise ValueError("center_nearest extraction requires x, y, and block center.")
+        return values[_center_nearest_index(np.asarray(x), np.asarray(y), center)]
+    raise ValueError(f"Unsupported value statistic: {statistic!r}.")
+
+
+def _extract_error(values, statistic):
+    values = np.asarray(values)
+    if statistic == "std":
+        return np.std(values)
+    if statistic == "mad":
+        median = np.median(values)
+        return 1.4826 * np.median(np.abs(values - median))
+    if statistic == "sem":
+        if values.size == 0:
+            return np.nan
+        return np.std(values) / np.sqrt(values.size)
+    if statistic == "none":
+        return 0.0
+    raise ValueError(f"Unsupported error statistic: {statistic!r}.")
+
+
+def _extract_xy(x, y, center, statistic):
+    x = np.asarray(x)
+    y = np.asarray(y)
+    if statistic == "mean":
+        return np.mean(x), np.mean(y)
+    if statistic == "block_center":
+        return center[0], center[1]
+    if statistic == "center_nearest":
+        index = _center_nearest_index(x, y, center)
+        return x[index], y[index]
+    raise ValueError(f"Unsupported coordinate statistic: {statistic!r}.")
+
+
+def _extract_projection(projection, statistic, x=None, y=None, center=None):
+    projection = np.asarray(projection)
+    if statistic == "mean_normalized":
+        vector = np.mean(projection, axis=0)
+        norm = np.sqrt(np.sum(vector**2))
+        return vector / norm
+    if statistic == "center_nearest":
+        if x is None or y is None or center is None:
+            raise ValueError("center_nearest projection extraction requires x, y, and block center.")
+        return projection[_center_nearest_index(np.asarray(x), np.asarray(y), center)]
+    raise ValueError(f"Unsupported projection statistic: {statistic!r}.")
+
+
+def _corrected_std(values, correction="std", x=None, y=None):
+    values = np.asarray(values, dtype=float)
+    correction = _std_correction_key(correction)
+    if correction == "std":
+        return np.std(values)
+    if correction == "mean":
+        return np.std(values - np.mean(values))
+    if correction == "median":
+        return np.std(values - np.median(values))
+
+    if x is None or y is None:
+        raise ValueError("bilinear std correction requires x and y coordinates.")
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    finite = np.isfinite(values) & np.isfinite(x) & np.isfinite(y)
+    if np.count_nonzero(finite) < 3:
+        return np.std(values)
+    design = np.column_stack((np.ones(np.count_nonzero(finite)), x[finite], y[finite]))
+    coeffs, _, _, _ = np.linalg.lstsq(design, values[finite], rcond=None)
+    residual = values[finite] - design.dot(coeffs)
+    return np.std(residual)
+
+
+def resolve_workers(workers=None):
+    if workers is None:
+        for variable in ("CSI_NUM_WORKERS", "ECAT_NUM_WORKERS"):
+            value = os.environ.get(variable)
+            if value not in (None, ""):
+                workers = value
+                break
+
+    if workers is None and os.name != "nt":
+        value = os.environ.get("OMP_NUM_THREADS")
+        if value not in (None, ""):
+            workers = value
+
+    if workers is None:
+        workers = 1 if os.name == "nt" else mp.cpu_count()
+
+    try:
+        workers = int(workers)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("workers must be a positive integer.") from exc
+    if workers < 1:
+        raise ValueError("workers must be a positive integer.")
+    return workers
 
 
 class mpstd(mp.Process):
@@ -60,7 +249,9 @@ class mpstd(mp.Process):
         '''
     
         std_dev = []
-        abs_mean = []
+        amplitude = []
+        amplitude_stat = getattr(self.downsampler, 'amplitude_stat', 'mean_abs')
+        std_correction = getattr(self.downsampler, 'std_correction', 'std')
     
         # Check if KDTree exists
         if not hasattr(self.downsampler, 'PIXXY_Tree'):
@@ -79,7 +270,7 @@ class mpstd(mp.Process):
             if self.Bsize[i]:
                 # If so, set the standard deviation and mean absolute value to 0
                 std_dev.append(0)
-                abs_mean.append(0)
+                amplitude.append(0)
             else:
                 # Create a path
                 p = mpath.Path(block, closed=False)
@@ -94,16 +285,33 @@ class mpstd(mp.Process):
                 # Compute standard deviation and mean absolute value
                 if self.downsampler.datatype == 'insar':
                     values = self.downsampler.image.vel[indices][mask]
-                    std_dev.append(np.std(values))
-                    abs_mean.append(np.abs(np.mean(values)))
+                    x_values = self.downsampler.image.x[indices][mask]
+                    y_values = self.downsampler.image.y[indices][mask]
+                    std_dev.append(_corrected_std(values, std_correction, x=x_values, y=y_values))
+                    if amplitude_stat == 'abs_mean':
+                        amplitude.append(np.abs(np.mean(values)))
+                    elif amplitude_stat == 'median_abs':
+                        amplitude.append(np.median(np.abs(values)))
+                    else:
+                        amplitude.append(np.mean(np.abs(values)))
                 elif self.downsampler.datatype == 'opticorr':
                     east_values = self.downsampler.image.east[indices][mask]
                     north_values = self.downsampler.image.north[indices][mask]
-                    std_dev.append(np.sqrt(np.std(east_values)**2 + np.std(north_values)**2))
-                    abs_mean.append(np.mean(np.sqrt(east_values**2 + north_values**2)))
+                    x_values = self.downsampler.image.x[indices][mask]
+                    y_values = self.downsampler.image.y[indices][mask]
+                    east_std = _corrected_std(east_values, std_correction, x=x_values, y=y_values)
+                    north_std = _corrected_std(north_values, std_correction, x=x_values, y=y_values)
+                    std_dev.append(np.sqrt(east_std**2 + north_std**2))
+                    magnitude = np.sqrt(east_values**2 + north_values**2)
+                    if amplitude_stat == 'abs_mean':
+                        amplitude.append(np.sqrt(np.mean(east_values)**2 + np.mean(north_values)**2))
+                    elif amplitude_stat == 'median_abs':
+                        amplitude.append(np.median(magnitude))
+                    else:
+                        amplitude.append(np.mean(magnitude))
     
-        # Save standard deviation and mean absolute value
-        self.queue.put([std_dev, abs_mean, self.indexes])
+        # Save standard deviation and amplitude statistic
+        self.queue.put([std_dev, amplitude, self.indexes])
     
         # All done
         return
@@ -180,13 +388,12 @@ class mpgradcurv(mp.Process):
                     ii = indices[mask]
 
                     # Check if total area is sufficient
-                    check = self.downsampler._isItAGoodBlock(block,
-                            np.flatnonzero(ii).shape[0])
+                    check = self.downsampler._isItAGoodBlock(subblock, ii.size)
                     if check:
                         if self.downsampler.datatype == 'insar':
                             vel = np.mean(self.downsampler.image.vel[ii])
                             means.append(vel)
-                        elif self.datatype == 'opticorr':
+                        elif self.downsampler.datatype == 'opticorr':
                             east = np.mean(self.downsampler.image.east[ii])
                             north = np.mean(self.downsampler.image.north[ii])
                             means.append(np.sqrt(east**2+north**2))
@@ -255,6 +462,9 @@ class mpdownsampler(mp.Process):
             East, North, Err_east, Err_north = [], [], [], []
         outBlocks = []
         outBlocksll = []
+        extraction = normalize_extraction_config(
+            getattr(self.downsampler, "extraction_config", None)
+        )
 
         # Over each block, we average the position and the phase to have a new point
         for block, blockll in zip(self.blocks, self.blocksll):
@@ -288,24 +498,54 @@ class mpdownsampler(mp.Process):
                 outBlocksll.append(blockll)
 
                 # Get Mean, Std, x, y, ...
-                wgt = len(np.flatnonzero(ii))
+                wgt = ii.size
+                x_values = self.downsampler.image.x[ii]
+                y_values = self.downsampler.image.y[ii]
+                x, y = _extract_xy(
+                    x_values,
+                    y_values,
+                    block_center,
+                    extraction["coordinate_statistic"],
+                )
                 if self.downsampler.datatype == 'insar':
-                    vel = np.mean(self.downsampler.image.vel[ii])
-                    err = np.std(self.downsampler.image.vel[ii])
-                    los0 = np.mean(self.downsampler.image.los[ii,0])
-                    los1 = np.mean(self.downsampler.image.los[ii,1])
-                    los2 = np.mean(self.downsampler.image.los[ii,2])
-                    norm = np.sqrt(los0*los0+los1*los1+los2*los2)
-                    los0 /= norm
-                    los1 /= norm
-                    los2 /= norm
+                    values = self.downsampler.image.vel[ii]
+                    vel = _extract_value(
+                        values,
+                        extraction["value_statistic"],
+                        x=x_values,
+                        y=y_values,
+                        center=block_center,
+                        trim_fraction=extraction["trim_fraction"],
+                    )
+                    err = _extract_error(values, extraction["error_statistic"])
+                    los0, los1, los2 = _extract_projection(
+                        self.downsampler.image.los[ii],
+                        extraction["projection_statistic"],
+                        x=x_values,
+                        y=y_values,
+                        center=block_center,
+                    )
                 elif self.downsampler.datatype == 'opticorr':
-                    east = np.mean(self.downsampler.image.east[ii])
-                    north = np.mean(self.downsampler.image.north[ii])
-                    err_east = np.std(self.downsampler.image.east[ii])
-                    err_north = np.std(self.downsampler.image.north[ii])
-                x = np.mean(self.downsampler.image.x[ii])
-                y = np.mean(self.downsampler.image.y[ii])
+                    east_values = self.downsampler.image.east[ii]
+                    north_values = self.downsampler.image.north[ii]
+                    east = _extract_value(
+                        east_values,
+                        extraction["value_statistic"],
+                        x=x_values,
+                        y=y_values,
+                        center=block_center,
+                        trim_fraction=extraction["trim_fraction"],
+                    )
+                    north = _extract_value(
+                        north_values,
+                        extraction["value_statistic"],
+                        x=x_values,
+                        y=y_values,
+                        center=block_center,
+                        trim_fraction=extraction["trim_fraction"],
+                    )
+                    err_east = _extract_error(east_values, extraction["error_statistic"])
+                    err_north = _extract_error(north_values, extraction["error_statistic"])
                 lon, lat = self.downsampler.xy2ll(x, y)
 
                 # Store that
@@ -344,13 +584,16 @@ class imagedownsampling(object):
 
     Kwargs:
         * faults    : List of faults.
-        * verbose   : Talk to me
+        * verbose   : Talk to me.
+        * workers   : Number of worker processes. If None, CSI_NUM_WORKERS,
+                      ECAT_NUM_WORKERS, OMP_NUM_THREADS, or the platform
+                      default is used. Windows defaults to serial execution.
 
     Returns:
         * None
     '''
 
-    def __init__(self, name, image, faults=None, verbose=True):
+    def __init__(self, name, image, faults=None, verbose=True, workers=None):
 
         if verbose:
             print ("---------------------------------")
@@ -358,6 +601,8 @@ class imagedownsampling(object):
             print ("Initialize InSAR downsampling tools {}".format(name))
 
         self.verbose = verbose
+
+        self.workers = resolve_workers(workers)
 
         # Set the name
         self.name = name
@@ -386,6 +631,7 @@ class imagedownsampling(object):
         self.image = image
         self.PIXXY = np.vstack((image.x, image.y)).T
         self.PIXXY_Tree = KDTree(self.PIXXY)
+        self.extraction_config = normalize_extraction_config()
 
         # Incidence and heading need to be defined if already defined
         if self.datatype == 'insar':
@@ -430,6 +676,27 @@ class imagedownsampling(object):
 
         # All done
         return
+
+    def setExtractionConfig(self, config=None, **kwargs):
+        '''
+        Configure how values are extracted from each final downsampling block.
+        '''
+        merged = {}
+        if config:
+            merged.update(config)
+        merged.update(kwargs)
+        self.extraction_config = normalize_extraction_config(merged)
+        return self.extraction_config
+
+    def set_extraction_config(self, config=None, **kwargs):
+        '''
+        Python-style alias for setExtractionConfig.
+        '''
+        return self.setExtractionConfig(config=config, **kwargs)
+
+    def _worker_count(self, item_count):
+        item_count = max(1, int(item_count))
+        return max(1, min(int(self.workers), item_count))
 
     def initialstate(self, startingsize, minimumsize, tolerance=0.5, plot=False, decimorig=10):
         '''
@@ -546,25 +813,21 @@ class imagedownsampling(object):
         # Store the factor
         newimage.factor = self.image.factor
 
-        # Build the previous geometry
-        # self.PIXXY = np.vstack((self.image.x, self.image.y)).T
-        # Create a queue to hold the results
-        output = mp.Queue()
-
-        # Check how many workers
-        try:
-            nworkers = int(os.environ['OMP_NUM_THREADS'])
-        except:
-            nworkers = mp.cpu_count()
-
         # Create the workers
+        nworkers = self._worker_count(len(blocks))
         seqblocks = _split_seq(blocks, nworkers)
         seqblocksll = _split_seq(blocksll, nworkers)
-        workers = [mpdownsampler(self, seqblocks[i], seqblocksll[i], output)\
-                                 for i in range(nworkers)]
 
-        # Start
-        for w in range(nworkers): workers[w].start()
+        if nworkers == 1:
+            output = _SerialQueue()
+            mpdownsampler(self, seqblocks[0], seqblocksll[0], output).run()
+        else:
+            output = mp.Queue()
+            workers = [mpdownsampler(self, seqblocks[i], seqblocksll[i], output)\
+                                     for i in range(nworkers)]
+
+            # Start
+            for w in range(nworkers): workers[w].start()
 
         # Initialize blocks
         blocks, blocksll = [], []
@@ -914,21 +1177,19 @@ class imagedownsampling(object):
         self.Gradient = np.ones(len(self.blocks,))*1e7
         self.Curvature = np.ones(len(self.blocks,))*1e7
 
-        # Create a queue to hold the results
-        output = mp.Queue()
-
-        # Check how many workers
-        try:
-            nworkers = int(os.environ['OMP_NUM_THREADS'])
-        except:
-            nworkers = mp.cpu_count()
-
         # Create the workers
+        nworkers = self._worker_count(len(self.blocks))
         seqindices = _split_seq(range(len(self.blocks)), nworkers)
-        workers = [mpgradcurv(self, Bsize, seqindices[w], output) for w in range(nworkers)]
 
-        # start the workers
-        for w in range(nworkers): workers[w].start()
+        if nworkers == 1:
+            output = _SerialQueue()
+            mpgradcurv(self, Bsize, seqindices[0], output).run()
+        else:
+            output = mp.Queue()
+            workers = [mpgradcurv(self, Bsize, seqindices[w], output) for w in range(nworkers)]
+
+            # start the workers
+            for w in range(nworkers): workers[w].start()
 
         # Collect
         for w in range(nworkers):
@@ -947,12 +1208,13 @@ class imagedownsampling(object):
         # All done
         return
     
-    def computeStdDev(self, smooth=None):
+    def computeStdDev(self, smooth=None, amplitude_stat=None, correction=None):
         '''
         Computes the standard deviation for all the blocks.
 
         Kwargs:
             * smooth        : Smoothes the standard deviation using a Gaussian filter. {smooth} is the kernel size (in km) of the filter.
+            * correction    : std | mean | median | bilinear. Controls the block metric used for splitting.
 
         Returns:
             * None
@@ -968,29 +1230,40 @@ class imagedownsampling(object):
 
         # Standard deviation (if we cannot compute the standard deviation, the value is zero, so the algo stops)
         self.StdDev = np.ones(len(self.blocks,))*1e7
-        self.AbsMean = np.ones(len(self.blocks,))*1e7
-
-        # Create a queue to hold the results
-        output = mp.Queue()
-
-        # Check how many workers
-        try:
-            nworkers = int(os.environ['OMP_NUM_THREADS'])
-        except:
-            nworkers = mp.cpu_count()
+        self.Amplitude = np.ones(len(self.blocks,))*1e7
+        if amplitude_stat is not None:
+            self.amplitude_stat = amplitude_stat
+        elif not hasattr(self, 'amplitude_stat'):
+            self.amplitude_stat = 'mean_abs'
+        if self.amplitude_stat not in ('mean_abs', 'abs_mean', 'median_abs'):
+            raise ValueError("amplitude_stat must be 'mean_abs', 'abs_mean', or 'median_abs'.")
+        if correction is not None:
+            self.std_correction = _std_correction_key(correction)
+        elif not hasattr(self, 'std_correction'):
+            self.std_correction = 'std'
+        else:
+            self.std_correction = _std_correction_key(self.std_correction)
 
         # Create the workers
+        nworkers = self._worker_count(len(self.blocks))
         seqindices = _split_seq(range(len(self.blocks)), nworkers)
-        workers = [mpstd(self, Bsize, seqindices[w], output) for w in range(nworkers)]
 
-        # start the workers
-        for w in range(nworkers): workers[w].start()
+        if nworkers == 1:
+            output = _SerialQueue()
+            mpstd(self, Bsize, seqindices[0], output).run()
+        else:
+            output = mp.Queue()
+            workers = [mpstd(self, Bsize, seqindices[w], output) for w in range(nworkers)]
+
+            # start the workers
+            for w in range(nworkers): workers[w].start()
 
         # Collect
         for w in range(nworkers):
-            std_dev, abs_mean, istd = output.get()
+            std_dev, amplitude, istd = output.get()
             self.StdDev[istd] = std_dev
-            self.AbsMean[istd] = abs_mean
+            self.Amplitude[istd] = amplitude
+        self.AbsMean = self.Amplitude  # Backward-compatible alias.
 
         # Smooth?
         if smooth is not None:
@@ -998,14 +1271,18 @@ class imagedownsampling(object):
             Distances = distance.cdist(centers,centers)**2
             gauss = np.exp(-0.5*Distances/(smooth**2))
             self.StdDev = np.dot(gauss, self.StdDev)/np.sum(gauss, axis=1)
-            self.AbsMean = np.dot(gauss, self.AbsMean)/np.sum(gauss, axis=1)
+            self.Amplitude = np.dot(gauss, self.Amplitude)/np.sum(gauss, axis=1)
+            self.AbsMean = self.Amplitude
 
         # All done
         return
 
     def stdBased(self, threshold, plot=False, verboseLevel='minimum', decimorig=10, smooth=None, itmax=100, 
                  high_value_ratio=0.25, min_splits_high_value=1, reference_max_value=None, 
-                 mask_polygon=None, max_splits_mask_out=5, use_variance=False):
+                 mask_polygon=None, max_splits_mask_out=5, use_variance=False,
+                 low_amplitude_ratio=None, max_splits_low_amplitude=None,
+                 low_amplitude_apply_inside_mask=False, amplitude_stat='mean_abs',
+                 correction='std'):
         '''
         Iteratively downsamples the dataset using a quadtree approach until the standard deviation inside each block is lower than the threshold.
     
@@ -1017,102 +1294,114 @@ class imagedownsampling(object):
             * verboseLevel              : Level of verbosity
             * decimorig                 : Decimation rate before plotting
             * itmax                     : Maximum number of iterations
-            * high_value_ratio          : Minimum mean threshold as a proportion of the reference maximum value. Default is 0.25.
-            * min_splits_high_value     : Minimum number of divisions for blocks with high mean values. Default is 1.
+            * high_value_ratio          : Minimum amplitude threshold as a proportion of the reference maximum value. Default is 0.25.
+            * min_splits_high_value     : Minimum number of divisions for blocks with high-amplitude values. Default is 1.
             * mask_polygon              : Polygon defining the area of interest. Default is None.
             * max_splits_mask_out       : Maximum number of divisions for blocks outside the mask polygon. Default is 5.
             * reference_max_value       : Reference maximum value for high value ratio. Default is None (uses max absolute value of self.image.vel).
-            * use_variance            : Use variance instead of standard deviation for threshold comparison. Default is False.
+            * use_variance              : Use variance instead of standard deviation for threshold comparison. Default is False.
+            * low_amplitude_ratio       : Optional low-amplitude threshold as a proportion of the reference maximum value.
+            * max_splits_low_amplitude  : Maximum split level for low-amplitude blocks.
+            * low_amplitude_apply_inside_mask : If False, low-amplitude cap applies outside mask_polygon only.
+            * amplitude_stat            : Amplitude statistic: 'mean_abs', 'abs_mean', or 'median_abs'.
+            * correction                 : Block statistic correction: 'std', 'mean', 'median', or 'bilinear'.
     
         Returns:
             * None
         '''
-    
+        if amplitude_stat not in ('mean_abs', 'abs_mean', 'median_abs'):
+            raise ValueError("amplitude_stat must be 'mean_abs', 'abs_mean', or 'median_abs'.")
+        correction = _std_correction_key(correction)
+
         if self.verbose:
             print ("---------------------------------")
             print ("---------------------------------")
             print ("Downsampling Iterations")
-    
-        # Creates the variable that is supposed to stop the loop
-        self.StdDev = np.ones(len(self.blocks),)*(threshold+1.)
-        self.AbsMean = np.zeros(len(self.blocks),)
-        do_cut = False
-    
-        # counter
-        it = 0
-    
-        # Check if block size is minimum
-        Bsize = self._is_minimum_size(self.blocks)
-    
-        # Compute the reference maximum value in the dataset
+
         if reference_max_value is None:
-            reference_max_value = np.max(np.abs(self.image.vel))
-    
-        # Initialize division counts
-        division_counts = np.ones(len(self.blocks), dtype=int)
-    
-        # Loops until done
-        while not (self.StdDev<threshold).all() and it<itmax:
-    
-            # Check
-            assert self.StdDev.shape[0]==len(self.blocks), 'StdDev vector has a size different than number of blocks'
-    
-            # Cut if asked
-            if do_cut:
-                # New list of blocks
-                newblocks = []
-                new_division_counts = []
-                # Iterate over blocks
-                for j in range(len(self.blocks)):
-                    block = self.blocks[j]
-                    block_mean = self.AbsMean[j]
-                    if use_variance:
-                        value_to_compare = self.StdDev[j]**2
-                    else:
-                        value_to_compare = self.StdDev[j]
-                    if ((value_to_compare>threshold) or ((block_mean > high_value_ratio * reference_max_value) and (division_counts[j] < min_splits_high_value))) and not Bsize[j]:
-                        if mask_polygon is not None:
-                            p = path.Path(mask_polygon, closed=False)
-                            block_center = self.getblockcenter(block)
-                            if not p.contains_point(block_center) and division_counts[j] >= max_splits_mask_out:
-                                newblocks.append(block)
-                                new_division_counts.append(division_counts[j])
-                                continue
-                        b1, b2, b3, b4 = self.cutblockinfour(block)
-                        newblocks.extend([b1, b2, b3, b4])
-                        new_division_counts.extend([division_counts[j]+1]*4)
-                    else:
-                        newblocks.append(block)
-                        new_division_counts.append(division_counts[j])
-                # Set the blocks
-                self.setBlocks(newblocks)
-                division_counts = np.array(new_division_counts, dtype=int)
-                # Do the downsampling
-                self.downsample(plot=False, decimorig=decimorig)
+            if self.datatype == 'opticorr':
+                magnitude = np.sqrt(np.asarray(self.image.east)**2 + np.asarray(self.image.north)**2)
+                reference_max_value = np.nanmax(magnitude)
             else:
-                do_cut = True
-    
-            # Iteration #
-            it += 1
+                reference_max_value = np.nanmax(np.abs(self.image.vel))
+
+        mask_path = path.Path(mask_polygon, closed=False) if mask_polygon is not None else None
+        division_counts = np.ones(len(self.blocks), dtype=int)
+
+        for it in range(1, int(itmax) + 1):
             if self.verbose:
                 print('Iteration {}: Testing {} data samples '.format(it, len(self.blocks)))
-    
-            # Compute standard deviation
-            self.computeStdDev(smooth=smooth)
-    
-            # initialize
+
+            self.computeStdDev(smooth=smooth, amplitude_stat=amplitude_stat, correction=correction)
+            assert self.StdDev.shape[0]==len(self.blocks), 'StdDev vector has a size different than number of blocks'
+
             Bsize = self._is_minimum_size(self.blocks)
-    
+            value_to_compare = self.StdDev**2 if use_variance else self.StdDev
+            high_amplitude = self.Amplitude > high_value_ratio * reference_max_value
+            split_flags = []
+
+            for j in range(len(self.blocks)):
+                block = self.blocks[j]
+                should_split = (
+                    (value_to_compare[j] > threshold)
+                    or (high_amplitude[j] and division_counts[j] < min_splits_high_value)
+                )
+                if should_split and not Bsize[j]:
+                    inside_mask = True
+                    if mask_path is not None:
+                        inside_mask = mask_path.contains_point(self.getblockcenter(block))
+                        if not inside_mask and division_counts[j] >= max_splits_mask_out:
+                            split_flags.append(False)
+                            continue
+                    if (
+                        low_amplitude_ratio is not None
+                        and max_splits_low_amplitude is not None
+                        and self.Amplitude[j] < low_amplitude_ratio * reference_max_value
+                        and division_counts[j] >= max_splits_low_amplitude
+                        and (low_amplitude_apply_inside_mask or mask_path is None or not inside_mask)
+                    ):
+                        split_flags.append(False)
+                        continue
+                    split_flags.append(True)
+                else:
+                    split_flags.append(False)
+
             if self.verbose and verboseLevel != 'minimum':
-                sys.stdout.write(' ===> StdDev from {} to {}, Mean = {} +- {} \n'.format(self.StdDev.min(),
-                    self.StdDev.max(), self.StdDev.mean(), self.StdDev.std()))
+                sys.stdout.write(
+                    ' ===> StdDev from {} to {}, Mean = {} +- {}, split candidates = {} \n'.format(
+                        self.StdDev.min(),
+                        self.StdDev.max(),
+                        self.StdDev.mean(),
+                        self.StdDev.std(),
+                        int(np.count_nonzero(split_flags)),
+                    )
+                )
                 sys.stdout.flush()
-    
-            # Plot at the end of that iteration
+
             if plot:
                 self.plotDownsampled(decimorig=decimorig)
-    
-        # All done
+
+            if not any(split_flags):
+                break
+
+            if it >= int(itmax):
+                break
+
+            newblocks = []
+            new_division_counts = []
+            for j, block in enumerate(self.blocks):
+                if split_flags[j]:
+                    b1, b2, b3, b4 = self.cutblockinfour(block)
+                    newblocks.extend([b1, b2, b3, b4])
+                    new_division_counts.extend([division_counts[j]+1]*4)
+                else:
+                    newblocks.append(block)
+                    new_division_counts.append(division_counts[j])
+
+            self.setBlocks(newblocks)
+            division_counts = np.array(new_division_counts, dtype=int)
+            self.downsample(plot=False, decimorig=decimorig)
+
         return
 
     def dataBased(self, threshold, plot=False, verboseLevel='minimum', decimorig=10, quantity='curvature', smooth=None, itmax=100):
@@ -1455,8 +1744,8 @@ class imagedownsampling(object):
         corner = []
         if len(self.blocksll[0]) == 4:
             for block in self.blocksll:
-                corner.append(block[0] + block[1] + block[2] + block[3])
-                # corner.append(block[1] + block[3])
+                corner.append(block[0] + block[1] + block[2] + block[3]) # 4 corners: top-left, top-right, bottom-right, bottom-left
+                # corner.append(block[1] + block[3]) # 2 corners: top-left, bottom-right
         elif len(self.blocksll[0]) == 3:
             for block in self.blocksll:
                 corner.append(block[0] + block[1] + block[2])

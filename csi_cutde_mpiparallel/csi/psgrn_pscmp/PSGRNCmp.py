@@ -36,7 +36,7 @@ def get_pscmp_bin():
 def pscmpslip2dis(
     data, p, slip,
     BIN_PSCMP=None, # 'PSCMP_BIN'
-    psgrndir='psgrnfcts',
+    grn_dir='psgrnfcts',
     output_dir='pscmpgrns',
     filename_suffix='',
     workdir='pscmp_ecat',
@@ -46,7 +46,7 @@ def pscmpslip2dis(
 ):
     """
     Generate PSCMP input file and compute Green's functions for a single patch using PSCMPConfig.
-    All input/output is isolated per patch. Both psgrndir and output_dir are created under workdir.
+    All input/output is isolated per patch. Both grn_dir and output_dir are created under workdir.
     All system commands are executed in workdir for safety.
     Parameters
     ----------
@@ -58,11 +58,11 @@ def pscmpslip2dis(
         Slip vector: [strike-slip, dip-slip, tensile-slip].
     BIN_PSCMP : str
         Environment variable name for PSCMP binary directory.
-        In Linux: 
+        In Linux:
             export PSCMP_BIN=/home/yourname/pscmp_bin, where yourname maybe ecat_bins
-        In Windows: 
+        In Windows:
             set PSCMP_BIN=C:\yourname\pscmp_bin, where yourname maybe ecat_bins
-    psgrndir : str
+    grn_dir : str
         Directory for Green's functions, relative to workdir or absolute.
     output_dir : str
         Directory for PSCMP outputs, relative to workdir or absolute.
@@ -90,14 +90,14 @@ def pscmpslip2dis(
 
     # Prepare working directories
     workdir = os.path.abspath(workdir)
-    psgrn_dir = os.path.join(workdir, psgrndir)
+    psgrn_dir = os.path.join(workdir, grn_dir)
     out_dir = os.path.join(workdir, output_dir)
     os.makedirs(workdir, exist_ok=True)
     os.makedirs(psgrn_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
 
     # Use relative paths for PSCMP input
-    rel_psgrn_dir = os.path.join('.', psgrndir)
+    rel_psgrn_dir = os.path.join('.', grn_dir)
     rel_out_dir = os.path.join('.', output_dir)
 
     # Check Green's function directory

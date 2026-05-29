@@ -218,8 +218,8 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                 self.dip_interpolator.interpolation_axis = interpolation_axis
             
             xydip_expanded = self.handle_buffer_nodes(
-                xydip, buffer_nodes, buffer_radius, 
-                interpolation_axis, update_ref=False)
+                xydip, buffer_nodes, buffer_radius,
+                interpolation_axis)
             
             # Convert back to list of dicts
             processed = xydip_expanded.to_dict('records')
@@ -293,7 +293,7 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             interpolation_axis = self.dip_interpolator.interpolation_axis
             xydip_expanded = self.handle_buffer_nodes(
                 xydip, buffer_nodes, buffer_radius,
-                interpolation_axis, update_ref=False)
+                interpolation_axis)
             
             # Find new nodes (buffer nodes)
             existing_locs = set(zip(xydip['x'], xydip['y']))
@@ -1001,7 +1001,38 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                 smooth_method=smooth_method,
                 include_bottom=True
             )
-        
+
+        # Record geometry-affecting parameters for config sync
+        if hasattr(self, 'record_mesh_call'):
+            self.record_mesh_call('generate_layered_mesh', {
+                'num_layers': num_layers, 'layer_depths': layer_depths,
+                'use_profile_depths': use_profile_depths,
+                'nodes_on_layers': nodes_on_layers,
+                'mesh_func': mesh_func, 'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'occ_method': occ_method, 'sparse_points': sparse_points,
+                'sparse_factor': sparse_factor,
+                'smooth_layers': smooth_layers, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
+        else:
+            import copy as _copy
+            _mf = True if callable(mesh_func) else mesh_func
+            self._last_mesh_params = _copy.deepcopy({
+                'method': 'generate_layered_mesh',
+                'num_layers': num_layers, 'layer_depths': layer_depths,
+                'use_profile_depths': use_profile_depths,
+                'nodes_on_layers': nodes_on_layers,
+                'mesh_func': _mf, 'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'occ_method': occ_method, 'sparse_points': sparse_points,
+                'sparse_factor': sparse_factor,
+                'smooth_layers': smooth_layers, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
+
         # Use parent's generate_multilayer_mesh
         if out_mesh is None:
             out_mesh = f'gmsh_layered_fault_mesh_{self.name}.msh'

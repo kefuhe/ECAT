@@ -1063,6 +1063,7 @@ class Pressure(SourceInv):
 
         # Create a dictionary to keep track of the orbital froms
         self.poly = {}
+        self.numberofpolys = {} # Added to match Fault class
 
         # Set poly right
         if polys.__class__ is not list:
@@ -1099,6 +1100,7 @@ class Pressure(SourceInv):
             transformation = self.poly[data.name]
             if type(transformation) in (str, list):
                 tmpNpo = data.getNumberOfTransformParameters(self.poly[data.name])
+                self.numberofpolys[data.name] = tmpNpo
                 Npo += tmpNpo
                 if type(transformation) is str:
                     if transformation in ('full'):
@@ -1111,6 +1113,7 @@ class Pressure(SourceInv):
                     self.transformation[data.name] = tmpNpo
             elif transformation is not None:
                 Npo += transformation
+                self.numberofpolys[data.name] = transformation
         Np = Nps + Npo
 
         # Save extra Parameters

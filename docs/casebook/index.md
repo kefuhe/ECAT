@@ -6,7 +6,7 @@
 
 | 顺序 | 案例 | 适合学习的问题 | 先读 |
 | --- | --- | --- | --- |
-| 1 | InSAR Downsampling / Menyuan, Wushi GeoTIFF | 原始 GAMMA/GeoTIFF 如何读入、协方差估计和降采样 | [InSAR 降采样案例](insar_downsampling_gamma_geotiff.md), [InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md) |
+| 1 | InSAR Downsampling / Menyuan, Wushi, Myanmar | 原始 GAMMA/GeoTIFF/GMTSAR/offset 如何读入、协方差估计和降采样 | [InSAR/Offset 降采样案例](insar_downsampling_gamma_geotiff.md), [InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md) |
 | 2 | Wushi 2024 Mw7.0 | InSAR-only Bayesian 非线性几何反演 | [Wushi：InSAR-only 非线性几何反演](wushi_nonlinear_geometry.md) |
 | 3 | Ridgecrest 2019 Mw6.4/Mw7.1 | GPS+InSAR、多事件覆盖关系、`geodata.faults` | [Ridgecrest：GPS+InSAR 非线性几何反演](ridgecrest_gps_insar.md) |
 | 4 | Dingri 2020 Mw5.6 | 固定几何后的 BLSE、smoothing loop 和结果导出 | [Dingri 2020：BLSE/VCE 线性滑动反演](dingri_blse_vce.md) |
@@ -15,7 +15,7 @@
 
 | ECAT-Cases 目录 | 当前定位 | 学习价值 |
 | --- | --- | --- |
-| [`InSAR_Downsampling`](https://github.com/kefuhe/ECAT-Cases/tree/main/InSAR_Downsampling) | 降采样方法案例 | GAMMA/GeoTIFF 读入、`covarSAR-Step1.py` 与 `downsampleSAR-Step2_*.py` 的旧脚本对照 |
+| [`InSAR_Downsampling`](https://github.com/kefuhe/ECAT-Cases/tree/main/InSAR_Downsampling) | 数据准备和降采样方法案例 | GAMMA、GeoTIFF、GMTSAR direct-projection、range/azimuth offset、adapter 和 `covarSAR-Step1.py` / `downsampleSAR-Step2_*.py` 旧脚本对照 |
 | [`Cases/Wushi_20240122M7_0`](https://github.com/kefuhe/ECAT-Cases/tree/main/Cases/Wushi_20240122M7_0) | 入门非线性几何案例 | 两条 InSAR 轨道、`explorefault`、几何后验和 sigma 后验 |
 | [`Cases/Ridgecrest_20190706Mw7_1`](https://github.com/kefuhe/ECAT-Cases/tree/main/Cases/Ridgecrest_20190706Mw7_1) | 多数据、多事件非线性案例 | GPS 与 InSAR 混合，部分数据覆盖前震或主震，部分数据覆盖累计形变 |
 | [`Cases/Dingri_Events/Dingri_20200320Mw5_6`](https://github.com/kefuhe/ECAT-Cases/tree/main/Cases/Dingri_Events/Dingri_20200320Mw5_6) | 入门线性滑动案例 | `default_config.yml`、`bounds_config.yml`、BLSE 固定平滑、smoothing loop |
@@ -29,6 +29,7 @@
 ## 选择建议
 
 - 第一次跑通：先用 Wushi 非线性几何和 Dingri 2020 线性滑动。
-- 想理解 InSAR 原始产品到反演输入：先看 `InSAR_Downsampling`，再回到 Wushi 或 Dingri。
+- 想理解 InSAR/offset 原始产品到反演输入：先看 `InSAR_Downsampling`，根据数据格式选择 GAMMA、GeoTIFF、GMTSAR 或 adapter 子目录，再回到 Wushi 或 Dingri。
+- 手里是非标准文本、外部栅格或时序 InSAR：先看 [自定义读入 Adapter 降采样](../workflows/02b_adapter_downsampling.md)，只把读入层改成自己的 `input_adapter.py`。
 - 想处理 GPS+InSAR 或多事件：看 Ridgecrest，重点检查 `geodata` 顺序和 `geodata.faults`。
 - 想复用到新事件：从最相近的案例复制目录结构，再用 CLI 生成模板对照修改，不要直接套用模板默认参数。

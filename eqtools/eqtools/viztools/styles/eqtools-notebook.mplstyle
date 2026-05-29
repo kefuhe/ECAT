@@ -1,0 +1,31 @@
+# eqtools — notebook style
+# Moderate size for Jupyter notebooks and exploratory work.
+
+font.family                 : sans-serif
+font.size                   : 10.0
+axes.labelsize              : 10.0
+xtick.labelsize             : 9.0
+ytick.labelsize             : 9.0
+legend.fontsize             : 9.0
+figure.titlesize            : 11.0
+
+axes.linewidth              : 0.8
+
+lines.linewidth             : 1.5
+lines.markersize            : 5.0
+
+xtick.direction             : out
+ytick.direction             : out
+
+figure.dpi                  : 100
+savefig.dpi                 : 150
+savefig.bbox                : tight
+
+text.usetex                 : False
+mathtext.fontset            : dejavusans
+axes.formatter.use_mathtext : False
+
+pdf.fonttype                : 42
+ps.fonttype                 : 42
+
+legend.frameon              : False

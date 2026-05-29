@@ -24,7 +24,8 @@ from scipy.interpolate import interp1d
 from numpy import rad2deg
 
 # Local application imports
-from csi import TriangularPatches, seismiclocations
+from csi import TriangularPatches
+from csi.seismiclocations import seismiclocations
 from .fitting_methods import RegressionFitter
 from ..plottools import DegreeFormatter
 from .MeshGenerator import MeshGenerator
@@ -1240,18 +1241,12 @@ class AdaptiveTriangularPatches(TriangularPatches):
         return self.profiles
 
     def interpolate_point_strike_along_isocurve(self, lon, lat, iso_strike, iso_lon, iso_lat):
-        """
-        Calculate the strike angle at a specific point for isocurve data.
-    
-        Parameters:
-        - lon: Longitude of the point to calculate the strike angle.
-        - lat: Latitude of the point to calculate the strike angle.
-        - strike_data: Array of strike angles.
-        - lon_data: Array of longitudes corresponding to the strike data.
-        - lat_data: Array of latitudes corresponding to the strike data.
-    
-        Returns:
-        - float: The calculated strike angle at the specified point.
+        """Interpolate along-strike azimuth at a single point from isocurve data.
+
+        Finds the two nearest isocurve nodes by lon/lat distance and returns
+        the circular-mean of their strikes.
+
+        Convention: input and output are **geographic azimuth in degrees**.
         """
         from numpy import rad2deg, deg2rad
     
@@ -1269,16 +1264,12 @@ class AdaptiveTriangularPatches(TriangularPatches):
         return rad2deg(average_strike_rad)
     
     def interpolate_point_strike_along_trace(self, lon, lat, discretized=True):
-        """
-        Calculate the strike angle at a specific point for trace data.
-    
-        Parameters:
-        - lon: Longitude of the point to calculate the strike angle.
-        - lat: Latitude of the point to calculate the strike angle.
-        - discretized: If True, use the discretized trace data. Otherwise, use the original trace data.
-    
-        Returns:
-        - float: The calculated strike angle at the specified point.
+        """Interpolate along-strike azimuth at a single point from the fault trace.
+
+        Delegates to :meth:`interpolate_point_strike_along_isocurve` using the
+        cached trace strike (``strikei`` or ``strikef``).
+
+        Convention: returns **geographic azimuth in degrees**.
         """
         if discretized:
             if not hasattr(self, 'strikei') or self.strikei is None:
@@ -1290,37 +1281,112 @@ class AdaptiveTriangularPatches(TriangularPatches):
             return self.interpolate_point_strike_along_isocurve(lon, lat, self.strikef, self.lon, self.lat)
 
     def calculate_top_strike(self, discretized=True):
-            # Check if self.top_coords exists and is not None
-            if not hasattr(self, 'top_coords') or self.top_coords is None:
-                raise ValueError("The attribute 'top_coords' is not set. Please set 'top_coords' before calling this function.")
+        """Interpolate along-strike azimuth from the trace onto each top_coords point.
 
-            # Initialize an empty list to store the strike values for each point
-            top_strike = []
+        For each point in ``self.top_coords_ll``, finds the two nearest trace
+        points and returns the circular-mean interpolated strike.  Result is
+        cached to ``self.top_strike``.
 
-            # Iterate through each point in self.top_coords
-            for coord in self.top_coords_ll:
-                # Calculate the strike value for each point
-                strike = self.interpolate_point_strike_along_trace(coord[0], coord[1], discretized=discretized)
-                # Add the calculated strike value to the list
-                top_strike.append(strike)
+        Convention
+        ----------
+        Returns **geographic azimuth** in degrees (0°=N, 90°=E, clockwise),
+        same as :meth:`compute_strike` and :meth:`calculate_isocurve_strike`.
 
-            # Convert the list to a numpy array and save it to self.top_strike
-            self.top_strike = np.array(top_strike)
-            return self.top_strike
+        Note
+        ----
+        When the trace *is* top_coords (the common perturbation case),
+        this reduces to a self-interpolation and the output equals
+        ``compute_strike(self.top_coords)`` exactly.  The perturbation path
+        now calls ``compute_strike`` directly to avoid this redundancy.
+        """
+        # Check if self.top_coords exists and is not None
+        if not hasattr(self, 'top_coords') or self.top_coords is None:
+            raise ValueError("The attribute 'top_coords' is not set. Please set 'top_coords' before calling this function.")
+
+        # Initialize an empty list to store the strike values for each point
+        top_strike = []
+
+        # Iterate through each point in self.top_coords
+        for coord in self.top_coords_ll:
+            # Calculate the strike value for each point
+            strike = self.interpolate_point_strike_along_trace(coord[0], coord[1], discretized=discretized)
+            # Add the calculated strike value to the list
+            top_strike.append(strike)
+
+        # Convert the list to a numpy array and save it to self.top_strike
+        self.top_strike = np.array(top_strike)
+        return self.top_strike
+
+    @staticmethod
+    def compute_strike(coords_xy):
+        """Compute per-point along-strike azimuth from an ordered coordinate array.
+
+        Convention
+        ----------
+        Returns **geographic azimuth** in degrees, measured clockwise from
+        North.  0° = North, 90° = East, 180° = South, 270° = West.
+
+        The azimuth follows the input point order: point[i] → point[i+1]
+        defines the positive-strike direction.
+
+        Algorithm
+        ---------
+        - Segment strike: ``90 − atan2(Δy, Δx)``  (math-angle → azimuth).
+        - Endpoint nodes:  strike of the adjacent segment.
+        - Interior nodes:  **circular mean** of the two adjacent segment
+          strikes (handles wrap-around near 0°/360° correctly).
+
+        Parameters
+        ----------
+        coords_xy : (N, 2+) array
+            Columns 0, 1 are x, y in a projected (Cartesian) CRS.
+
+        Returns
+        -------
+        strike : (N,) ndarray
+            Along-strike azimuth in degrees for each input point.
+        """
+        from numpy import rad2deg, deg2rad, arctan2, sin, cos, diff, concatenate
+
+        x, y = coords_xy[:, 0], coords_xy[:, 1]
+        segment_strike = 90 - rad2deg(arctan2(diff(y), diff(x)))
+        segment_strike_rad = deg2rad(segment_strike)
+
+        average_strike_rad = arctan2(
+            (sin(segment_strike_rad[:-1]) + sin(segment_strike_rad[1:])) / 2,
+            (cos(segment_strike_rad[:-1]) + cos(segment_strike_rad[1:])) / 2
+        )
+        average_strike = rad2deg(average_strike_rad)
+
+        return concatenate(([segment_strike[0]], average_strike, [segment_strike[-1]]))
 
     def calculate_isocurve_strike(self, x_coords, y_coords, calculate_strike_along_trace=True, is_lonlat=False):
-        """
-        Calculate the strike angle of the fault trace based on given coordinates.
-    
-        Parameters:
-        - x_coords: Array of x coordinates.
-        - y_coords: Array of y coordinates.
-        - calculate_strike_along_trace (bool): If True, calculate the strike angle along the input order of the trace. 
-            Otherwise, calculate the strike angle in the reverse order.
-        - is_lonlat (bool): If True, the input coordinates are in longitude and latitude. Default is False.
-    
-        Returns:
-        - np.ndarray: The strike angles in degrees.
+        """Compute along-strike azimuth for an arbitrary isocurve (trace, isodepth, etc.).
+
+        Convention
+        ----------
+        Returns **geographic azimuth** in degrees (0°=N, 90°=E, clockwise).
+        Same algorithm as :meth:`compute_strike`.
+
+        When *calculate_strike_along_trace* is False, 180° is added to all
+        values, effectively reversing the positive-strike direction.
+
+        Parameters
+        ----------
+        x_coords : array-like
+            X coordinates (projected CRS, or longitude if *is_lonlat=True*).
+        y_coords : array-like
+            Y coordinates (projected CRS, or latitude if *is_lonlat=True*).
+        calculate_strike_along_trace : bool
+            If True (default), strike follows the input point order.
+            If False, strike is reversed (+180°).
+        is_lonlat : bool
+            If True, convert lon/lat → projected xy before computing.
+
+        Returns
+        -------
+        strike : (N,) ndarray
+            Along-strike azimuth in degrees.
         """
         from numpy import rad2deg, deg2rad
     
@@ -1353,15 +1419,28 @@ class AdaptiveTriangularPatches(TriangularPatches):
         return strike
     
     def calculate_trace_strike(self, use_discretized_trace=True, calculate_strike_along_trace=True):
-        """
-        Calculate the strike angle of the fault trace. You can choose to calculate the strike angle along the input order of the trace or the reverse order.
-    
-        Parameters:
-        - use_discretized_trace (bool): If True, use the discretized trace coordinates. Otherwise, use the original trace coordinates.
-        - calculate_strike_along_trace (bool): If True, calculate the strike angle along the input order of the trace. Otherwise, calculate the strike angle in the reverse order.
-    
-        Returns:
-        - np.ndarray: The strike angles in degrees.
+        """Compute along-strike azimuth for the fault trace and cache the result.
+
+        Wrapper around :meth:`calculate_isocurve_strike` that reads from
+        ``self.xi/yi`` (discretized) or ``self.xf/yf`` (original) and caches
+        the result to ``self.strikei`` or ``self.strikef``.
+
+        Convention
+        ----------
+        Returns **geographic azimuth** in degrees (0°=N, 90°=E, clockwise).
+
+        Parameters
+        ----------
+        use_discretized_trace : bool
+            If True, use discretized trace (xi, yi → strikei).
+            If False, use original trace (xf, yf → strikef).
+        calculate_strike_along_trace : bool
+            If True, strike follows point order; if False, +180°.
+
+        Returns
+        -------
+        strike : (N,) ndarray
+            Along-strike azimuth in degrees.
         """
         if use_discretized_trace:
             if not hasattr(self, 'xi') or self.xi is None:
@@ -1391,20 +1470,19 @@ class AdaptiveTriangularPatches(TriangularPatches):
         profile_info = seis.profiles[prof_name]
         self.profiles[prof_name] = profile_info
     
-    def handle_buffer_nodes(self, xydip, buffer_nodes=None, buffer_radius=None, interpolation_axis='x', top_coords=None, update_ref=True):
+    def handle_buffer_nodes(self, xydip, buffer_nodes=None, buffer_radius=None, interpolation_axis='x', top_coords=None):
         """
         Handle buffer nodes. If buffer nodes and radius are provided, find the buffer node segments and calculate the dip for each node segment.
-    
+
         Parameters:
         xydip (DataFrame): The DataFrame containing the coordinates and dips.
         buffer_nodes (numpy.ndarray, optional): The buffer nodes. The shape is (n, 2) numpy array. Default is None.
         buffer_radius (float, optional): The buffer radius. Default is None. Unit is km.
         interpolation_axis (str, optional): The interpolation axis. It can be 'x' or 'y'. Default is 'x'.
         top_coords (numpy.ndarray, optional): The top coordinates to use. If None, self.top_coords[:, :-1] is used. Default is None.
-        update_ref (bool, optional): If True, update the xydip reference. Default is True.
-    
+
         Returns:
-        DataFrame: The updated DataFrame containing the coordinates and dips. 
+        DataFrame: The updated DataFrame containing the coordinates and dips.
         If buffer nodes and radius are provided, it will contain the buffer node information.
         """
         if buffer_nodes is not None and buffer_radius is not None:
@@ -1474,52 +1552,67 @@ class AdaptiveTriangularPatches(TriangularPatches):
             xydip = pd.concat([xydip] + buffer_dfs).drop_duplicates().reset_index(drop=True)
 
             # print('xydip:', xydip)
-    
-        if update_ref:
-            self.xydip_ref = xydip
+
         return xydip
 
     def interpolate_top_dip_from_relocated_profile(
-            self, 
-            xydip, 
-            is_utm=False, 
+            self,
+            xydip,
+            is_utm=False,
             discretization_interval=None,
-            interpolation_axis='auto',  # Modified default value to 'auto'
-            save_to_file=False, 
+            interpolation_axis='auto',
+            save_to_file=False,
             calculate_strike_along_trace=True,
-            method='min_mse',  # optimal: min_use, ols, theil_sen, ransac, huber, lasso, ridge, elasticnet, quantile
+            method='min_mse',
             buffer_nodes=None,
             buffer_radius=None,
-            update_xydip_ref=False,
             profiles_to_keep=None,
             profiles_to_remove=None
         ):
+        """Interpolate dip angles onto top_coords and compute along-strike azimuth.
+
+        Strike is computed via :meth:`compute_strike` directly from
+        ``self.top_coords`` (geographic azimuth, degrees, clockwise from N).
+        The trace infrastructure (strikei / top_strike cache chain) is no
+        longer used by this method.
+
+        Parameters
+        ----------
+        xydip : str, np.ndarray, or pd.DataFrame
+            Dip control data (file path, array, or DataFrame).
+        is_utm : bool
+            Whether coordinates in *xydip* are UTM (default False → lon/lat).
+        discretization_interval : float, optional
+            Interval for discretizing the top trace before interpolation.
+        interpolation_axis : str
+            ``'auto'``, ``'x'``, or ``'y'``.
+        save_to_file : bool
+            Save interpolation results to CSV.
+        calculate_strike_along_trace : bool
+            **Deprecated — ignored.**  Strike direction is now determined
+            solely by the point order of ``self.top_coords``.  Passing
+            ``False`` emits a :class:`DeprecationWarning`.
+        method : str
+            Dip selection method (default ``'min_mse'``).
+        buffer_nodes, buffer_radius : optional
+            Buffer segmentation parameters.
+        profiles_to_keep, profiles_to_remove : list, optional
+            Filter profiles by index.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: lon, lat, strike (degrees), dip (degrees).
         """
-        Interpolate the dip of the earthquake fault.
-    
-        Parameters:
-        xydip (str, np.ndarray, pd.DataFrame): str is the path to a file containing x, y coordinates and dip angles. 
-            (np.ndarray, pd.DataFrame) is the array or DataFrame containing the coordinates and dips.
-        xydip_file: Path to a file containing x, y coordinates and dip angles.
-        is_utm: If True, the x and y coordinates are in UTM. Otherwise, they are in geographic coordinates.
-        discretization_interval: Interval for discretizing the trace.
-        interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
-            'auto' automatically selects the best interpolation direction using PCA.
-        save_to_file: If True, save the results to a file.
-        calculate_strike_along_trace: If True, calculate the strike along the fault trace.
-        method: Method to select dips if multiple methods are available. Default is 'min_mse'.
-        buffer_nodes: Coordinates of buffer nodes used to segment the top_coords, then adaptively interpolate the dip for each segment.
-        buffer_radius: Radius of the buffer zone, used to maintain a transition radius for linear interpolation.
-        update_xydip_ref: If True, update the xydip reference.
-        profiles_to_keep: List of profile indices to keep. Default is None.
-        profiles_to_remove: List of profile indices to remove. Default is None.
-    
-        Returns:
-        pd.DataFrame: DataFrame containing the interpolated results.
-    
-        Todo: 
-            * Remove the dependency on the fault trace (i.e., self.xf, self.yf or self.xi, self.yi).
-        """
+        import warnings
+        if not calculate_strike_along_trace:
+            warnings.warn(
+                "calculate_strike_along_trace=False is deprecated and ignored. "
+                "Strike direction is now determined by the point order of "
+                "top_coords. Reverse the point order if you need the opposite "
+                "strike direction.",
+                DeprecationWarning, stacklevel=2,
+            )
         # Discretize the trace for more accurate strike angle interpolation
         if discretization_interval is not None:
             self.discretize_top_coords(every=discretization_interval)
@@ -1535,9 +1628,9 @@ class AdaptiveTriangularPatches(TriangularPatches):
             interpolation_axis = self._determine_optimal_interpolation_axis(self.top_coords[:, 0], self.top_coords[:, 1])
             print(f"Auto-selected interpolation axis: {interpolation_axis}")
         
-        # Handle buffer nodes and update self.xydip_ref
-        xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis, update_ref=update_xydip_ref or not hasattr(self, 'xydip_ref'))
-        
+        # Handle buffer nodes
+        xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis)
+
         # Save to csv file
         if save_to_file:
             xydip.to_csv(f'{self.name}_used.csv', index=False, header=True, float_format='%.6f')
@@ -1562,11 +1655,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
                                         fill_value=(start_dip_fill, end_dip_fill), bounds_error=False)
         interpolated_dip = interpolation_function(interpolated_x)
     
-        # Calculate strike
-        if not hasattr(self, 'strikei') or self.strikei is None or self.strikei.size != self.xi.size:
-            strikei = self.calculate_trace_strike(use_discretized_trace=True, calculate_strike_along_trace=calculate_strike_along_trace)
-    
-        top_strike = self.calculate_top_strike(discretized=True)
+        # Calculate strike directly from top_coords (no trace infrastructure needed)
+        top_strike = self.compute_strike(self.top_coords)
         lon, lat, strike, dip = self.top_coords_ll[:, 0], self.top_coords_ll[:, 1], top_strike, interpolated_dip
         interpolated_main = pd.DataFrame(np.vstack((lon, lat, strike, dip)).T, columns='lon lat strike dip'.split())
     
@@ -1668,8 +1758,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         # Read coordinates and dips using the read_coordinates_and_dips function
         xydip = self.read_coordinates_and_dips(xydip, False, method, profiles_to_keep, profiles_to_remove)
 
-        # Handle buffer nodes and update self.xydip_ref
-        xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis, update_ref=False)
+        # Handle buffer nodes
+        xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis)
         # Save to csv file
         xydip.to_csv(f'{self.name}_used_isocurve.csv', index=False, header=True, float_format='%.6f')
 
@@ -1953,7 +2043,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         * is_utm: If True, the x and y coordinates are in UTM. Otherwise, they are in geographic coordinates.
         * interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
             'auto' automatically selects the best interpolation direction using PCA.
-        * calculate_strike_along_trace: If True, calculate the strike along the fault trace.
+        * calculate_strike_along_trace: **Deprecated — ignored.** Passed through to
+            ``interpolate_top_dip_from_relocated_profile`` but has no effect.
         * method: Method to select dips if multiple methods are available. Default is 'min_mse'.
         * buffer_nodes: Coordinates of buffer nodes used to segment the top_coords, then adaptively interpolate the dip for each segment.
         * buffer_radius: Radius of the buffer zone, used to maintain a transition radius for linear interpolation.
@@ -1996,7 +2087,6 @@ class AdaptiveTriangularPatches(TriangularPatches):
                     method=method,
                     buffer_nodes=buffer_nodes,
                     buffer_radius=buffer_radius,
-                    update_xydip_ref=False,
                     profiles_to_keep=profiles_to_keep,
                     profiles_to_remove=profiles_to_remove
                 )
@@ -3054,6 +3144,28 @@ class AdaptiveTriangularPatches(TriangularPatches):
         ...     smooth_method='savgol'
         ... )
         """
+        # Record geometry-affecting parameters for config sync
+        if hasattr(self, 'record_mesh_call'):
+            self.record_mesh_call('generate_mesh', {
+                'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict, 'segments_dict': segments_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'mesh_func': mesh_func,
+                'smooth_coords': smooth_coords, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
+        else:
+            import copy as _copy
+            _mf = True if callable(mesh_func) else mesh_func
+            self._last_mesh_params = _copy.deepcopy({
+                'method': 'generate_mesh',
+                'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict, 'segments_dict': segments_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'mesh_func': _mf,
+                'smooth_coords': smooth_coords, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
         # Apply smoothing if requested
         if smooth_coords:
             self.smooth_coords(
@@ -3221,7 +3333,34 @@ class AdaptiveTriangularPatches(TriangularPatches):
             
             if self.verbose:
                 print(f"Smoothed {len(layers_coords)} intermediate layers")
-        
+
+        # Record geometry-affecting parameters for config sync
+        if hasattr(self, 'record_mesh_call'):
+            self.record_mesh_call('generate_multilayer_mesh', {
+                'mesh_func': mesh_func, 'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'nodes_on_layers': nodes_on_layers,
+                'occ_method': occ_method, 'sparse_points': sparse_points,
+                'sparse_factor': sparse_factor, 'lonlat': lonlat,
+                'smooth_coords': smooth_coords, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
+        else:
+            import copy as _copy
+            _mf = True if callable(mesh_func) else mesh_func
+            self._last_mesh_params = _copy.deepcopy({
+                'method': 'generate_multilayer_mesh',
+                'mesh_func': _mf, 'top_size': top_size, 'bottom_size': bottom_size,
+                'field_size_dict': field_size_dict,
+                'mesh_algorithm': mesh_algorithm, 'optimize_method': optimize_method,
+                'nodes_on_layers': nodes_on_layers,
+                'occ_method': occ_method, 'sparse_points': sparse_points,
+                'sparse_factor': sparse_factor, 'lonlat': lonlat,
+                'smooth_coords': smooth_coords, 'smooth_window': smooth_window,
+                'smooth_method': smooth_method,
+            })
+
         if out_mesh is None:
             out_mesh = self.out_mesh
         

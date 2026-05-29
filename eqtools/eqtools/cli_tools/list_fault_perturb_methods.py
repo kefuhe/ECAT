@@ -67,12 +67,12 @@ def format_markdown(registry):
 
     # Define Categories and Keywords
     categories = {
-        "🧬 Dutta Methods (Shape)": ["Dutta"],
-        "📉 Dip Angle Adjustments": ["dip", "Dip"],
-        "🔄 Rotation & Rigid Motion": ["Rotate", "Rotation", "rotation"],
-        "⚓ Endpoints & Midpoints": ["Endpoints", "Midpoint"],
-        "🧩 Complex/Composite": ["RotateTrans", "multiLayer"],
-        "📏 Translation & Shifts": ["Translation", "translation", "Trans", "FixedDir", "fixed_direction"]
+        "[DNA] Dutta Methods (Shape)": ["Dutta"],
+        "[DIP] Dip Angle Adjustments": ["dip", "Dip"],
+        "[SYNC] Rotation & Rigid Motion": ["Rotate", "Rotation", "rotation"],
+        "[*] Endpoints & Midpoints": ["Endpoints", "Midpoint"],
+        "[*] Complex/Composite": ["RotateTrans", "multiLayer"],
+        "[*] Translation & Shifts": ["Translation", "translation", "Trans", "FixedDir", "fixed_direction"]
     }
     
     # Helper to clean params string
@@ -88,7 +88,7 @@ def format_markdown(registry):
         
         # Bucket for categorized methods
         buckets = {k: [] for k in categories.keys()}
-        buckets["⚙️ Other / General"] = [] # Fallback category
+        buckets["[CFG] Other / General"] = [] # Fallback category
 
         for name, meta in methods.items():
             matched = False
@@ -98,7 +98,7 @@ def format_markdown(registry):
                     matched = True
                     break # Assign to first matching category
             if not matched:
-                buckets["⚙️ Other / General"].append((name, meta))
+                buckets["[CFG] Other / General"].append((name, meta))
 
         # Print Categories
         for cat_name, items in buckets.items():

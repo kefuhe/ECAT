@@ -1,0 +1,3 @@
+# eqtools — colorblind-safe vibrant palette (Paul Tol)
+# Usage: PlotStyle.apply(['science', 'colors-vibrant'])
+axes.prop_cycle : cycler('color', ['EE7733', '0077BB', '33BBEE', 'EE3377', 'CC3311', '009988', 'BBBBBB'])

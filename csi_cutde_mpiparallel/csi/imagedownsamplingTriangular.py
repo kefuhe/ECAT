@@ -26,7 +26,7 @@ from .imagedownsampling import imagedownsampling
 
 
 class imagedownsamplingTriangular(imagedownsampling):
-    def __init__(self, name, image, faults=None, verbose=True, vel_type='east'):
+    def __init__(self, name, image, faults=None, verbose=True, vel_type='east', workers=None):
         '''
         Initialize the downsampler.
 
@@ -38,9 +38,12 @@ class imagedownsamplingTriangular(imagedownsampling):
         Kwargs:
             * verbose    : Whether to print verbose output. Default is True.
             * vel_type   : Type of velocity to use ('east', 'north', or 'magnitude'). Default is 'east'.
+            * workers    : Number of worker processes passed to imagedownsampling.
         '''
         # Initialize the downsampler
-        super(imagedownsamplingTriangular, self).__init__(name, image, faults=faults, verbose=verbose)
+        super(imagedownsamplingTriangular, self).__init__(
+            name, image, faults=faults, verbose=verbose, workers=workers
+        )
         self.vel_type = vel_type  # Store the velocity type
 
         # Adapt velocity based on vel_type

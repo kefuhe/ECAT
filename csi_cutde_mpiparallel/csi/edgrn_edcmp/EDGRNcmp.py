@@ -1,9 +1,10 @@
 import os
 import sys
 import subprocess
+import shutil
 import numpy as np
-import pandas as pd
 from .edcmp_config import EDCMPConfig, EDCMPParameters, RectangularSource
+from .edcmp_coord import csi_obs_to_edcmp, csi_source_to_edcmp, edcmp_disp_to_csi
 from .tri2rectpoints import patch_local2d_inv, patch_local2d, triangle_to_rectangles
 
 def get_edcmp_bin():
@@ -18,10 +19,14 @@ def get_edcmp_bin():
     """
     import importlib.util
     # Find the csi package location
-    spec = importlib.util.find_spec("csi")
-    if spec is None or not spec.submodule_search_locations:
-        raise ImportError("Cannot find csi package. Please ensure csi is installed.")
-    csi_dir = spec.submodule_search_locations[0]
+    csi_module = sys.modules.get("csi")
+    if csi_module is not None and getattr(csi_module, "__path__", None):
+        csi_dir = csi_module.__path__[0]
+    else:
+        spec = importlib.util.find_spec("csi")
+        if spec is None or not spec.submodule_search_locations:
+            raise ImportError("Cannot find csi package. Please ensure csi is installed.")
+        csi_dir = spec.submodule_search_locations[0]
     if sys.platform.startswith('win'):
         bin_dir = os.path.join(csi_dir, 'bin', 'windows')
     elif sys.platform.startswith('linux'):
@@ -31,6 +36,14 @@ def get_edcmp_bin():
     return bin_dir
 
 def read_disp_bin(filename, nrec, ncol):
+    """
+    Read EDCMP binary displacement output and convert to CSI convention.
+
+    Returns
+    -------
+    disp_csi : np.ndarray, shape (nrec, 3)
+        Displacement in CSI convention (dx=East, dy=North, dz=Up).
+    """
     with open(filename, 'rb') as f:
         # Read nrec
         f.read(4)
@@ -50,11 +63,178 @@ def read_disp_bin(filename, nrec, ncol):
         f.read(4)
         disp = disp.reshape((nrec_bin, ncol), order='F')
 
-        disp_arr = np.empty_like(disp)
-        disp_arr[:, 0] = disp[:, 1]
-        disp_arr[:, 1] = disp[:, 0]
-        disp_arr[:, 2] = -disp[:, 2]
-    return disp_arr
+    return edcmp_disp_to_csi(disp)
+
+
+def _prepare_grn_dir_for_edcmp(workdir, grn_dir, grn_files):
+    src_dir = grn_dir if os.path.isabs(grn_dir) else os.path.join(workdir, grn_dir)
+    if not os.path.isdir(src_dir) or not os.listdir(src_dir):
+        raise FileNotFoundError(
+            f"Green's function directory '{src_dir}' does not exist or is empty. "
+            "Please prepare EDGRN outputs in this directory before running EDCMP."
+        )
+
+    if os.path.isabs(grn_dir):
+        runtime_name = os.path.basename(os.path.normpath(src_dir)) or "edgrnfcts"
+        runtime_dir = os.path.join(workdir, runtime_name)
+        os.makedirs(runtime_dir, exist_ok=True)
+        for fname in grn_files:
+            src_file = os.path.join(src_dir, fname)
+            dst_file = os.path.join(runtime_dir, fname)
+            if not os.path.isfile(src_file):
+                raise FileNotFoundError(f"Missing EDGRN output file: {src_file}")
+            if not os.path.isfile(dst_file):
+                try:
+                    os.link(src_file, dst_file)
+                except OSError:
+                    shutil.copy2(src_file, dst_file)
+        cfg_dir = os.path.join('.', runtime_name)
+    else:
+        runtime_dir = src_dir
+        cfg_dir = os.path.join('.', grn_dir)
+
+    return src_dir, runtime_dir, cfg_dir
+
+
+def _build_edcmp_sources(xs, ys, zs, width, length, strike, dip, slip_total, rake):
+    """
+    Build a list of RectangularSource objects with CSI→EDCMP coordinate swap.
+
+    Parameters
+    ----------
+    xs, ys : float or array-like
+        Source positions in CSI convention (metres, already offset from origin).
+    zs : float or array-like
+        Source depth(s) in metres.
+    width, length, strike, dip : float or array-like
+        Geometric parameters.
+    slip_total : float
+        Slip amplitude.
+    rake : float
+        Rake angle in degrees.
+
+    Returns
+    -------
+    sources : list of RectangularSource
+    """
+    xs_edcmp, ys_edcmp = csi_source_to_edcmp(xs, ys)
+
+    if isinstance(xs, (list, tuple, np.ndarray)):
+        n = len(xs)
+        width_arr = width if isinstance(width, (list, tuple, np.ndarray)) else [width] * n
+        length_arr = length if isinstance(length, (list, tuple, np.ndarray)) else [length] * n
+        strike_arr = strike if isinstance(strike, (list, tuple, np.ndarray)) else [strike] * n
+        dip_arr = dip if isinstance(dip, (list, tuple, np.ndarray)) else [dip] * n
+        zs_arr = zs if isinstance(zs, (list, tuple, np.ndarray)) else [zs] * n
+        return [
+            RectangularSource(
+                source_id=i + 1,
+                slip=slip_total,
+                xs=xs_edcmp[i],
+                ys=ys_edcmp[i],
+                zs=zs_arr[i],
+                width=width_arr[i],
+                length=length_arr[i],
+                strike=strike_arr[i],
+                dip=dip_arr[i],
+                rake=rake,
+            )
+            for i in range(n)
+        ]
+    else:
+        return [RectangularSource(
+            source_id=1, slip=slip_total,
+            xs=xs_edcmp, ys=ys_edcmp, zs=zs,
+            width=width, length=length,
+            strike=strike, dip=dip, rake=rake
+        )]
+
+
+def _run_edcmp_exe(params, workdir, inp_basename, BIN_EDCMP_PATH):
+    """
+    Write EDCMP input file, run the exe, and check for errors.
+
+    Parameters
+    ----------
+    params : EDCMPParameters
+        Fully configured parameters (sources, observation points, etc.).
+    workdir : str
+        Absolute path to working directory.
+    inp_basename : str
+        Basename for the .inp file (written under workdir).
+    BIN_EDCMP_PATH : str
+        Path to directory containing the edcmp executable.
+    """
+    inp_file = os.path.join(workdir, inp_basename)
+    config = EDCMPConfig(params)
+    config.write_config_file(inp_file, verbose=False)
+
+    exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
+    cmd = [exe_path, os.path.join('.', inp_basename)]
+    with subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=(sys.platform == "win32")
+        ) as proc:
+        out, err = proc.communicate()
+        if proc.returncode != 0:
+            print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
+            print(f"[EDCMP ERROR] Return code: {proc.returncode}")
+            print(f"[EDCMP ERROR] Working directory: {workdir}")
+            print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
+            print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
+            raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
+
+
+def _prepare_exe_environment(BIN_EDCMP, workdir, output_dir, grn_dir):
+    """
+    Common setup for exe-mode functions: resolve binary path, prepare directories.
+
+    Returns
+    -------
+    BIN_EDCMP_PATH, workdir, out_dir, grn_dir_abs, grn_runtime_dir, grn_dir_cfg : str
+    """
+    BIN_EDCMP_PATH = get_edcmp_bin() if BIN_EDCMP is None else os.environ.get(BIN_EDCMP, None)
+    if not BIN_EDCMP_PATH:
+        raise RuntimeError(
+            f"Environment variable '{BIN_EDCMP}' is not set or empty. "
+            "Please set it to your EDCMP binary directory."
+        )
+
+    grn_files = ('edgrnhs.ss', 'edgrnhs.ds', 'edgrnhs.cl')
+    workdir = os.path.abspath(workdir)
+    out_dir = os.path.join(workdir, output_dir)
+    os.makedirs(workdir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    grn_dir_abs, grn_runtime_dir, grn_dir_cfg = _prepare_grn_dir_for_edcmp(workdir, grn_dir, grn_files)
+
+    return BIN_EDCMP_PATH, workdir, out_dir, grn_dir_cfg, grn_files
+
+
+def _make_base_params(output_dir_cfg, grn_dir_cfg, grn_files, layered_model, data, mean_x, mean_y):
+    """
+    Create EDCMPParameters with observation points set.
+
+    Returns
+    -------
+    params : EDCMPParameters
+    """
+    obs_xrec, obs_yrec = csi_obs_to_edcmp(data.x, data.y, mean_x, mean_y)
+    obs_coords = np.column_stack([obs_xrec, obs_yrec])
+
+    params = EDCMPParameters(
+        output_dir=output_dir_cfg + os.sep,
+        output_flags=(1, 0, 0, 0),
+        output_files=('edcmp.disp', 'edcmp.strn', 'edcmp.strss', 'edcmp.tilt'),
+        layered_model=layered_model,
+        grn_dir=grn_dir_cfg + os.sep,
+        grn_files=grn_files
+    )
+    params.set_irregular_observation_points([tuple(pt) for pt in obs_coords])
+    return params
+
 
 def edcmpslip2dis(
     data, source_params, slip,
@@ -70,12 +250,13 @@ def edcmpslip2dis(
 ):
     """
     Generate EDCMP input file and call EDCMP to compute Green's functions for a single rectangular fault.
+
     Parameters
     ----------
     data : object
         Observation points object, must have .x, .y attributes (unit: kilo-meters)
-    source_params : dict
-        Parameters required by RectangularSource
+    source_params : tuple
+        (xs, ys, zs, width, length, strike, dip, mean_x, mean_y)
     slip : list or tuple
         Slip vector: [strike-slip, dip-slip, tensile-slip].
     BIN_EDCMP : str or None
@@ -102,46 +283,16 @@ def edcmpslip2dis(
     ss, ds, ts : np.ndarray
         Green's functions for strike-slip, dip-slip, tensile-slip (Nd, 3).
     """
-    BIN_EDCMP_PATH = get_edcmp_bin() if BIN_EDCMP is None else os.environ.get(BIN_EDCMP, None)
-    # print('The EDCMP binary directory is:', BIN_EDCMP_PATH)
-    if not BIN_EDCMP_PATH:
-        raise RuntimeError(f"Environment variable '{BIN_EDCMP}' is not set or empty. Please set it to your EDCMP binary directory.")
-
-    # Prepare working directories
-    workdir = os.path.abspath(workdir)
-    grn_dir_abs = os.path.join(workdir, grn_dir)
-    out_dir = os.path.join(workdir, output_dir)
-    os.makedirs(workdir, exist_ok=True)
-    os.makedirs(grn_dir_abs, exist_ok=True)
-    os.makedirs(out_dir, exist_ok=True)
-
-    # Check Green's function directory
-    if not os.path.isdir(grn_dir_abs) or not os.listdir(grn_dir_abs):
-        raise FileNotFoundError(
-            f"Green's function directory '{grn_dir_abs}' does not exist or is empty. "
-            "Please prepare EDGRN outputs in this directory before running EDCMP."
-        )
-
-    # Prepare observation points
-    layered_model=layered_model
-    grn_files=('edgrnhs.ss', 'edgrnhs.ds', 'edgrnhs.cl')
-    output_flags = (1, 0, 0, 0)
-    output_files = ('edcmp.disp', 'edcmp.strn', 'edcmp.strss', 'edcmp.tilt')
+    BIN_EDCMP_PATH, workdir, out_dir, grn_dir_cfg, grn_files = _prepare_exe_environment(
+        BIN_EDCMP, workdir, output_dir, grn_dir
+    )
 
     xs, ys, zs, width, length, strike, dip, mean_x, mean_y = source_params
+    output_dir_cfg = out_dir if os.path.isabs(output_dir) else os.path.join('.', output_dir)
 
-    obs_coords = np.column_stack([(data.y-mean_y)*1000.0, (data.x-mean_x)*1000.0])
-    params = EDCMPParameters(
-        output_dir=os.path.join('.', output_dir) + os.sep,
-        output_flags=output_flags,
-        output_files=output_files,
-        layered_model=layered_model,
-        grn_dir=os.path.join('.', grn_dir) + os.sep,
-        grn_files=grn_files
-    )
-    params.set_irregular_observation_points([tuple(pt) for pt in obs_coords])
+    params = _make_base_params(output_dir_cfg, grn_dir_cfg, grn_files, layered_model, data, mean_x, mean_y)
 
-    # Read outputs
+    # Output file paths
     ds_data_basename = f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.disp'
     ds_file = os.path.join(out_dir, ds_data_basename)
     ss_data_basename = f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.disp'
@@ -149,133 +300,38 @@ def edcmpslip2dis(
     Nd = len(data.x)
     ds = np.zeros((Nd, 3))
     ss = np.zeros((Nd, 3))
-    if (not force_recompute) and os.path.exists(ds_file) and os.path.exists(ss_file):
-        # # Skip the comment line and read (2, 3, 4)
-        # ds_arr = np.loadtxt(ds_file, comments='#', usecols=(2, 3, 4))
-        # ds = np.empty_like(ds_arr)
-        # ds[:, 0] = ds_arr[:, 1]  # dx = Uy_m
-        # ds[:, 1] = ds_arr[:, 0]  # dy = Ux_m
-        # ds[:, 2] = -ds_arr[:, 2] # dz = -Uz_m
-    
-        # ss_arr = np.loadtxt(ss_file, comments='#', usecols=(2, 3, 4))
-        # ss = np.empty_like(ss_arr)
-        # ss[:, 0] = ss_arr[:, 1]
-        # ss[:, 1] = ss_arr[:, 0]
-        # ss[:, 2] = -ss_arr[:, 2]
-    
-        # ts = np.zeros_like(ss)
 
+    # Check cache
+    if (not force_recompute) and os.path.exists(ds_file) and os.path.exists(ss_file):
         ds = read_disp_bin(ds_file, Nd, 3)
         ss = read_disp_bin(ss_file, Nd, 3)
-        ts = np.zeros_like(ss)  # Tensile slip Green's function is not computed
+        ts = np.zeros_like(ss)
         return ss, ds, ts
 
     # Compute strike-slip Green's function
     if slip[0] == 1.0:
-        slip_total = 1.0
-        rake = 0.0
-        # swap x and y for edcmp
-        if isinstance(xs, (list, tuple, np.ndarray)):
-            params.sources = [RectangularSource(source_id=i+1, slip=slip_total,
-                                                xs=ys[i], ys=xs[i], zs=zs[i],
-                                                width=width, length=length,
-                                                strike=strike, dip=dip, rake=rake) for i in range(len(xs))]
-        else:
-            params.sources = [RectangularSource(source_id=1, slip=slip_total,
-                                                xs=ys, ys=xs, zs=zs,
-                                                width=width, length=length,
-                                                strike=strike, dip=dip, rake=rake)]
+        params.sources = _build_edcmp_sources(xs, ys, zs, width, length, strike, dip, 1.0, 0.0)
         params.output_files = (ss_data_basename,
                             f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.strn',
                             f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.strss',
                             f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.tilt')
-        # Write input file
-        inp_ss_basename = f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.inp'
-        inp_ss = os.path.join(os.path.basename(workdir), inp_ss_basename)
-        config = EDCMPConfig(params)
-        config.write_config_file(inp_ss, verbose=False)
-        # Call edcmp
-        exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', inp_ss_basename)]
-        with subprocess.Popen(
-                cmd,
-                cwd=workdir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=(sys.platform == "win32")
-            ) as proc:
-            out, err = proc.communicate()
-            if proc.returncode != 0:
-                print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
-                print(f"[EDCMP ERROR] Return code: {proc.returncode}")
-                print(f"[EDCMP ERROR] Working directory: {workdir}")
-                print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
-                print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
-                raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
+        _run_edcmp_exe(params, workdir, f'edcmp_ss_{faultname}_{dataname}_{filename_suffix}.inp', BIN_EDCMP_PATH)
 
     # Compute dip-slip Green's function
     if slip[1] == 1.0:
-        slip_total = 1.0
-        rake = 90.0
-        # Swap xs and ys for edcmp
-        if isinstance(xs, (list, tuple, np.ndarray)):
-            params.sources = [RectangularSource(source_id=i+1, slip=slip_total,
-                                                xs=ys[i], ys=xs[i], zs=zs[i],
-                                                width=width, length=length,
-                                                strike=strike, dip=dip, rake=rake) for i in range(len(xs))]
-        else:
-            params.sources = [RectangularSource(source_id=1, slip=slip_total,
-                                                xs=ys, ys=xs, zs=zs,
-                                                width=width, length=length,
-                                                strike=strike, dip=dip, rake=rake)]
+        params.sources = _build_edcmp_sources(xs, ys, zs, width, length, strike, dip, 1.0, 90.0)
         params.output_files = (ds_data_basename,
                             f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.strn',
                             f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.strss',
                             f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.tilt')
-        # Write input file
-        inp_ds_basename = f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.inp'
-        inp_ds = os.path.join(os.path.basename(workdir), inp_ds_basename)
-        config = EDCMPConfig(params)
-        config.write_config_file(inp_ds, verbose=False)
-        # Call edcmp
-        exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
-        cmd = [exe_path, os.path.join('.', inp_ds_basename)]
-        with subprocess.Popen(
-            cmd,
-            cwd=workdir,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            shell=(sys.platform == "win32")
-        ) as proc:
-            out, err = proc.communicate()
-            if proc.returncode != 0:
-                print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
-                print(f"[EDCMP ERROR] Return code: {proc.returncode}")
-                print(f"[EDCMP ERROR] Working directory: {workdir}")
-                print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
-                print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
-                raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
-
+        _run_edcmp_exe(params, workdir, f'edcmp_ds_{faultname}_{dataname}_{filename_suffix}.inp', BIN_EDCMP_PATH)
 
     # Read outputs
-    if os.path.exists(ds_file) and os.path.exists(ss_file):
-        # Skip the comment line and read (2, 3, 4)
-        # ds_arr = np.loadtxt(ds_file, comments='#', usecols=(2, 3, 4))
-        # ds = np.empty_like(ds_arr)
-        # ds[:, 0] = ds_arr[:, 1]  # dx = Uy_m
-        # ds[:, 1] = ds_arr[:, 0]  # dy = Ux_m
-        # ds[:, 2] = -ds_arr[:, 2] # dz = -Uz_m
-    
-        # ss_arr = np.loadtxt(ss_file, comments='#', usecols=(2, 3, 4))
-        # ss = np.empty_like(ss_arr)
-        # ss[:, 0] = ss_arr[:, 1]
-        # ss[:, 1] = ss_arr[:, 0]
-        # ss[:, 2] = -ss_arr[:, 2]
-    
-        # ts = np.zeros_like(ss)
-        ds = read_disp_bin(ds_file, Nd, 3)
+    if os.path.exists(ss_file):
         ss = read_disp_bin(ss_file, Nd, 3)
-        ts = np.zeros_like(ss)
+    if os.path.exists(ds_file):
+        ds = read_disp_bin(ds_file, Nd, 3)
+    ts = np.zeros_like(ss)
     return ss, ds, ts
 
 def edcmpslip2dis_forward(
@@ -327,97 +383,42 @@ def edcmpslip2dis_forward(
     disp : np.ndarray
         Displacement field at each observation point, shape (Nd, 3).
     """
-    import os
-    import sys
-    import numpy as np
-    from .edcmp_config import EDCMPConfig, EDCMPParameters, RectangularSource
-
-    BIN_EDCMP_PATH = get_edcmp_bin() if BIN_EDCMP is None else os.environ.get(BIN_EDCMP, None)
-    if not BIN_EDCMP_PATH:
-        raise RuntimeError(f"Environment variable '{BIN_EDCMP}' is not set or empty. Please set it to your EDCMP binary directory.")
-
-    workdir = os.path.abspath(workdir)
-    grn_dir_abs = os.path.join(workdir, grn_dir)
-    out_dir = os.path.join(workdir, output_dir)
-    os.makedirs(workdir, exist_ok=True)
-    os.makedirs(grn_dir_abs, exist_ok=True)
-    os.makedirs(out_dir, exist_ok=True)
-
-    if not os.path.isdir(grn_dir_abs) or not os.listdir(grn_dir_abs):
-        raise FileNotFoundError(
-            f"Green's function directory '{grn_dir_abs}' does not exist or is empty. "
-            "Please prepare EDGRN outputs in this directory before running EDCMP."
-        )
+    BIN_EDCMP_PATH, workdir, out_dir, grn_dir_cfg, grn_files = _prepare_exe_environment(
+        BIN_EDCMP, workdir, output_dir, grn_dir
+    )
 
     xs, ys, zs, width, length, strike, dip, mean_x, mean_y = source_params
+    output_dir_cfg = out_dir if os.path.isabs(output_dir) else os.path.join('.', output_dir)
 
-    # Prepare observation points (EDCMP expects y, x order, in meters relative to mean)
-    obs_coords = np.column_stack([(data.y-mean_y)*1000.0, (data.x-mean_x)*1000.0])
-
-    params = EDCMPParameters(
-        output_dir=os.path.join('.', output_dir) + os.sep,
-        output_flags=(1, 0, 0, 0),
-        output_files=('edcmp.disp', 'edcmp.strn', 'edcmp.strss', 'edcmp.tilt'),
-        layered_model=layered_model,
-        grn_dir=os.path.join('.', grn_dir) + os.sep,
-        grn_files=('edgrnhs.ss', 'edgrnhs.ds', 'edgrnhs.cl')
-    )
-    params.set_irregular_observation_points([tuple(pt) for pt in obs_coords])
+    params = _make_base_params(output_dir_cfg, grn_dir_cfg, grn_files, layered_model, data, mean_x, mean_y)
 
     # Compute slip amplitude and rake from input slip vector
-    ss, ds, ts = slip
-    slip_total = np.sqrt(ss**2 + ds**2)
+    ss_slip, ds_slip, ts_slip = slip
+    slip_total = np.sqrt(ss_slip**2 + ds_slip**2)
     if slip_total > 0:
-        rake = np.degrees(np.arctan2(ds, ss))
+        rake = np.degrees(np.arctan2(ds_slip, ss_slip))
     else:
         rake = 0.0
 
-    # Only one source, only one output file
+    # Output file
     disp_data_basename = f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.disp'
     disp_file = os.path.join(out_dir, disp_data_basename)
+    Nd = len(data.x)
+    disp = np.zeros((Nd, 3))
 
-    params.sources = [RectangularSource(
-        source_id=1, slip=slip_total,
-        xs=ys, ys=xs, zs=zs,
-        width=width, length=length,
-        strike=strike, dip=dip, rake=rake
-    )]
+    # Check cache
+    if (not force_recompute) and os.path.exists(disp_file):
+        disp = read_disp_bin(disp_file, Nd, 3)
+        return disp
+
+    # Build sources and run
+    params.sources = _build_edcmp_sources(xs, ys, zs, width, length, strike, dip, slip_total, rake)
     params.output_files = (disp_data_basename,
                           f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.strn',
                           f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.strss',
                           f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.tilt')
 
-    inp_basename = f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.inp'
-    inp_file = os.path.join(os.path.basename(workdir), inp_basename)
-    config = EDCMPConfig(params)
-    config.write_config_file(inp_file, verbose=False)
-
-    exe_path = os.path.join(BIN_EDCMP_PATH, 'edcmp' + ('.exe' if sys.platform.startswith('win') else ''))
-    cmd = [exe_path, os.path.join('.', inp_basename)]
-    Nd = len(data.x)
-    disp = np.zeros((Nd, 3))
-
-    # If not force_recompute and output exists, read directly
-    if (not force_recompute) and os.path.exists(disp_file):
-        disp = read_disp_bin(disp_file, Nd, 3)
-        return disp
-
-    # Run EDCMP
-    with subprocess.Popen(
-            cmd,
-            cwd=workdir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=(sys.platform == "win32")
-        ) as proc:
-        out, err = proc.communicate()
-        if proc.returncode != 0:
-            print(f"[EDCMP ERROR] Command failed: {' '.join(cmd)}")
-            print(f"[EDCMP ERROR] Return code: {proc.returncode}")
-            print(f"[EDCMP ERROR] Working directory: {workdir}")
-            print(f"[EDCMP ERROR] stdout:\n{out.decode(errors='ignore')}")
-            print(f"[EDCMP ERROR] stderr:\n{err.decode(errors='ignore')}")
-            raise RuntimeError(f"EDCMP failed with return code {proc.returncode}")
+    _run_edcmp_exe(params, workdir, f'edcmp_disp_{faultname}_{dataname}_{filename_suffix}.inp', BIN_EDCMP_PATH)
 
     # Read output
     if os.path.exists(disp_file):

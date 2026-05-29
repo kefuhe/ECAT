@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from . import lsqlin
 
@@ -28,7 +30,7 @@ def simplified_vce(
     """
     Simplified Variance Component Estimation for geodetic inversions using lsqlin solver.
     
-    Solves: minimize ||G*m - d||²_Σd + Σᵢ ||Lᵢ*m||²_Σαᵢ
+    Solves: minimize ||G*m - d||^2_Σd + Σ_i ||L_i*m||^2_Σα_i
     
     Subject to:
     - A_ueq*m <= b_ueq (inequality constraints)
@@ -85,8 +87,8 @@ def simplified_vce(
     --------
     dict with keys:
         - 'm': estimated parameters
-        - 'var_d': data variance components (σ²)
-        - 'var_alpha': regularization variance components (σ²)
+        - 'var_d': data variance components (σ^2)
+        - 'var_alpha': regularization variance components (σ^2)
         - 'weights': regularization weights
         - 'converged': convergence flag
         - 'iterations': number of iterations
@@ -97,6 +99,7 @@ def simplified_vce(
     n_obs = len(d)
     n_params = G.shape[1]
     n_reg = L.shape[0]
+    sigma_only = (n_reg == 0)  # No smoothing constraints → sigma-only VCE
     
     # Configure data ranges
     if data_ranges is None:
@@ -136,6 +139,9 @@ def simplified_vce(
     
     if verbose:
         print(f"VCE Setup: {n_obs} obs, {n_params} params, {n_reg} constraints")
+        if sigma_only:
+            print("  ** Sigma-only VCE: no smoothing constraints (L has 0 rows).")
+            print("  ** Only data variance components will be estimated.")
         print(f"Data ranges: {len(data_ranges)} datasets")
         print(f"Fault ranges: {len(fault_ranges)} faults")
         print(f"Sigma groups: {n_sigma} groups")
@@ -144,10 +150,11 @@ def simplified_vce(
             print(f"  Data group {group}: {datasets} (update={group in sigma_updatable}, value={sigma_fixed.get(group, 'auto')})")
         for fault, (start, end) in fault_ranges.items():
             print(f"  Fault {fault}: params [{start}:{end}]")
-        for group, faults in smooth_config.items():
-            print(f"  Smooth group {group}: faults {faults} (update={group in smooth_updatable}, value={smooth_fixed.get(group, 'auto')})")
+        if not sigma_only:
+            for group, faults in smooth_config.items():
+                print(f"  Smooth group {group}: faults {faults} (update={group in smooth_updatable}, value={smooth_fixed.get(group, 'auto')})")
     
-    # Initialize variance components (σ²)
+    # Initialize variance components (σ^2)
     var_d = {g: sigma_values[i] for i, g in enumerate(sigma_group_names)}
     var_alpha = {g: smooth_values[i] for i, g in enumerate(smooth_group_names)}
     
@@ -164,7 +171,7 @@ def simplified_vce(
                 Cd_inv_sub = Cd_inv[start:end, start:end]
                 G_sub = G[start:end, :]
                 d_sub = d[start:end]
-                # Weight: sqrt(Cd_inv) / sqrt(σ²_d) = sqrt(Cd_inv) / σ_d
+                # Weight: sqrt(Cd_inv) / sqrt(σ^2_d) = sqrt(Cd_inv) / σ_d
                 weight = 1.0 / np.sqrt(var_d[group])
                 try:
                     L_chol = np.linalg.cholesky(Cd_inv_sub)
@@ -205,11 +212,25 @@ def simplified_vce(
         try:
             ret = lsqlin.lsqlin(G_aug, d_aug, 0, A_ueq, b_ueq, Aeq, beq, lb, ub, None, opts)
             m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
-        except:
+        except Exception as e:
+            warnings.warn(
+                f"Equality constraints caused solver failure "
+                f"({type(e).__name__}: {e}). "
+                f"Retrying without equality constraints.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             try:
                 ret = lsqlin.lsqlin(G_aug, d_aug, 0, A_ueq, b_ueq, None, None, lb, ub, None, opts)
                 m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
-            except:
+            except Exception as e2:
+                warnings.warn(
+                    f"Inequality constraints also caused solver failure "
+                    f"({type(e2).__name__}: {e2}). "
+                    f"Retrying without any constraints.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 ret = lsqlin.lsqlin(G_aug, d_aug, 0, None, None, None, None, lb, ub, None, opts)
                 m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
 
@@ -312,51 +333,61 @@ def simplified_vce(
                 var_alpha[group] = var_alpha[group] * update_factors_alpha[group]
     
     # Compute weights (regularization parameter ratios)
-    weights = {}
-    for d_group in var_d.keys():
-        weights[d_group] = {}
-        for alpha_group, alpha_var in var_alpha.items():
-            weights[d_group][alpha_group] = alpha_var / var_d[d_group]
-    # Simplify output for single smoothing case
-    if len(var_alpha) == 1:
-        var_alpha_out = list(var_alpha.values())[0]
-        std_alpha_out = np.sqrt(var_alpha_out)
-        weights_out = {group: var_alpha_out / var for group, var in var_d.items()}
-    else:
+    if sigma_only:
+        # No meaningful alpha — weights and var_alpha are placeholders
         var_alpha_out = var_alpha
         std_alpha_out = {k: np.sqrt(v) for k, v in var_alpha.items()}
-        weights_out = weights
+        weights_out = {}
+    else:
+        weights = {}
+        for d_group in var_d.keys():
+            weights[d_group] = {}
+            for alpha_group, alpha_var in var_alpha.items():
+                weights[d_group][alpha_group] = alpha_var / var_d[d_group]
+        # Simplify output for single smoothing case
+        if len(var_alpha) == 1:
+            var_alpha_out = list(var_alpha.values())[0]
+            std_alpha_out = np.sqrt(var_alpha_out)
+            weights_out = {group: var_alpha_out / var for group, var in var_d.items()}
+        else:
+            var_alpha_out = var_alpha
+            std_alpha_out = {k: np.sqrt(v) for k, v in var_alpha.items()}
+            weights_out = weights
 
     # Print final results
     if verbose:
         print(f"\nFinal Results:")
         for group, var in var_d.items():
-            print(f"  var_d[{group}] (σ²): {var:.6f}")
+            print(f"  var_d[{group}] (σ^2): {var:.6f}")
             print(f"  std_d[{group}] (σ): {np.sqrt(var):.6f}")
-        if isinstance(var_alpha_out, dict):
+        if sigma_only:
+            print("  var_alpha: N/A (sigma-only VCE, no smoothing)")
+        elif isinstance(var_alpha_out, dict):
             for group, var in var_alpha_out.items():
-                print(f"  var_alpha[{group}] (σ²): {var:.6f}")
+                print(f"  var_alpha[{group}] (σ^2): {var:.6f}")
                 print(f"  std_alpha[{group}] (σ): {np.sqrt(var):.6f}")
         else:
-            print(f"  var_alpha (σ²): {var_alpha_out:.6f}")
+            print(f"  var_alpha (σ^2): {var_alpha_out:.6f}")
             print(f"  std_alpha (σ): {np.sqrt(var_alpha_out):.6f}")
-        print(f"\nWeights:")
-        if isinstance(weights_out, dict) and any(isinstance(v, dict) for v in weights_out.values()):
-            for d_group, weights_dict in weights_out.items():
-                for alpha_group, weight in weights_dict.items():
-                    print(f"  weight[{d_group}][{alpha_group}]: {weight:.6f}")
-        else:
-            for group, weight in weights_out.items():
-                print(f"  weight[{group}]: {weight:.6f}")
+        if not sigma_only:
+            print(f"\nWeights:")
+            if isinstance(weights_out, dict) and any(isinstance(v, dict) for v in weights_out.values()):
+                for d_group, weights_dict in weights_out.items():
+                    for alpha_group, weight in weights_dict.items():
+                        print(f"  weight[{d_group}][{alpha_group}]: {weight:.6f}")
+            else:
+                for group, weight in weights_out.items():
+                    print(f"  weight[{group}]: {weight:.6f}")
 
     return {
         'm': m,
-        'var_d': var_d,                    # Data variance components (σ²)
-        'var_alpha': var_alpha_out,        # Smoothing variance components (σ²)
+        'var_d': var_d,                    # Data variance components (σ^2)
+        'var_alpha': var_alpha_out,        # Smoothing variance components (σ^2)
         'std_d': {k: np.sqrt(v) for k, v in var_d.items()},      # Data standard deviations
         'std_alpha': std_alpha_out,        # Smoothing standard deviations
         'weights': weights_out,            # Regularization weights
         'fault_ranges': fault_ranges,      # Fault parameter ranges
+        'sigma_only': sigma_only,          # True when no smoothing constraints
         'converged': it < max_iter - 1,
         'iterations': it + 1
     }

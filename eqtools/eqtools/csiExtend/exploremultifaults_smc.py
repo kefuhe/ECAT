@@ -30,7 +30,8 @@ from scipy.stats import norm, uniform
 # Personals
 from csi import SourceInv
 from csi import planarfault
-from csi import gps, insar
+from csi import gps, insar, leveling, crossfaultoffset
+from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 from .SMC_MPI import SMC_samples_parallel_mpi
 from .config import explorefaultConfig
 from .logging_utils.mpi_logging import ensure_default_logging
@@ -482,6 +483,10 @@ class explorefault(SourceInv):
             elif data.dtype=='insar':
                 # Get data
                 dobs = data.vel
+            elif data.dtype == 'leveling':
+                dobs = data.vel
+            elif data.dtype == 'crossfaultoffset':
+                dobs = data.data_vector
     
             # Make sure Cd exists
             assert hasattr(data, 'Cd'), \
@@ -561,6 +566,10 @@ class explorefault(SourceInv):
                 return data.synth[:,:-1].flatten()
         elif data.dtype=='insar':
             return data.synth.flatten()+reference
+        elif data.dtype == 'leveling':
+            return data.synth.flatten() + reference
+        elif data.dtype == 'crossfaultoffset':
+            return data.synth.flatten()
     
         # All done
         return
@@ -771,11 +780,17 @@ class explorefault(SourceInv):
         if model not in ['STD', 'std', 'Std']:
             cogps_vertical_list = []
             cosar_list = []
+            coleveling_list = []
+            cocrossfault_list = []
             for data, vertical in zip(self.datas, self.verticals):
                 if data.dtype == 'gps':
                     cogps_vertical_list.append([data, vertical])
                 elif data.dtype == 'insar':
                     cosar_list.append(data)
+                elif data.dtype == 'leveling':
+                    coleveling_list.append(data)
+                elif data.dtype == 'crossfaultoffset':
+                    cocrossfault_list.append(data)
             
             for cogps, vertical in cogps_vertical_list:
                 cogps.buildsynth(faults, vertical=vertical)
@@ -784,6 +799,14 @@ class explorefault(SourceInv):
                 cosar.buildsynth(faults, vertical=True)
                 if hasattr(cosar, 'refnumber') and '{}'.format(cosar.name) in self.keys:
                     cosar.synth += self.model[cosar.refnumber]
+            
+            for colev in coleveling_list:
+                colev.buildsynth(faults, vertical=True)
+                if hasattr(colev, 'refnumber') and '{}'.format(colev.name) in self.keys:
+                    colev.synth += self.model[colev.refnumber]
+            
+            for cocf in cocrossfault_list:
+                cocf.buildsynth(faults)
             
             # =================================================================
             # Printing logic: Fit Stats + detailed parameter table (with aliases)
@@ -860,6 +883,12 @@ class explorefault(SourceInv):
         elif data.dtype in ('opticorr', 'optical'):
             observed = np.hstack((data.east, data.north))
             synthetic = np.hstack((data.east_synth, data.north_synth))
+        elif data.dtype == 'leveling':
+            observed = data.vel
+            synthetic = data.synth
+        elif data.dtype == 'crossfaultoffset':
+            observed = data.data_vector
+            synthetic = data.synth_vector
         else:
             raise ValueError(f"Unsupported data type: {data.dtype}")
         
@@ -1272,90 +1301,6 @@ class explorefault(SourceInv):
                 self.logger.info(f"\nModel parameters saved to: {filename} (format: {file_format})")
     
         return estimated_params
-    
-    def plot(self, model='median', show=True, scale=2., legendscale=0.5, vertical=True):
-        '''
-        Plots the PDFs and the desired model predictions and residuals.
-
-        Kwargs:
-            * model     : 'mean', 'median' or 'rand'
-            * show      : True/False
-
-        Returns:
-            * None
-        '''
-
-        # Plot the pymc stuff
-        for iprior, prior in enumerate(self.Priors):
-            trace = self.sampler['allsamples'][:,iprior]
-            fig = plt.figure()
-            plt.subplot2grid((1,4), (0,0), colspan=3)
-            plt.plot([0, len(trace)], [trace.mean(), trace.mean()], 
-                     '--', linewidth=2)
-            plt.plot(trace, 'o-')
-            plt.title(self.keys[iprior])
-            plt.subplot2grid((1,4), (0,3), colspan=1)
-            plt.hist(trace, orientation='horizontal')
-            #plt.savefig('{}.png'.format(prior[0]))
-
-        # Get the model
-        faults = self.returnModel(model=model, print_stats=False)
-
-        # Build predictions
-        for fault in self.faults:
-            for data, vertical in zip(self.datas, self.verticals):
-
-                # Build the green's functions
-                fault.buildGFs(data, slipdir='sd', verbose=False, vertical=vertical)
-
-        # Build the synthetics
-        data.buildsynth(fault)
-
-            # Check ref
-        for data in self.datas:
-            if '{}'.format(data.name) in self.keys:
-                data.synth += self.model[data.refnumber] # ['{}'.format(data.name)]
-
-            # Plot the data and synthetics
-            if data.dtype == 'insar':
-                cmin = np.min(data.vel)
-                cmax = np.max(data.vel)
-                data.plot(data='data', norm=[cmin, cmax], show=False)
-                data.plot(data='synth', norm=[cmin, cmax], show=False)
-            elif data.dtype == 'gps':
-                data.plot(data=['synth', 'data'], color=['r', 'k'], scale=scale, drawCoastlines=False, legendscale=legendscale)
-        
-        # Plot
-        if show:
-            plt.show()
-
-        # All done
-        return
-
-    def plot_smc_statistics(self):
-        import arviz as az
-        import matplotlib.pyplot as plt
-
-        # Get the SMC chains
-        trace = self.sampler['allsamples']
-        keys = self.keys
-
-        # Convert the SMC chains to a dictionary
-        data = {keys[i]: trace[:, i] for i in range(len(keys))}
-
-        # Convert the dictionary to an InferenceData object
-        idata = az.from_dict(data)
-
-        # Plot the sample traces
-        az.plot_trace(idata)
-
-        # Plot the posterior distributions
-        az.plot_posterior(idata)
-
-        # Plot the autocorrelation
-        az.plot_autocorr(idata)
-
-        plt.show()
 
     def plot_kde_matrix(self, figsize=None, save=False, filename='kde_matrix.png', show=True, 
                         style='white', fill=True, scatter=False, scatter_size=15, 
@@ -1680,11 +1625,17 @@ class explorefault(SourceInv):
             # Build synthetics for GPS and SAR data
             cogps_vertical_list = []
             cosar_list = []
+            coleveling_list = []
+            cocrossfault_list = []
             for data, vertical in zip(self.datas, self.verticals):
                 if data.dtype == 'gps':
                     cogps_vertical_list.append([data, vertical])
                 elif data.dtype == 'insar':
                     cosar_list.append(data)
+                elif data.dtype == 'leveling':
+                    coleveling_list.append(data)
+                elif data.dtype == 'crossfaultoffset':
+                    cocrossfault_list.append(data)
 
             if save_data:
                 if not os.path.exists('Modeling'):
@@ -1703,6 +1654,14 @@ class explorefault(SourceInv):
                 for i, (gpsdata, gpsvertical) in enumerate(cogps_vertical_list):
                     for itype in ['data', 'synth', 'res']:
                         gpsdata.write2file(f'{gpsdata.name}_{itype}.txt', itype, outDir='Modeling')
+                # Save Leveling data
+                for i, levdata in enumerate(coleveling_list):
+                    for itype in ['data', 'synth']:
+                        levdata.write2file(f'{levdata.name}_{itype}.txt', outDir='Modeling', data=itype)
+                # Save Cross-fault offset data
+                for i, cfdata in enumerate(cocrossfault_list):
+                    for itype in ['data', 'synth']:
+                        cfdata.write2file(f'{cfdata.name}_{itype}.txt', outDir='Modeling', data=itype)
             
             # Plot GPS and SAR data
             if plot_data:
@@ -1749,6 +1708,14 @@ class explorefault(SourceInv):
                                                 save_path=os.path.join('Modeling', f'{cosar.name}_fit_comparison.pdf'),
                                                 show=True
                                             )
+
+                # Plot Leveling data
+                for colev in coleveling_list:
+                    _plot_leveling_fit(colev, save_dir='Modeling', file_type='png')
+
+                # Plot Cross-fault offset data
+                for cocf in cocrossfault_list:
+                    _plot_crossfaultoffset_fit(cocf, save_dir='Modeling', file_type='png')
 
     def save2h5(self, filename, datasets=None):
         '''

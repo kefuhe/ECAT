@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 from typing import Union, List, Dict, Callable, Optional, Tuple
-from .AdaptiveTriangularPatches import AdaptiveTriangularPatches
 
 
 def normalize_dip_to_0_180(dip: Union[float, np.ndarray]) -> Union[float, np.ndarray]:

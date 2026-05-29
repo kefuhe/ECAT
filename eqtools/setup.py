@@ -37,8 +37,10 @@ setup(
     include_package_data=True,
     package_data={
         'eqtools': ['cpt/*'],  # , 'examples/*'
+        'eqtools.cli_tools': ['templates/adapter_downsampling/*'],
         'eqtools.Tectonic_Utils': ['README.md', 'cover_picture.png'],
         'eqtools.earthquake_clients': ['data/*', 'data/Faults/*', 'data/Blocks/*'],
+        'eqtools.viztools': ['styles/*.mplstyle'],
     },
     classifiers=[
         # Choose classifiers from https://pypi.org/classifiers/
@@ -53,6 +55,7 @@ setup(
             "ecat-generate-boundary=eqtools.cli_tools.generate_bounds_config:main",
             "ecat-generate-nonlinear=eqtools.cli_tools.generate_nonlinear_config:main",
             "ecat-generate-downsample=eqtools.cli_tools.generate_downsample_config:main",
+            "ecat-downsample=eqtools.cli_tools.process_data_downsampling:main",
             "ecat-psgrn=eqtools.cli_tools.psgrn_cli:main",
             "ecat-pscmp=eqtools.cli_tools.pscmp_cli:main",
             "ecat-edgrn=eqtools.cli_tools.edgrn_cli:main",

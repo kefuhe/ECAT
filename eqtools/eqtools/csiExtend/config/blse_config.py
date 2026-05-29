@@ -56,6 +56,23 @@ class BoundLSEInversionConfig(LinearInversionConfig):
         # Force slip_sampling_mode to 'ss_ds' for BLSE
         self.slip_sampling_mode = 'ss_ds'
 
+        # Handle alpha disabled case for BLSE
+        # BLSE uses 1.0/alpha, so we need safe defaults to avoid division by zero
+        if not self.alpha_enabled:
+            from .config_utils import parse_alpha_config, parse_alpha_faults
+            self.alpha['update'] = [False]
+            self.alpha['mode'] = 'single'
+            self.alpha['initial_value'] = [0.0]
+            self.alpha['log_scaled'] = True    # 10^0 = 1.0, safe for 1.0/alpha
+            fault_names = self.faultnames
+            smoothing_faultnames = getattr(self, '_smoothing_faultnames', None)
+            self.alpha['faults'] = parse_alpha_faults(
+                self.alpha['faults'], fault_names,
+                smoothing_faultnames=smoothing_faultnames)
+            self.alpha = parse_alpha_config(
+                self.alpha, faultnames=fault_names,
+                smoothing_faultnames=smoothing_faultnames)
+
         # BLSE-specific validation
         self._validate_laplacian_bounds()
         

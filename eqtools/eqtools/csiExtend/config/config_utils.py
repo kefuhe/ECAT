@@ -234,7 +234,10 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
     Parameters:
     -----------
     data_faults_config : None, list, or dict
-        Configuration for data faults
+        Configuration for data faults. Supported forms:
+        - None: every dataset uses all faults
+        - list[None | str | list[str]]: one entry per dataset in all_datanames order
+        - dict[str, None | str | list[str]]: map dataset name to fault selection
     all_faultnames : list
         List of all available fault names
     all_datanames : list
@@ -246,17 +249,52 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
     --------
     list
         List of fault name lists for each dataset
+
+    Raises:
+    -------
+    ValueError
+        Raised when:
+        - data_faults_config is not None, a list, or a dict
+        - list input length does not match the number of datasets
+        - a fault name does not exist in all_faultnames
+        - a dataset name in dict input does not exist in all_datanames
+        - an item is not one of None, str, or list[str]
+
+    Notes:
+    ------
+    Each dataset is validated independently. Unlike parse_alpha_faults,
+    fault coverage does not need to be complete across datasets:
+    - a dataset may use all faults, one fault, or any subset of faults
+    - unspecified datasets in dict form default to all_faultnames
+    - repeated use of the same fault across different datasets is allowed
         
     Examples:
     ---------
     >>> parse_data_faults(None, ["f1", "f2"], ["d1", "d2"])
     [["f1", "f2"], ["f1", "f2"]]
     
+    >>> parse_data_faults(["f1", "f2"], ["f1", "f2"], ["d1", "d2"])
+    [["f1"], ["f2"]]
+
     >>> parse_data_faults([None, ["f1"]], ["f1", "f2"], ["d1", "d2"])
+    [["f1", "f2"], ["f1"]]
+
+    >>> parse_data_faults([["f1", "f2"], "f1"], ["f1", "f2"], ["d1", "d2"])
     [["f1", "f2"], ["f1"]]
     
     >>> parse_data_faults({"d1": "f1", "d2": None}, ["f1", "f2"], ["d1", "d2"])
     [["f1"], ["f1", "f2"]]
+
+    >>> parse_data_faults({"d1": ["f1"]}, ["f1", "f2"], ["d1", "d2"])
+    [["f1"], ["f1", "f2"]]
+
+    Common invalid cases:
+    - ["f1"] with all_datanames=["d1", "d2"]
+      Invalid because list input must provide one item per dataset.
+    - {"d3": "f1"} with all_datanames=["d1", "d2"]
+      Invalid because "d3" is not a known dataset name.
+    - {"d1": "f3"} with all_faultnames=["f1", "f2"]
+      Invalid because "f3" is not a known fault name.
     """
     
     def _normalize_fault_item(item, all_faultnames, param_name):
@@ -343,23 +381,51 @@ def parse_data_faults(data_faults_config, all_faultnames, all_datanames, param_n
         raise ValueError(msg)
 
 
-def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFaults"):
+def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFaults",
+                       smoothing_faultnames=None):
     """
     Parse alphaFaults configuration with enhanced flexibility.
     
     Parameters:
     -----------
-    alpha_faults_config : None, or list
-        Configuration for alpha faults
+    alpha_faults_config : None or list
+        Configuration for alpha faults. Supported forms:
+        - None or [None]: all faults share one alpha group
+        - list[str]: each fault name defines one alpha group
+        - list[list[str]]: each sublist defines one alpha group
+        - mixed list[str | list[str]]: strings and grouped fault lists can be mixed
     all_faultnames : list
         List of all available fault names
     param_name : str, optional
         Name of the parameter for error messages
+    smoothing_faultnames : list, optional
+        Subset of all_faultnames that support Laplacian smoothing.
+        When provided, only these names participate in alpha grouping;
+        non-smoothing sources are silently excluded from coverage
+        validation. When None (default), all faults are required.
         
     Returns:
     --------
     list
         List of fault name lists for each alpha
+
+    Raises:
+    -------
+    ValueError
+        Raised when:
+        - alpha_faults_config is not None or a list
+        - a fault name does not exist in all_faultnames
+        - the same fault appears in multiple alpha groups
+        - some faults are missing from the final grouping
+        - the number of configured groups exceeds the number of faults
+
+    Notes:
+    ------
+    A list-style configuration is considered valid only if all of the
+    following conditions are satisfied:
+    - every referenced fault name exists in all_faultnames
+    - each fault appears exactly once across all groups
+    - all faults in all_faultnames are fully covered
         
     Examples:
     ---------
@@ -369,10 +435,35 @@ def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFau
     >>> parse_alpha_faults([None], ["f1", "f2"])
     [["f1", "f2"]]
 
+    >>> parse_alpha_faults(["f1", "f2"], ["f1", "f2"])
+    [["f1"], ["f2"]]
+
     >>> parse_alpha_faults([["f1"], ["f2"]], ["f1", "f2"])
     [["f1"], ["f2"]]
+
+    >>> parse_alpha_faults([["f1", "f2"]], ["f1", "f2"])
+    [["f1", "f2"]]
+
+    >>> parse_alpha_faults([["f1", "f2"], "f3"], ["f1", "f2", "f3"])
+    [["f1", "f2"], ["f3"]]
+
+    >>> parse_alpha_faults(["f1", ["f2", "f3"]], ["f1", "f2", "f3"])
+    [["f1"], ["f2", "f3"]]
+
+    Common invalid cases:
+    - ["f1"] with all_faultnames=["f1", "f2"]
+      Invalid because "f2" is missing and coverage is incomplete.
+    - [["f1", "f2"], "f2"] with all_faultnames=["f1", "f2"]
+      Invalid because "f2" appears in multiple groups.
+    - ["f3"] with all_faultnames=["f1", "f2"]
+      Invalid because "f3" is not a known fault name.
     """
     
+    # When smoothing_faultnames is provided, only those names participate
+    # in alpha grouping validation.  Non-smoothing sources are excluded.
+    if smoothing_faultnames is not None:
+        all_faultnames = [fn for fn in all_faultnames if fn in smoothing_faultnames]
+
     def _normalize_fault_subset(item, all_faultnames, param_name):
         """Normalize a fault subset item"""
         if isinstance(item, str):
@@ -445,83 +536,119 @@ def parse_alpha_faults(alpha_faults_config, all_faultnames, param_name="alphaFau
 
 def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'):
     """
-    Parse sigmas configuration supporting single, individual, and grouped modes
-    
-    Args:
-        sigmas_config (dict): Sigmas configuration dictionary
-        dataset_names (list): Dataset names list, must be provided
-        param_name (str): Name of the initial value parameter ('initial_value' or 'values'), default 'initial_value'
-    
+    Parse sigma configuration for VCE in `single`, `individual`, or
+    `grouped` mode.
+
+    Parameters:
+    -----------
+    sigmas_config : dict
+        Sigma configuration dictionary. Supported keys depend on mode:
+        - mode: one of 'single', 'individual', 'grouped'
+        - update: bool or per-parameter list
+        - param_name: scalar, list, or dict depending on mode
+        - log_scaled: bool
+        - groups: required in grouped mode
+    dataset_names : list
+        Dataset names. Must be provided and cannot be empty.
+    param_name : str, optional
+        Name of the value field to parse from sigmas_config, such as
+        'initial_value' or 'values'. Default is 'initial_value'.
+
     Returns:
-        dict: Dictionary containing parsed results
-            - mode: str, Mode type
-            - update: list, Update flags for each parameter group
-            - initial_value: list, Initial values for each parameter group (float)
-            - dataset_param_indices: list, Parameter group index for each dataset
-            - log_scaled: bool, Whether log scaled
-            - num_datasets: int, Number of datasets
-            - total_params: int, Total number of parameter groups
-            - updatable_params: int, Number of parameters to be updated
-            - groups: dict, Groups definition (for grouped mode)
-    
+    --------
+    dict
+        Dictionary containing the merged input configuration and parsed
+        arrays, including:
+        - mode: str
+        - update: np.ndarray of bool
+        - param_name: np.ndarray of float under the same key name passed in
+          param_name
+        - dataset_param_indices: np.ndarray of int
+        - updatable_param_indices: np.ndarray of int
+        - log_scaled: bool
+        - num_datasets: int
+        - total_params: int
+        - updatable_params: int
+        - groups: dict or None
+
+    Raises:
+    -------
+    ValueError
+        Raised when:
+        - dataset_names is empty
+        - mode is not 'single', 'individual', or 'grouped'
+        - single mode receives multi-value update or value lists
+        - single mode receives dict values
+        - individual mode list lengths do not match len(dataset_names)
+        - grouped mode does not define groups
+        - a dataset is assigned to multiple groups
+        - some datasets are missing from grouped assignments
+        - grouped mode list lengths do not match the number of groups
+
+    Notes:
+    ------
+    Default values are applied before parsing:
+    - update -> True
+    - param_name -> 0.0
+    - log_scaled -> False
+
+    Mode-specific input rules:
+    - single:
+      update and param_name must be scalar-like, or a one-element list
+    - individual:
+      update may be scalar or dataset-length list
+      param_name may be scalar, dataset-length list, or dict keyed by
+      dataset name; missing dict entries default to 0.0
+    - grouped:
+      groups must be a dict mapping group name to dataset-name list
+      every dataset in dataset_names must appear in exactly one group
+      param_name may be scalar, group-length list, or dict keyed by
+      group name; missing dict entries default to 0.0
+
     Examples:
-        # Example 1: Using default 'initial_value' parameter name
-        sigmas_config = {
-            'update': True,
-            'initial_value': [0.3181, 0.6062],
-            'log_scaled': True
-        }
-        dataset_names = ['InSAR_A', 'InSAR_D']
-        result = parse_sigmas_config(sigmas_config, dataset_names)
-        
-        # Example 2: Using 'values' parameter name
-        sigmas_config = {
-            'update': True,
-            'values': [0.3181, 0.6062],  # Using 'values' instead of 'initial_value'
-            'log_scaled': True
-        }
-        dataset_names = ['InSAR_A', 'InSAR_D']
-        result = parse_sigmas_config(sigmas_config, dataset_names, param_name='values')
-        
-        # Example 3: Individual mode with dictionary values
-        sigmas_config = {
-            'mode': 'individual',
-            'update': [True, False, True, True, False],
-            'initial_value': {
-                'InSAR_A': 0.3181,
-                'GPS_E': 0.5,
-                'GPS_N': 0.6
-                # Missing datasets default to 0.0
-            },
-            'log_scaled': True
-        }
-        dataset_names = ['InSAR_A', 'InSAR_D', 'GPS_E', 'GPS_N', 'GPS_U']
-        result = parse_sigmas_config(sigmas_config, dataset_names)
-        
-        # Example 4: Single mode (all datasets share one parameter)
-        sigmas_config = {
-            'mode': 'single',
-            'update': True,
-            'values': 0.5,  # Using 'values' parameter name
-            'log_scaled': True
-        }
-        dataset_names = ['InSAR_A', 'InSAR_D', 'GPS_E', 'GPS_N', 'GPS_U']
-        result = parse_sigmas_config(sigmas_config, dataset_names, param_name='values')
-        
-        # Example 5: Grouped mode with list values
-        sigmas_config = {
-            'mode': 'grouped',
-            'groups': {
-                'InSAR_group': ['InSAR_A', 'InSAR_D'],
-                'GPS_horizontal': ['GPS_E', 'GPS_N'],
-                'GPS_vertical': ['GPS_U']
-            },
-            'update': [True, False, True],
-            'initial_value': [0.3181, 0.6062, 0.8],
-            'log_scaled': True
-        }
-        dataset_names = ['InSAR_A', 'InSAR_D', 'GPS_E', 'GPS_N', 'GPS_U']
-        result = parse_sigmas_config(sigmas_config, dataset_names)
+    ---------
+    >>> cfg = {"mode": "single", "update": True, "initial_value": 0.5}
+    >>> out = parse_sigmas_config(cfg, ["d1", "d2"])
+    >>> out["dataset_param_indices"].tolist()
+    [0, 0]
+    >>> out["initial_value"].tolist()
+    [0.5]
+
+    >>> cfg = {
+    ...     "mode": "individual",
+    ...     "update": [True, False, True],
+    ...     "initial_value": {"d1": 0.3, "d3": 0.8},
+    ... }
+    >>> out = parse_sigmas_config(cfg, ["d1", "d2", "d3"])
+    >>> out["initial_value"].tolist()
+    [0.3, 0.0, 0.8]
+
+    >>> cfg = {
+    ...     "mode": "grouped",
+    ...     "groups": {"insar": ["d1", "d2"], "gps": ["d3"]},
+    ...     "update": [True, False],
+    ...     "initial_value": {"insar": 0.2, "gps": 0.6},
+    ... }
+    >>> out = parse_sigmas_config(cfg, ["d1", "d2", "d3"])
+    >>> out["dataset_param_indices"].tolist()
+    [0, 0, 1]
+    >>> out["initial_value"].tolist()
+    [0.2, 0.6]
+
+    >>> cfg = {"mode": "single", "values": [0.5], "update": [True]}
+    >>> out = parse_sigmas_config(cfg, ["d1", "d2"], param_name="values")
+    >>> out["values"].tolist()
+    [0.5]
+
+    Common invalid cases:
+    - {"mode": "single", "update": [True, False]}
+      Invalid because single mode accepts only one update flag.
+    - {"mode": "individual", "initial_value": [0.1, 0.2]}
+      Invalid when len(dataset_names) is not 2.
+    - {"mode": "grouped", "groups": {"g1": ["d1"], "g2": ["d1", "d2"]}}
+      Invalid because a dataset cannot belong to multiple groups.
+    - {"mode": "grouped", "groups": {"g1": ["d1"]}}
+      Invalid when some datasets are not assigned to any group.
     """
     
     # Validate dataset_names must be provided
@@ -720,100 +847,138 @@ def parse_sigmas_config(sigmas_config, dataset_names, param_name='initial_value'
         }
     return {**config, **result}
 
-def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
+def parse_alpha_config(alpha_config, faultnames, param_name='initial_value',
+                       smoothing_faultnames=None):
     """
-    Parse the alpha (smoothing/regularization) configuration for VCE, supporting 'single', 'individual', and 'grouped' modes.
+    Parse alpha (smoothing / regularization) configuration in `single`,
+    `individual`, or `grouped` mode.
 
-    This function standardizes the parsing of alpha (regularization) configuration for flexible VCE workflows.
-    It supports:
-      - Single mode: all faults share one parameter
-      - Individual mode: each fault has its own parameter
-      - Grouped mode: custom grouping of faults, using 'faults' (list of lists) or legacy 'groups' (dict).
-
-    Parameters
-    ----------
+    Parameters:
+    -----------
     alpha_config : dict
-        Configuration dictionary for alpha, e.g.:
-            {
-                'mode': 'grouped',
-                'faults': [['faultA', 'faultB'], ['faultC']],
-                'update': [True, False],
-                'initial_value': [0.1, 0.2],
-                'log_scaled': True
-            }
-    faultnames : list of str
-        List of fault names (must match the faults in the problem)
+        Alpha configuration dictionary. Supported keys depend on mode:
+        - mode: one of 'single', 'individual', 'grouped'
+        - update: bool or per-parameter list
+        - param_name: scalar, list, or dict depending on mode
+        - log_scaled: bool
+        - enabled: bool
+        - faults: grouped mode definition as list[list[str]]
+        - groups: legacy grouped mode definition as dict[str, list[str]]
+    faultnames : list
+        Fault names. Must be provided and cannot be empty.
     param_name : str, optional
-        Name of the parameter for initial values (default: 'initial_value')
+        Input key to read alpha values from. Default is 'initial_value'.
+    smoothing_faultnames : list, optional
+        Subset of faultnames that support Laplacian smoothing.
+        When provided, only these names participate in alpha grouping;
+        non-smoothing sources are silently excluded. When None, all
+        faultnames are used.
 
-    Returns
-    -------
-    dict
-        Dictionary with parsed alpha configuration:
-            - mode: str, mode type ('single', 'individual', 'grouped')
-            - update: np.ndarray, update flags for each parameter group
-            - initial_value: np.ndarray, initial values for each parameter group
-            - fault_param_indices: np.ndarray, parameter group index for each fault
-            - updatable_param_indices: np.ndarray, updatable index for each group (-1 if not updatable)
-            - log_scaled: bool, whether log scaling is used
-            - num_faults: int, number of faults
-            - total_params: int, number of parameter groups
-            - updatable_params: int, number of updatable groups
-            - faults: list of lists, group definitions (for grouped mode)
-
-    Examples
+    Returns:
     --------
-    # Example 1: Single mode (all faults share one alpha)
-    alpha_config = {
-        'mode': 'single',
-        'update': True,
-        'initial_value': 0.1,
-        'log_scaled': False
-    }
-    faultnames = ['faultA', 'faultB', 'faultC']
-    result = parse_alpha_config(alpha_config, faultnames)
-    # result['mode'] == 'single'
-    # result['update'] == array([True])
-    # result['initial_value'] == array([0.1])
-    # result['fault_param_indices'] == array([0, 0, 0])
+    dict
+        Dictionary containing the merged input configuration and parsed
+        outputs, including:
+        - enabled: bool
+        - mode: str
+        - update: np.ndarray of bool
+        - initial_value: np.ndarray of float
+        - log_scaled: bool
+        - faults: list[list[str]]
+        - fault_param_indices: list of int (group index per smoothing fault)
+        - updatable_param_indices: np.ndarray of int
+        - num_alpha_faults: int
+        - total_params: int
+        - updatable_params: int
 
-    # Example 2: Individual mode
-    alpha_config = {
-        'mode': 'individual',
-        'update': [True, False, True],
-        'initial_value': [0.1, 0.2, 0.3],
-        'log_scaled': True
-    }
-    faultnames = ['faultA', 'faultB', 'faultC']
-    result = parse_alpha_config(alpha_config, faultnames)
+    Raises:
+    -------
+    ValueError
+        Raised when:
+        - faultnames is empty
+        - mode is not 'single', 'individual', or 'grouped'
+        - single mode receives more than one update flag
+        - single mode receives more than one value
+        - individual mode list lengths do not match len(faultnames)
+        - grouped mode defines neither faults nor groups
+        - grouped mode faults is not a list of lists
+        - a fault is assigned to multiple groups
+        - some faults in faultnames are missing from grouped assignments
+        - grouped mode list lengths do not match the number of groups
 
-    # Example 3: Grouped mode with faults (recommended)
-    alpha_config = {
-        'mode': 'grouped',
-        'faults': [['faultA', 'faultB'], ['faultC']],
-        'update': [True, False],
-        'initial_value': [0.1, 0.2],
-        'log_scaled': False
-    }
-    faultnames = ['faultA', 'faultB', 'faultC']
-    result = parse_alpha_config(alpha_config, faultnames)
+    Notes:
+    ------
+    Default values are applied before parsing:
+    - mode -> 'single'
+    - log_scaled -> True
+    - enabled -> True
+    - update -> True
+    - param_name -> 0.0
 
-    # Example 4: Grouped mode with legacy groups (dict)
-    alpha_config = {
-        'mode': 'grouped',
-        'groups': {'g1': ['faultA', 'faultB'], 'g2': ['faultC']},
-        'update': [True, False],
-        'initial_value': [0.1, 0.2],
-        'log_scaled': False
-    }
-    faultnames = ['faultA', 'faultB', 'faultC']
-    result = parse_alpha_config(alpha_config, faultnames)
+    Mode-specific input rules:
+    - single:
+      all faults share one alpha parameter
+      update must be scalar-like or length-1
+      param_name must be scalar-like or length-1
+    - individual:
+      each fault gets its own alpha parameter
+      update may be scalar or fault-length list
+      param_name may be scalar, fault-length list, or dict keyed by
+      fault name; missing dict entries default to 0.0
+    - grouped:
+      prefer faults as list[list[str]]
+      groups is accepted as a legacy dict and converted by dict order
+      every fault in faultnames must appear exactly once across groups
+      param_name may be scalar, group-length list, or dict keyed by
+      stringified group indices such as "0", "1", ...; missing keys
+      default to 0.0
 
-    Notes
-    -----
-    - In 'grouped' mode, all faults must be assigned to exactly one group.
-    - The length of 'update' and 'initial_value' must match the number of groups (grouped mode) or faults (individual mode).
-    - The function returns indices for mapping faults to parameter groups and updatable groups.
+    Examples:
+    ---------
+    >>> cfg = {"mode": "single", "update": True, "initial_value": 0.1}
+    >>> out = parse_alpha_config(cfg, ["f1", "f2", "f3"])
+    >>> out["fault_param_indices"]
+    [0, 0, 0]
+    >>> out["initial_value"].tolist()
+    [0.1]
+
+    >>> cfg = {
+    ...     "mode": "individual",
+    ...     "update": [True, False, True],
+    ...     "initial_value": {"f1": 0.1, "f3": 0.3},
+    ... }
+    >>> out = parse_alpha_config(cfg, ["f1", "f2", "f3"])
+    >>> out["initial_value"].tolist()
+    [0.1, 0.0, 0.3]
+
+    >>> cfg = {
+    ...     "mode": "grouped",
+    ...     "faults": [["f1", "f2"], ["f3"]],
+    ...     "update": [True, False],
+    ...     "initial_value": [0.1, 0.2],
+    ... }
+    >>> out = parse_alpha_config(cfg, ["f1", "f2", "f3"])
+    >>> out["fault_param_indices"]
+    [0, 0, 1]
+
+    >>> cfg = {
+    ...     "mode": "grouped",
+    ...     "groups": {"g1": ["f1", "f2"], "g2": ["f3"]},
+    ...     "initial_value": {"0": 0.1, "1": 0.2},
+    ... }
+    >>> out = parse_alpha_config(cfg, ["f1", "f2", "f3"])
+    >>> out["initial_value"].tolist()
+    [0.1, 0.2]
+
+    Common invalid cases:
+    - {"mode": "single", "update": [True, False]}
+      Invalid because single mode accepts only one update flag.
+    - {"mode": "individual", "initial_value": [0.1, 0.2]}
+      Invalid when len(faultnames) is not 2.
+    - {"mode": "grouped", "faults": [["f1", "f2"], ["f2"]]}
+      Invalid because a fault cannot belong to multiple groups.
+    - {"mode": "grouped", "faults": [["f1"]]}
+      Invalid when some faults are not assigned to any group.
     """
 
     if not faultnames:
@@ -821,7 +986,30 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         logger.error(msg)
         raise ValueError(msg)
 
-    num_faults = len(faultnames)
+    # Filter to smoothing-capable sources when specified
+    # Alpha grouping is built on smoothing faultnames only;
+    # non-smoothing faults are auto-assigned to group 0 in fault_param_indices.
+    all_faultnames = list(faultnames)   # preserve original full list
+    if smoothing_faultnames is not None:
+        faultnames = [fn for fn in faultnames if fn in smoothing_faultnames]
+        if not faultnames:
+            # No smoothing sources at all — return a minimal disabled config
+            result = {
+                'enabled': False,
+                'update': np.array([False], dtype=bool),
+                'initial_value': np.array([0.0], dtype=float),
+                'log_scaled': alpha_config.get('log_scaled', True),
+                'faults': [],
+                'mode': 'single',
+                'fault_param_indices': [0] * len(all_faultnames),
+                'updatable_param_indices': np.array([-1], dtype=int),
+                'num_alpha_faults': 0,
+                'total_params': 1,
+                'updatable_params': 0,
+            }
+            return {**alpha_config, **result}
+
+    num_alpha_faults = len(faultnames)
     mode = alpha_config.get('mode', 'single')
     log_scaled = alpha_config.get('log_scaled', True)
     enabled = alpha_config.get('enabled', True)
@@ -843,7 +1031,7 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
             initial_value_list = [float(initial_value[0])]
         else:
             initial_value_list = [float(initial_value)]
-        fault_param_indices = [0] * num_faults
+        fault_param_indices = [0] * num_alpha_faults
         total_params = 1
         group_faults = [faultnames.copy()]
 
@@ -852,25 +1040,25 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         update = alpha_config.get('update', True)
         initial_value = alpha_config.get(param_name, 0.0)
         if isinstance(update, (list, tuple, np.ndarray)):
-            if len(update) != num_faults:
+            if len(update) != num_alpha_faults:
                 msg = "In 'individual' mode, 'update' length must match number of faults"
                 logger.error(msg)
                 raise ValueError(msg)
             update_list = list(update)
         else:
-            update_list = [update] * num_faults
+            update_list = [update] * num_alpha_faults
         if isinstance(initial_value, dict):
             initial_value_list = [float(initial_value.get(name, 0.0)) for name in faultnames]
         elif isinstance(initial_value, (list, tuple, np.ndarray)):
-            if len(initial_value) != num_faults:
+            if len(initial_value) != num_alpha_faults:
                 msg = "In 'individual' mode, 'initial_value' length must match number of faults"
                 logger.error(msg)
                 raise ValueError(msg)
             initial_value_list = [float(v) for v in initial_value]
         else:
-            initial_value_list = [float(initial_value)] * num_faults
-        fault_param_indices = list(range(num_faults))
-        total_params = num_faults
+            initial_value_list = [float(initial_value)] * num_alpha_faults
+        fault_param_indices = list(range(num_alpha_faults))
+        total_params = num_alpha_faults
         group_faults = [[f] for f in faultnames]
 
     # --- Grouped mode: custom grouping ---
@@ -943,6 +1131,12 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
             updatable_param_indices.append(-1)
     updatable_params = updatable_counter
 
+    # If smoothing filtering was applied, expand fault_param_indices back to all faults.
+    # Non-smoothing faults are auto-assigned to group 0.
+    if smoothing_faultnames is not None and len(all_faultnames) != len(faultnames):
+        smoothing_index_map = {name: idx for name, idx in zip(faultnames, fault_param_indices)}
+        fault_param_indices = [smoothing_index_map.get(fn, 0) for fn in all_faultnames]
+
     result = {
         'enabled': enabled,
         'update': np.array(update_list, dtype=bool),
@@ -950,9 +1144,9 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value'):
         'log_scaled': log_scaled,
         'faults': group_faults,
         'mode': mode,
-        'fault_param_indices': np.array(fault_param_indices, dtype=int),
+        'fault_param_indices': fault_param_indices,
         'updatable_param_indices': np.array(updatable_param_indices, dtype=int),
-        'num_faults': num_faults,
+        'num_alpha_faults': num_alpha_faults,
         'total_params': total_params,
         'updatable_params': updatable_params
     }

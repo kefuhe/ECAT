@@ -53,26 +53,36 @@ class MyMultiFaultsInversion(multifaultsolve):
         self.update_fault(method, fault_names=fault_names, verbose=verbose, show=show, **kwargs)
 
     def update_GFs(self, geodata=None, verticals=None, fault_names=None, dataFaults=None, method=None, options=None):
-        # Update the Green's functions of the specified faults
+        """
+        Update the Green's functions of the specified faults.
+        Uses source adapters for type-safe GF building.
+        """
         def func(fault):
-            # get the good indexes
+            adapter = self.adapters[fault.name]
+            gf_keys = adapter.get_gf_column_keys()
             st_row = 0
-            sliplist = [slip for slip, char in zip(['strikeslip', 'dipslip', 'tensile', 'coupling'], 'sdtc') if char in fault.slipdir]
+            
             for obsdata, vertical, dataFault in zip(geodata, verticals, dataFaults or [None]*len(geodata)):
                 # Determine method based on fault presence in dataFault
                 gfmethod = 'empty' if dataFault is not None and fault.name not in dataFault else method
-                # print(f"Method for {fault.name}: {gfmethod}")
-                fault.buildGFs(obsdata, vertical=vertical, slipdir=fault.slipdir, method=gfmethod, verbose=False, **(options or {}))
+                
+                # Build GFs using adapter (handles type-specific call signatures)
+                adapter.build_gfs(obsdata, vertical, method=gfmethod, options=options)
+                
+                # Assemble GFs into fault.Gassembled
                 st = 0
-                for sp in sliplist:
-                    Nclocal = fault.G[obsdata.name][sp].shape[1]
-                    Nrowlocal = fault.G[obsdata.name][sp].shape[0]
-
-                    fault.Gassembled[st_row:st_row+Nrowlocal, st:st+Nclocal] = fault.G[obsdata.name][sp]
-                    st += Nclocal
+                for key in gf_keys:
+                    if key in fault.G[obsdata.name]:
+                        Gsp = fault.G[obsdata.name][key]
+                        Nclocal = Gsp.shape[1]
+                        Nrowlocal = Gsp.shape[0]
+                        
+                        fault.Gassembled[st_row:st_row+Nrowlocal, st:st+Nclocal] = Gsp
+                        st += Nclocal
+                
                 st_row += Nrowlocal
 
-            # get the good indexes for self.G
+            # Get the good indexes for self.G
             st, se = self.fault_indexes[fault.name]
             # Store the G matrix
             self.G[:, st:se] = fault.Gassembled
@@ -81,18 +91,21 @@ class MyMultiFaultsInversion(multifaultsolve):
 
     def update_Laplacian(self, method='Mudpy', bounds=('free', 'free', 'free', 'free'), 
                          topscale=0.25, bottomscale=0.03, fault_names=None):
-        # Update the Laplacian matrix of the specified faults using the specified method and arguments (if any)
+        """
+        Update the Laplacian matrix of the specified faults.
+        Only applicable to sources that support smoothing (via adapter).
+        """
         if not hasattr(self, 'GLs') or self.GLs is None:
             self.GLs = {}
 
         def func(fault):
-            lap = fault.buildLaplacian(method=method, bounds=bounds, 
-                                       topscale=topscale, bottomscale=bottomscale)
-            if len(fault.slipdir) == 1:
-                fault.GL = csr_matrix(lap)
-            else:
-                fault.GL = block_diag([lap for _ in fault.slipdir]).tocsr()
-
+            adapter = self.adapters[fault.name]
+            if not adapter.supports_smoothing():
+                return
+            
+            # Build Laplacian matrix using adapter
+            fault.GL = adapter.build_laplacian(method=method, bounds=bounds, 
+                                               topscale=topscale, bottomscale=bottomscale)
             self.GLs[fault.name] = fault.GL
 
         self._apply_to_faults(func, fault_names)
@@ -120,8 +133,10 @@ class MyMultiFaultsInversion(multifaultsolve):
             self.patch_areas = {}
 
         def func(fault):
-            areas = fault.compute_patch_areas()
-            self.patch_areas[fault.name] = areas
+            adapter = self.adapters[fault.name]
+            areas = adapter.compute_patch_areas()
+            if areas is not None:
+                self.patch_areas[fault.name] = areas
 
         self._apply_to_faults(func, fault_names)
         return self.patch_areas

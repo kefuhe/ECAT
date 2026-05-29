@@ -1,26 +1,64 @@
 from osgeo import gdal, osr
 import xarray
 import numpy as np
-from glob import glob
 import os
 import pandas as pd
+import warnings
 from csi.insar import insar
 from .readBase2csisar import ReadBase2csisar, GammasarConfig
 from .readTiffUtils import save_to_tiff
 
 
 class GammasarReader(ReadBase2csisar):
-    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None, directory_name='.', config=None):
-        super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0)
-        self.directory_name = directory_name
-        self.config = config if config else GammasarConfig()
+    """
+    Reader for GAMMA binary SAR products with `.phs`, `.azi`, `.inc`, and
+    `.rsc` files.
+
+    Use short modes such as `unwrapped_phase`, `los_displacement`,
+    `range_offset`, or `azimuth_offset` for normal use. Full presets such as
+    `gamma_unwrapped_phase` remain available for explicit configuration files.
+    Presets from other reader families are rejected; use `config=...` for
+    custom conventions.
+    """
+    config_cls = GammasarConfig
+    mode_presets = {
+        "unwrapped_phase": "gamma_unwrapped_phase",
+        "phase_los": "gamma_unwrapped_phase",
+        "los": "gamma_los_displacement",
+        "los_displacement": "gamma_los_displacement",
+        "range": "gamma_range_offset",
+        "range_offset": "gamma_range_offset",
+        "az": "gamma_azimuth_offset",
+        "azimuth": "gamma_azimuth_offset",
+        "azimuth_offset": "gamma_azimuth_offset",
+    }
+
+    def __init__(self, name=None, utmzone=None, lon0=None, lat0=None,
+                 directory_name='.', config=None, preset=None, mode=None,
+                 verbose=False):
+        super().__init__(
+            name,
+            utmzone=utmzone,
+            lon0=lon0,
+            lat0=lat0,
+            directory_name=directory_name,
+            config=config,
+            preset=preset,
+            mode=mode,
+            verbose=verbose,
+        )
     
     def extract_raw_grd(self, directory_name=None, prefix=None, phsname=None, rscname=None,
-                        azifile=None, incfile=None, zero2nan=True, wavelength=None,
-                        azi_reference=None, azi_unit=None, azi_direction=None,
-                        inc_reference=None, inc_unit=None, mode=None):
+                        azifile=None, incfile=None, zero2nan=None, wavelength=None,
+                        azimuth_reference=None, azimuth_unit=None,
+                        azimuth_direction=None, incidence_reference=None,
+                        incidence_unit=None, verbose=None):
         """
-        Extract SAR raw images and process azimuth and incidence angles.
+        Extract GAMMA value, azimuth, incidence, and coordinate grids.
+
+        Presets or config values should be set before calling this method
+        because angle conventions are applied here. Raw value conversion to the
+        CSI scalar-observation convention happens later in `read_observation()`.
 
         Parameters:
         directory_name (str, optional): The directory name where the raw images are stored. Defaults to None.
@@ -30,25 +68,33 @@ class GammasarReader(ReadBase2csisar):
         azifile (str, optional): The name of the azimuth file. Defaults to None.
         incfile (str, optional): The name of the incidence file. Defaults to None.
         zero2nan (bool, optional): Whether to convert zero values to NaN. Defaults to config value.
-        wavelength (float, optional): The wavelength of the SAR signal. Defaults to config value.
-        azi_reference (str, optional): The reference direction for azimuth. Defaults to config value.
-        azi_unit (str, optional): The unit of the azimuth angle. Defaults to config value.
-        azi_direction (str, optional): The rotation direction for azimuth. Defaults to config value.
-        inc_reference (str, optional): The reference direction for incidence. Defaults to config value.
-        inc_unit (str, optional): The unit of the incidence angle. Defaults to config value.
-        mode (str, optional): The mode of processing. Defaults to config value.
-
+        wavelength (float, optional): Expected wavelength of the SAR signal. GAMMA
+            `.rsc` WAVELENGTH is used for the loaded data; a supplied value is
+            checked against it and warned on mismatch.
+        azimuth_reference (str, optional): The reference direction for azimuth. Defaults to config value.
+        azimuth_unit (str, optional): The unit of the azimuth angle. Defaults to config value.
+        azimuth_direction (str, optional): The rotation direction for azimuth. Defaults to config value.
+        incidence_reference (str, optional): The reference direction for incidence. Defaults to config value.
+        incidence_unit (str, optional): The unit of the incidence angle. Defaults to config value.
         Returns:
         None
         """
         # Use config values if parameters are not provided
+        zero2nan = zero2nan if zero2nan is not None else self.config.zero2nan
+        requested_wavelength = wavelength
         wavelength = wavelength if wavelength is not None else self.config.wavelength
-        azi_reference = azi_reference if azi_reference is not None else self.config.azi_reference
-        azi_unit = azi_unit if azi_unit is not None else self.config.azi_unit
-        azi_direction = azi_direction if azi_direction is not None else self.config.azi_direction
-        inc_reference = inc_reference if inc_reference is not None else self.config.inc_reference
-        inc_unit = inc_unit if inc_unit is not None else self.config.inc_unit
-        mode = mode if mode is not None else self.config.mode
+        azimuth_reference = azimuth_reference if azimuth_reference is not None else self.config.azimuth_reference
+        azimuth_unit = azimuth_unit if azimuth_unit is not None else self.config.azimuth_unit
+        azimuth_direction = azimuth_direction if azimuth_direction is not None else self.config.azimuth_direction
+        incidence_reference = incidence_reference if incidence_reference is not None else self.config.incidence_reference
+        incidence_unit = incidence_unit if incidence_unit is not None else self.config.incidence_unit
+        self._set_raw_angle_convention(
+            azimuth_reference=azimuth_reference,
+            azimuth_unit=azimuth_unit,
+            azimuth_direction=azimuth_direction,
+            incidence_reference=incidence_reference,
+            incidence_unit=incidence_unit,
+        )
 
         # extract sar raw images 
         if directory_name is not None:
@@ -59,7 +105,10 @@ class GammasarReader(ReadBase2csisar):
         if prefix is not None:
             phase_file, rsc_file, azi_file, inc_file = self._construct_file_paths(directory_name, prefix)
         else:
-            assert phsname is not None and rscname is not None, 'phase and rsc file must to be not None.'
+            if not (phsname and rscname and azifile and incfile):
+                raise ValueError(
+                    "phsname, rscname, azifile, and incfile are required when prefix is not provided."
+                )
             phase_file = os.path.join(directory_name, phsname)
             rsc_file = os.path.join(directory_name, rscname)
             azi_file = os.path.join(directory_name, azifile)
@@ -68,21 +117,27 @@ class GammasarReader(ReadBase2csisar):
         rsc = pd.read_csv(rsc_file, sep=r'\s+', names=['name', 'value'])
         rsc.set_index('name', inplace=True)
 
-        # 读取los文件信息
-        # 数据存储信息
+        # Raster dimensions from GAMMA resource metadata.
         nrow, ncol = [int(rsc.loc['WIDTH', 'value']), int(rsc.loc['FILE_LENGTH', 'value'])]
-        wavelength = float(rsc.loc['WAVELENGTH', 'value'])
+        rsc_wavelength = float(rsc.loc['WAVELENGTH', 'value'])
+        if requested_wavelength is not None and not np.isclose(float(requested_wavelength), rsc_wavelength):
+            warnings.warn(
+                "The supplied wavelength differs from the GAMMA .rsc WAVELENGTH; "
+                f"using the .rsc value {rsc_wavelength:g} m.",
+                UserWarning,
+                stacklevel=2,
+            )
+        wavelength = rsc_wavelength
         dtype = np.float32
-        # 数据读入和格式转存
+        # Raw value raster. Its physical meaning is defined by the preset/config.
         phs = np.fromfile(phase_file, dtype=dtype).reshape(ncol, nrow)
         los = phs
 
-        # 方位角信息
+        # Raw azimuth and incidence rasters.
         azi = np.fromfile(azi_file, dtype=dtype).reshape(ncol, nrow)
-        # 入射角信息
         inc = np.fromfile(inc_file, dtype=dtype).reshape(ncol, nrow)
 
-        # 位置信息
+        # Geographic coordinates from GAMMA resource metadata.
         x_first = np.float32(rsc.loc['X_FIRST', 'value'])
         y_first = np.float32(rsc.loc['Y_FIRST', 'value'])
 
@@ -91,11 +146,11 @@ class GammasarReader(ReadBase2csisar):
         lon = np.arange(x_first, x_first + x_step*nrow, x_step)[:nrow]
         lat = np.arange(y_first, y_first + y_step*ncol, y_step)[:ncol]
 
-        self.raw_azi_input = azi
-        self.raw_inc_input = inc
+        self.raw_azimuth_input = azi
+        self.raw_incidence_input = inc
         # Process azimuth and incidence angles
-        azi = self._process_azimuth(azi, azi_reference, azi_unit, azi_direction, mode=mode)
-        inc = self._process_incidence(inc, inc_reference, inc_unit)
+        azi = self.normalize_azimuth(azi, azimuth_reference, azimuth_unit, azimuth_direction)
+        inc = self.normalize_incidence(inc, incidence_reference, incidence_unit)
 
         if zero2nan:
             los[los == 0] = np.nan
@@ -107,96 +162,96 @@ class GammasarReader(ReadBase2csisar):
         self.inc_file = inc_file
         self.wavelength = wavelength
         self.raw_vel = los
-        self.raw_azimuth = azi
+        self.raw_azimuth_enu = azi
+        self.raw_azimuth_role = self.config.input_azimuth_role
         self.raw_incidence = inc
         self.raw_lon = lon
         self.raw_lat = lat
         mesh_lon, mesh_lat = np.meshgrid(lon, lat)
         self.raw_mesh_lon = mesh_lon
         self.raw_mesh_lat = mesh_lat
+        if self._is_verbose(verbose):
+            self.print_input_summary()
     
     def _construct_file_paths(self, directory_name, prefix):
-        phase_file = prefix + '*.phs'
-        rsc_file = prefix + '*.phs.rsc'
-        azi_file = prefix + '*.azi'
-        inc_file = prefix + '*.inc'
-        phase_file = glob(os.path.join(directory_name, phase_file))[0]
-        rsc_file = glob(os.path.join(directory_name, rsc_file))[0]
-        azi_file = glob(os.path.join(directory_name, azi_file))[0]
-        inc_file = glob(os.path.join(directory_name, inc_file))[0]
+        phase_file = self._single_file_match(
+            os.path.join(directory_name, prefix + '*.phs'),
+            "GAMMA value file",
+        )
+        rsc_file = self._single_file_match(
+            os.path.join(directory_name, prefix + '*.phs.rsc'),
+            "GAMMA resource file",
+        )
+        azi_file = self._single_file_match(
+            os.path.join(directory_name, prefix + '*.azi'),
+            "GAMMA azimuth file",
+        )
+        inc_file = self._single_file_match(
+            os.path.join(directory_name, prefix + '*.inc'),
+            "GAMMA incidence file",
+        )
         return phase_file, rsc_file, azi_file, inc_file
 
-    def read_from_gamma(self, downsample=1, apply_wavelength_conversion=True, zero2nan=True, wavelength=None):
-        # Generate meshgrid for longitude and latitude
-        Lon, Lat = np.meshgrid(self.raw_lon, self.raw_lat)
-
-        # Read SAR data from binary files using inherited method
-        # Desc: azimuth = ~-170; Asc: azimuth = ~-10
-        self.read_from_binary(self.raw_vel, lon=Lon.flatten(), lat=Lat.flatten(), 
-                              azimuth=self.raw_azimuth.flatten(), incidence=self.raw_incidence.flatten(), downsample=downsample)
-
-        # Apply wavelength conversion to velocity if enabled
-        if apply_wavelength_conversion:
-            self.vel = self.unw_phase_to_los(self.vel, wavelength)
-            self.raw_vel = self.unw_phase_to_los(self.raw_vel, wavelength)
-        else:
-            self.vel = -self.vel
-            self.raw_vel = -self.raw_vel
-
-        # Convert zeros to NaN in velocity data if enabled
-        if zero2nan:
-            self.vel[self.vel == 0] = np.nan
-
-    def read_from_gamma(self, downsample=1, apply_wavelength_conversion=True, zero2nan=True, wavelength=None, sartype='unwrapPhase'):
+    def read_observation(self, downsample=1, zero2nan=True, wavelength=None,
+                         observation_type=None, input_azimuth_role=None,
+                         look_side=None, input_value_convention=None, verbose=None):
         """
-        Read SAR data from GAMMA format files.
+        Convert extracted GAMMA grids into CSI observation arrays.
+
+        The selected preset/config determines whether `raw_vel` is interpreted
+        as unwrapped phase, LOS/range displacement, or azimuth offset. Override
+        the semantic fields only when the product documentation differs from
+        the selected preset.
         
         Parameters:
         -----------
         downsample : int, optional
             Downsample factor for the data. Default is 1 (no downsampling).
-        apply_wavelength_conversion : bool, optional
-            Whether to apply wavelength conversion to velocity. Default is True.
         zero2nan : bool, optional
             Whether to convert zero values to NaN. Default is True.
         wavelength : float, optional
             The wavelength to use for conversion. Default is None (use self.wavelength).
-        sartype : str, optional
-            Type of SAR data being processed. Options are 'unwrapPhase', 'rangeOffset', or 'azimuthOffset'.
-            Default is 'unwrapPhase'.
+        observation_type : str or ObservationType, optional
+            Explicit observation type: "phase_los", "los_displacement", or
+            "azimuth_offset". If omitted, config.observation_type is used.
+        input_azimuth_role : str or InputAzimuthRole, optional
+            Meaning of the input azimuth raster after angle normalization.
+        look_side : str or LookSide, optional
+            Right/left looking geometry for phase_los and los_displacement
+            when the azimuth role does not already imply it.
+        input_value_convention : str or InputValueConvention, optional
+            Raw value sign convention. phase_los accepts only
+            "unwrapped_phase"; los_displacement accepts "toward_satellite" or
+            "away_from_satellite"; azimuth_offset accepts "along_heading" or
+            "opposite_heading".
         """
+        self._require_raw_grid(
+            "read_observation()",
+            fields=("raw_vel", "raw_lon", "raw_lat", "raw_azimuth_enu", "raw_incidence"),
+        )
         # Generate meshgrid for longitude and latitude
         Lon, Lat = np.meshgrid(self.raw_lon, self.raw_lat)
 
-        # Read SAR data from binary files using inherited method
-        # Desc: azimuth = ~-100; Asc: azimuth = ~100
-        if sartype in ('unwrapphase', 'UnwrapPhase', 'Unwrapphase', 'unwrapPhase'):
-            incidence_flatten = self.raw_incidence.flatten()
-            azimuth_flatten = self.raw_azimuth.flatten()
-        elif sartype in ('rangeoffset', 'RangeOffset', 'Rangeoffset', 'rangeOffset'):
-            # incidence_flatten = np.ones_like(self.raw_incidence.flatten()) * 90.0
-            incidence_flatten = self.raw_incidence.flatten()
-            azimuth_flatten = self.raw_azimuth.flatten()
-        elif sartype in ('azimuthoffset', 'AzimuthOffset', 'Azimuthoffset', 'azimuthOffset'):
-            incidence_flatten = np.ones_like(self.raw_incidence.flatten()) * 90.0
-            azimuth_flatten = self.raw_azimuth.flatten() + 90.0
+        self.read_observation_to_csi(
+            self.raw_vel,
+            lon=Lon.flatten(),
+            lat=Lat.flatten(),
+            azimuth=self.raw_azimuth_enu.flatten(),
+            incidence=self.raw_incidence.flatten(),
+            downsample=downsample,
+            zero2nan=zero2nan,
+            observation_type=observation_type,
+            input_azimuth_role=input_azimuth_role,
+            look_side=look_side,
+            input_value_convention=input_value_convention,
+            wavelength=wavelength,
+            verbose=verbose,
+        )
 
-        self.read_from_binary(self.raw_vel, lon=Lon.flatten(), lat=Lat.flatten(), 
-                                azimuth=azimuth_flatten, incidence=incidence_flatten, downsample=downsample)
-    
-        # Apply wavelength conversion to velocity if enabled
-        if apply_wavelength_conversion:
-            self.vel = self.unw_phase_to_los(self.vel, wavelength)
-            self.raw_vel = self.unw_phase_to_los(self.raw_vel, wavelength)
-        else:
-            self.vel = -self.vel
-            self.raw_vel = -self.raw_vel
-
-        # Convert zeros to NaN in velocity data if enabled
-        if zero2nan:
-            self.vel[self.vel == 0] = np.nan
-
-    def save_outputs_as_tiff(self, directory_name, save_azi=False, save_inc=False, save_vel=True, apply_wavelength_conversion=True, extent=None, grid_resolution=None):
+    def save_outputs_as_tiff(self, directory_name, save_azi=False, save_inc=False,
+                             save_vel=True, observation_type=None,
+                             input_value_convention=None, wavelength=None,
+                             extent=None, grid_resolution=None):
         """
         Save azi, inc, and vel as GeoTIFF files, with optional resampling to a regular grid and user-defined extent.
     
@@ -205,7 +260,9 @@ class GammasarReader(ReadBase2csisar):
         - save_azi: bool, whether to save azimuth data as TIFF.
         - save_inc: bool, whether to save incidence data as TIFF.
         - save_vel: bool, whether to save velocity data as TIFF.
-        - apply_wavelength_conversion: bool, whether to apply wavelength conversion to velocity.
+        - observation_type: SAR observation type used for value conversion.
+        - input_value_convention: Sign convention of the raw input values.
+        - wavelength: Wavelength used for phase conversion.
         - extent: tuple, optional, geographic extent to define the regular grid (min_lon, max_lon, min_lat, max_lat).
         - grid_resolution: float, optional, resolution of the grid in degrees (e.g., 0.01 for ~1 km grid spacing).
         """
@@ -248,7 +305,7 @@ class GammasarReader(ReadBase2csisar):
     
         # Save azimuth data
         if save_azi:
-            azi_data = self.raw_azi_input
+            azi_data = np.array(self.raw_azimuth_input, copy=True)
             azi_lon, azi_lat = self.raw_lon, self.raw_lat
             if grid_resolution and extent:
                 azi_data, azi_lon, azi_lat = resample_to_regular_grid(azi_data, azi_lon, azi_lat, extent, grid_resolution)
@@ -258,7 +315,7 @@ class GammasarReader(ReadBase2csisar):
     
         # Save incidence data
         if save_inc:
-            inc_data = self.raw_inc_input
+            inc_data = np.array(self.raw_incidence_input, copy=True)
             inc_lon, inc_lat = self.raw_lon, self.raw_lat
             if grid_resolution and extent:
                 inc_data, inc_lon, inc_lat = resample_to_regular_grid(inc_data, inc_lon, inc_lat, extent, grid_resolution)
@@ -267,12 +324,14 @@ class GammasarReader(ReadBase2csisar):
     
         # Save velocity data
         if save_vel:
-            vel_data = self.raw_vel
+            vel_data = np.array(self.raw_vel, copy=True)
             vel_lon, vel_lat = self.raw_lon, self.raw_lat
-            if apply_wavelength_conversion:
-                vel_data = self.unw_phase_to_los(vel_data, self.wavelength)
-            else:
-                vel_data = -vel_data
+            spec = self.build_observation_spec(
+                observation_type=observation_type,
+                input_value_convention=input_value_convention,
+                wavelength=wavelength,
+            )
+            vel_data = self.convert_observation_values(vel_data, spec)
             if grid_resolution and extent:
                 vel_data, vel_lon, vel_lat = resample_to_regular_grid(vel_data, vel_lon, vel_lat, extent, grid_resolution)
             vel_file = os.path.join(directory_name, 'disp.tif')

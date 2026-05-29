@@ -1,14 +1,17 @@
 import numpy as np
+import copy
 import pandas as pd
-import yaml
 from typing import Dict, List, Tuple, Optional, Union, Any
 import warnings
 from datetime import datetime
 from pathlib import Path
 
-class ConstraintManager:
+from .constraint_manager_base import ConstraintManagerBase
+
+
+class ConstraintManagerBLSE(ConstraintManagerBase):
     """
-    Complete constraint and bounds management system.
+    BLSE constraint and bounds management system.
     
     Handles ALL constraint-related operations including:
     - Configuration loading and parsing
@@ -36,90 +39,15 @@ class ConstraintManager:
         self.config = config
         self.verbose = verbose
         
-        # Initialize bounds storage with detailed tracking
-        self._bounds = {
-            'lb': None,  # Global lower bounds array
-            'ub': None,  # Global upper bounds array
-            'global': {'lb': None, 'ub': None},  # Global defaults
-            'strikeslip': {},  # Per-fault strike-slip bounds
-            'dipslip': {},     # Per-fault dip-slip bounds  
-            'poly': {},        # Per-fault polynomial bounds
-            'source': None,
-            'config_file': None,
-            'applied_time': None
-        }
-        
-        # Configuration storage
-        self._bounds_config = None
-        
-        # Constraint storage
-        self._inequality_constraints = {}  # name -> constraint_dict
-        self._equality_constraints = {}    # name -> constraint_dict
-        
-        # Combined constraints cache
-        self._combined_cache = {
-            'inequality': {'A': None, 'b': None, 'valid': False},
-            'equality': {'A': None, 'b': None, 'valid': False}
-        }
+        # Shared storage (constraints, cache, common bounds keys)
+        self._init_shared_storage()
         
         if self.verbose:
-            print(f"🔧 Complete ConstraintManager initialized")
+            print(f"[OK] Complete ConstraintManager initialized")
 
-    def load_bounds_config(self, config_file: str, encoding: str = 'utf-8'):
-        """
-        Load bounds configuration from file.
-        
-        Parameters:
-        -----------
-        config_file : str
-            Path to bounds configuration file
-        encoding : str
-            File encoding
-        """
-        try:
-            config_path = Path(config_file)
-            if not config_path.exists():
-                raise FileNotFoundError(f"Bounds config file not found: {config_file}")
-            
-            with open(config_path, 'r', encoding=encoding) as f:
-                if config_path.suffix.lower() in ['.yml', '.yaml']:
-                    self._bounds_config = yaml.safe_load(f)
-                else:
-                    raise ValueError(f"Unsupported config file format: {config_path.suffix}")
-            
-            self._bounds['config_file'] = str(config_path)
-            
-            # Store bounds_config in solver for compatibility
-            self.solver.bounds_config = self._bounds_config
-            
-            if self.verbose:
-                print(f"📁 Loaded bounds config from: {config_file}")
-                self._print_config_summary()
-            
-        except Exception as e:
-            if self.verbose:
-                print(f"❌ Failed to load bounds config: {e}")
-            raise
-
-    def _print_config_summary(self):
-        """Print summary of loaded configuration."""
-        if not self._bounds_config:
-            return
-            
-        config_items = []
-        if 'lb' in self._bounds_config or 'ub' in self._bounds_config:
-            config_items.append("global bounds")
-        if 'strikeslip' in self._bounds_config:
-            config_items.append(f"strike-slip bounds for {len(self._bounds_config['strikeslip'])} fault(s)")
-        if 'dipslip' in self._bounds_config:
-            config_items.append(f"dip-slip bounds for {len(self._bounds_config['dipslip'])} fault(s)")
-        if 'poly' in self._bounds_config:
-            config_items.append(f"polynomial bounds for {len(self._bounds_config['poly'])} fault(s)")
-        if 'rake_angle' in self._bounds_config:
-            config_items.append(f"rake angle constraints for {len(self._bounds_config['rake_angle'])} fault(s)")
-        
-        if config_items:
-            print(f"   - Configuration contains: {', '.join(config_items)}")
+    def _on_bounds_config_loaded(self):
+        """Sync bounds config to solver for BLSE compatibility."""
+        self.solver.bounds_config = self._bounds_config
 
     def set_rake_angle_constraints(self, rake_limits: Dict[str, Tuple[float, float]], source: str = "manual"):
         """
@@ -139,7 +67,7 @@ class ConstraintManager:
             
             if not constrained_fault_names:
                 if self.verbose:
-                    print("⚠️  Warning: No faults found that match both rake_limits keys and solver.faults")
+                    print("[!]  Warning: No faults found that match both rake_limits keys and solver.faults")
                 return
             
             # Calculate total patches for constrained faults only
@@ -147,8 +75,16 @@ class ConstraintManager:
             Nsd = 0
             Np = self.solver.lsq_parameters  # Total number of parameters
             
-            # Get constrained fault objects
-            constrained_faults = [fault for fault in self.solver.faults if fault.name in constrained_fault_names]
+            # Get constrained fault objects — only Fault-type sources support rake constraints
+            constrained_faults = [fault for fault in self.solver.faults
+                                  if fault.name in constrained_fault_names
+                                  and self._get_source_type(fault.name) == 'Fault']
+            constrained_fault_names = [f.name for f in constrained_faults]
+            
+            if not constrained_faults:
+                if self.verbose:
+                    print("[!]  Warning: No Fault-type sources found for rake angle constraints")
+                return
             
             for ifault in constrained_faults:
                 inpatch = len(ifault.patch)
@@ -193,14 +129,14 @@ class ConstraintManager:
             self._combined_cache['inequality']['valid'] = False
             
             if self.verbose:
-                print(f"🔻 Applied rake angle constraints: {A.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
+                print(f"[INQ] Applied rake angle constraints: {A.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
                 for fault_name, (min_rake, max_rake) in rake_limits.items():
                     if fault_name in constrained_fault_names:
-                        print(f"   • {fault_name}: {min_rake}° ≤ rake ≤ {max_rake}°")
+                        print(f"   - {fault_name}: {min_rake}° <= rake <= {max_rake}°")
                         
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to apply rake angle constraints: {e}")
+                print(f"[X] Failed to apply rake angle constraints: {e}")
             raise
 
     def apply_rake_constraints(self, additional_rake_limits: Dict = None):
@@ -219,7 +155,7 @@ class ConstraintManager:
             
             if not final_rake_limits:
                 if self.verbose:
-                    print("ℹ️  No rake angle limits specified")
+                    print("[i]  No rake angle limits specified")
                 return
             
             # Apply rake angle constraints
@@ -230,7 +166,7 @@ class ConstraintManager:
 
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to apply rake constraints: {e}")
+                print(f"[X] Failed to apply rake constraints: {e}")
             raise
 
     def set_fixed_rake_constraints(self, fixed_rake: Dict[str, float], source: str = "manual"):
@@ -251,15 +187,23 @@ class ConstraintManager:
             
             if not constrained_fault_names:
                 if self.verbose:
-                    print("⚠️  Warning: No faults found that match both fixed_rake keys and solver.faults")
+                    print("[!]  Warning: No faults found that match both fixed_rake keys and solver.faults")
                 return
             
             # Calculate total patches for constrained faults
             npatch = 0
             Np = self.solver.lsq_parameters
             
-            # Get constrained fault objects
-            constrained_faults = [fault for fault in self.solver.faults if fault.name in constrained_fault_names]
+            # Get constrained fault objects — only Fault-type sources have rake
+            constrained_faults = [fault for fault in self.solver.faults
+                                  if fault.name in constrained_fault_names
+                                  and self._get_source_type(fault.name) == 'Fault']
+            constrained_fault_names = [f.name for f in constrained_faults]
+            
+            if not constrained_faults:
+                if self.verbose:
+                    print("[!]  Warning: No Fault-type sources found for fixed rake constraints")
+                return
             
             for ifault in constrained_faults:
                 npatch += len(ifault.patch)
@@ -297,27 +241,37 @@ class ConstraintManager:
             self._combined_cache['equality']['valid'] = False
             
             if self.verbose:
-                print(f"🔺 Applied fixed rake constraints: {Aeq.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
+                print(f"[EQ] Applied fixed rake constraints: {Aeq.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
                 for fault_name, rake_angle in fixed_rake.items():
                     if fault_name in constrained_fault_names:
-                        print(f"   • {fault_name}: rake = {rake_angle}°")
+                        print(f"   - {fault_name}: rake = {rake_angle}°")
                         
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to apply fixed rake constraints: {e}")
+                print(f"[X] Failed to apply fixed rake constraints: {e}")
             raise
 
     def apply_euler_constraints(self):
-        """Apply Euler constraints."""
+        """Apply Euler constraints (Fault-only — non-Fault sources are filtered out)."""
         try:
             if not hasattr(self.config, 'euler_constraints') or not self.config.euler_constraints.get('enabled', False):
                 if self.verbose:
-                    print("ℹ️  Euler constraints not enabled in config")
+                    print("[i]  Euler constraints not enabled in config")
                 return
             
             from .euler_inequality_constraints import generate_euler_inequality_constraints
             
-            euler_config = self.config.euler_constraints
+            euler_config = copy.deepcopy(self.config.euler_constraints)
+            
+            # Filter out non-Fault sources from euler config (Euler is Fault-specific)
+            if 'faults' in euler_config:
+                non_fault_names = [fn for fn in euler_config['faults']
+                                   if self._get_source_type(fn) != 'Fault']
+                for fn in non_fault_names:
+                    if self.verbose:
+                        print(f"[!]  Warning: Euler constraint skipping non-Fault source '{fn}'")
+                    del euler_config['faults'][fn]
+            
             all_datasets = self.config.geodata['data']
             
             # Generate constraints
@@ -335,16 +289,77 @@ class ConstraintManager:
                 self._combined_cache['inequality']['valid'] = False
                 
                 if self.verbose:
-                    print(f"🔻 Applied Euler constraints: {A_ineq.shape[0]} constraints")
+                    print(f"[INQ] Applied Euler constraints: {A_ineq.shape[0]} constraints")
                     configured_faults = euler_config.get('configured_faults', [])
                     print(f"   - Constrained faults: {configured_faults}")
             elif self.verbose:
-                print("ℹ️  No Euler constraints generated")
+                print("[i]  No Euler constraints generated")
                 
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to apply Euler constraints: {e}")
+                print(f"[X] Failed to apply Euler constraints: {e}")
             raise
+
+    def apply_source_constraints_from_config(self):
+        """Apply source-specific inequality/equality constraints from ``source_constraints`` config.
+
+        The ``source_constraints`` section in the bounds config YAML maps each source
+        name to a list of constraint definitions.  Each definition contains:
+        - ``name``: constraint identifier
+        - ``type``: ``'inequality'`` or ``'equality'``
+        - ``rule``: a recognised pattern (e.g. ``'pressure >= 0'``)
+
+        The method delegates to each source's adapter
+        ``generate_source_inequality_constraints`` /
+        ``generate_source_equality_constraints`` to build the actual ``A, b`` matrices.
+        """
+        if not self._bounds_config or 'source_constraints' not in self._bounds_config:
+            return
+
+        source_constraints_cfg = self._bounds_config['source_constraints']
+        if not source_constraints_cfg:
+            return
+
+        if not hasattr(self.solver, 'adapters'):
+            if self.verbose:
+                print("[!]  Warning: solver has no adapters, skipping source_constraints")
+            return
+
+        n_total = self.solver.lsq_parameters if hasattr(self.solver, 'lsq_parameters') else 0
+        if n_total == 0:
+            return
+
+        for source_name, src_cfg in source_constraints_cfg.items():
+            if not self._fault_exists(source_name):
+                if self.verbose:
+                    print(f"[!]  Warning: Source '{source_name}' not found, skipping source_constraints")
+                continue
+            if source_name not in self.solver.adapters:
+                if self.verbose:
+                    print(f"[!]  Warning: No adapter for '{source_name}', skipping source_constraints")
+                continue
+
+            adapter = self.solver.adapters[source_name]
+            param_start = self.solver.slip_positions[source_name][0] if hasattr(self.solver, 'slip_positions') else 0
+
+            # Normalise list-of-dicts → dict-of-dicts keyed by constraint name
+            constraints_dict = self._normalise_constraint_list(src_cfg)
+
+            # Inequality constraints
+            for cname, A, b in adapter.generate_source_inequality_constraints(
+                    constraints_dict, param_start, n_total):
+                full_name = f"src_{source_name}_{cname}"
+                self.add_inequality_constraint(A, b, name=full_name,
+                                               source=f"source_constraints/{source_name}",
+                                               overwrite=True)
+
+            # Equality constraints
+            for cname, A, b in adapter.generate_source_equality_constraints(
+                    constraints_dict, param_start, n_total):
+                full_name = f"src_{source_name}_{cname}"
+                self.add_equality_constraint(A, b, name=full_name,
+                                             source=f"source_constraints/{source_name}",
+                                             overwrite=True)
 
     def apply_all_constraints_from_config(self, bounds_config_file: str = None, 
                                         rake_limits: Dict = None, 
@@ -362,7 +377,7 @@ class ConstraintManager:
             File encoding
         """
         if self.verbose:
-            print("\n🚀 Applying all constraints from configuration...")
+            print("\n[RUN] Applying all constraints from configuration...")
         
         # Load bounds config if provided
         if bounds_config_file is not None:
@@ -380,8 +395,12 @@ class ConstraintManager:
         if hasattr(self.config, 'euler_constraints') and self.config.euler_constraints.get('enabled', False):
             self.apply_euler_constraints()
         
+        # Apply source-specific constraints from source_constraints config
+        if self._bounds_config and 'source_constraints' in self._bounds_config:
+            self.apply_source_constraints_from_config()
+        
         if self.verbose:
-            print("✅ All constraints applied successfully")
+            print("[OK] All constraints applied successfully")
             self.print_summary()
 
     def set_global_bounds(self, lb: float = None, ub: float = None, source: str = "manual"):
@@ -409,7 +428,7 @@ class ConstraintManager:
         self._apply_global_bounds_to_arrays(lb, ub)
         
         if self.verbose:
-            print(f"🌐 Set global bounds: lb={lb}, ub={ub} (source: {source})")
+            print(f"[GLB] Set global bounds: lb={lb}, ub={ub} (source: {source})")
 
     def set_fault_slip_bounds(self, fault_name: str, strikeslip: Tuple[float, float] = None, 
                             dipslip: Tuple[float, float] = None, source: str = "manual"):
@@ -445,7 +464,7 @@ class ConstraintManager:
             self._apply_dipslip_bounds(fault_name, dipslip)
         
         if self.verbose:
-            print(f"⚡ Set slip bounds for '{fault_name}': ss={strikeslip}, ds={dipslip} (source: {source})")
+            print(f"[*] Set slip bounds for '{fault_name}': ss={strikeslip}, ds={dipslip} (source: {source})")
 
     def set_fault_poly_bounds(self, fault_name: str, poly_bounds: Tuple[float, float], source: str = "manual"):
         """
@@ -471,13 +490,54 @@ class ConstraintManager:
         self._apply_poly_bounds(fault_name, poly_bounds)
         
         if self.verbose:
-            print(f"📐 Set poly bounds for '{fault_name}': {poly_bounds} (source: {source})")
+            print(f"[GEO] Set poly bounds for '{fault_name}': {poly_bounds} (source: {source})")
+
+    def set_source_component_bounds(self, source_name: str, comp_bounds: Dict[str, Tuple[float, float]], 
+                                     source: str = "manual"):
+        """
+        Set per-component bounds for any source type using source adapters.
+        
+        Parameters
+        ----------
+        source_name : str
+            Name of the source (fault/pressure/sbarbot).
+        comp_bounds : dict
+            {component_name: (lb, ub)} — component names come from
+            adapter.get_param_names(), e.g. {'eps12': (-1e-4, 1e-4)}.
+        source : str
+            Source description for audit trail.
+        """
+        if not self._fault_exists(source_name):
+            raise ValueError(f"Source '{source_name}' not found in solver")
+        
+        if not hasattr(self.solver, 'adapters') or source_name not in self.solver.adapters:
+            raise ValueError(f"No adapter found for source '{source_name}'")
+        
+        adapter = self.solver.adapters[source_name]
+        params_per_comp = adapter.get_n_params_per_component()
+        slip_st, _ = self.solver.slip_positions[source_name]
+        
+        self._initialize_bounds_arrays()
+        
+        offset = slip_st
+        for comp_name in adapter.get_param_names():
+            n = params_per_comp[comp_name]
+            if comp_name in comp_bounds:
+                clb, cub = comp_bounds[comp_name]
+                if clb > cub:
+                    raise ValueError(f"Lower bound ({clb}) > upper bound ({cub}) for {comp_name}")
+                self._bounds['lb'][offset:offset + n] = clb
+                self._bounds['ub'][offset:offset + n] = cub
+            offset += n
+        
+        if self.verbose:
+            print(f"[SRC] Set component bounds for '{source_name}': {comp_bounds} (source: {source})")
 
     def apply_bounds_from_config(self):
         """Apply all bounds from loaded configuration."""
         if not self._bounds_config:
             if self.verbose:
-                print("⚠️  No bounds config loaded")
+                print("[!]  No bounds config loaded")
             return
         
         # Initialize parameter arrays if needed
@@ -489,13 +549,19 @@ class ConstraintManager:
         if lb is not None or ub is not None:
             self.set_global_bounds(lb, ub, source="config_file")
         
-        # Apply fault-specific slip bounds
+        # Apply fault-specific slip bounds (legacy Fault-only keys)
         strikeslip_config = self._bounds_config.get('strikeslip', {})
         dipslip_config = self._bounds_config.get('dipslip', {})
         
         all_slip_faults = set(strikeslip_config.keys()) | set(dipslip_config.keys())
         for fault_name in all_slip_faults:
             if self._fault_exists(fault_name):
+                # Only Fault-type sources have strikeslip/dipslip semantics
+                if self._get_source_type(fault_name) != 'Fault':
+                    if self.verbose:
+                        print(f"[!]  Warning: '{fault_name}' is not a Fault source, "
+                              f"skipping strikeslip/dipslip bounds. Use 'source_bounds' instead.")
+                    continue
                 ss_bounds = strikeslip_config.get(fault_name, None)
                 ds_bounds = dipslip_config.get(fault_name, None)
                 self.set_fault_slip_bounds(fault_name, ss_bounds, ds_bounds, source="config_file")
@@ -506,6 +572,12 @@ class ConstraintManager:
             if self._fault_exists(fault_name):
                 self.set_fault_poly_bounds(fault_name, poly_bounds, source="config_file")
         
+        # Apply generic source component bounds (works for Pressure, Sbarbot, etc.)
+        source_bounds_config = self._bounds_config.get('source_bounds', {})
+        for source_name, comp_bounds in source_bounds_config.items():
+            if self._fault_exists(source_name):
+                self.set_source_component_bounds(source_name, comp_bounds, source="config_file")
+        
         self._bounds['source'] = "config_file"
         self._bounds['applied_time'] = datetime.now()
 
@@ -514,11 +586,17 @@ class ConstraintManager:
         if hasattr(self.solver, 'lsq_parameters'):
             n_params = self.solver.lsq_parameters
         else:
-            # Try to calculate from faults
+            # Fallback: calculate from adapters if available, else from source attributes
             n_params = 0
             for fault in self.solver.faults:
-                n_params += len(fault.patch) * len(fault.slipdir)
-                # Add polynomial parameters if any
+                if hasattr(self.solver, 'adapters') and fault.name in self.solver.adapters:
+                    n_params += self.solver.adapters[fault.name].get_n_source_params()
+                elif hasattr(fault, 'patch') and hasattr(fault, 'slipdir'):
+                    n_params += len(fault.patch) * len(fault.slipdir)
+                elif hasattr(fault, 'volumes') and hasattr(fault, 'strain_components'):
+                    n_params += len(fault.volumes) * len(fault.strain_components)
+                else:
+                    n_params += 1  # Point source (Pressure)
                 if hasattr(fault, 'numberofpolys'):
                     n_params += sum(fault.numberofpolys.values())
         
@@ -566,145 +644,12 @@ class ConstraintManager:
         """Check if fault exists in solver."""
         return any(fault.name == fault_name for fault in self.solver.faults)
 
-    def add_inequality_constraint(self, A: np.ndarray, b: np.ndarray, name: str, 
-                                source: str = "manual", overwrite: bool = False):
-        """Add inequality constraint A @ x <= b."""
-        if name in self._inequality_constraints and not overwrite:
-            raise ValueError(f"Inequality constraint '{name}' already exists. Use overwrite=True to replace.")
-        
-        A = np.asarray(A)
-        b = np.asarray(b)
-        
-        if A.ndim != 2:
-            raise ValueError(f"Constraint matrix A must be 2D, got shape {A.shape}")
-        
-        if A.shape[0] != len(b):
-            raise ValueError(f"A.shape[0] ({A.shape[0]}) != len(b) ({len(b)})")
-        
-        # Store constraint
-        self._inequality_constraints[name] = {
-            'A': A.copy(),
-            'b': b.copy(),
-            'source': source,
-            'shape': A.shape,
-            'added_time': datetime.now()
-        }
-        
-        # Invalidate cache
-        self._combined_cache['inequality']['valid'] = False
-        
-        if self.verbose:
-            print(f"🔻 Added inequality constraint '{name}': {A.shape[0]} constraints (source: {source})")
-
-    def add_equality_constraint(self, A: np.ndarray, b: np.ndarray, name: str,
-                              source: str = "manual", overwrite: bool = False):
-        """Add equality constraint A @ x = b."""
-        if name in self._equality_constraints and not overwrite:
-            raise ValueError(f"Equality constraint '{name}' already exists. Use overwrite=True to replace.")
-        
-        A = np.asarray(A)
-        b = np.asarray(b)
-        
-        if A.ndim != 2:
-            raise ValueError(f"Constraint matrix A must be 2D, got shape {A.shape}")
-        
-        if A.shape[0] != len(b):
-            raise ValueError(f"A.shape[0] ({A.shape[0]}) != len(b) ({len(b)})")
-        
-        # Store constraint
-        self._equality_constraints[name] = {
-            'A': A.copy(),
-            'b': b.copy(),
-            'source': source,
-            'shape': A.shape,
-            'added_time': datetime.now()
-        }
-        
-        # Invalidate cache
-        self._combined_cache['equality']['valid'] = False
-        
-        if self.verbose:
-            print(f"🔺 Added equality constraint '{name}': {A.shape[0]} constraints (source: {source})")
-
-    def remove_constraint(self, name: str, constraint_type: Optional[str] = None):
-        """Remove constraint by name."""
-        removed = False
-        
-        if constraint_type is None or constraint_type == 'inequality':
-            if name in self._inequality_constraints:
-                del self._inequality_constraints[name]
-                self._combined_cache['inequality']['valid'] = False
-                removed = True
-                constraint_type = 'inequality'
-        
-        if constraint_type is None or constraint_type == 'equality':
-            if name in self._equality_constraints:
-                del self._equality_constraints[name]
-                self._combined_cache['equality']['valid'] = False
-                removed = True
-                constraint_type = 'equality'
-        
-        if removed:
-            if self.verbose:
-                print(f"❌ Removed {constraint_type} constraint: '{name}'")
-        else:
-            raise ValueError(f"Constraint '{name}' not found")
-
-    def get_combined_inequality_constraints(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Get combined inequality constraints as (A, b)."""
-        if not self._inequality_constraints:
-            return None, None
-        
-        cache = self._combined_cache['inequality']
-        if cache['valid']:
-            return cache['A'].copy() if cache['A'] is not None else None, \
-                   cache['b'].copy() if cache['b'] is not None else None
-        
-        # Rebuild combined constraints
-        A_list = []
-        b_list = []
-        
-        for constraint in self._inequality_constraints.values():
-            A_list.append(constraint['A'])
-            b_list.append(constraint['b'])
-        
-        A_combined = np.vstack(A_list)
-        b_combined = np.hstack(b_list)
-        
-        # Update cache
-        cache['A'] = A_combined.copy()
-        cache['b'] = b_combined.copy()
-        cache['valid'] = True
-        
-        return A_combined, b_combined
-
-    def get_combined_equality_constraints(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Get combined equality constraints as (A, b)."""
-        if not self._equality_constraints:
-            return None, None
-        
-        cache = self._combined_cache['equality']
-        if cache['valid']:
-            return cache['A'].copy() if cache['A'] is not None else None, \
-                   cache['b'].copy() if cache['b'] is not None else None
-        
-        # Rebuild combined constraints
-        A_list = []
-        b_list = []
-        
-        for constraint in self._equality_constraints.values():
-            A_list.append(constraint['A'])
-            b_list.append(constraint['b'])
-        
-        A_combined = np.vstack(A_list)
-        b_combined = np.hstack(b_list)
-        
-        # Update cache
-        cache['A'] = A_combined.copy()
-        cache['b'] = b_combined.copy()
-        cache['valid'] = True
-        
-        return A_combined, b_combined
+    def _get_source_type(self, fault_name):
+        """Get source type string for a given source name, using adapter if available."""
+        if hasattr(self.solver, 'adapters') and fault_name in self.solver.adapters:
+            return self.solver.adapters[fault_name].source_type
+        fault_obj = next((f for f in self.solver.faults if f.name == fault_name), None)
+        return getattr(fault_obj, 'type', 'Fault') if fault_obj else 'Fault'
 
     def sync_to_solver(self):
         """Synchronize all constraints and bounds to solver attributes."""
@@ -751,47 +696,14 @@ class ConstraintManager:
         self.solver.beq = b_eq
         
         if self.verbose:
-            print("🔄 Synchronized all constraints and bounds to solver")
+            print("[SYNC] Synchronized all constraints and bounds to solver")
 
-    def validate_constraints(self) -> Dict[str, Any]:
-        """Validate all constraints for consistency."""
-        result = {
-            'valid': True,
-            'errors': [],
-            'warnings': [],
-            'summary': {}
-        }
-        
-        # Validate bounds
-        if self._bounds['lb'] is not None and self._bounds['ub'] is not None:
-            inconsistent = np.where(self._bounds['lb'] > self._bounds['ub'])[0]
-            if len(inconsistent) > 0:
-                result['errors'].append(
-                    f"Inconsistent bounds at {len(inconsistent)} parameter(s): "
-                    f"indices {inconsistent[:10].tolist()}" + 
-                    ("..." if len(inconsistent) > 10 else "")
-                )
-                result['valid'] = False
-        
-        # Validate inequality constraints
-        for name, constraint in self._inequality_constraints.items():
-            A, b = constraint['A'], constraint['b']
-            if A.shape[0] != len(b):
-                result['errors'].append(
-                    f"Inequality '{name}': A.shape[0] ({A.shape[0]}) != len(b) ({len(b)})"
-                )
-                result['valid'] = False
-        
-        # Validate equality constraints
-        for name, constraint in self._equality_constraints.items():
-            A, b = constraint['A'], constraint['b']
-            if A.shape[0] != len(b):
-                result['errors'].append(
-                    f"Equality '{name}': A.shape[0] ({A.shape[0]}) != len(b) ({len(b)})"
-                )
-                result['valid'] = False
-        
-        # Create summary
+    def validate(self) -> Dict[str, Any]:
+        """Validate all constraints for consistency.
+
+        Extends base validation with a summary dict.
+        """
+        result = super().validate()
         result['summary'] = {
             'bounds_set': self._bounds['lb'] is not None or self._bounds['ub'] is not None,
             'inequality_groups': len(self._inequality_constraints),
@@ -799,8 +711,10 @@ class ConstraintManager:
             'total_inequality_constraints': sum(c['A'].shape[0] for c in self._inequality_constraints.values()),
             'total_equality_constraints': sum(c['A'].shape[0] for c in self._equality_constraints.values())
         }
-        
         return result
+
+    # Backward-compatible alias
+    validate_constraints = validate
 
     def print_summary(self):
         """Print comprehensive constraint and bounds summary."""
@@ -809,7 +723,7 @@ class ConstraintManager:
         print("="*70)
         
         # Configuration info
-        print(f"🔧 CONFIGURATION")
+        print(f"[OK] CONFIGURATION")
         if self._bounds['config_file']:
             print(f"   Config file: {self._bounds['config_file']}")
         
@@ -818,12 +732,12 @@ class ConstraintManager:
             rake_enabled = getattr(self.config, 'use_rake_angle_constraints', False)
             euler_enabled = hasattr(self.config, 'euler_constraints') and self.config.euler_constraints.get('enabled', False)
             
-            print(f"   Bounds constraints: {'✅ Enabled' if bounds_enabled else '❌ Disabled'}")
-            print(f"   Rake constraints: {'✅ Enabled' if rake_enabled else '❌ Disabled'}")
-            print(f"   Euler constraints: {'✅ Enabled' if euler_enabled else '❌ Disabled'}")
+            print(f"   Bounds constraints: {'[OK] Enabled' if bounds_enabled else '[X] Disabled'}")
+            print(f"   Rake constraints: {'[OK] Enabled' if rake_enabled else '[X] Disabled'}")
+            print(f"   Euler constraints: {'[OK] Enabled' if euler_enabled else '[X] Disabled'}")
         
         # Bounds info
-        print(f"\n📊 BOUNDS MANAGEMENT")
+        print(f"\n[STAT] BOUNDS MANAGEMENT")
         if self._bounds['lb'] is not None or self._bounds['ub'] is not None:
             n_params = len(self._bounds['lb']) if self._bounds['lb'] is not None else len(self._bounds['ub'])
             n_lb = np.sum(~np.isnan(self._bounds['lb'])) if self._bounds['lb'] is not None else 0
@@ -847,80 +761,62 @@ class ConstraintManager:
             if self._bounds['strikeslip']:
                 print(f"   Strike-slip bounds: {len(self._bounds['strikeslip'])} fault(s)")
                 for fault, bounds in self._bounds['strikeslip'].items():
-                    print(f"     • {fault}: {bounds}")
+                    print(f"     - {fault}: {bounds}")
             
             if self._bounds['dipslip']:
                 print(f"   Dip-slip bounds: {len(self._bounds['dipslip'])} fault(s)")
                 for fault, bounds in self._bounds['dipslip'].items():
-                    print(f"     • {fault}: {bounds}")
+                    print(f"     - {fault}: {bounds}")
             
             if self._bounds['poly']:
                 print(f"   Polynomial bounds: {len(self._bounds['poly'])} fault(s)")
                 for fault, bounds in self._bounds['poly'].items():
-                    print(f"     • {fault}: {bounds}")
+                    print(f"     - {fault}: {bounds}")
                     
             print(f"   Source: {self._bounds['source']}")
         else:
             print("   No bounds set")
         
         # Inequality constraints
-        print(f"\n🔻 INEQUALITY CONSTRAINTS")
+        print(f"\n[INQ] INEQUALITY CONSTRAINTS")
         print(f"   Groups: {len(self._inequality_constraints)}")
         total_ineq = sum(c['A'].shape[0] for c in self._inequality_constraints.values())
         print(f"   Total constraints: {total_ineq}")
         
         for name, constraint in self._inequality_constraints.items():
-            print(f"   • {name}: {constraint['A'].shape[0]} constraints (source: {constraint['source']})")
+            print(f"   - {name}: {constraint['A'].shape[0]} constraints (source: {constraint['source']})")
         
         # Equality constraints
-        print(f"\n🔺 EQUALITY CONSTRAINTS")
+        print(f"\n[EQ] EQUALITY CONSTRAINTS")
         print(f"   Groups: {len(self._equality_constraints)}")
         total_eq = sum(c['A'].shape[0] for c in self._equality_constraints.values())
         print(f"   Total constraints: {total_eq}")
         
         for name, constraint in self._equality_constraints.items():
-            print(f"   • {name}: {constraint['A'].shape[0]} constraints (source: {constraint['source']})")
+            print(f"   - {name}: {constraint['A'].shape[0]} constraints (source: {constraint['source']})")
         
         # Validation status
         validation = self.validate_constraints()
-        print(f"\n✅ VALIDATION: {'PASSED' if validation['valid'] else 'FAILED'}")
+        print(f"\n[OK] VALIDATION: {'PASSED' if validation['valid'] else 'FAILED'}")
         
         if validation['errors']:
-            print("   ❌ Errors:")
+            print("   [X] Errors:")
             for error in validation['errors']:
                 print(f"      {error}")
         
         if validation['warnings']:
-            print("   ⚠️  Warnings:")
+            print("   [!]  Warnings:")
             for warning in validation['warnings']:
                 print(f"      {warning}")
         
         print("="*70)
 
-    # Properties for backward compatibility
-    @property
-    def lb(self) -> Optional[np.ndarray]:
-        """Lower bounds array for compatibility."""
-        return self._bounds['lb'].copy() if self._bounds['lb'] is not None else None
-
-    @property
-    def ub(self) -> Optional[np.ndarray]:
-        """Upper bounds array for compatibility."""
-        return self._bounds['ub'].copy() if self._bounds['ub'] is not None else None
-
-    @property
-    def inequality_constraints(self) -> Dict[str, Dict]:
-        """Inequality constraints dict for compatibility."""
-        return {name: {'A': constraint['A'], 'b': constraint['b']} 
-                for name, constraint in self._inequality_constraints.items()}
-
-    @property
-    def equality_constraints(self) -> Dict[str, Dict]:
-        """Equality constraints dict for compatibility."""
-        return {name: {'A': constraint['A'], 'b': constraint['b']} 
-                for name, constraint in self._equality_constraints.items()}
-
+    # BLSE-specific property
     @property
     def bounds_config_file(self) -> Optional[str]:
         """Path to bounds config file."""
         return self._bounds['config_file']
+
+
+# Backward-compatible alias
+ConstraintManager = ConstraintManagerBLSE

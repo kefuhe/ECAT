@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 # Load csi and its extensions
 from csi.gps import gps
 from csi.insar import insar
+from csi.leveling import leveling
+from csi.crossfaultoffset import crossfaultoffset
 
 # Import utility functions for parsing configuration updates
 from .config_utils import parse_data_faults, parse_update, parse_initial_values, parse_sigmas_config
@@ -84,6 +86,12 @@ class CommonConfigBase:
                 data_file_prefix = os.path.splitext(data_file)[0]
                 data_instance = insar(data_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
                 data_instance.read_from_varres(data_file_prefix, cov=True)
+            elif data_type == 'leveling':
+                data_instance = leveling(name=data_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
+                data_instance.read_from_ascii(data_file, header=0)
+            elif data_type == 'crossfaultoffset':
+                data_instance = crossfaultoffset(name=data_name, lon0=self.lon0, lat0=self.lat0, verbose=True)
+                data_instance.read_from_ascii(data_file, header=0)
             else:
                 msg = f"Unsupported data type: {data_type}"
                 logger.error(msg)
@@ -166,6 +174,14 @@ class CommonConfigBase:
                                 data.buildCd(direction='en')
                             else:
                                 data.buildCd(direction='enu')
+                        elif data.dtype == 'leveling':
+                            # Leveling has lon/lat arrays; select benchmarks within range
+                            if hasattr(data, 'select_stations'):
+                                data.select_stations(*lon_lat_range)
+                        elif data.dtype == 'crossfaultoffset':
+                            # Cross-fault offset uses reference midpoints for selection
+                            if hasattr(data, 'select_stations'):
+                                data.select_stations(*lon_lat_range)
                 elif method == 'distance_to_fault':
                     distance_to_fault = method_config.get('distance_to_fault', None)
                     faults = self.faults_list

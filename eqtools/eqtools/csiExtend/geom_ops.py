@@ -146,19 +146,18 @@ class PolygonIntersector:
 
 def discretize_coords(coords, every=None, num_segments=None, threshold=2):
     '''
-    Discretize iso-depth nodes coordinates depicting the rupture trace.
+    Discretize node coordinates along a piecewise-linear curve.
 
     Parameters:
-    - coords (np.ndarray): The coordinates of the iso-depth nodes.
+    - coords (np.ndarray): The coordinates of the nodes, shape (N, 3).
     - every (float, optional): The interval at which to discretize the coordinates. If provided, overrides num_segments.
     - num_segments (int, optional): The number of segments to discretize the coordinates into. Ignored if every is provided.
     - threshold (float, optional): The threshold distance to check the first and last vertex against the nearest r_new point. Default is 2.
 
     Returns:
-    - xyz_new (np.ndarray): The new discretized coordinates in the original coordinate system.
-    - lonlatz_new (np.ndarray): The new discretized coordinates in the longitude/latitude coordinate system.
+    - xyz_new (np.ndarray): The new discretized coordinates, shape (M, 3).
     '''
-    x, y = coords[:, 0], coords[:, 1]
+    x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
     # Calculate the length of the curve
     dx = np.insert(np.diff(x), 0, 0)
     dy = np.insert(np.diff(y), 0, 0)
@@ -168,6 +167,7 @@ def discretize_coords(coords, every=None, num_segments=None, threshold=2):
     # Create interpolation functions
     fx = interp1d(r, x, kind='linear')
     fy = interp1d(r, y, kind='linear')
+    fz = interp1d(r, z, kind='linear')
 
     # Discretize the curve length at equal intervals
     if every is not None:
@@ -188,12 +188,11 @@ def discretize_coords(coords, every=None, num_segments=None, threshold=2):
     if r[-1] - r_new[-1] > threshold:
         r_new = np.append(r_new, r[-1])
 
-    # Calculate new x and y values
+    # Calculate new x, y, z values
     x_new = fx(r_new)
     y_new = fy(r_new)
-
-    z = np.ones_like(x_new) * coords[0, 2]
-    xyz_new = np.vstack((x_new, y_new, z)).T
+    z_new = fz(r_new)
+    xyz_new = np.vstack((x_new, y_new, z_new)).T
 
     return xyz_new
 

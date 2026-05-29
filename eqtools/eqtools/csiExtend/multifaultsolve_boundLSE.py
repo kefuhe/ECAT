@@ -1,4 +1,6 @@
 # import the necessary libraries
+import warnings
+
 from csi import multifaultsolve
 import copy
 import yaml
@@ -11,6 +13,7 @@ from . import lsqlin
 from ..plottools import sci_plot_style, DegreeFormatter
 from .fault_analysis_mixin import FaultAnalysisMixin
 from .constraint_manager_blse import ConstraintManager
+from .source_adapters import make_adapter
 
 # Plot
 from eqtools.getcpt import get_cpt
@@ -36,6 +39,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                                                 faults,
                                                 verbose=verbose)
         
+        # Build source adapters
+        self.adapters = {fault.name: make_adapter(fault) for fault in faults}
+
         # Calculate the covariance matrix and the inverse of the covariance matrix
         self.calculate_Icovd_chol()
         self.calculate_slip_and_poly_positions()
@@ -89,7 +95,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         }
         
         if verbose:
-            print(f"🔧 Enhanced multifaultsolve_boundLSE initialized with unified constraint management")
+            print(f"[OK] Enhanced multifaultsolve_boundLSE initialized with unified constraint management")
         
         return
     
@@ -97,10 +103,10 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         """Calculate total number of parameters for all faults."""
         total = 0
         for fault in self.faults:
-            npatches = len(fault.patch)
-            num_slip_samples = len(fault.slipdir) * npatches
+            adapter = self.adapters[fault.name]
+            num_source_params = adapter.get_n_source_params()
             num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
-            total += num_slip_samples + num_poly_samples
+            total += num_source_params + num_poly_samples
         return total
     
     def calculate_Icovd_chol(self):
@@ -113,84 +119,114 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
     def calculate_slip_and_poly_positions(self):
         """
-        Calculates indices for SS, DS, Poly, AND Depths for DES.
+        Calculates indices for source params and poly for all source types.
+        Uses source adapters for type-safe parameter counting.
+        DES configuration is built only for sources that support it.
         """
         self.slip_positions = {}
         self.poly_positions = {}
-        self.des_indices_config = [] 
-        
+        self.des_indices_config = []  # Only for sources that support DES
+
         current_idx = 0
-        
+
         for fault in self.faults:
-            n_patches = len(fault.patch)
-            
-            # --- 获取深度信息 ---
-            # 假设 fault.getcenters() 返回 [x, y, z] (km)，取 z 为深度
-            # 注意：确保单位一致 (通常是 km 或 m，只要配置里对得上即可)
-            centers = fault.getcenters()
-            depths = [c[2] for c in centers] # List of depth for each patch
-            
-            # --- 1. SS 索引 ---
-            ss_start = current_idx
-            ss_end = ss_start + n_patches
-            ss_indices = list(range(ss_start, ss_end))
-            current_idx = ss_end
-            
-            # --- 2. DS 索引 ---
-            ds_indices = []
-            if len(fault.slipdir) > 1:
-                ds_start = current_idx
-                ds_end = ds_start + n_patches
-                ds_indices = list(range(ds_start, ds_end))
-                current_idx = ds_end
-            
-            # Legacy positions update
+            adapter = self.adapters[fault.name]
+            params_per_comp = adapter.get_n_params_per_component()
+            comp_names = adapter.get_param_names()
+
+            # --- Build per-component index ranges ---
+            source_start = current_idx
+            comp_indices = {}  # {comp_name: list of indices}
+            for comp_name in comp_names:
+                n = params_per_comp[comp_name]
+                comp_indices[comp_name] = list(range(current_idx, current_idx + n))
+                current_idx += n
+
             slip_end_idx = current_idx
-            self.slip_positions[fault.name] = (ss_start, slip_end_idx)
-            
-            # --- 3. Poly 索引 ---
-            num_poly = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
+            self.slip_positions[fault.name] = (source_start, slip_end_idx)
+
+            # --- Poly indices ---
+            num_poly = 0
+            if hasattr(fault, 'numberofpolys'):
+                num_poly = np.sum([fault.numberofpolys.get(ikey, 0)
+                                   for ikey in fault.numberofpolys], dtype=int)
             if num_poly > 0:
-                poly_start = current_idx
-                poly_end = poly_start + num_poly
-                poly_indices = list(range(poly_start, poly_end))
-                current_idx = poly_end
+                poly_indices = list(range(current_idx, current_idx + num_poly))
+                current_idx += num_poly
             else:
                 poly_indices = []
-            
             self.poly_positions[fault.name] = (slip_end_idx, current_idx)
 
-            # --- 4. 生成 DES 配置 ---
-            fault_config = {
-                'name': fault.name,
-                'ss': ss_indices,
-                'ds': ds_indices,
-                'poly': poly_indices,
-                'depths': depths  # <--- 新增：保存该断层每个 Patch 的深度
-            }
-            self.des_indices_config.append(fault_config)
+            # --- DES configuration (only for sources that support it) ---
+            # For Fault: ss = first component, ds = second component
+            ss_indices = comp_indices.get(comp_names[0], []) if comp_names else []
+            ds_indices = comp_indices.get(comp_names[1], []) if len(comp_names) > 1 else []
+            des_cfg = adapter.get_des_config(ss_indices, ds_indices, poly_indices)
+            if des_cfg is not None:
+                self.des_indices_config.append(des_cfg)
 
         self.lsq_parameters = current_idx
 
-    def set_bounds(self, lb=None, ub=None, strikeslip_limits=None, dipslip_limits=None, poly_limits=None):
-        """Set bounds using constraint manager."""
+    def set_bounds(self, lb=None, ub=None, strikeslip_limits=None, dipslip_limits=None, 
+                poly_limits=None, pressure_limits=None, source_bounds=None):
+        """
+        Set bounds using constraint manager with type-safe handling.
+        
+        Parameters
+        ----------
+        lb, ub : float or array-like, optional
+            Global lower/upper bounds
+        strikeslip_limits : dict, optional
+            Strike-slip bounds per fault (only for Fault type)
+            Format: {fault_name: (lb, ub)}
+        dipslip_limits : dict, optional
+            Dip-slip bounds per fault (only for Fault type)
+            Format: {fault_name: (lb, ub)}
+        poly_limits : dict, optional
+            Polynomial parameter bounds per fault
+            Format: {fault_name: (lb, ub)}
+        pressure_limits : dict, optional
+            Pressure parameter bounds (only for Pressure type)
+            Format: {fault_name: (lb, ub)}
+        source_bounds : dict, optional
+            Generic per-source, per-component bounds.
+            Format: {source_name: {component_name: (lb, ub)}}
+            Works for any source type (Fault, Pressure, Sbarbot).
+        """
         # Set global bounds
         if lb is not None or ub is not None:
             self.constraint_manager.set_global_bounds(lb, ub, source="manual")
         
-        # Set fault-specific bounds
-        if strikeslip_limits or dipslip_limits:
-            for fault in self.faults:
+        # Set source-specific bounds based on type (legacy interface)
+        for fault in self.faults:
+            adapter = self.adapters[fault.name]
+            if adapter.source_type == 'Fault':
                 ss_bounds = strikeslip_limits.get(fault.name) if strikeslip_limits else None
                 ds_bounds = dipslip_limits.get(fault.name) if dipslip_limits else None
                 if ss_bounds or ds_bounds:
-                    self.constraint_manager.set_fault_slip_bounds(fault.name, ss_bounds, ds_bounds, source="manual")
+                    self.constraint_manager.set_fault_slip_bounds(
+                        fault.name, ss_bounds, ds_bounds, source="manual"
+                    )
+            
+            elif adapter.source_type == 'Pressure':
+                p_bounds = pressure_limits.get(fault.name) if pressure_limits else None
+                if p_bounds:
+                    self.constraint_manager.set_source_component_bounds(
+                        fault.name, {name: p_bounds for name in adapter.get_param_names()}, source="manual"
+                    )
+            
+            # Handle polynomial bounds (common to all types)
+            if poly_limits and fault.name in poly_limits:
+                self.constraint_manager.set_fault_poly_bounds(
+                    fault.name, poly_limits[fault.name], source="manual"
+                )
         
-        # Set polynomial bounds
-        if poly_limits:
-            for fault in self.faults:
-                if fault.name in poly_limits:
-                    self.constraint_manager.set_fault_poly_bounds(fault.name, poly_limits[fault.name], source="manual")
+        # Generic source_bounds interface (works for any source type including Sbarbot)
+        if source_bounds:
+            for source_name, comp_bounds in source_bounds.items():
+                self.constraint_manager.set_source_component_bounds(
+                    source_name, comp_bounds, source="manual"
+                )
         
         # Sync to solver
         self.constraint_manager.sync_to_solver()
@@ -324,6 +360,39 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self.constraint_manager.set_fixed_rake_constraints(fixed_rake, source="manual")
         self.constraint_manager.sync_to_solver()
 
+    def set_incompressibility_constraints(self, source_names=None):
+        """Set incompressibility equality constraints for Sbarbot sources.
+
+        For each volume element: eps11 + eps22 + eps33 = 0.
+
+        Parameters
+        ----------
+        source_names : str or list of str, optional
+            Sbarbot source name(s) to constrain. ``None`` applies to all
+            Sbarbot sources in the solver.
+        """
+        if source_names is None:
+            source_names = [f.name for f in self.faults
+                            if self.adapters[f.name].source_type == 'Sbarbot']
+        elif isinstance(source_names, str):
+            source_names = [source_names]
+
+        n_total = self.lsq_parameters
+        for sname in source_names:
+            adapter = self.adapters[sname]
+            if adapter.source_type != 'Sbarbot':
+                raise TypeError(f"'{sname}' is not a Sbarbot source")
+            param_start = self.slip_positions[sname][0]
+            cfg = {'incompressible': {'type': 'equality', 'rule': 'incompressible'}}
+            for cname, A, b in adapter.generate_source_equality_constraints(
+                    cfg, param_start, n_total):
+                full_name = f"src_{sname}_{cname}"
+                self.constraint_manager.add_equality_constraint(
+                    A, b, name=full_name,
+                    source=f"incompressibility/{sname}", overwrite=True)
+
+        self.constraint_manager.sync_to_solver()
+
     def print_constraint_summary(self):
         """Print constraint summary using constraint manager."""
         self.constraint_manager.print_summary()
@@ -363,6 +432,193 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         else:
             raise ValueError("constraint_type must be 'equality' or 'inequality'")
 
+    def add_zero_edge_slip_constraint(self, fault_names, edges, slip_modes):
+        """
+        Add zero-slip equality constraints for triangles on specified fault edges.
+
+        Builds a constraint matrix per (fault, edge, slip_mode) combination and
+        calls add_equality_constraint once per combination — instead of looping
+        triangle by triangle.
+
+        Parameters
+        ----------
+        fault_names : str or list of str
+            Fault name(s) to constrain.
+        edges : str or list of str
+            Edge name(s), e.g. 'top', 'bottom', 'left', 'right'.
+        slip_modes : str or list of str
+            Slip mode(s) to zero out (case-insensitive, spaces/underscores ignored).
+            Strike-slip aliases: 'strikeslip', 'strike_slip', 'strike slip', 'ss'.
+            Dip-slip   aliases: 'dipslip',    'dip_slip',    'dip slip',    'ds'.
+
+        Examples
+        --------
+        # Zero both slip components on the top edge of one fault
+        inversion.add_zero_edge_slip_constraint(
+            'Aheqi_2025', 'top', ['strikeslip', 'dipslip'])
+
+        # Zero dip-slip on top and bottom edges of two faults
+        inversion.add_zero_edge_slip_constraint(
+            ['FaultA', 'FaultB'], ['top', 'bottom'], 'dip slip')
+        """
+        if isinstance(fault_names, str):
+            fault_names = [fault_names]
+        if isinstance(edges, str):
+            edges = [edges]
+        if isinstance(slip_modes, str):
+            slip_modes = [slip_modes]
+
+        def _normalize(mode):
+            m = mode.lower().replace(' ', '').replace('_', '')
+            if m in ('strikeslip', 'ss', 's', 'strike'):
+                return 'strikeslip'
+            elif m in ('dipslip', 'ds', 'd', 'dip'):
+                return 'dipslip'
+            raise ValueError(
+                f"Unknown slip mode '{mode}'. Use 'strikeslip' or 'dipslip'."
+            )
+
+        slip_modes = list(dict.fromkeys(_normalize(m) for m in slip_modes))
+
+        for fault_name in fault_names:
+            if fault_name not in self.faults_dict:
+                raise ValueError(
+                    f"Fault '{fault_name}' not found. Available: {list(self.faults_dict.keys())}"
+                )
+            fault = self.faults_dict[fault_name]
+
+            if not hasattr(fault, 'edge_triangles_indices'):
+                raise AttributeError(
+                    f"Fault '{fault_name}' has no 'edge_triangles_indices'. "
+                    "Run edge detection first."
+                )
+
+            slip_st, _ = self.slip_positions[fault_name]
+            n_patches = len(fault.patch)
+
+            for edge in edges:
+                if edge not in fault.edge_triangles_indices:
+                    available = list(fault.edge_triangles_indices.keys())
+                    raise KeyError(
+                        f"Edge '{edge}' not found in fault '{fault_name}'. "
+                        f"Available: {available}"
+                    )
+                tri_indices = np.asarray(fault.edge_triangles_indices[edge])
+
+                for slip_mode in slip_modes:
+                    if slip_mode == 'strikeslip':
+                        offset = slip_st
+                    else:  # dipslip
+                        if len(fault.slipdir) < 2:
+                            raise ValueError(
+                                f"Fault '{fault_name}' has no dip-slip component "
+                                f"(slipdir={fault.slipdir})."
+                            )
+                        offset = slip_st + n_patches
+
+                    global_indices = tri_indices + offset
+                    n_constrained = len(global_indices)
+
+                    A = np.zeros((n_constrained, self.lsq_parameters))
+                    A[np.arange(n_constrained), global_indices] = 1.0
+                    b = np.zeros(n_constrained)
+
+                    name = f"zero_edge_{fault_name}_{edge}_{slip_mode}"
+                    self.add_equality_constraint(A=A, b=b, name=name)
+
+    def add_patch_slip_constraint(self, fault_patches, slip_component, value=0.0, constraint_type='equality', operator='=='):
+        """
+        Set slip constraints for specific sub-fault patches.
+
+        This method allows setting equality (e.g., slip = 0) or inequality 
+        (e.g., slip >= 0) constraints for the strike-slip or dip-slip 
+        components of a given set of patches.
+
+        Parameters
+        ----------
+        fault_patches : dict
+            Dictionary mapping fault names to lists of patch indices.
+            Format: {'fault_name': [patch_idx1, patch_idx2, ...]}
+        slip_component : str or list of str
+            Slip component(s) to constrain. Can be 'strikeslip' or 'dipslip'.
+            Aliases such as 'ss' and 'ds' are also accepted.
+        value : float, optional
+            The constraint value. Default is 0.0.
+        constraint_type : str, optional
+            Type of constraint: 'equality' or 'inequality'. Default is 'equality'.
+        operator : str, optional
+            Operator used for inequality constraints ('<=' or '>=').
+            Ignored for equality constraints. Default is '=='.
+        """
+
+        if isinstance(slip_component, str):
+            slip_components = [slip_component]
+        else:
+            slip_components = list(slip_component)
+
+        all_global_indices = []
+
+        for f_name, patch_indices in fault_patches.items():
+            if f_name not in self.faults_dict:
+                raise ValueError(f"Fault '{f_name}' not found. Available faults: {list(self.faults_dict.keys())}")
+
+            adapter = self.adapters[f_name]
+
+            if adapter.source_type != 'Fault':
+                raise TypeError(f"Slip constraints can only be applied to 'Fault' sources, but '{f_name}' is '{adapter.source_type}'.")
+
+            slip_st, _ = self.slip_positions[f_name]
+            n_patches = adapter.get_n_spatial_elements()
+
+            patch_indices = np.asarray(patch_indices)
+
+            if np.any(patch_indices >= n_patches) or np.any(patch_indices < 0):
+                raise ValueError(f"Invalid patch indices found for fault '{f_name}'. Indices must be between 0 and {n_patches-1}.")
+
+            for s_comp in slip_components:
+                slip_component_norm = s_comp.lower().replace(' ', '').replace('_', '')
+                if slip_component_norm in ('strikeslip', 'ss', 's', 'strike'):
+                    if 's' not in adapter.slipdir:
+                        raise ValueError(f"Fault '{f_name}' does not have a strike-slip component (slipdir='{adapter.slipdir}').")
+                    offset = slip_st
+                elif slip_component_norm in ('dipslip', 'ds', 'd', 'dip'):
+                    if 'd' not in adapter.slipdir:
+                        raise ValueError(f"Fault '{f_name}' does not have a dip-slip component (slipdir='{adapter.slipdir}').")
+                    # Dip-slip parameters follow strike-slip parameters
+                    offset = slip_st + n_patches
+                else:
+                    raise ValueError(f"Unknown slip component '{s_comp}'. Please use 'strikeslip' or 'dipslip'.")
+
+                all_global_indices.extend((patch_indices + offset).tolist())
+
+        n_constrained = len(all_global_indices)
+        if n_constrained == 0:
+            return
+
+        A = np.zeros((n_constrained, self.lsq_parameters))
+        A[np.arange(n_constrained), all_global_indices] = 1.0
+        b = np.full(n_constrained, value)
+
+        f_name_str = "_".join(fault_patches.keys())[:20]
+        c_name_str = "_".join(slip_components)[:15]
+        name = f"patch_slip_constraint_{f_name_str}_{c_name_str}"
+
+        if constraint_type == 'equality':
+            self.add_equality_constraint(A=A, b=b, name=name, source='manual')
+        elif constraint_type == 'inequality':
+            if operator in ('<=', '<'):
+                # A*x <= b is the standard form
+                pass
+            elif operator in ('>=', '>'):
+                # A*x >= b  => -A*x <= -b
+                A = -A
+                b = -b
+            else:
+                raise ValueError(f"Unsupported inequality operator '{operator}'. Please use '<=' or '>='.")
+            self.add_inequality_constraint(A=A, b=b, name=name, source='manual')
+        else:
+            raise ValueError(f"Invalid constraint type '{constraint_type}'. Please use 'equality' or 'inequality'.")
+
     def ConstrainedLeastSquareSoln(self, penalty_weight=1., smoothing_matrix=None, data_weight=1.,
                                 smoothing_constraints=None, method='mudpy', Aueq=None, bueq=None, 
                                 Aeq=None, beq=None, verbose=False, extra_parameters=None,
@@ -376,18 +632,18 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if validate_constraints:
             validation = self.constraint_manager.validate_constraints()
             if not validation['valid']:
-                print("❌ Constraint validation failed:")
+                print("[X] Constraint validation failed:")
                 for error in validation['errors']:
                     print(f"   Error: {error}")
                 raise ValueError("Invalid constraints detected")
             
             if validation['warnings'] and verbose:
-                print("⚠️  Constraint validation warnings:")
+                print("[!]  Constraint validation warnings:")
                 for warning in validation['warnings']:
                     print(f"   Warning: {warning}")
 
         if verbose:
-            print("\n🚀 Starting constrained least squares with unified constraint management:")
+            print("\n[RUN] Starting constrained least squares with unified constraint management:")
             if not self.constraint_manager.verbose:
                 self.constraint_manager.print_summary()
 
@@ -416,7 +672,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # build Laplace
         for fault in faults:
             Ns_st.append(Ns)
-            Ns += int(fault.slip.shape[0]*len(fault.slipdir))
+            adapter = self.adapters[fault.name]
+            Ns += adapter.get_n_source_params()
             Ns_se.append(Ns)
         G_lap = np.zeros((Ns, Np))
         d_lap = np.zeros((Ns, ))
@@ -443,7 +700,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             smoothing_constraints = [smoothing_constraints[ifaultname] for ifaultname in faultnames]
             for ii, (fault, ipenalty_weight, ismoothing_constraints) in enumerate(zip(faults, penalty_weight, smoothing_constraints)):
                 st = self.fault_indexes[fault.name][0]
-                if fault.type == 'Fault':
+                adapter = self.adapters[fault.name]
+                if adapter.supports_smoothing():
                     if fault.patchType in ('rectangle'):
                         lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     else:
@@ -566,7 +824,15 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         opts = {'show_progress': False}
         try:
             ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, Aeq_prime, beq_prime, lb_prime, ub_prime, None, opts)
-        except:
+        except Exception as e:
+            warnings.warn(
+                f"Equality constraints caused solver failure "
+                f"({type(e).__name__}: {e}). "
+                f"Retrying without equality constraints. "
+                f"Check constraint matrix rank with validate_constraints().",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, None, None, lb_prime, ub_prime, None, opts)
         mpost_prime = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
         
@@ -649,13 +915,13 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if validate_constraints:
             validation = self.constraint_manager.validate_constraints()
             if not validation['valid']:
-                print("❌ Constraint validation failed:")
+                print("[X] Constraint validation failed:")
                 for error in validation['errors']:
                     print(f"   Error: {error}")
                 raise ValueError("Invalid constraints detected")
 
         if verbose:
-            print("\n🚀 Starting VCE with unified constraint management:")
+            print("\n[RUN] Starting VCE with unified constraint management:")
             self.constraint_manager.print_summary()
 
         # Ensure constraints are synced
@@ -715,7 +981,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
             for fault in faults:
                 Ns_st.append(Ns)
-                Ns += int(fault.slip.shape[0] * len(fault.slipdir))
+                adapter = self.adapters[fault.name]
+                Ns += adapter.get_n_source_params()
                 Ns_se.append(Ns)
 
             G_lap = np.zeros((Ns, Np))
@@ -733,8 +1000,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             for ii, fault in enumerate(faults):
                 st = self.fault_indexes[fault.name][0]
                 ismoothing_constraints = smoothing_constraints[fault.name]
+                adapter = self.adapters[fault.name]
 
-                if fault.type == 'Fault':
+                if adapter.supports_smoothing():
                     lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     from scipy.linalg import block_diag as blkdiag
                     lap_sd = blkdiag(lap, lap)
@@ -894,13 +1162,13 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if validate_constraints:
             validation = self.constraint_manager.validate_constraints()
             if not validation['valid']:
-                print("❌ Constraint validation failed:")
+                print("[X] Constraint validation failed:")
                 for error in validation['errors']:
                     print(f"   Error: {error}")
                 raise ValueError("Invalid constraints detected")
 
         if verbose:
-            print("\n🚀 Starting fnnls solver with unified constraint management:")
+            print("\n[RUN] Starting fnnls solver with unified constraint management:")
             self.constraint_manager.print_summary()
 
         # Ensure constraints are synced
@@ -922,7 +1190,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # build Laplace
         for fault in faults:
             Ns_st.append(Ns)
-            Ns += int(fault.slip.shape[0] * len(fault.slipdir))
+            adapter = self.adapters[fault.name]
+            Ns += adapter.get_n_source_params()
             Ns_se.append(Ns)
         G_lap = np.zeros((Ns, Np))
         d_lap = np.zeros((Ns, ))
@@ -949,7 +1218,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             smoothing_constraints = [smoothing_constraints[ifaultname] for ifaultname in faultnames]
             for ii, (fault, ipenalty_weight, ismoothing_constraints) in enumerate(zip(faults, penalty_weight, smoothing_constraints)):
                 st = self.fault_indexes[fault.name][0]
-                if fault.type == 'Fault':
+                adapter = self.adapters[fault.name]
+                if adapter.supports_smoothing():
                     if fault.patchType in ('rectangle'):
                         lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     else:
@@ -1032,6 +1302,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
     def distributem(self, verbose=False):
         '''
         After computing the m_post model, this routine distributes the m parameters to the faults.
+        Uses source adapters for type-safe parameter distribution.
 
         Kwargs:
             * verbose   : talk to me
@@ -1062,119 +1333,77 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 # Distribute simply
                 fault.distributem()
 
-            # Fault object
-            if fault.type == "Fault":
+            # Use adapter for Fault/Pressure/Sbarbot
+            elif fault.name in self.adapters:
+                adapter = self.adapters[fault.name]
 
-                # Affect the indexes
-                self.affectIndexParameters(fault)
+                # Affect the indexes (only for Fault type from CSI parent)
+                if adapter.source_type == 'Fault':
+                    self.affectIndexParameters(fault)
 
-                # put the slip values in slip
-                st = 0
-                if 's' in fault.slipdir:
-                    se = st + fault.slip.shape[0]
-                    fault.slip[:,0] = fault.mpost[st:se]
-                    st += fault.slip.shape[0]
-                if 'd' in fault.slipdir:
-                    se = st + fault.slip.shape[0]
-                    fault.slip[:,1] = fault.mpost[st:se]
-                    st += fault.slip.shape[0]
-                if 't' in fault.slipdir:
-                    se = st + fault.slip.shape[0]
-                    fault.slip[:,2] = fault.mpost[st:se]
-                    st += fault.slip.shape[0]
-                if 'c' in fault.slipdir:
-                    se = st + fault.slip.shape[0]
-                    fault.coupling = fault.mpost[st:se]
-                    st += fault.slip.shape[0]
+                # Distribute source parameters using adapter
+                n_source = adapter.get_n_source_params()
+                adapter.distribute_results(fault.mpost[:n_source])
+                st = n_source
 
-                # check
-                if hasattr(fault, 'NumberCustom'):
-                    fault.custom = {} # Initialize dictionnary
-                    # Get custom params for each dataset
+                # Handle custom parameters (any source with NumberCustom)
+                if hasattr(fault, 'NumberCustom') and fault.NumberCustom > 0:
+                    fault.custom = {}
                     for dset in fault.datanames:
                         if 'custom' in fault.G[dset].keys():
-                            nc = fault.G[dset]['custom'].shape[1] # Get number of param for this dset
+                            nc = fault.G[dset]['custom'].shape[1]
                             se = st + nc
                             fault.custom[dset] = fault.mpost[st:se]
                             st += nc
 
-            # Pressure object
-            elif fault.type == "Pressure":
+                # Get the polynomial/orbital/helmert values if they exist
+                if hasattr(fault, 'poly'):
+                    fault.polysol = {}
+                    fault.polysolindex = {}
+                    for dset in fault.datanames:
+                        if dset in fault.poly.keys():
+                            if (fault.poly[dset] is None):
+                                fault.polysol[dset] = None
+                            else:
 
-                st = 0
-                if fault.source in {"Mogi", "Yang"}:
-                    se = st + 1
-                    print(np.asscalar(fault.mpost[st:se]*fault.mu))
-                    fault.deltapressure = np.asscalar(fault.mpost[st:se]*fault.mu)
-                    st += 1
-                elif fault.source == "pCDM":
-                    se = st + 1
-                    fault.DVx = np.asscalar(fault.mpost[st:se]*fault.scale)
-                    st += 1
-                    se = st + 1
-                    fault.DVy = np.asscalar(fault.mpost[st:se]*fault.scale)
-                    st += 1
-                    se = st + 1
-                    fault.DVz = np.asscalar(fault.mpost[st:se]*fault.scale)
-                    st += 1
-                    print("Total potency scaled by", fault.scale)
-
-                    if fault.DVtot is None:
-                        fault.computeTotalpotency()
-                elif fault.source == "CDM":
-                    se = st + 1
-                    print(np.asscalar(fault.mpost[st:se]*fault.mu))
-                    fault.deltaopening = np.asscalar(fault.mpost[st:se])
-                    st += 1
-
-            # Get the polynomial/orbital/helmert values if they exist
-            if fault.type in ('Fault', 'Pressure'):
-                fault.polysol = {}
-                fault.polysolindex = {}
-                for dset in fault.datanames:
-                    if dset in fault.poly.keys():
-                        if (fault.poly[dset] is None):
-                            fault.polysol[dset] = None
-                        else:
-
-                            if (fault.poly[dset].__class__ is not str) and (fault.poly[dset].__class__ is not list):
-                                if (fault.poly[dset] > 0):
-                                    se = st + fault.poly[dset]
-                                    fault.polysol[dset] = fault.mpost[st:se]
-                                    fault.polysolindex[dset] = range(st,se)
-                                    st += fault.poly[dset]
-                            elif (fault.poly[dset].__class__ is str):
-                                if fault.poly[dset] == 'full':
-                                    nh = fault.helmert[dset]
+                                if (fault.poly[dset].__class__ is not str) and (fault.poly[dset].__class__ is not list):
+                                    if (fault.poly[dset] > 0):
+                                        se = st + fault.poly[dset]
+                                        fault.polysol[dset] = fault.mpost[st:se]
+                                        fault.polysolindex[dset] = range(st,se)
+                                        st += fault.poly[dset]
+                                elif (fault.poly[dset].__class__ is str):
+                                    if fault.poly[dset] == 'full':
+                                        nh = fault.helmert[dset]
+                                        se = st + nh
+                                        fault.polysol[dset] = fault.mpost[st:se]
+                                        fault.polysolindex[dset] = range(st,se)
+                                        st += nh
+                                    if fault.poly[dset] in ('strain', 'strainnorotation', 'strainonly', 'strainnotranslation', 'translation', 'translationrotation'):
+                                        nh = fault.strain[dset]
+                                        se = st + nh
+                                        fault.polysol[dset] = fault.mpost[st:se]
+                                        fault.polysolindex[dset] = range(st,se)
+                                        st += nh
+                                    # Added by kfhe, at 10/12/2021
+                                    if fault.poly[dset] == 'eulerrotation':
+                                        nh = fault.eulerrot[dset]
+                                        se = st + nh
+                                        fault.polysol[dset] = fault.mpost[st:se]
+                                        fault.polysolindex[dset] = range(st,se)
+                                        st += nh
+                                    if fault.poly[dset] == 'internalstrain':
+                                        nh = fault.intstrain[dset]
+                                        se = st + nh
+                                        fault.polysol[dset] = fault.mpost[st:se]
+                                        fault.polysolindex[dset] = range(st,se)
+                                        st += nh
+                                elif (fault.poly[dset].__class__ is list):
+                                    nh = fault.transformation[dset]
                                     se = st + nh
                                     fault.polysol[dset] = fault.mpost[st:se]
                                     fault.polysolindex[dset] = range(st,se)
                                     st += nh
-                                if fault.poly[dset] in ('strain', 'strainnorotation', 'strainonly', 'strainnotranslation', 'translation', 'translationrotation'):
-                                    nh = fault.strain[dset]
-                                    se = st + nh
-                                    fault.polysol[dset] = fault.mpost[st:se]
-                                    fault.polysolindex[dset] = range(st,se)
-                                    st += nh
-                                # Added by kfhe, at 10/12/2021
-                                if fault.poly[dset] == 'eulerrotation':
-                                    nh = fault.eulerrot[dset]
-                                    se = st + nh
-                                    fault.polysol[dset] = fault.mpost[st:se]
-                                    fault.polysolindex[dset] = range(st,se)
-                                    st += nh
-                                if fault.poly[dset] == 'internalstrain':
-                                    nh = fault.intstrain[dset]
-                                    se = st + nh
-                                    fault.polysol[dset] = fault.mpost[st:se]
-                                    fault.polysolindex[dset] = range(st,se)
-                                    st += nh
-                            elif (fault.poly[dset].__class__ is list):
-                                nh = fault.transformation[dset]
-                                se = st + nh
-                                fault.polysol[dset] = fault.mpost[st:se]
-                                fault.polysolindex[dset] = range(st,se)
-                                st += nh
 
         # All done
         return

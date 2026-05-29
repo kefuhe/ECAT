@@ -1,0 +1,4 @@
+# eqtools — colorblind-safe bright palette (Paul Tol)
+# Usage: PlotStyle.apply(['science', 'colors-bright'])
+# Ref: https://personal.sron.nl/~pault/
+axes.prop_cycle : cycler('color', ['4477AA', 'EE6677', '228833', 'CCBB44', '66CCEE', 'AA3377', 'BBBBBB'])

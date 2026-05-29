@@ -1,0 +1,10 @@
+# eqtools — scatter plot mode
+# Markers only, no connecting lines. 7 markers x 7 std-colors, fully cycling.
+# Usage: PlotStyle(['science', 'scatter'])
+#
+# Marker guide: o=circle  s=square  ^=triangle-up  v=triangle-down
+#               d=diamond  P=filled-plus  X=filled-x
+axes.prop_cycle : (cycler('marker', ['o', 's', '^', 'v', 'd', 'P', 'X']) + cycler('color', ['0C5DA5', '00B945', 'FF9500', 'FF2C00', '845B97', '474747', '9e9e9e']) + cycler('ls', [' ', ' ', ' ', ' ', ' ', ' ', ' ']))
+
+lines.markersize     : 4.0
+lines.linewidth      : 0.0

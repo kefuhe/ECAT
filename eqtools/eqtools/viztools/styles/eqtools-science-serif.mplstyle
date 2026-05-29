@@ -1,0 +1,72 @@
+# eqtools — science-serif style
+# Serif fonts, publication quality, no LaTeX required.
+# Fully overrides scienceplots when loaded after it.
+
+# ── Font ──────────────────────────────────────────────────────────────────────
+font.family                 : serif
+font.serif                  : Times New Roman, Times, DejaVu Serif, Bitstream Vera Serif, Computer Modern Roman, Palatino, Georgia, serif
+font.size                   : 8.0
+axes.labelsize              : 8.0
+xtick.labelsize             : 7.0
+ytick.labelsize             : 7.0
+legend.fontsize             : 7.0
+figure.titlesize            : 9.0
+
+# ── Math / TeX ────────────────────────────────────────────────────────────────
+text.usetex                 : False
+mathtext.fontset            : stix
+axes.formatter.use_mathtext : False
+axes.unicode_minus          : False
+
+# ── PDF font embedding ────────────────────────────────────────────────────────
+pdf.fonttype                : 42
+ps.fonttype                 : 42
+
+# ── Color cycle (scienceplots std-colors, 7-color professional palette) ───────
+axes.prop_cycle : cycler('color', ['0C5DA5', '00B945', 'FF9500', 'FF2C00', '845B97', '474747', '9e9e9e'])
+
+# ── Axes ──────────────────────────────────────────────────────────────────────
+axes.linewidth              : 0.8
+axes.spines.top             : True
+axes.spines.right           : True
+axes.axisbelow              : True
+
+# ── Lines & markers ───────────────────────────────────────────────────────────
+lines.linewidth             : 1.0
+lines.markersize            : 3.5
+
+# ── Ticks ─────────────────────────────────────────────────────────────────────
+xtick.direction             : in
+ytick.direction             : in
+xtick.top                   : True
+ytick.right                 : True
+xtick.major.size            : 3.5
+xtick.minor.size            : 2.0
+xtick.major.width           : 0.8
+xtick.minor.width           : 0.6
+ytick.major.size            : 3.5
+ytick.minor.size            : 2.0
+ytick.major.width           : 0.8
+ytick.minor.width           : 0.6
+xtick.minor.visible         : True
+ytick.minor.visible         : True
+
+# ── Grid ──────────────────────────────────────────────────────────────────────
+axes.grid                   : False
+grid.linewidth              : 0.5
+grid.color                  : 0.85
+grid.linestyle              : -
+grid.alpha                  : 1.0
+
+# ── Legend ────────────────────────────────────────────────────────────────────
+legend.frameon              : False
+legend.numpoints            : 1
+legend.scatterpoints        : 1
+legend.handlelength         : 1.5
+legend.handleheight         : 0.5
+
+# ── Figure & saving ───────────────────────────────────────────────────────────
+figure.dpi                  : 150
+savefig.dpi                 : 300
+savefig.bbox                : tight
+savefig.pad_inches          : 0.05

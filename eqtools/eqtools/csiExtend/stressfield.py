@@ -1223,7 +1223,7 @@ class stressfield(stressfield_base):
         
         def get_stiffness(k_par, k_perp, k_abs):
             """Compute parallel and perpendicular stiffness."""
-            # Parallel stiffness: K_par = -0.5 * μ * [α*k_par² + k_perp²] / |k|
+            # Parallel stiffness: K_par = -0.5 * μ * [α*k_par^2 + k_perp^2] / |k|
             term1 = alpha * (k_par**2) + (k_perp**2)
             K_par = -0.5 * mu * term1 / k_abs
             

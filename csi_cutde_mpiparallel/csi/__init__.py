@@ -4,6 +4,16 @@ Init file for StaticInv
 Written by R. Jolivet, April 2013.
 '''
 
+# GF options registry (must be before Fault import to avoid circular deps)
+from .gf_options import (
+    VALID_GF_METHODS,
+    GF_OPTIONS_REGISTRY,
+    resolve_gf_options,
+    describe_gf_options,
+)
+from .edgrn_edcmp.edcmp_backends import EdcmpOptions
+from .psgrn_pscmp.pscmp_options import PscmpOptions
+
 # Base class
 from .SourceInv import SourceInv
 
@@ -35,6 +45,9 @@ from .Yang import Yang
 from .pCDM import pCDM
 from .CDM import CDM
 
+##Strain volumes
+from .Sbarbot import Sbarbot
+
 ##Transformation
 from .transformation import transformation
 
@@ -51,6 +64,8 @@ from .insartimeseries import insartimeseries
 from .gpstimeseries import gpstimeseries
 from .timeseries import timeseries
 from .surfaceslip import surfaceslip
+from .crossfaultoffset import crossfaultoffset
+from .leveling import leveling
 
 ## Green's functions
 from . import okadafull
@@ -58,6 +73,7 @@ from . import mogifull
 from . import yangfull
 from . import pCDMfull
 from . import CDMfull
+from . import sbarbotfull
 
 ## Uncertainties in the Green's functions
 from .uncertainties import uncertainties

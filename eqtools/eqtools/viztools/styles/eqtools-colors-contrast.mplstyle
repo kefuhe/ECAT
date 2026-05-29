@@ -1,0 +1,3 @@
+# eqtools — high-contrast 3-color palette (colorblind + B&W print safe)
+# Usage: PlotStyle.apply(['science', 'colors-contrast'])
+axes.prop_cycle : cycler('color', ['004488', 'DDAA33', 'BB5566'])

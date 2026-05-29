@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 降采样 InSAR `.txt/.rsp/.cov` 如何读入 | [Wushi：InSAR-only 非线性几何反演](../casebook/wushi_nonlinear_geometry.md), [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md) | [InSAR 降采样](02_insar_downsampling.md#后续反演中读取) |
 | 外部 ASCII InSAR 点位格式如何读入 | [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md) | [SAR Reader 参考](../reference/sar_reader.md#外部-ascii-点位数据) |
-| 原始 GAMMA/GeoTIFF 产品如何进入降采样 | [InSAR 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#降采样配置) |
+| 原始 GAMMA/GeoTIFF/GMTSAR/HyP3/offset 产品如何进入降采样 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#降采样配置) |
 
 ## InSAR 数据入口
 
@@ -87,6 +87,7 @@ sar.read_observation(downsample=1)
 | GAMMA range offset | `gamma` | `range_offset` |
 | GAMMA azimuth offset | `gamma` | `azimuth_offset` |
 | GAMMA GeoTIFF 相位/位移 | `gamma_tiff` | 对应观测模式 |
+| GMTSAR-style direct-projection GRD/NetCDF + ENU projection | `gmtsar` | `phase_los`、`los_displacement`、`range_offset` 或 `azimuth_offset` |
 | HyP3 GeoTIFF | `hyp3` | `unwrapped_phase` 或 `los_displacement` |
 
 reader 会把产品转换到 CSI 使用的投影形式：

@@ -77,6 +77,12 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                     'east': d.east.copy() if d.east is not None else None,
                     'north': d.north.copy() if d.north is not None else None
                 })
+            elif d.dtype == 'crossfaultoffset':
+                self.geodata_original_vel.append({
+                    'fault_parallel': d.fault_parallel.copy() if d.fault_parallel is not None else None,
+                    'fault_perpendicular': d.fault_perpendicular.copy() if d.fault_perpendicular is not None else None,
+                    'fault_vertical': d.fault_vertical.copy() if d.fault_vertical is not None else None
+                })
             else:
                 self.geodata_original_vel.append(d.vel.copy() if hasattr(d, 'vel') else None)
 
@@ -218,6 +224,13 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                 data.east = data.synth_east.copy()
             if hasattr(data, 'synth_north'): 
                 data.north = data.synth_north.copy()
+        elif data.dtype == 'crossfaultoffset':
+            if hasattr(data, 'synth_parallel') and data.synth_parallel is not None:
+                data.fault_parallel = data.synth_parallel.copy()
+            if hasattr(data, 'synth_perpendicular') and data.synth_perpendicular is not None:
+                data.fault_perpendicular = data.synth_perpendicular.copy()
+            if hasattr(data, 'synth_vertical') and data.synth_vertical is not None:
+                data.fault_vertical = data.synth_vertical.copy()
         else:
             if hasattr(data, 'synth'):
                 data.vel = data.synth.copy()
@@ -330,6 +343,12 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                         outDir=str(out_path), 
                         triangular=True
                     )
+            elif data.dtype in ('leveling', 'crossfaultoffset'):
+                data.write2file(
+                    f'{data.name}_{suffix}.txt',
+                    outDir=str(out_path),
+                    data='data'
+                )
             else:
                 data.writeDecim2file(
                     f'{data.name}_{suffix}.txt', 
@@ -430,6 +449,22 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                 # Opticorr is complex, typically has east/north two figures
                 logger.info(f"    Skipping opticorr data '{data.name}' (not yet implemented)")
                 return
+
+            # Leveling data
+            elif data.dtype == 'leveling':
+                if hasattr(data, 'plot'):
+                    data.plot(show=False)
+                else:
+                    logger.info(f"    Skipping leveling data '{data.name}' (no plot method)")
+                    return
+
+            # Cross-fault offset data
+            elif data.dtype == 'crossfaultoffset':
+                if hasattr(data, 'plot'):
+                    data.plot(show=False)
+                else:
+                    logger.info(f"    Skipping crossfaultoffset data '{data.name}' (no plot method)")
+                    return
 
             if save_dir and hasattr(data, 'fig'):
                 figname = save_dir / f"input_data_{data.name}"
@@ -634,7 +669,8 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
         # 1. Prepare Data
         plot_data = []
         for data in self.geodata:
-            if data.dtype == 'opticorr': continue 
+            if data.dtype == 'opticorr': continue
+            if data.dtype == 'crossfaultoffset': continue
 
             d_obs = data.vel.copy() if hasattr(data, 'vel') else None
             if d_obs is None: continue

@@ -13,6 +13,7 @@ from .euler_inequality_constraints import (
     apply_euler_inequality_constraints,
     validate_euler_inequality_config)
 from ..plottools import sci_plot_style
+from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 
 class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
     def __init__(self, name, faults_list, geodata=None, config='default_config_BLSE.yml', encoding='utf-8',
@@ -113,7 +114,7 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         Nd = len(datanames)
         faultnames = self.faultnames
         for fault_name, fault_config in self.config.faults.items():
-            if fault_name != 'default':
+            if fault_name != 'defaults':
                 # Update Green's functions
                 dataFaults = self.config.dataFaults
                 # Check if dataFaults is a list of lists, each equal to faultnames
@@ -198,41 +199,55 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         data_weight = data_weight[data_indices]
 
         # Handle penalty weights
-        n_faults = len(self.config.alpha['update'])
-        if self.config.alpha['mode'] == 'single':
-            fault_names = ['All_faults']
-        elif self.config.alpha['mode'] == 'individual':
-            fault_names = [fault.name for fault in self.faults]
-        elif self.config.alpha['mode'] == 'grouped':
-            fault_names = [f'Event_{i}' for i in range(n_faults)]
-        fault_indices = self.config.alpha['faults_index']
-
-        if penalty_weight is None:
-            if alpha is None:
-                alpha = self.config.alpha['initial_value']
-                # print('alpha is from config:', alpha)
-            else:
-                alpha = parse_initial_values({'initial_value': alpha},
-                                                n_datasets=n_faults,
-                                                param_name='initial_value',  # initial_value or 'values'
-                                                dataset_names=fault_names,
-                                                print_name='alpha')
-            alpha = np.array(alpha)
-            if penalty_log_scaled is None:
-                penalty_log_scaled = self.config.alpha['log_scaled']
-            if penalty_log_scaled:
-                alpha = np.power(10, alpha)
-            penalty_weight = 1.0 / alpha
+        # If alpha smoothing is disabled, use uniform weight (no regularization penalty)
+        if not self.config.alpha_enabled:
+            penalty_weight = np.ones(len(self.faults))
+            self.current_penalty_weight = penalty_weight
+            # Alpha disabled: use empty smoothing matrix, ignore smoothing_constraints
+            self.combine_GL_poly(penalty_weight=penalty_weight)
+            self.ConstrainedLeastSquareSoln(penalty_weight=penalty_weight,
+                                            smoothing_matrix=self.GL_combined_poly,
+                                            data_weight=data_weight,
+                                            des_enabled=des_enabled,
+                                            verbose=True)
+            self.distributem()
+            return
         else:
-            penalty_weight = parse_initial_values({'initial_value': penalty_weight},
-                                                  n_datasets=n_faults,
-                                                  param_name='initial_value',  # initial_value or 'values'
-                                                  dataset_names=fault_names,
-                                                  print_name='penalty_weight')
-            penalty_weight = np.array(penalty_weight)
-        penalty_weight = penalty_weight[fault_indices]
+            n_faults = len(self.config.alpha['update'])
+            if self.config.alpha['mode'] == 'single':
+                fault_names = ['All_faults']
+            elif self.config.alpha['mode'] == 'individual':
+                fault_names = [fault.name for fault in self.faults]
+            elif self.config.alpha['mode'] == 'grouped':
+                fault_names = [f'Event_{i}' for i in range(n_faults)]
+            fault_indices = self.config.alpha['fault_param_indices']
 
-        self.current_penalty_weight = penalty_weight
+            if penalty_weight is None:
+                if alpha is None:
+                    alpha = self.config.alpha['initial_value']
+                    # print('alpha is from config:', alpha)
+                else:
+                    alpha = parse_initial_values({'initial_value': alpha},
+                                                    n_datasets=n_faults,
+                                                    param_name='initial_value',  # initial_value or 'values'
+                                                    dataset_names=fault_names,
+                                                    print_name='alpha')
+                alpha = np.array(alpha)
+                if penalty_log_scaled is None:
+                    penalty_log_scaled = self.config.alpha['log_scaled']
+                if penalty_log_scaled:
+                    alpha = np.power(10, alpha)
+                penalty_weight = 1.0 / alpha
+            else:
+                penalty_weight = parse_initial_values({'initial_value': penalty_weight},
+                                                      n_datasets=n_faults,
+                                                      param_name='initial_value',  # initial_value or 'values'
+                                                      dataset_names=fault_names,
+                                                      print_name='penalty_weight')
+                penalty_weight = np.array(penalty_weight)
+            penalty_weight = penalty_weight[fault_indices]
+
+            self.current_penalty_weight = penalty_weight
         # Handle smoothing constraints
         if smoothing_constraints is not None:
             if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
@@ -321,31 +336,45 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             sigma_values = np.array(sigma_values)**2
         # print(sigma_mode, sigma_groups, sigma_update, sigma_values)
 
-        alphaFaults = self.config.alphaFaults
-        if len(alphaFaults) == 1:
+        # Check if alpha (smoothing) is disabled
+        alpha_disabled = not self.config.alpha_enabled
+
+        if alpha_disabled:
+            # Sigma-only VCE: no smoothing estimation, only data weighting
             smooth_mode = 'single'
-            smooth_groups = {'Event_all': alphaFaults[0]}
-            smooth_values = [self.config.alpha['initial_value'][0]]
-            smooth_update = [True]
+            smooth_groups = {'no_smooth': self.faultnames}
+            smooth_values = [1.0]
+            smooth_update = [False]  # Never update alpha — nothing to estimate
         else:
-            smooth_mode = 'grouped'
-            smooth_groups = {f'Event_{i}': alphaFaults[i] for i in range(len(alphaFaults))}
-            smooth_values = self.config.alpha['initial_value']
-            smooth_update = self.config.alpha['update']
-        if self.config.alpha['log_scaled']:
-            smooth_values = np.power(10, smooth_values)**2
-        else:
-            smooth_values = np.array(smooth_values)**2
+            alphaFaults = self.config.alphaFaults
+            if len(alphaFaults) == 1:
+                smooth_mode = 'single'
+                smooth_groups = {'Event_all': alphaFaults[0]}
+                smooth_values = [self.config.alpha['initial_value'][0]]
+                smooth_update = [True]
+            else:
+                smooth_mode = 'grouped'
+                smooth_groups = {f'Event_{i}': alphaFaults[i] for i in range(len(alphaFaults))}
+                smooth_values = self.config.alpha['initial_value']
+                smooth_update = self.config.alpha['update']
+            if self.config.alpha['log_scaled']:
+                smooth_values = np.power(10, smooth_values)**2
+            else:
+                smooth_values = np.array(smooth_values)**2
         # print(smooth_mode, smooth_groups, smooth_update, smooth_values)
+        if des_enabled is None:
+            des_enabled = getattr(self, 'des_enabled', False)
+
         if verbose:
             print("="*70)
             print("Starting Simple VCE for Multi-Fault Inversion")
-            print("Automatically determining optimal regularization weights...")
+            if alpha_disabled:
+                print("Alpha smoothing is DISABLED — running sigma-only VCE (data weighting only).")
+            else:
+                print("Automatically determining optimal regularization weights...")
             print(f"Number of faults: {len(self.faults)}")
             print(f"Data variance mode: {sigma_mode}")
             print(f"Smoothing variance mode: {smooth_mode}")
-            if des_enabled is None:
-                des_enabled = getattr(self, 'des_enabled', False)
             print(f"DES enabled: {des_enabled}")
             print("="*70)
     
@@ -357,8 +386,12 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             if np.any(np.isnan(self.lb)) or np.any(np.isnan(self.ub)):
                 raise ValueError("Some bounds are not set (NaN values found). Please set all bounds first.")
     
-        # Handle smoothing constraints
-        if smoothing_constraints is not None:
+        # Handle smoothing constraints (ignored when alpha is disabled)
+        if alpha_disabled:
+            smoothing_constraints = None
+            if verbose:
+                print("Alpha disabled — smoothing_constraints ignored, using empty smoothing matrix.")
+        elif smoothing_constraints is not None:
             if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
                 smoothing_constraints = {fault_name: smoothing_constraints for fault_name in self.faultnames}
             elif isinstance(smoothing_constraints, dict):
@@ -424,12 +457,17 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             )
     
         self.distributem()
-        penalty_weight = 1.0/np.sqrt(vce_result.get('var_alpha', None))
-        if isinstance(penalty_weight, (float,)):
-            penalty_weight = np.array([penalty_weight])
+
+        # Post-process penalty weights (only meaningful when smoothing is enabled)
+        if alpha_disabled:
+            self.current_penalty_weight = np.zeros(len(self.faults))
         else:
-            penalty_weight = np.array(penalty_weight)
-        self.current_penalty_weight = penalty_weight[self.config.alpha['faults_index']]
+            var_alpha = vce_result.get('var_alpha', None)
+            if isinstance(var_alpha, dict):
+                penalty_weight = np.array([1.0 / np.sqrt(v) for v in var_alpha.values()])
+            else:
+                penalty_weight = np.array([1.0 / np.sqrt(var_alpha)])
+            self.current_penalty_weight = penalty_weight[self.config.alpha['fault_param_indices']]
     
         if verbose:
             print("\n" + "="*70)
@@ -444,13 +482,14 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             else:
                 print(f"  Data variance: {vce_result['var_d']:.6e}")
     
-            if isinstance(vce_result['var_alpha'], dict):
-                for group, var in vce_result['var_alpha'].items():
-                    print(f"  Regularization variance [{group}]: {var:.6e}")
+            if not alpha_disabled:
+                if isinstance(vce_result['var_alpha'], dict):
+                    for group, var in vce_result['var_alpha'].items():
+                        print(f"  Regularization variance [{group}]: {var:.6e}")
+                else:
+                    print(f"  Regularization variance: {vce_result['var_alpha']:.6e}")
             else:
-                print(f"  Regularization variance: {vce_result['var_alpha']:.6e}")
-    
-            # print(f"\nEffective penalty weights: {[f'{w:.4e}' for w in self.vce_penalty_weights]}")
+                print("  Regularization variance: N/A (smoothing disabled)")
     
             print("\nFinal Model Statistics:")
             self.returnModel(print_stat=True)
@@ -492,8 +531,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
             vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
             self.combine_GL_poly()
-            roughness = np.dot(self.GL_combined_poly, self.mpost)
-            roughness = np.sqrt(np.mean(roughness**2))
+            roughness_vec = np.dot(self.GL_combined_poly, self.mpost)
+            roughness = np.sqrt(np.mean(roughness_vec**2)) if roughness_vec.size > 0 else 0.0
             result = {
                 'Penalty_weight': ipenalty,
                 'Roughness': roughness,
@@ -597,6 +636,10 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     ifault.d[data.name] = np.hstack((data.east.T.flatten(), data.north.T.flatten()))
                     if vert:
                         ifault.d[data.name] = np.hstack((ifault.d[data.name], np.zeros_like(data.east.T.ravel())))
+                elif data.dtype == 'leveling':
+                    ifault.d[data.name] = data.vel
+                elif data.dtype == 'crossfaultoffset':
+                    ifault.d[data.name] = data.data_vector
 
         for ifault in faults:
             ifault.assembled(geodata)
@@ -619,8 +662,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
         rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
         vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
         self.combine_GL_poly()
-        roughness = np.dot(self.GL_combined_poly, self.mpost)
-        roughness = np.sqrt(np.mean(roughness**2))
+        roughness_vec = np.dot(self.GL_combined_poly, self.mpost)
+        roughness = np.sqrt(np.mean(roughness_vec**2)) if roughness_vec.size > 0 else 0.0
         self.combine_GL_poly(penalty_weight=self.current_penalty_weight)
         if print_stat:
             # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
@@ -666,25 +709,44 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             else:
                 raise ValueError("penalty_weight should be a scalar or a list of scalars.")
         else:
-            alpha = np.array(self.config.alpha['initial_value'])
-            fault_index = self.config.alpha['faults_index']
-            alpha = alpha[fault_index]
-            assert len(alpha) == len(self.faults), "The length of alpha should be equal to the number of faults."
-            if self.config.alpha['log_scaled']:
-                penalty_weight = 1.0 / np.power(10, alpha)
+            # When alpha is disabled, use uniform weight=1.0 (no regularization penalty)
+            if not self.config.alpha_enabled:
+                penalty_weight = np.ones(len(self.faults))
             else:
-                penalty_weight = 1.0 / alpha
+                alpha = np.array(self.config.alpha['initial_value'])
+                fault_index = self.config.alpha['fault_param_indices']
+                alpha = alpha[fault_index]
+                assert len(alpha) == len(self.faults), "The length of alpha should be equal to the number of faults."
+                if self.config.alpha['log_scaled']:
+                    penalty_weight = 1.0 / np.power(10, alpha)
+                else:
+                    penalty_weight = 1.0 / alpha
+
+        # When alpha is disabled, skip all GL blocks to prevent smoothing
+        alpha_disabled = not self.config.alpha_enabled
 
         if GL_combined is None:
             GL_combined_poly = []
             for fault, ipenalty_weight in zip(self.faults, penalty_weight):
-                poly_positions = self.poly_positions.get(fault.name, (0, 0))
-                # Create a zero matrix with the correct size
-                combined = np.zeros((fault.GL.shape[0], fault.GL.shape[1] + poly_positions[1] - poly_positions[0]))
-                # Copy the values from the original matrix to the combined matrix at the correct positions
-                combined[:, :fault.GL.shape[1]] = fault.GL.toarray() * ipenalty_weight
-                GL_combined_poly.append(combined)
-            self.GL_combined_poly = scipy.linalg.block_diag(*GL_combined_poly)
+                has_gl = hasattr(fault, 'GL') and fault.GL is not None
+                if has_gl and not alpha_disabled:
+                    poly_positions = self.poly_positions.get(fault.name, (0, 0))
+                    # Create a zero matrix with the correct size
+                    combined = np.zeros((fault.GL.shape[0], fault.GL.shape[1] + poly_positions[1] - poly_positions[0]))
+                    # Copy the values from the original matrix to the combined matrix at the correct positions
+                    combined[:, :fault.GL.shape[1]] = fault.GL.toarray() * ipenalty_weight
+                    GL_combined_poly.append(combined)
+                else:
+                    # Sources without smoothing (Pressure/Sbarbot): zero-row placeholder
+                    slip_st, slip_end = self.slip_positions.get(fault.name, (0, 0))
+                    poly_st, poly_end = self.poly_positions.get(fault.name, (0, 0))
+                    n_params = (slip_end - slip_st) + (poly_end - poly_st)
+                    if n_params > 0:
+                        GL_combined_poly.append(np.zeros((0, n_params)))
+            if GL_combined_poly:
+                self.GL_combined_poly = scipy.linalg.block_diag(*GL_combined_poly)
+            else:
+                self.GL_combined_poly = np.zeros((0, 0))
     
         return self.GL_combined_poly
 
@@ -761,6 +823,8 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
             faults = self.faults
             cogps_vertical_list = []
             cosar_list = []
+            coleveling_list = []
+            cocrossfault_list = []
             datas = self.config.geodata.get('data', [])
             verticals = self.config.geodata.get('verticals', [])
             for data, vertical in zip(datas, verticals):
@@ -768,6 +832,10 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                     cogps_vertical_list.append([data, vertical])
                 elif data.dtype == 'insar':
                     cosar_list.append(data)
+                elif data.dtype == 'leveling':
+                    coleveling_list.append(data)
+                elif data.dtype == 'crossfaultoffset':
+                    cocrossfault_list.append(data)
 
             # Plot GPS data
             for fault in faults:
@@ -824,6 +892,28 @@ class BoundLSEMultiFaultsInversion(MyMultiFaultsInversion):
                                                 figsize=sar_figsize,
                                                 show=True
                                             )
+
+            # Build synthetics and save/plot leveling data
+            for colev in coleveling_list:
+                colev.buildsynth(faults, vertical=True, poly=data_poly)
+            if plot_data and coleveling_list:
+                out_modeling_dir = pathlib.Path('Modeling')
+                out_modeling_dir.mkdir(parents=True, exist_ok=True)
+                for colev in coleveling_list:
+                    for itype in ['data', 'synth']:
+                        colev.write2file(f'{colev.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
+                    _plot_leveling_fit(colev, save_dir=out_modeling_dir, file_type=file_type)
+            
+            # Build synthetics and save/plot cross-fault offset data
+            for cocf in cocrossfault_list:
+                cocf.buildsynth(faults, poly=data_poly)
+            if plot_data and cocrossfault_list:
+                out_modeling_dir = pathlib.Path('Modeling')
+                out_modeling_dir.mkdir(parents=True, exist_ok=True)
+                for cocf in cocrossfault_list:
+                    for itype in ['data', 'synth']:
+                        cocf.write2file(f'{cocf.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
+                    _plot_crossfaultoffset_fit(cocf, save_dir=out_modeling_dir, file_type=file_type)
 
     def calculate_tectonic_loading_rate(self, fault_name, euler_params1=None, euler_params2=None):
         """

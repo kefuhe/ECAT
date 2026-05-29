@@ -3580,7 +3580,7 @@ class gps(SourceInv):
         # All done
         return datname,filename
 
-    def write2file(self, namefile=None, data='data', outDir='./'):
+    def write2file(self, namefile=None, data='data', outDir='./', write_header=True):
         '''
         Write the data to a file. If namefile is None, then the output file will be in the form outDir/self.name.dat
 
@@ -3588,6 +3588,7 @@ class gps(SourceInv):
             * namefile  : Name of the output file.
             * data      : data, synth, strain, transformation.
             * outDir    : Output directory
+            * write_header : write a header line as the first line (default: True)
 
         Returns:
             * None
@@ -3599,19 +3600,16 @@ class gps(SourceInv):
             for a in self.name.split():
                 filename = filename+a+'_'
             filename = outDir+'/'+filename+data+'.dat'
-        else: 
+        else:
             filename = outDir+'/'+namefile
-        
-        if self.verbose:        
+
+        if self.verbose:
             print ("Write {} set {} to file {}".format(data, self.name, filename))
 
         # open the file
         fout = open(filename,'w')
 
-        # write a header
-        fout.write('# Name lon lat v_east v_north v_up e_east e_north e_up \n')
-
-        # Get the data 
+        # Get the data
         if data == 'data':
             z = self.vel_enu
         elif data == 'synth':
@@ -3629,17 +3627,25 @@ class gps(SourceInv):
         z = z.squeeze()
         self.err_enu = self.err_enu.squeeze()
 
+        # write a header
+        if write_header:
+            header = ['name', 'lon', 'lat',
+                      '{}_east'.format('v'), '{}_north'.format('v'), '{}_up'.format('v'),
+                      'e_east', 'e_north', 'e_up']
+            fout.write('# ' + ' '.join(header) + '\n')
+
         # Loop over stations
         for i in range(len(self.station)):
-            fout.write('{} {} {} {} {} {} {} {} {} \n'.format(self.station[i], self.lon[i], self.lat[i], 
+            fout.write('{} {} {} {} {} {} {} {} {} \n'.format(self.station[i], self.lon[i], self.lat[i],
                                                         z[i,0], z[i,1], z[i,2],
                                                         self.err_enu[i,0], self.err_enu[i,1], self.err_enu[i,2]))
-        
+
         # Close file
         fout.close()
 
-        # All done 
+        # All done
         return
+
 
     def getRMS(self, vertical=True):
         '''

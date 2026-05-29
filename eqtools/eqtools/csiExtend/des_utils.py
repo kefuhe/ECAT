@@ -635,10 +635,10 @@ def apply_des_transformation(G, fault_indices_config, D=None,
 
 def transform_inequality_constraints(A_ineq, b_ineq, scale_factors, fault_indices):
     """
-    Transform inequality constraints As ≤ b for DES scaling.
+    Transform inequality constraints As <= b for DES scaling.
     
     For fault slip parameters, the constraint becomes:
-    A'_prime * s'_fault ≤ b where A'_prime = A * scale_factors
+    A'_prime * s'_fault <= b where A'_prime = A * scale_factors
 
     Parameters:
     -----------

@@ -92,24 +92,63 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
 
         # Validate the perturbation methods defined in the raw YAML configuration
         self._validate_perturbation_config()
+        self._normalize_mesh_config()
 
         if self.parallel_rank is not None and self.parallel_rank == 0:
             self.export_config()
 
     def _process_bayesian_specific_config(self):
         """Process Bayesian-specific configuration settings."""
-        # Set geometry parameters for faults with shared information
+        from .config_utils import parse_alpha_config, parse_alpha_faults
+        # Set geometry / mesh parameters for followers that share a master's geometry.
+        # Only copy geometry config and mesh-related method_parameters — NOT
+        # slip, poly, or other fault-specific settings.
         for ifault in self.faults_list:
-            if hasattr(ifault, 'use_shared_info') and ifault.use_shared_info:
+            if getattr(ifault, 'role', 'standalone') == 'follower':
+                master_name = ifault.geometry_master
+                if master_name is None or master_name not in self.faults:
+                    raise ValueError(
+                        f"Follower fault '{ifault.name}' has no valid geometry_master "
+                        f"(got {master_name!r}). Ensure copy_with_shared_info was used."
+                    )
+                master_cfg = self.faults[master_name]
+                # Copy geometry config from master, mark as follower
                 self.faults[ifault.name]['geometry'] = {
-                    'update': True,
-                    'sample_positions': [0, 0]
+                    **master_cfg['geometry'],
+                    'follows': master_name,
                 }
+                # Copy mesh-related method_parameters from master
+                follower_mp = self.faults[ifault.name].setdefault('method_parameters', {})
+                master_mp = master_cfg.get('method_parameters', {})
+                for key in ('update_fault_geometry', 'update_mesh'):
+                    if key in master_mp:
+                        follower_mp[key] = master_mp[key]
+
+        # Apply densification config from YAML to faults
+        for ifault in self.faults_list:
+            fault_cfg = self.faults.get(ifault.name, {})
+            densification = fault_cfg.get('geometry', {}).get('densification', None)
+            if densification is not None:
+                if getattr(ifault, 'geometry_ref', None) is not None:
+                    ifault.set_densification(**densification)
+                else:
+                    ifault._pending_densification = densification
 
         # Alpha configuration processing
         if not self.alpha['enabled']:
-            self.alpha['update'] = False
-            self.alpha['initial_value'] = 0.0
+            self.alpha['update'] = [False]
+            self.alpha['mode'] = 'single'
+            self.alpha['initial_value'] = [0.0]
+            self.alpha['log_scaled'] = True
+            fault_names = [f.name for f in self.faults_list]
+            smoothing_faultnames = getattr(self, '_smoothing_faultnames', None)
+            self.alpha['faults'] = parse_alpha_faults(
+                self.alpha['faults'], fault_names,
+                smoothing_faultnames=smoothing_faultnames)
+            # fault_param_indices is set by parse_alpha_config below
+            self.alpha = parse_alpha_config(
+                self.alpha, faultnames=fault_names,
+                smoothing_faultnames=smoothing_faultnames)
 
         # Force set sampling mode
         if self.bayesian_sampling_mode == 'SMC_F_J':
@@ -216,6 +255,161 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             if self.verbose:
                 logger.info(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
 
+    def _normalize_mesh_config(self):
+        """
+        Validate and normalize mesh-related config for Bayesian inversion.
+
+        Rules:
+        1. geometry.update=false + explicit update_mesh → warn, skip rest
+        2. Validate update_fault_geometry kwargs against perturb method's forbidden
+        3. Always validate update_mesh forbidden + spelling if the section exists
+        4. mesh_updated=True + explicit update_mesh → warn (ignored at runtime)
+        5. mesh_updated=False + explicit unregistered method → ValueError
+        6. mesh_updated=False + inherited/missing unregistered → try get_mesh_params()
+        7. Auto-filled update_mesh also gets forbidden + spelling check
+        """
+        import warnings
+        from .. import mesh_registry as _mesh_registry
+        from ..bayesian_perturbation_base import PerturbationRegistry
+
+        if not hasattr(self, 'faults') or not self.faults:
+            return
+
+        fault_instance_map = {f.name: f for f in self.multifaults.faults}
+
+        for fault_name, fault_config in self.faults.items():
+            if fault_name == 'defaults':
+                continue
+            if not isinstance(fault_config, dict):
+                continue
+
+            geom_config = fault_config.get('geometry', {})
+            method_params = fault_config.setdefault('method_parameters', {})
+            origin = fault_config.get('_method_params_origin', {})
+
+            # Rule 1: geometry.update=false — update_mesh won't be called
+            if not geom_config.get('update', False):
+                if origin.get('update_mesh') == 'explicit':
+                    warnings.warn(
+                        f"[{fault_name}] geometry.update=false but update_mesh is "
+                        f"explicitly configured; it will not be called.",
+                        stacklevel=2,
+                    )
+                continue
+
+            fault_instance = fault_instance_map.get(fault_name)
+            if fault_instance is None:
+                continue
+
+            # --- update_fault_geometry forbidden check ---
+            geom_method_params = method_params.get('update_fault_geometry', {})
+            perturb_method = geom_method_params.get('method')
+            perturb_meta = None
+            if perturb_method:
+                perturb_meta = PerturbationRegistry.get_meta(
+                    fault_instance, perturb_method
+                )
+                if perturb_meta and perturb_meta.get('forbidden'):
+                    for param, rule in perturb_meta['forbidden'].items():
+                        value = geom_method_params.get(param)
+                        self._check_forbidden(
+                            fault_name, 'update_fault_geometry', param, value, rule
+                        )
+
+            mesh_updated_flag = (
+                perturb_meta['flags']['mesh'] if perturb_meta else False
+            )
+
+            mesh_config = method_params.get('update_mesh', {})
+            mesh_method = mesh_config.get('method') if isinstance(mesh_config, dict) else None
+            mesh_origin = origin.get('update_mesh')
+
+            # --- Always validate existing update_mesh forbidden + spelling ---
+            if mesh_method and _mesh_registry.is_registered(mesh_method):
+                self._validate_mesh_section(
+                    fault_name, mesh_config, mesh_method, _mesh_registry
+                )
+
+            # --- mesh_updated=True: warn if explicit, then done ---
+            if mesh_updated_flag:
+                if mesh_method and mesh_origin == 'explicit':
+                    warnings.warn(
+                        f"[{fault_name}] perturbation method '{perturb_method}' already "
+                        f"updates mesh internally; explicit update_mesh will be ignored.",
+                        stacklevel=2,
+                    )
+                continue
+
+            # --- mesh_updated=False: need a valid update_mesh ---
+            if mesh_method and _mesh_registry.is_registered(mesh_method):
+                continue
+
+            # Method missing or unregistered
+            if mesh_method and mesh_origin == 'explicit':
+                raise ValueError(
+                    f"[{fault_name}] update_mesh.method='{mesh_method}' is not "
+                    f"registered in mesh_registry. Check spelling."
+                )
+
+            # inherited/missing → try auto-fill from get_mesh_params()
+            auto_params = (
+                fault_instance.get_mesh_params()
+                if hasattr(fault_instance, 'get_mesh_params')
+                else None
+            )
+            if not auto_params:
+                raise ValueError(
+                    f"[{fault_name}] mesh_updated=False but no valid "
+                    f"update_mesh config and get_mesh_params() returned None."
+                )
+
+            method_params['update_mesh'] = auto_params
+            logger.info(
+                f"[{fault_name}] auto-filled update_mesh from "
+                f"get_mesh_params(): {auto_params.get('method')}"
+            )
+
+            # Validate auto-filled params
+            auto_method = auto_params.get('method')
+            if auto_method and _mesh_registry.is_registered(auto_method):
+                self._validate_mesh_section(
+                    fault_name, auto_params, auto_method, _mesh_registry
+                )
+
+    def _validate_mesh_section(self, fault_name, mesh_config, mesh_method, _mesh_registry):
+        """Validate forbidden params and kwargs spelling for an update_mesh section."""
+        forbidden_rules = _mesh_registry.get_bayesian_forbidden(mesh_method)
+        for param, rule in forbidden_rules.items():
+            value = mesh_config.get(param)
+            self._check_forbidden(fault_name, 'update_mesh', param, value, rule)
+
+        replayable = _mesh_registry.get_replayable_keys(mesh_method)
+        if replayable is not None:
+            allowed = set(replayable) | {'method'} | set(forbidden_rules.keys())
+            for key in mesh_config:
+                if key not in allowed:
+                    raise ValueError(
+                        f"[{fault_name}] update_mesh.{key} is not a recognized "
+                        f"parameter for '{mesh_method}'. "
+                        f"Valid keys: {sorted(allowed)}"
+                    )
+
+    @staticmethod
+    def _check_forbidden(fault_name, section, param, value, rule):
+        """Check a single forbidden rule and raise ValueError if violated."""
+        if rule is True and value:
+            raise ValueError(
+                f"[{fault_name}] Bayesian forbidden: {section}.{param}=True"
+            )
+        if rule == 'not_none' and value is not None:
+            raise ValueError(
+                f"[{fault_name}] Bayesian forbidden: {section}.{param} must be None"
+            )
+        if rule == 'truthy' and value:
+            raise ValueError(
+                f"[{fault_name}] Bayesian forbidden: {section}.{param} must be falsy"
+            )
+
     def load_from_file(self, config_file, encoding='utf-8'):
         """
         Load the configuration from a file and ensure defaults are always present with required attributes.
@@ -297,7 +491,14 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     else:
                         merged_method_parameters[method_name] = method_params
                 merged_parameters['method_parameters'] = merged_method_parameters
-    
+
+                # Track origin of each method_parameters entry (explicit vs inherited)
+                origin = {}
+                explicit_methods = set(fault_parameters.get('method_parameters', {}).keys())
+                for method_name in merged_method_parameters:
+                    origin[method_name] = 'explicit' if method_name in explicit_methods else 'inherited'
+                merged_parameters['_method_params_origin'] = origin
+
                 config_data['faults'][fault_name] = merged_parameters
     
             self._process_fixed_nodes(config_data['faults'][fault_name])

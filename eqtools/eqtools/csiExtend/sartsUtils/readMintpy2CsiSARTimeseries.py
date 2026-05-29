@@ -197,7 +197,7 @@ class MintpyInSARTimeseriesReader(csiinsartimeseries):
         else:
             return tsts, lon, lat, new_coord_range
 
-    def plot_raw_sar_at_time(self, time_index=-1, coordrange=None, faults=None, rawdownsample4plot=100, factor4plot=100, 
+    def plot_sar_values_at_time(self, time_index=-1, coordrange=None, faults=None, rawdownsample4plot=100, factor4plot=100,
                   vmin=None, vmax=None, symmetry=True, ax=None, tickfontsize=10, labelfontsize=10,
                   style=['science'], fontsize=None, figsize=None, save_fig=False, 
                   file_path='raw_sar_at_time.png', dpi=300, show=True, cmap='cmc.roma_r', 
@@ -267,7 +267,7 @@ class MintpyInSARTimeseriesReader(csiinsartimeseries):
     
         return fig, ax
 
-    def plot_raw_sar_timeseries(self, time_indices=None, coordrange=None, rawdownsample4plot=100, factor4plot=100, 
+    def plot_sar_values_timeseries(self, time_indices=None, coordrange=None, rawdownsample4plot=100, factor4plot=100,
                                 vmin=None, vmax=None, symmetry=True, columns=3, figsize=None, 
                                 save_fig=False, file_path='timeseries_plot.png', dpi=300, 
                                 show=True, cmap='cmc.roma_r', trace_color='black', trace_linewidth=0.5, 

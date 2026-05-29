@@ -16,6 +16,11 @@ import scipy.spatial.distance as scidis
 import copy
 import sys
 import os
+import logging
+from types import SimpleNamespace
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 from scipy.interpolate import interp1d
 from scipy.integrate import cumulative_trapezoid as cumtrapz
 
@@ -24,9 +29,42 @@ from .SourceInv import SourceInv
 from .EDKSmp import sum_layered
 from .EDKSmp import dropSourcesInPatches as Patches2Sources
 from .psgrn_pscmp.PSGRNCmp import pscmpslip2dis
+from .psgrn_pscmp.pscmp_options import PscmpOptions
 from .edgrn_edcmp.EDGRNcmp import edcmpslip2dis, edcmpslip2dis_forward
+from .edgrn_edcmp.edcmp_backends import (
+    EdcmpOptions,
+    compute_inmemory_edcmp_forward,
+    compute_inmemory_edcmp_greens,
+    resolve_edcmp_engine,
+)
 from .edgrn_edcmp.tri2rectpoints import patch_local2d_inv, patch_local2d, triangle_to_rectangles
 from tqdm import tqdm
+
+from . import VALID_GF_METHODS
+from .gf_options import resolve_gf_options
+
+
+@dataclass
+class EdcmpPatchSourceCache:
+    """Structured cache for EDCMP patch source parameters."""
+    sources: list
+    mean_x_km: float
+    mean_y_km: float
+    cache_key: tuple
+
+
+def _lightweight_data(data):
+    """
+    Create a lightweight proxy of the data object for parallel dispatch.
+    Only carries the fields needed by EDCMP workers (x, y, name),
+    avoiding pickle of the full object (which includes the large Cd matrix).
+    """
+    return SimpleNamespace(
+        x=np.asarray(data.x, dtype=np.float64),
+        y=np.asarray(data.y, dtype=np.float64),
+        name=getattr(data, 'name', ''),
+    )
+
 
 def _pscmp_patch_task(args):
     """
@@ -46,7 +84,7 @@ def _pscmp_patch_task(args):
         ss, ds, ts = pscmpslip2dis(
             data, (clon, clat, depth_km, width_km, length_km, strike_deg, dip_deg),
             slip=SLP,
-            psgrndir=psgrn_dir,
+            grn_dir=psgrn_dir,
             output_dir=out_dir,
             filename_suffix=patch_prefix,
             workdir=workdir,
@@ -77,7 +115,7 @@ def _pscmp_patch_task(args):
         ss, ds, ts = pscmpslip2dis(
             data, (xs_clon, xs_clat, depth_center_km, dy_km, dx_km, strike_deg, dip_deg),
             slip=SLP,
-            psgrndir=psgrn_dir,
+            grn_dir=psgrn_dir,
             output_dir=out_dir,
             filename_suffix=patch_prefix,
             workdir=workdir,
@@ -89,7 +127,16 @@ def _pscmp_patch_task(args):
     return p, ss, ds, ts
 
 # Prepare source parameters for edcmpslip2dis for each patch ---
-def _prepare_patch_source(p, patchType, geometry, patch_vertices, mean_x_km, mean_y_km):
+def _prepare_patch_source(
+    p,
+    patchType,
+    geometry,
+    patch_vertices,
+    mean_x_km,
+    mean_y_km,
+    rect_dx_km=0.1,
+    rect_dy_km=0.1,
+):
     """
     Prepare the source parameter tuple for edcmpslip2dis for a single patch.
     Returns (p, sourceparams) for order tracking.
@@ -110,8 +157,8 @@ def _prepare_patch_source(p, patchType, geometry, patch_vertices, mean_x_km, mea
     elif patchType == 'triangle':
         vertices = patch_vertices
         xyz = patch_local2d(vertices, cx_km, cy_km, depth_km, strike_rad, dip_rad)
-        dx_km = 0.1
-        dy_km = 0.1
+        dx_km = float(rect_dx_km)
+        dy_km = float(rect_dy_km)
         _, rect_corners = triangle_to_rectangles(xyz[:, :2], dx_km, dy_km)
         rect_corners_3d = [
             patch_local2d_inv(
@@ -131,11 +178,74 @@ def _prepare_patch_source(p, patchType, geometry, patch_vertices, mean_x_km, mea
         depth_top_left_km = depth_top_left_km[valid]
         sourceparams = (xs, ys, depth_top_left_km*1000.0, dy_km*1000.0, dx_km*1000.0, strike_deg, dip_deg, mean_x_km, mean_y_km)
     else:
-        raise ValueError(f"Unknown patchType: {patchType}")
+        msg = f"Unknown patchType: {patchType}"
+        logger.error(msg)
+        raise ValueError(msg)
     return (p, sourceparams)
 
 def _prepare_patch_source_wrapper(args):
     return _prepare_patch_source(*args)
+
+
+def _edcmp_source_bundle_size(sourceparams):
+    xs = np.atleast_1d(np.asarray(sourceparams[0], dtype=np.float64))
+    return int(xs.size)
+
+
+def _get_edcmp_patch_sources(fault, n_jobs, rect_dx_km=0.1, rect_dy_km=0.1):
+    from concurrent.futures import ProcessPoolExecutor
+
+    n_patch = len(fault.patch)
+    cache_key = (
+        n_patch,
+        fault.patchType,
+        round(float(rect_dx_km), 6),
+        round(float(rect_dy_km), 6),
+    )
+
+    # Check structured cache
+    cached = getattr(fault, '_edcmp_source_cache', None)
+    if (
+        cached is not None
+        and isinstance(cached, EdcmpPatchSourceCache)
+        and len(cached.sources) == n_patch
+        and cached.cache_key == cache_key
+    ):
+        return cached.sources, cached.mean_x_km, cached.mean_y_km
+
+    mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in fault.patch])
+    mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in fault.patch])
+    patch_geometries = [fault.getpatchgeometry(p, center=True) for p in range(n_patch)]
+    patch_args = [
+        (
+            p,
+            fault.patchType,
+            patch_geometries[p],
+            fault.patch[p],
+            mean_x_km,
+            mean_y_km,
+            rect_dx_km,
+            rect_dy_km,
+        )
+        for p in range(n_patch)
+    ]
+
+    max_workers = int(n_jobs) if n_jobs is not None else 1
+    if max_workers > 1:
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_prepare_patch_source_wrapper, patch_args))
+    else:
+        results = list(map(_prepare_patch_source_wrapper, patch_args))
+
+    results.sort(key=lambda x: x[0])
+    sources = [sourceparams for p, sourceparams in results]
+    fault._edcmp_source_cache = EdcmpPatchSourceCache(
+        sources=sources,
+        mean_x_km=mean_x_km,
+        mean_y_km=mean_y_km,
+        cache_key=cache_key,
+    )
+    return sources, mean_x_km, mean_y_km
 
 def _edcmp_patch_task(args):
     """
@@ -145,7 +255,7 @@ def _edcmp_patch_task(args):
     Parameters
     ----------
     args : tuple
-        (p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np,
+        (p, SLP, data, workdir, grn_dir, output_dir, layered_model, verbose, Np,
          mean_x_km, mean_y_km, p_vertices, patchType, faultname, force_recompute, sourceparameters)
         - sourceparameters: tuple, precomputed and ready to be passed to edcmpslip2dis
 
@@ -156,7 +266,7 @@ def _edcmp_patch_task(args):
     ss, ds, ts : np.ndarray
         Green's functions for strike-slip, dip-slip, tensile-slip (Nd, 3).
     """
-    (p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np,
+    (p, SLP, data, workdir, grn_dir, output_dir, layered_model, verbose, Np,
      mean_x_km, mean_y_km, p_vertices, patchType, faultname, force_recompute, sourceparameters) = args
     dataname = data.name
     patch_prefix = f'p{p}'
@@ -166,7 +276,7 @@ def _edcmp_patch_task(args):
         data, sourceparameters,
         slip=SLP,
         grn_dir=grn_dir,
-        output_dir=edcmpgrns,
+        output_dir=output_dir,
         filename_suffix=patch_prefix,
         workdir=workdir,
         layered_model=layered_model,
@@ -191,6 +301,35 @@ def _single_patch_forward(args):
         faultname=faultname,
         dataname=data.name
     )
+
+
+def _single_patch_inmemory_forward(args):
+    p, sourceparams, slip, data, grn_dir, workdir, engine, module_dir = args
+    disp = compute_inmemory_edcmp_forward(
+        data,
+        sourceparams,
+        slip=slip,
+        engine=engine,
+        grn_dir=grn_dir,
+        workdir=workdir,
+        module_dir=module_dir,
+    )
+    return p, disp
+
+
+def _single_patch_inmemory_greens(args):
+    p, sourceparams, slip, data, grn_dir, workdir, engine, module_dir = args
+    ss, ds, ts = compute_inmemory_edcmp_greens(
+        data,
+        sourceparams,
+        slip=slip,
+        engine=engine,
+        grn_dir=grn_dir,
+        workdir=workdir,
+        module_dir=module_dir,
+        use_shared_memory=True,
+    )
+    return p, ss, ds, ts
 
 #class Fault
 class Fault(SourceInv):
@@ -366,7 +505,7 @@ class Fault(SourceInv):
                     try:
                         self.slip[:,0] = values
                     except:
-                        print('Wrong size for the slip array provided')
+                        logger.error('Wrong size for the slip array provided')
                         return
 
         # All done
@@ -858,7 +997,9 @@ class Fault(SourceInv):
             depth_range = kwargs.get('depth_range', None)
             
             if point1 is None or point2 is None or buffer_distance is None:
-                raise ValueError("For 'buffer' method, 'point1', 'point2' and 'buffer_distance' are required")
+                msg = "For 'buffer' method, 'point1', 'point2' and 'buffer_distance' are required"
+                logger.error(msg)
+                raise ValueError(msg)
             
             # Convert point coordinates to xy if necessary
             if coord_system == 'lonlat':
@@ -877,7 +1018,9 @@ class Fault(SourceInv):
                 trace_x, trace_y = self.xi, self.yi
                 
             if trace_x is None or trace_y is None:
-                raise ValueError("Fault trace is not defined. Please set fault trace first.")
+                msg = "Fault trace is not defined. Please set fault trace first."
+                logger.error(msg)
+                raise ValueError(msg)
             
             # Create LineString from fault trace
             trace_coords = list(zip(trace_x, trace_y))
@@ -928,7 +1071,9 @@ class Fault(SourceInv):
             depth_range = kwargs.get('depth_range', None)
             
             if lon_range is None or lat_range is None:
-                raise ValueError("For 'box' method, 'lon_range' and 'lat_range' are required")
+                msg = "For 'box' method, 'lon_range' and 'lat_range' are required"
+                logger.error(msg)
+                raise ValueError(msg)
             
             # Convert patch centers to lon/lat
             for i, (cx, cy, cz) in enumerate(centers):
@@ -946,7 +1091,9 @@ class Fault(SourceInv):
                         patch_indices.append(i)
         
         else:
-            raise ValueError(f"Unknown method '{method}'. Use 'buffer' or 'box'")
+            msg = f"Unknown method '{method}'. Use 'buffer' or 'box'"
+            logger.error(msg)
+            raise ValueError(msg)
         
         return patch_indices
 
@@ -1109,7 +1256,7 @@ class Fault(SourceInv):
                 trace_valid = True
                 
         if not trace_valid:
-            print("Trace (xi, yi) not detected or invalid. Automatically building trace...")
+            logger.warning("Trace (xi, yi) not detected or invalid. Automatically building trace...")
             if hasattr(self, 'setTrace'):
                 self.setTrace(0.1)  # Set trace from top edge
             
@@ -1123,7 +1270,9 @@ class Fault(SourceInv):
                 self.discretize_trace(every=trace_step/10.0)
                 
             if not hasattr(self, 'xi') or self.xi is None:
-                 raise ValueError("Failed to generate fault trace. Check fault geometry.")
+                 msg = "Failed to generate fault trace. Check fault geometry."
+                 logger.error(msg)
+                 raise ValueError(msg)
 
         # ==========================================
         # 2. Geometry Projection
@@ -1164,7 +1313,7 @@ class Fault(SourceInv):
         if isinstance(horizontal_discretization, int):
             n_cols = max(1, horizontal_discretization)
             strike_edges = np.linspace(0, total_trace_len, n_cols + 1)
-            print(f"Checkerboard: Dividing trace ({total_trace_len:.2f} km) into {n_cols} uniform columns.")
+            logger.info(f"Checkerboard: Dividing trace ({total_trace_len:.2f} km) into {n_cols} uniform columns.")
 
         # Case C: Float -> Average Distance (Uniform Resampling)
         elif isinstance(horizontal_discretization, float):
@@ -1174,18 +1323,22 @@ class Fault(SourceInv):
             n_cols = max(1, n_cols) # Ensure at least 1 column
             strike_edges = np.linspace(0, total_trace_len, n_cols + 1)
             actual_width = total_trace_len / n_cols
-            print(f"Checkerboard: Optimized {target_width} km -> {actual_width:.4f} km width ({n_cols} cols).")
+            logger.info(f"Checkerboard: Optimized {target_width} km -> {actual_width:.4f} km width ({n_cols} cols).")
 
         # Case D: List/Array -> Explicit Edges (Custom/Non-uniform)
         elif isinstance(horizontal_discretization, (list, np.ndarray, tuple)):
             strike_edges = np.array(horizontal_discretization)
             # Basic validation
             if strike_edges.ndim != 1 or len(strike_edges) < 2:
-                raise ValueError("Explicit horizontal_discretization must be a 1D list with at least 2 points.")
-            print(f"Checkerboard: Using explicit horizontal edges: {strike_edges}")
+                msg = "Explicit horizontal_discretization must be a 1D list with at least 2 points."
+                logger.error(msg)
+                raise ValueError(msg)
+            logger.info(f"Checkerboard: Using explicit horizontal edges: {strike_edges}")
         
         else:
-            raise TypeError("horizontal_discretization must be None, int, float, or list/array.")
+            msg = "horizontal_discretization must be None, int, float, or list/array."
+            logger.error(msg)
+            raise TypeError(msg)
 
         # Map strike distance to column indices
         col_indices = np.digitize(patch_along_strike_dist, strike_edges) - 1
@@ -1215,7 +1368,7 @@ class Fault(SourceInv):
         self.slip[checker_mask, 1] = np.sin(rake_rad) * 1.0 
         
         assigned_count = np.sum(checker_mask)
-        print(f"Checkerboard generated: {assigned_count}/{n_patches} patches assigned slip.")
+        logger.info(f"Checkerboard generated: {assigned_count}/{n_patches} patches assigned slip.")
 
         # ==========================================
         # 5. Normalization
@@ -1235,13 +1388,13 @@ class Fault(SourceInv):
                 if current_moment > 1e-9: # Avoid division by zero
                     ratio = target_mo / current_moment
                     self.slip *= ratio
-                    print(f"Normalization: Scaling slip by factor {ratio:.4f} to match Mo={target_mo:.2e}")
+                    logger.info(f"Normalization: Scaling slip by factor {ratio:.4f} to match Mo={target_mo:.2e}")
                 else:
-                    print("Warning: Current moment is effectively zero despite slip assignment. Check mesh area.")
+                    logger.warning("Current moment is effectively zero despite slip assignment. Check mesh area.")
             else:
-                print("Normalization: Skipped (No target moment/magnitude specified).")
+                logger.info("Normalization: Skipped (No target moment/magnitude specified).")
         elif normalize and assigned_count == 0:
-            print("Normalization: Skipped (No patches assigned slip).")
+            logger.info("Normalization: Skipped (No patches assigned slip).")
 
     def _project_to_trace_vectorized(self, points, trace_x, trace_y):
         """
@@ -1516,7 +1669,7 @@ class Fault(SourceInv):
 
         # Print stuff
         if self.verbose:
-            print('Writing Greens functions to file for fault {}'.format(self.name))
+            logger.info('Writing Greens functions to file for fault {}'.format(self.name))
 
         # Loop over the keys in self.G
         for data in self.G.keys():
@@ -1553,7 +1706,7 @@ class Fault(SourceInv):
 
         # Print stuff
         if self.verbose:
-            print('Writing Greens functions to file for fault {}'.format(self.name))
+            logger.info('Writing Greens functions to file for fault {}'.format(self.name))
 
         # Loop over the data names in self.d
         for data in self.d.keys():
@@ -1571,10 +1724,8 @@ class Fault(SourceInv):
 
     # ----------------------------------------------------------------------
     def buildGFs(self, data, vertical=True, slipdir='sd',
-                 method='homogeneous', verbose=True, convergence=None, 
-                 pscmpgrns='pscmpgrns', psgrndir='psgrnfcts', pscmp_workdir='pscmp_ecat', 
-                 edcmpgrns='edcmpgrns', edgrndir='edgrnfcts', edcmp_workdir='edcmp_ecat',
-                 edcmp_layered_model=True, n_jobs=None, cleanup_inp=True, force_recompute=True):
+                 method='homogeneous', verbose=True, convergence=None,
+                 options=None):
         '''
         Builds the Green's function matrix based on the discretized fault.
 
@@ -1589,86 +1740,70 @@ class Fault(SourceInv):
         Kwargs:
             * vertical      : If True, will produce green's functions for the vertical displacements in a gps object.
             * slipdir       : Direction of slip along the patches. Can be any combination of s (strikeslip), d (dipslip), t (tensile) and c (coupling)
-            * method        : Can be 'okada' (Okada, 1982) (rectangular patches only), 'meade' (Meade 2007) (triangular patches only), 'edks' (Zhao & Rivera, 2002), 'homogeneous' (Okada for rectangles, Meade for triangles)
+            * method        : Can be 'okada', 'meade', 'edks', 'pscmp', 'edcmp', 'cutde', 'homogeneous', 'empty'
             * verbose       : Writes stuff to the screen (overwrites self.verbose)
             * convergence   : If coupling case, needs convergence azimuth and rate [azimuth in deg, rate]
+            * options       : Method-specific configuration.
+                EdcmpOptions, PscmpOptions, dict, or None.
+                Use csi.describe_gf_options(method) to see available fields.
 
         Returns:
             * None
-
-        **********************
-        TODO: Implement the homogeneous case for the Node-based triangular GFs
-        **********************
         '''
 
-        # Chech something
         if self.patchType == 'triangletent':
             assert method == 'edks', 'Homogeneous case not implemented for {} faults'.format(self.patchType)
 
-        # Check something
         if method in ('homogeneous', 'Homogeneous'):
             if self.patchType == 'rectangle':
                 method = 'Okada'
             elif self.patchType == 'triangle':
-                method = 'cutde' # 'Meade'
+                method = 'cutde'
             elif self.patchType == 'triangletent':
                 method = 'Meade'
 
-        # Print
         if verbose:
-            print('Greens functions computation method: {}'.format(method))
+            logger.info('Greens functions computation method: {}'.format(method))
 
-        # Data type check
         if data.dtype == 'insar':
             if not vertical:
                 if verbose:
-                    print('---------------------------------')
-                    print('---------------------------------')
-                    print(' WARNING WARNING WARNING WARNING ')
-                    print('  You specified vertical=False   ')
-                    print(' As this is quite dangerous, we  ')
-                    print(' switched it directly to True... ')
-                    print(' SAR data are very sensitive to  ')
-                    print('     vertical displacements.     ')
-                    print(' WARNING WARNING WARNING WARNING ')
-                    print('---------------------------------')
-                    print('---------------------------------')
+                    logger.warning('---------------------------------')
+                    logger.warning(' WARNING: You specified vertical=False')
+                    logger.warning(' As this is dangerous for SAR data, switched to True...')
+                    logger.warning(' SAR data are very sensitive to vertical displacements.')
+                    logger.warning('---------------------------------')
                 vertical = True
 
-        # Compute the Green's functions
+        opts = resolve_gf_options(method, options)
+
         method_lower = method.lower()
         if method_lower in ('okada', 'ok92', 'meade'):
             G = self.homogeneousGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method_lower in ('edks',):
             G = self.edksGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method_lower in ('pscmp', 'psgrn'):
-            n_jobs = int(n_jobs) if n_jobs is not None else max(os.cpu_count()//2, 4)
-            G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence, 
-                              pscmpgrns=pscmpgrns, psgrndir=psgrndir, workdir=pscmp_workdir, 
-                              n_jobs=n_jobs, cleanup_inp=cleanup_inp, force_recompute=force_recompute)
+            G = self.pscmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose,
+                              convergence=convergence, options=opts)
         elif method_lower in ('edcmp', 'edgrn'):
-            G = self.edcmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, 
-                              edcmpgrns=edcmpgrns, grn_dir=edgrndir, workdir=edcmp_workdir, 
-                              layered_model=edcmp_layered_model, n_jobs=n_jobs, 
-                              cleanup_inp=cleanup_inp, force_recompute=force_recompute)
+            G = self.edcmpGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose,
+                              convergence=convergence, options=opts)
         elif method_lower in ('cutde',):
             G = self.cutdeGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         elif method_lower in ('empty',):
             G = self.emptyGFs(data, vertical=vertical, slipdir=slipdir, verbose=verbose, convergence=convergence)
         else:
-            raise Exception('Method {} not implemented'.format(method))
+            raise ValueError('Method {} not implemented'.format(method))
 
-        # Separate the Green's functions for each type of data set
         data.setGFsInFault(self, G, vertical=vertical)
 
-        # All done
         return
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
     def buildGFs_multidataset_bycutde(self, datadict, verticaldict=None, slipdir='sd',
-                                method='cutde', verbose=True, convergence=None, 
-                                pscmpinp='pscmp_template.inp', psgrndir='psgrnfcts'):
+                                method='cutde', verbose=True, convergence=None,
+                                pscmpinp='pscmp_template.inp', grn_dir='psgrnfcts'):
         '''
         Builds the Green's function matrix based on the discretized fault.
 
@@ -1728,17 +1863,11 @@ class Fault(SourceInv):
             if idata.dtype == 'insar':
                 if not ivertical:
                     if verbose:
-                        print('---------------------------------')
-                        print('---------------------------------')
-                        print(' WARNING WARNING WARNING WARNING ')
-                        print('  You specified vertical=False   ')
-                        print(' As this is quite dangerous, we  ')
-                        print(' switched it directly to True... ')
-                        print(' SAR data are very sensitive to  ')
-                        print('     vertical displacements.     ')
-                        print(' WARNING WARNING WARNING WARNING ')
-                        print('---------------------------------')
-                        print('---------------------------------')
+                        logger.warning('---------------------------------')
+                        logger.warning(' WARNING: You specified vertical=False')
+                        logger.warning(' As this is dangerous for SAR data, switched to True...')
+                        logger.warning(' SAR data are very sensitive to vertical displacements.')
+                        logger.warning('---------------------------------')
                     ivertical = True
 
             # Build the dictionary
@@ -1784,7 +1913,7 @@ class Fault(SourceInv):
             # get the index of the points
             zeroD = np.flatnonzero(np.array([tent[2] for tent in self.tent])==0.)
             if len(zeroD)==0: 
-                print('No surface patches.')
+                logger.info('No surface patches.')
                 return None
             # Get their positions
             x = np.array([tent[0] for tent in self.tent])[zeroD]
@@ -1865,6 +1994,10 @@ class Fault(SourceInv):
                 nd *= 3
             else:
                 nd *= 2
+        elif data.dtype == 'crossfaultoffset':
+            nd = data.obs_per_station * len(data.station)
+        elif data.dtype == 'leveling':
+            nd = len(data.vel)
 
         # Build dictionnary
         if 's' in slipdir:
@@ -1903,16 +2036,21 @@ class Fault(SourceInv):
             * G             : Dictionary of the built Green's functions
         '''
 
+        # Dispatch for cross-fault offset data
+        if data.dtype == 'crossfaultoffset':
+            return self._build_gfs_crossfaultoffset_via_gps_concat(
+                self.homogeneousGFs, data, slipdir=slipdir,
+                vertical=True, verbose=verbose, convergence=convergence)
+
         # Check that we are not in this case
         assert self.patchType != 'triangletent',\
                 'Need to run EDKS for that particular type of fault'
 
         # Print
         if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print("Building Green's functions for the data set ")
-            print("{} of type {} in a homogeneous half-space".format(data.name,
+            logger.info('---------------------------------')
+            logger.info("Building Green's functions for the data set ")
+            logger.info("{} of type {} in a homogeneous half-space".format(data.name,
                                                                      data.dtype))
 
         # Initialize the slip vector
@@ -1960,7 +2098,7 @@ class Fault(SourceInv):
             Gts[:,:,p] = ts.T
 
         if verbose:
-            print(' ')
+            logger.info(' ')
 
         # Build the dictionary
         G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
@@ -2000,71 +2138,134 @@ class Fault(SourceInv):
 
     # ----------------------------------------------------------------------
     def _edcmp_displacement_forward(self, obs_pts, slipVec,
-                                   grn_dir='edgrnfcts', output_dir='edcmpgrns',
-                                   workdir='edcmp_ecat', layered_model=True,
-                                   force_recompute=True, faultname='', dataname='', verbose=False,
-                                   n_jobs=4):
-        """
-        Forward calculation of surface displacement using EDCMP for all patches (parallel).
-        Each patch is processed in parallel, using physical slip vector [ss, ds, ts].
-        Patch geometry is prepared via _prepare_patch_source_wrapper.
-    
+                                   faultname='', dataname='', verbose=False,
+                                   options=None):
+        """Forward calculation of surface displacement using EDCMP for all patches.
+
         Parameters
         ----------
         obs_pts : np.ndarray
             Observation points, shape (N, 3), in fault/projected coordinates (meters).
         slipVec : np.ndarray
-            Physical slip vector for each patch, shape (n_patch, 3) [strike-slip, dip-slip, tensile-slip].
-        grn_dir, output_dir, workdir, layered_model, force_recompute, faultname, dataname, verbose
-            Same as edcmpGFs.
-        n_jobs : int
-            Number of parallel workers.
-    
+            Physical slip vector for each patch, shape (n_patch, 3) [ss, ds, ts].
+        faultname, dataname : str
+            Labels for file naming.
+        verbose : bool
+            Print progress information.
+        options : EdcmpOptions or None
+            EDCMP configuration.
+
         Returns
         -------
-        disp_total : np.ndarray
-            Surface displacement at each observation point, shape (N, 3).
+        disp_total : np.ndarray, shape (N, 3)
         """
         import numpy as np
         from concurrent.futures import ProcessPoolExecutor, as_completed
-    
+
+        opts = options if isinstance(options, EdcmpOptions) else EdcmpOptions()
+        n_jobs = opts.n_jobs or 4
+
         N_obs = obs_pts.shape[0]
         N_patch = slipVec.shape[0]
         disp_total = np.zeros((N_obs, 3))
-    
-        # Prepare a fake data object for EDCMP (with .x, .y, .name)
-        class SimpleData:
-            pass
-        data = SimpleData()
-        data.x = obs_pts[:, 0]
-        data.y = obs_pts[:, 1]
-        data.name = dataname if dataname else 'surface'
-    
-        # --- Prepare patch geometry and source parameters ---
-        mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
-        mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
-        patch_geometries = [self.getpatchgeometry(p, center=True) for p in range(N_patch)]
-        patchType = self.patchType
-        patch_args_geom = [(p, patchType, patch_geometries[p], self.patch[p], mean_x_km, mean_y_km) for p in range(N_patch)]
-        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
-            results = list(pool.map(_prepare_patch_source_wrapper, patch_args_geom))
-        # Keep the order same as patch_args
-        results.sort(key=lambda x: x[0])
-        self.patch_source_for_edcmp = [sourceparams for p, sourceparams in results]
-        # print('patch_source_for_edcmp has been calculated again!')
 
-        # --- Step 3: Prepare arguments for parallel computation ---
-        patch_args = []
-        for p in range(N_patch):
-            patch_args.append((p, self.patch_source_for_edcmp[p], slipVec[p], data, grn_dir, 
-                               output_dir, workdir, layered_model, force_recompute, faultname))
+        if self.patchType == 'triangle' and not opts.allow_triangle:
+            raise ValueError(
+                "Triangle patches with method='edcmp' require edcmp_allow_triangle=True"
+            )
 
-        # --- Parallel execution ---
-        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
-            futures = [pool.submit(_single_patch_forward, arg) for arg in patch_args]
-            for future in as_completed(futures):
-                disp_total += future.result()
-    
+        data = SimpleNamespace(
+            x=obs_pts[:, 0],
+            y=obs_pts[:, 1],
+            name=dataname if dataname else 'surface',
+        )
+
+        patch_sources, _, _ = _get_edcmp_patch_sources(
+            self,
+            n_jobs,
+            rect_dx_km=opts.triangle_rect_dx_km,
+            rect_dy_km=opts.triangle_rect_dy_km,
+        )
+        resolved_engine = resolve_edcmp_engine(
+            opts.engine,
+            fallback_engines=opts.fallback_engines,
+            module_dir=opts.module_dir,
+        )
+
+        if resolved_engine != 'exe' and not opts.layered_model:
+            logger.warning(
+                "EDCMP engine '%s' only supports layered Green's functions; falling back to exe backend.",
+                resolved_engine,
+            )
+            resolved_engine = 'exe'
+
+        bundle_sizes = [_edcmp_source_bundle_size(source) for source in patch_sources]
+        total_rects = int(sum(bundle_sizes))
+        if verbose:
+            logger.info(
+                "EDCMP-%s forward: %d patches, %d equivalent rectangles (data=%s)",
+                resolved_engine, N_patch, total_rects, data.name,
+            )
+
+        data_lite = _lightweight_data(data)
+        if resolved_engine == 'exe':
+            patch_args = []
+            for p in range(N_patch):
+                patch_args.append((p, patch_sources[p], slipVec[p], data_lite, opts.grn_dir,
+                                   opts.output_dir, opts.workdir, opts.layered_model,
+                                   opts.force_recompute, faultname))
+
+            with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+                futures = [pool.submit(_single_patch_forward, arg) for arg in patch_args]
+                progress_iter = as_completed(futures)
+                if verbose:
+                    progress_iter = tqdm(progress_iter, total=N_patch, desc="EDCMP-exe forward")
+                for future in progress_iter:
+                    disp_total += future.result()
+        else:
+            max_workers = int(n_jobs)
+            if max_workers > 1:
+                patch_args = [
+                    (
+                        p,
+                        patch_sources[p],
+                        slipVec[p],
+                        data_lite,
+                        opts.grn_dir,
+                        opts.workdir,
+                        resolved_engine,
+                        opts.module_dir,
+                    )
+                    for p in range(N_patch)
+                ]
+                with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                    progress_iter = as_completed([pool.submit(_single_patch_inmemory_forward, arg) for arg in patch_args])
+                    if verbose:
+                        progress_iter = tqdm(progress_iter, total=N_patch, desc=f"EDCMP-{resolved_engine} forward")
+                    for future in progress_iter:
+                        _, disp_patch = future.result()
+                        disp_total += disp_patch
+            else:
+                for p in range(N_patch):
+                    if verbose:
+                        sys.stdout.write(
+                            f"\r EDCMP-{resolved_engine} forward patch: {p+1} / {N_patch} "
+                            f"(bundle={bundle_sizes[p]} rects) "
+                        )
+                        sys.stdout.flush()
+                    disp_total += compute_inmemory_edcmp_forward(
+                        data,
+                        patch_sources[p],
+                        slipVec[p],
+                        engine=resolved_engine,
+                        grn_dir=opts.grn_dir,
+                        workdir=opts.workdir,
+                        module_dir=opts.module_dir,
+                    )
+                if verbose:
+                    sys.stdout.write('\n')
+                    sys.stdout.flush()
+
         return disp_total
     # ----------------------------------------------------------------------
 
@@ -2085,7 +2286,7 @@ class Fault(SourceInv):
         try:
             import pickle
         except:
-            print('Needs the pickle module...')
+            logger.error('Needs the pickle module...')
             return
 
         # Assert
@@ -2127,7 +2328,7 @@ class Fault(SourceInv):
         try:
             import pickle
         except:
-            print('Needs the pickle module...')
+            logger.error('Needs the pickle module...')
             return
 
         # Create lists, clean lists
@@ -2178,46 +2379,42 @@ class Fault(SourceInv):
             * G             : Dictionary of the built Green's functions
         '''
 
+        # Dispatch for cross-fault offset data
+        if data.dtype == 'crossfaultoffset':
+            return self._build_gfs_crossfaultoffset_via_gps_concat(
+                self.edksGFs, data, slipdir=slipdir,
+                vertical=True, verbose=verbose, convergence=convergence)
+
         # Print
         if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print ("Building Green's functions for the data set")
-            print("{} of type {} using EDKS on fault {}".format(data.name, data.dtype, self.name))
+            logger.info('---------------------------------')
+            logger.info("Building Green's functions for the data set")
+            logger.info("{} of type {} using EDKS on fault {}".format(data.name, data.dtype, self.name))
 
         # Check if we can find kernels
         if not hasattr(self, 'kernelsEDKS'):
             if verbose:
-                print('---------------------------------')
-                print('---------------------------------')
-                print(' WARNING WARNING WARNING WARNING ')
-                print('   Kernels for computation of')
-                print('stratified Greens functions not ')
-                print('    set in {}.kernelsEDKS'.format(self.name))
-                print('   Looking for default kernels')
-                print('---------------------------------')
-                print('---------------------------------')
+                logger.warning('---------------------------------')
+                logger.warning(' WARNING: Kernels for computation of')
+                logger.warning(' stratified Greens functions not set in {}.kernelsEDKS'.format(self.name))
+                logger.warning(' Looking for default kernels')
+                logger.warning('---------------------------------')
             self.kernelsEDKS = 'kernels.edks'
         stratKernels = self.kernelsEDKS
         assert os.path.isfile(stratKernels), 'Kernels for EDKS not found...'
 
         # Show me
         if verbose:
-            print('Kernels used: {}'.format(stratKernels))
+            logger.info('Kernels used: {}'.format(stratKernels))
 
         # Check if we can find mention of the spacing between points
         if not hasattr(self, 'sourceSpacing') and not hasattr(self, 'sourceNumber')\
                 and not hasattr(self, 'sourceArea'):
-            print('---------------------------------')
-            print('---------------------------------')
-            print(' WARNING WARNING WARNING WARNING ')
-            print('  Cannot find sourceSpacing nor  ')
-            print('   sourceNumber nor sourceArea   ')
-            print('         for stratified          ')
-            print('   Greens function computation   ')
-            print('           computation           ')
-            print('          Dying here...          ')
-            print('              Arg...             ')
+            logger.error('---------------------------------')
+            logger.error(' ERROR: Cannot find sourceSpacing nor')
+            logger.error(' sourceNumber nor sourceArea for stratified')
+            logger.error(' Greens function computation. Dying here...')
+            logger.error('---------------------------------')
             sys.exit(1)
 
         # Receivers to meters
@@ -2247,12 +2444,12 @@ class Fault(SourceInv):
         # If we have already done that step
         if self.keepTrackOfSources and hasattr(self, 'edksSources'):
             if verbose:
-                print('Get sources from saved sources')
+                logger.info('Get sources from saved sources')
             Ids, xs, ys, zs, strike, dip, Areas = self.edksSources[:7]
         # Else, drop sources in the patches
         else:
             if verbose:
-                print('Subdividing patches into point sources')
+                logger.info('Subdividing patches into point sources')
             Ids, xs, ys, zs, strike, dip, Areas = Patches2Sources(self, verbose=verbose)
             # All these guys need to be in meters
             xs *= 1000.
@@ -2287,19 +2484,19 @@ class Fault(SourceInv):
 
         # Informations
         if verbose:
-            print('{} sources for {} patches and {} data points'.format(len(Ids), len(self.patch), len(xr)))
+            logger.info('{} sources for {} patches and {} data points'.format(len(Ids), len(self.patch), len(xr)))
 
         # Run EDKS Strike slip
         if 's' in slipdir:
             if verbose:
-                print('Running Strike Slip component for data set {}'.format(data.name))
+                logger.info('Running Strike Slip component for data set {}'.format(data.name))
             iGss = np.array(sum_layered(xs, ys, zs,
                                         strike, dip, np.zeros(dip.shape), slip,
                                         np.sqrt(Areas), np.sqrt(Areas), 1, 1,
                                         xr, yr, stratKernels, prefix, BIN_EDKS='EDKS_BIN',
                                         cleanUp=self.cleanUp, verbose=verbose))
             if verbose:
-                print('Summing sub-sources...')
+                logger.info('Summing sub-sources...')
             Gss = np.zeros((3, iGss.shape[1],np.unique(Ids).shape[0]))
             for Id in np.unique(Ids):
                 Gss[:,:,Id] = np.sum(iGss[:,:,np.flatnonzero(Ids==Id)], axis=2)
@@ -2310,14 +2507,14 @@ class Fault(SourceInv):
         # Run EDKS dip slip
         if 'd' in slipdir:
             if verbose:
-                print('Running Dip Slip component for data set {}'.format(data.name))
+                logger.info('Running Dip Slip component for data set {}'.format(data.name))
             iGds = np.array(sum_layered(xs, ys, zs,
                                         strike, dip, np.ones(dip.shape)*90.0, slip,
                                         np.sqrt(Areas), np.sqrt(Areas), 1, 1,
                                         xr, yr, stratKernels, prefix, BIN_EDKS='EDKS_BIN',
                                         cleanUp=self.cleanUp, verbose=verbose))
             if verbose:
-                print('Summing sub-sources...')
+                logger.info('Summing sub-sources...')
             Gds = np.zeros((3, iGds.shape[1], np.unique(Ids).shape[0]))
             for Id in np.unique(Ids):
                 Gds[:,:,Id] = np.sum(iGds[:,:,np.flatnonzero(Ids==Id)], axis=2)
@@ -2329,14 +2526,14 @@ class Fault(SourceInv):
         if 't' in slipdir:
             assert False, 'Sorry, this is not working so far... Bryan should get it done soon...'
             if verbose:
-                print('Running tensile component for data set {}'.format(data.name))
+                logger.info('Running tensile component for data set {}'.format(data.name))
             iGts = np.array(sum_layered(xs, ys, zs,
                                         strike, dip, np.zeros(dip.shape), slip,
                                         np.sqrt(Areas), np.sqrt(Areas), 1, 1,
                                         xr, yr, stratKernels, prefix,
                                         BIN_EDKS='EDKS_BIN', tensile=True, verbose=verbose))
             if verbose:
-                print('Summing sub-sources...')
+                logger.info('Summing sub-sources...')
             Gts = np.zeros((3, iGts.shape[1], np.unique(Ids).shape[0]))
             for Id in np.unique(Ids):
                 Gts[:, :,Id] = np.sum(iGts[:,:,np.flatnonzero(Ids==Id)], axis=2)
@@ -2352,14 +2549,11 @@ class Fault(SourceInv):
         return G
     # ----------------------------------------------------------------------
 
-    # ----------------------------------------------------------------------  
+    # ----------------------------------------------------------------------
     def pscmpGFs(self, data, vertical=True, slipdir='sd', verbose=True, convergence=None,
-                 workdir='pscmp_ecat', psgrndir='psgrnfcts', pscmpgrns='pscmpgrns', 
-                 n_jobs=4, cleanup_inp=True, force_recompute=True):
-        """
-        Compute PSCMP Green's functions for all patches in parallel.
-        Each patch uses its own input/output files and directories under workdir.
-    
+                 options=None):
+        """Compute PSCMP Green's functions for all patches in parallel.
+
         Parameters
         ----------
         data : object
@@ -2372,34 +2566,34 @@ class Fault(SourceInv):
             Print progress information.
         convergence : list or None
             Convergence azimuth and rate for coupling GFs.
-        workdir : str
-            Working directory for all intermediate and output files.
-        psgrndir : str
-            Directory for Green's functions, relative to workdir.
-        pscmpgrns : str
-            Directory for PSCMP outputs, relative to workdir.
-        n_jobs : int
-            Number of parallel workers.
-        cleanup_inp: bool
-            If True, clean up intermediate input files after processing.
-        force_recompute: bool
-            If True, force recomputation of Green's functions even if they already exist.
+        options : PscmpOptions or None
+            PSCMP configuration. Use PscmpOptions.describe_options() to see fields.
 
         Returns
         -------
         G : dict
             Dictionary of Green's functions.
         """
+        opts = options if isinstance(options, PscmpOptions) else PscmpOptions()
+
+        if data.dtype == 'crossfaultoffset':
+            return self._build_gfs_crossfaultoffset_via_gps_concat(
+                self.pscmpGFs, data, slipdir=slipdir,
+                vertical=True, verbose=verbose, convergence=convergence,
+                options=opts)
+
         import numpy as np
         import os
         import glob
         from concurrent.futures import ProcessPoolExecutor, as_completed
-    
-        # Prepare directories
-        psgrn_dir = psgrndir
-        out_dir = pscmpgrns
-    
-        # Build slip vector
+
+        n_jobs = opts.n_jobs if opts.n_jobs is not None else max(os.cpu_count() // 2, 4)
+        workdir = opts.workdir
+        psgrn_dir = opts.grn_dir
+        out_dir = opts.output_dir
+        cleanup_inp = opts.cleanup_inp
+        force_recompute = opts.force_recompute
+
         SLP = []
         if 's' in slipdir:
             SLP.append(1.0)
@@ -2419,28 +2613,23 @@ class Fault(SourceInv):
             SLP.append(1.0)
         else:
             SLP.append(0.0)
-    
-        # Allocate result arrays
+
         Nd = len(data.x)
         Np = len(self.patch)
         Gss = np.zeros((3, Nd, Np))
         Gds = np.zeros((3, Nd, Np))
         Gts = np.zeros((3, Nd, Np))
-    
-        # mean the fault source xy coordinates
+
         mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
         mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
 
-        # if self.patchType == 'triangle':
-        # Prepare arguments for each patch
         patch_args = []
         for p in range(Np):
             cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad = self.getpatchgeometry(p, center=True)
             patch_args.append((self, p, SLP, data, workdir, psgrn_dir, out_dir, verbose, Np,
-                            self.patch[p], self.patchll[p], self.patchType, self.name, force_recompute, 
+                            self.patch[p], self.patchll[p], self.patchType, self.name, force_recompute,
                             [cx_km, cy_km, depth_km, width_km, length_km, strike_rad, dip_rad]))
-    
-        # Parallel execution
+
         results = [None] * Np
         with ProcessPoolExecutor(max_workers=n_jobs) as pool:
             futures = [pool.submit(_pscmp_patch_task, arg) for arg in patch_args]
@@ -2450,24 +2639,20 @@ class Fault(SourceInv):
                 Gds[:, :, p] = ds.T
                 Gts[:, :, p] = ts.T
                 results[p] = (ss, ds, ts)
-    
-        if verbose:
-            print('')
 
-        # Optionally clean up input files
+        if verbose:
+            logger.info('')
+
         if cleanup_inp:
             inp_files = glob.glob(os.path.join(workdir, 'pscmp*.inp'))
             for f in inp_files:
-                # Keep patch_1 input file for user reference
                 if 'p1.inp' in f:
-                    # print(f"[INFO] Keep input file for patch_1: {f}")
                     continue
                 try:
                     os.remove(f)
                 except Exception as e:
-                    print(f"Warning: failed to remove {f}: {e}")
-    
-        # Build Green's function dictionary
+                    logger.warning("Failed to remove %s: %s", f, e)
+
         G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
                                convergence=convergence, vertical=vertical)
         return G
@@ -2475,11 +2660,8 @@ class Fault(SourceInv):
 
     # ----------------------------------------------------------------------
     def edcmpGFs(self, data, vertical=True, slipdir='sd', verbose=True,
-                workdir='edcmp_ecat', grn_dir='edgrnfcts', edcmpgrns='edcmpgrns',
-                layered_model=True, n_jobs=4, cleanup_inp=False, force_recompute=True):
-        """
-        Compute EDCMP Green's functions for all patches in parallel.
-        Each patch uses its own input/output files and directories under workdir.
+                convergence=None, options=None):
+        """Compute EDCMP Green's functions for all patches in parallel.
 
         Parameters
         ----------
@@ -2491,45 +2673,35 @@ class Fault(SourceInv):
             Slip directions, any combination of 's' (strike), 'd' (dip), 't' (tensile).
         verbose : bool
             Print progress information.
-        workdir : str
-            Working directory for all intermediate and output files.
-        grn_dir : str
-            Directory for Green's functions, relative to workdir.
-        edcmpgrns : str
-            Directory for EDCMP outputs, relative to workdir.
-        layered_model : bool
-            Use layered model for Green's functions.
-        n_jobs : int
-            Number of parallel workers.
-        cleanup_inp: bool
-            If True, clean up intermediate input files after processing.
-        force_recompute: bool
-            If True, force recomputation of Green's functions even if they already exist.
+        convergence : list or None
+            Convergence azimuth and rate for coupling GFs.
+        options : EdcmpOptions or None
+            EDCMP configuration. Use EdcmpOptions.describe_options() to see fields.
 
         Returns
         -------
         G : dict
             Dictionary of Green's functions.
         """
+        opts = options if isinstance(options, EdcmpOptions) else EdcmpOptions()
+
+        if data.dtype == 'crossfaultoffset':
+            return self._build_gfs_crossfaultoffset_via_gps_concat(
+                self.edcmpGFs, data, slipdir=slipdir,
+                vertical=True, verbose=verbose,
+                options=opts)
+
         import numpy as np
         import os
         import glob
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        # Build slip vector
-        SLP = []
-        if 's' in slipdir:
-            SLP.append(1.0)
-        else:
-            SLP.append(0.0)
-        if 'd' in slipdir:
-            SLP.append(1.0)
-        else:
-            SLP.append(0.0)
-        if 't' in slipdir:
-            SLP.append(1.0)
-        else:
-            SLP.append(0.0)
+        if self.patchType == 'triangle' and not opts.allow_triangle:
+            raise ValueError(
+                "Triangle patches with method='edcmp' require edcmp_allow_triangle=True"
+            )
+
+        SLP = [1.0 if c in slipdir else 0.0 for c in 'sdt']
 
         Nd = len(data.x)
         Np = len(self.patch)
@@ -2537,60 +2709,172 @@ class Fault(SourceInv):
         Gds = np.zeros((3, Nd, Np))
         Gts = np.zeros((3, Nd, Np))
 
-        # Compute mean coordinates for all patches
-        mean_x_km = np.mean([np.mean([p[i][0] for i in range(len(p))]) for p in self.patch])
-        mean_y_km = np.mean([np.mean([p[i][1] for i in range(len(p))]) for p in self.patch])
+        if opts.n_jobs is None:
+            n_jobs = max(os.cpu_count() // 2, 4)
+            if verbose:
+                logger.info("n_jobs=None, auto-detected %d workers", n_jobs)
+        else:
+            n_jobs = int(opts.n_jobs)
 
-        if not hasattr(self, 'patch_source_for_edcmp') or self.patch_source_for_edcmp is None or len(self.patch_source_for_edcmp) != Np:
-            # --- Step 1: Precompute patch geometry for all patches (avoid calling self.getpatchgeometry in parallel) ---
-            patch_geometries = [self.getpatchgeometry(p, center=True) for p in range(Np)]
+        resolved_engine = resolve_edcmp_engine(
+            opts.engine,
+            fallback_engines=opts.fallback_engines,
+            module_dir=opts.module_dir,
+        )
+        if resolved_engine != 'exe' and not opts.layered_model:
+            logger.warning(
+                "EDCMP engine '%s' only supports layered Green's functions; falling back to exe backend.",
+                resolved_engine,
+            )
+            resolved_engine = 'exe'
+        if verbose:
+            logger.info("EDCMP backend engine: %s", resolved_engine)
 
-            # --- Step 2: Precompute all patch source parameters (can be parallelized if needed) ---
-            patchType = self.patchType
-            patch_args = [(p, patchType, patch_geometries[p], self.patch[p], mean_x_km, mean_y_km) for p in range(Np)]
-            with ProcessPoolExecutor(max_workers=n_jobs) as pool:
-                results = list(pool.map(_prepare_patch_source_wrapper, patch_args))
-            # Keep the order same as patch_args
-            results.sort(key=lambda x: x[0])
-            self.patch_source_for_edcmp = [sourceparams for p, sourceparams in results]
-            # print('patch_source_for_edcmp has been calculated again!')
+        patch_sources, mean_x_km, mean_y_km = _get_edcmp_patch_sources(
+            self,
+            n_jobs,
+            rect_dx_km=opts.triangle_rect_dx_km,
+            rect_dy_km=opts.triangle_rect_dy_km,
+        )
+        bundle_sizes = [_edcmp_source_bundle_size(source) for source in patch_sources]
+        total_rects = int(sum(bundle_sizes))
+        if verbose:
+            logger.info(
+                "EDCMP-%s: %d patches, %d equivalent rectangles",
+                resolved_engine, Np, total_rects,
+            )
 
-        # --- Step 3: Prepare arguments for parallel computation ---
-        patch_args = []
-        for p in range(Np):
-            patch_args.append((p, SLP, data, workdir, grn_dir, edcmpgrns, layered_model, verbose, Np,
-                            mean_x_km, mean_y_km, self.patch[p], self.patchType, self.name, force_recompute,
-                            self.patch_source_for_edcmp[p]))
-
-        # --- Step 4: Parallel execution ---
-        results = [None] * Np
-        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
-            futures = [pool.submit(_edcmp_patch_task, arg) for arg in patch_args]
-            for i, future in enumerate(tqdm(as_completed(futures), total=Np)):
-                p, ss, ds, ts = future.result()
-                Gss[:, :, p] = ss.T
-                Gds[:, :, p] = ds.T
-                Gts[:, :, p] = ts.T
-                results[p] = (ss, ds, ts)
+        data_lite = _lightweight_data(data)
+        if resolved_engine == 'exe':
+            self._edcmpGFs_exe(
+                data_lite, SLP, Np, Gss, Gds, Gts,
+                patch_sources, mean_x_km, mean_y_km,
+                opts.workdir, opts.grn_dir, opts.output_dir, opts.layered_model,
+                n_jobs, opts.force_recompute, verbose,
+            )
+        else:
+            self._edcmpGFs_inmemory(
+                data, data_lite, SLP, Np, Gss, Gds, Gts,
+                patch_sources, bundle_sizes,
+                resolved_engine, opts.module_dir,
+                opts.grn_dir, opts.workdir, n_jobs, verbose,
+            )
 
         if verbose:
-            print('')
+            sys.stdout.write('\n')
+            sys.stdout.flush()
 
-        # Optionally clean up input files
-        if cleanup_inp:
-            inp_files = glob.glob(os.path.join(workdir, 'edcmp*.inp'))
+        if opts.cleanup_inp and resolved_engine == 'exe':
+            inp_files = glob.glob(os.path.join(opts.workdir, 'edcmp*.inp'))
             for f in inp_files:
                 if 'p1.inp' in f:
                     continue
                 try:
                     os.remove(f)
                 except Exception as e:
-                    print(f"Warning: failed to remove {f}: {e}")
+                    logger.warning("Failed to remove %s: %s", f, e)
 
-        # Build Green's function dictionary
         G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
-                            convergence=None, vertical=vertical)
+                            convergence=convergence, vertical=vertical)
         return G
+
+    def _edcmpGFs_exe(self, data_lite, SLP, Np, Gss, Gds, Gts,
+                      patch_sources, mean_x_km, mean_y_km,
+                      workdir, grn_dir, output_dir, layered_model,
+                      n_jobs, force_recompute, verbose):
+        """Run EDCMP Green's function computation via exe subprocess."""
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        patch_args = []
+        for p in range(Np):
+            patch_args.append((p, SLP, data_lite, workdir, grn_dir, output_dir, layered_model, verbose, Np,
+                            mean_x_km, mean_y_km, self.patch[p], self.patchType, self.name, force_recompute,
+                            patch_sources[p]))
+
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            futures = [pool.submit(_edcmp_patch_task, arg) for arg in patch_args]
+            for future in tqdm(as_completed(futures), total=Np, desc="EDCMP-exe"):
+                p, ss, ds, ts = future.result()
+                Gss[:, :, p] = ss.T
+                Gds[:, :, p] = ds.T
+                Gts[:, :, p] = ts.T
+
+    def _edcmpGFs_inmemory(self, data, data_lite, SLP, Np, Gss, Gds, Gts,
+                           patch_sources, bundle_sizes,
+                           resolved_engine, edcmp_module_dir,
+                           grn_dir, workdir, n_jobs, verbose):
+        """Run EDCMP Green's function computation via in-memory ctypes backend."""
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        if n_jobs > 1:
+            from csi.edgrn_edcmp.shared_memory_backend import create_shared_greens
+            from csi.edgrn_edcmp.edcmp_backends import _init_shared_memory_worker
+
+            if verbose:
+                logger.info("Creating shared memory for Green's functions...")
+
+            shared_grn, shm_metadata = create_shared_greens(
+                engine=resolved_engine,
+                grn_dir=grn_dir,
+                workdir=workdir,
+                module_dir=edcmp_module_dir
+            )
+
+            if verbose:
+                total_bytes = sum(np.prod(arr['shape']) * 8 for arr in shm_metadata['arrays'].values())
+                logger.info(f"Shared memory created, size: {total_bytes / 1024 / 1024:.1f} MB")
+
+            try:
+                patch_args = [
+                    (
+                        p,
+                        patch_sources[p],
+                        SLP,
+                        data_lite,
+                        grn_dir,
+                        workdir,
+                        resolved_engine,
+                        edcmp_module_dir,
+                    )
+                    for p in range(Np)
+                ]
+                with ProcessPoolExecutor(
+                    max_workers=n_jobs,
+                    initializer=_init_shared_memory_worker,
+                    initargs=(shm_metadata,),
+                ) as pool:
+                    progress_iter = as_completed([pool.submit(_single_patch_inmemory_greens, arg) for arg in patch_args])
+                    if verbose:
+                        progress_iter = tqdm(progress_iter, total=Np, desc=f"EDCMP-{resolved_engine}")
+                    for future in progress_iter:
+                        p, ss, ds, ts = future.result()
+                        Gss[:, :, p] = ss.T
+                        Gds[:, :, p] = ds.T
+                        Gts[:, :, p] = ts.T
+            finally:
+                shared_grn.cleanup()
+                if verbose:
+                    logger.info("Shared memory cleaned up")
+        else:
+            for p in range(Np):
+                if verbose:
+                    sys.stdout.write(
+                        f"\r EDCMP-{resolved_engine} patch: {p+1} / {Np} "
+                        f"(bundle={bundle_sizes[p]} rects) "
+                    )
+                    sys.stdout.flush()
+                ss, ds, ts = compute_inmemory_edcmp_greens(
+                    data,
+                    patch_sources[p],
+                    slip=SLP,
+                    engine=resolved_engine,
+                    grn_dir=grn_dir,
+                    workdir=workdir,
+                    module_dir=edcmp_module_dir,
+                )
+                Gss[:, :, p] = ss.T
+                Gds[:, :, p] = ds.T
+                Gts[:, :, p] = ts.T
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -2603,14 +2887,19 @@ class Fault(SourceInv):
         The cutde code uses a different coordinate system with z-axis pointing upward instead of downward.
         The vertex order of each patch need to be counter-clockwise when viewed from above.
         """
+        if data.dtype == 'crossfaultoffset':
+            return self.cutdeGFs_crossfaultoffset(data, slipdir=slipdir,
+                                                  verbose=verbose,
+                                                  convergence=convergence,
+                                                  nu=nu)
+
         from cutde.halfspace import disp_matrix
 
         # Print
         if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print("Building Green's functions for the data set ")
-            print("{} of type {} in a homogeneous elastic half-space by a parallel code cutde".format(data.name,
+            logger.info('---------------------------------')
+            logger.info("Building Green's functions for the data set ")
+            logger.info("{} of type {} in a homogeneous elastic half-space by a parallel code cutde".format(data.name,
                                                                     data.dtype))
 
         # Create the dictionary
@@ -2632,17 +2921,15 @@ class Fault(SourceInv):
 
         disp_mat = disp_matrix(obs_pts, src_tris, nu)
 
-        # Using list comprehension and numpy's transpose function to transpose each dimension of disp_mat.
-        # Here, 'i' varies from 0 to 2, corresponding to each element of the last dimension of disp_mat.
-        # The argument (1, 0, 2) for the transpose function represents the new order of the axes, 
-        # where the original second axis becomes the first, the original first axis becomes the second, 
-        # and the third axis remains unchanged.
-        # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
+        # disp_mat has shape (Nd, 3_component, Np, 3_slip).
+        # disp_mat[:, :, :, i] has shape (Nd, 3_component, Np).
+        # Transpose with (1, 0, 2) to get (3_component, Nd, Np) which is the
+        # standard GF shape expected by _buildGFsdict (axis-0 = E/N/U).
         # Gss.shape = (3, Nd, Np), where Nd is number of data points, Np is number of patches
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
 
         if verbose:
-            print(' ')
+            logger.info(' ')
 
         # Build the dictionary
         G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
@@ -2666,10 +2953,9 @@ class Fault(SourceInv):
 
         # Print
         if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print("Building Green's functions for the data set ")
-            print("{} of type {} in a homogeneous elastic half-space by a parallel code cutde".format(data.name,
+            logger.info('---------------------------------')
+            logger.info("Building Green's functions for the data set ")
+            logger.info("{} of type {} in a homogeneous elastic half-space by a parallel code cutde".format(data.name,
                                                                     data.dtype))
 
         # Create the dictionary
@@ -2691,14 +2977,13 @@ class Fault(SourceInv):
 
         disp_mat = disp_matrix(obs_pts, src_tris, nu)
 
-        # Using list comprehension and numpy's transpose function to transpose each dimension of disp_mat.
-        # Here, 'i' varies from 0 to 2, corresponding to each element of the last dimension of disp_mat.
-        # The argument (1, 0, 2) for the transpose function represents the new order of the axes, where the original second axis becomes the first, the original first axis becomes the second, and the third axis remains unchanged.
-        # Finally, the transposed results are assigned to Gss, Gds, and Gts respectively.
+        # disp_mat has shape (Nd, 3_component, Np, 3_slip).
+        # disp_mat[:, :, :, i] has shape (Nd, 3_component, Np).
+        # Transpose with (1, 0, 2) to get (3_component, Nd, Np) — standard GF shape.
         Gss, Gds, Gts = [np.transpose(disp_mat[:, :, :, i], (1, 0, 2)) for i in range(3)]
 
         if verbose:
-            print(' ')
+            logger.info(' ')
 
         # # Build the dictionary
         # G = self._buildGFsdict(data, Gss, Gds, Gts, slipdir=slipdir,
@@ -2706,6 +2991,222 @@ class Fault(SourceInv):
         
         # All done
         return Gss, Gds, Gts
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def cutdeGFs_crossfaultoffset(self, data, slipdir='sd', verbose=True, 
+                                   convergence=None, nu=0.25):
+        """
+        Builds the Green's functions for cross-fault offset data using cutde.
+
+        For each point pair, computes the displacement difference (side2 - side1)
+        and projects it onto fault-parallel and fault-perpendicular directions.
+
+        Args:
+            * data      : crossfaultoffset data object
+
+        Kwargs:
+            * slipdir       : Direction of slip ('s', 'd', 't', 'c')
+            * verbose       : Talk to me
+            * convergence   : Convergence azimuth and rate [azimuth in deg, rate]
+            * nu            : Poisson's ratio (default 0.25)
+
+        Returns:
+            * G             : Dictionary of GFs
+        """
+        from cutde.halfspace import disp_matrix
+
+        assert data.dtype == 'crossfaultoffset', \
+            'Only works for crossfaultoffset data type: {}'.format(data.dtype)
+
+        if verbose:
+            logger.info('---------------------------------')
+            logger.info("Building Green's functions for cross-fault offset data set ")
+            logger.info("{} using cutde".format(data.name))
+
+        # Source triangles
+        src_tris = self.Vertices[self.Faces, :]
+        src_tris[:, :, -1] *= -1  # cutde uses z-up
+
+        n_pairs = len(data.station)
+        n_patches = len(self.patch)
+
+        # Observation points for side 1
+        obs1 = np.column_stack([data.x1, data.y1, np.zeros(n_pairs)])
+        obs1 = np.ascontiguousarray(obs1)
+
+        # Observation points for side 2
+        obs2 = np.column_stack([data.x2, data.y2, np.zeros(n_pairs)])
+        obs2 = np.ascontiguousarray(obs2)
+
+        # Compute displacement matrices
+        # disp_mat shape: (n_obs, 3_disp, n_patches, 3_slip)
+        disp_mat1 = disp_matrix(obs1, src_tris, nu)
+        disp_mat2 = disp_matrix(obs2, src_tris, nu)
+
+        # Differential displacement: side2 - side1
+        diff_disp = disp_mat2 - disp_mat1  # (n_pairs, 3_disp, n_patches, 3_slip)
+
+        # Convert to (3, n_pairs, n_patches) for shared projection helper
+        # diff_disp[:,:,:,i] shape: (n_pairs, 3_E/N/U, n_patches)
+        dGss = np.transpose(diff_disp[:, :, :, 0], (1, 0, 2))
+        dGds = np.transpose(diff_disp[:, :, :, 1], (1, 0, 2))
+        dGts = np.transpose(diff_disp[:, :, :, 2], (1, 0, 2))
+
+        if verbose:
+            logger.info('Done building GFs for {}'.format(data.name))
+
+        return self._project_crossfaultoffset_from_diff_GFs(
+            data, dGss, dGds, dGts, slipdir, convergence)
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def _project_crossfaultoffset_from_diff_GFs(self, data, dGss, dGds, dGts,
+                                                 slipdir, convergence):
+        """
+        Shared helper: project differential GF tensors (side2 - side1) onto
+        crossfaultoffset observation space.
+
+        Args:
+            * data          : crossfaultoffset data object
+            * dGss/dGds/dGts: shape (3, n_pairs, n_patches)
+                              axis-0: [E, N, U] displacement components
+                              differential = side2 - side1
+            * slipdir       : slip direction string ('s','d','t','c')
+            * convergence   : coupling params [azimuth_deg, rate] or None
+
+        Returns:
+            * G             : dictionary of projected GF matrices
+        """
+        n_pairs = len(data.station)
+
+        # Build projection rules: parallel → perpendicular → vertical
+        components = []
+        if data.fault_parallel is not None:
+            fp_e = -np.sin(data.strike)  # (-sin s, cos s) in (E, N)
+            fp_n =  np.cos(data.strike)
+            components.append(('horizontal', fp_e, fp_n))
+        if data.fault_perpendicular is not None:
+            fn_e =  np.cos(data.strike)  # (cos s, sin s) in (E, N)
+            fn_n =  np.sin(data.strike)
+            components.append(('horizontal', fn_e, fn_n))
+        if data.fault_vertical is not None:
+            components.append(('vertical', None, None))
+
+        G = {'strikeslip': None, 'dipslip': None, 'tensile': None, 'coupling': None}
+
+        for slip_char, slip_key, dG in zip('sdt',
+                                            ['strikeslip', 'dipslip', 'tensile'],
+                                            [dGss, dGds, dGts]):
+            if slip_char not in slipdir:
+                continue
+            rows = []
+            for comp_type, ve, vn in components:
+                if comp_type == 'horizontal':
+                    proj = ve[:, None] * dG[0] + vn[:, None] * dG[1]  # (n_pairs, n_patches)
+                else:
+                    proj = dG[2]  # U differential
+                rows.append(proj)
+            G[slip_key] = np.vstack(rows)  # (n_comp * n_pairs, n_patches)
+
+        if 'c' in slipdir:
+            assert convergence is not None, 'No convergence azimuth and rate given'
+            azimuth, rate = convergence
+            azimuth_rad = azimuth * np.pi / 180.
+            strike_arr = self.getStrikes()
+            dip_arr    = self.getDips()
+            rotation = np.arctan2(
+                np.tan(strike_arr) - np.tan(azimuth_rad),
+                np.cos(dip_arr) * (1. + np.tan(azimuth_rad) * np.tan(strike_arr)))
+            if azimuth > 90. and azimuth <= 270.:
+                rotation += np.pi
+            rows = []
+            for comp_type, ve, vn in components:
+                if comp_type == 'horizontal':
+                    proj_ss = ve[:, None] * dGss[0] + vn[:, None] * dGss[1]
+                    proj_ds = ve[:, None] * dGds[0] + vn[:, None] * dGds[1]
+                else:
+                    proj_ss = dGss[2]
+                    proj_ds = dGds[2]
+                proj_c = (proj_ss * np.cos(rotation)[None, :] +
+                          proj_ds * np.sin(rotation)[None, :]) * rate
+                rows.append(proj_c)
+            G['coupling'] = np.vstack(rows)
+
+        return G
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    def _build_gfs_crossfaultoffset_via_gps_concat(self, method, data, **method_kwargs):
+        """
+        Generic crossfaultoffset GF builder via GPS-format concatenation.
+
+        Concatenates side1 and side2 observation points into a mock GPS data object,
+        calls the given GF method to obtain a 6N-row GPS-format G dict, then
+        extracts E/N/U differentials (side2 - side1) and projects onto
+        fault-parallel / fault-perpendicular / vertical directions.
+
+        This decouples the crossfaultoffset projection logic from each backend
+        (homogeneous, EDKS, PSCMP, EDCMP), letting them share one implementation.
+
+        Args:
+            * method        : bound GF method, e.g. self.homogeneousGFs
+            * data          : crossfaultoffset data object
+            * **method_kwargs : kwargs forwarded to method (slipdir, verbose, etc.)
+
+        Returns:
+            * G             : crossfaultoffset-projected GF dict
+        """
+        n = len(data.station)
+        slipdir    = method_kwargs.pop('slipdir', 'sd')
+        convergence = method_kwargs.pop('convergence', None)
+
+        # Ensure ss and ds are computed when coupling is requested
+        raw_slipdir = slipdir
+        if 'c' in slipdir:
+            if 's' not in slipdir:
+                slipdir = slipdir + 's'
+            if 'd' not in slipdir:
+                slipdir = slipdir + 'd'
+
+        # backend_slipdir: strip 'c' — coupling is computed by the projection helper,
+        # not by the GPS-format backend method
+        backend_slipdir = ''.join(c for c in slipdir if c != 'c')
+
+        # Create a GPS-like mock with 2N observation points (side1 || side2)
+        class _GPSMock:
+            dtype = 'gps'
+        mock = _GPSMock()
+        mock.x   = np.concatenate([data.x1,   data.x2])
+        mock.y   = np.concatenate([data.y1,   data.y2])
+        mock.lon = np.concatenate([data.lon1, data.lon2])
+        mock.lat = np.concatenate([data.lat1, data.lat2])
+        mock.name = data.name
+
+        # Call the backend method with the mock (dtype='gps' avoids re-dispatch).
+        # We do NOT pass convergence here: coupling is handled entirely by
+        # _project_crossfaultoffset_from_diff_GFs using dGss and dGds.
+        G_gps = method(mock, slipdir=backend_slipdir, **method_kwargs)
+
+        # G_gps format for GPS vertical=True: shape (6N, Np) per component
+        # Row layout: [E_0..E_{2N-1}, N_0..N_{2N-1}, U_0..U_{2N-1}]
+        # obs 0..N-1 = side1,  obs N..2N-1 = side2
+        Np = len(self.patch)
+        dGss = np.zeros((3, n, Np))
+        dGds = np.zeros((3, n, Np))
+        dGts = np.zeros((3, n, Np))
+
+        for slip_char, dG, key in zip('sdt', [dGss, dGds, dGts],
+                                       ['strikeslip', 'dipslip', 'tensile']):
+            if slip_char not in slipdir or G_gps.get(key) is None:
+                continue
+            M = G_gps[key]  # (6N, Np)
+            dG[0] = M[n:2*n,     :] - M[0:n,     :]  # dE
+            dG[1] = M[3*n:4*n,   :] - M[2*n:3*n, :]  # dN
+            dG[2] = M[5*n:6*n,   :] - M[4*n:5*n, :]  # dU
+
+        return self._project_crossfaultoffset_from_diff_GFs(
+            data, dGss, dGds, dGts, raw_slipdir, convergence)
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -2734,14 +3235,13 @@ class Fault(SourceInv):
         '''
 
         if self.verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print("Set up Green's functions for fault {}".format(self.name))
-            print("and data {} from files: ".format(data.name))
-            print("     strike slip: {}".format(strikeslip))
-            print("     dip slip:    {}".format(dipslip))
-            print("     tensile:     {}".format(tensile))
-            print("     coupling:    {}".format(coupling))
+            logger.info('---------------------------------')
+            logger.info("Set up Green's functions for fault {}".format(self.name))
+            logger.info("and data {} from files: ".format(data.name))
+            logger.info("     strike slip: {}".format(strikeslip))
+            logger.info("     dip slip:    {}".format(dipslip))
+            logger.info("     tensile:     {}".format(tensile))
+            logger.info("     coupling:    {}".format(coupling))
 
         # Get the number of patches
         if self.N_slip is None:
@@ -2816,16 +3316,25 @@ class Fault(SourceInv):
         '''
 
         # Get the number of data per point
-        data_types = ['insar', 'tsunami', 'gps', 'multigps', 'opticorr']
-        obs_per_station = [1, 1, 0, 0, 2]
-        data.obs_per_station = obs_per_station[data_types.index(data.dtype)]
+        data_types = ['insar', 'tsunami', 'gps', 'multigps', 'opticorr', 'crossfaultoffset', 'leveling']
+        obs_per_station = [1, 1, 0, 0, 2, 0, 1]
+        if data.dtype == 'crossfaultoffset':
+            # obs_per_station is dynamic (property) for crossfaultoffset
+            pass
+        elif data.dtype == 'leveling':
+            # leveling obs_per_station is always 1, already set in class
+            pass
+        else:
+            data.obs_per_station = obs_per_station[data_types.index(data.dtype)]
 
         # Check components
         if data.dtype in ('gps', 'multigps'):
             data.obs_per_station += sum(~np.isnan(data.vel_enu[:, :2]).any(axis=0))
             if vertical:
                 if np.isnan(data.vel_enu[:,2]).any():
-                    raise ValueError('Vertical can only be true if all stations have vertical components')
+                    msg = 'Vertical can only be true if all stations have vertical components'
+                    logger.error(msg)
+                    raise ValueError(msg)
                 data.obs_per_station += 1
         elif data.dtype == 'opticorr':
             if vertical:
@@ -2847,6 +3356,10 @@ class Fault(SourceInv):
                 self.d[data.name] = np.hstack((data.east.T.flatten(), data.north.T.flatten()))
                 if vertical:
                     self.d[data.name] = np.hstack((self.d[data.name], np.zeros_like(data.east.T.ravel())))
+            elif data.dtype == 'crossfaultoffset':
+                self.d[data.name] = data.data_vector
+            elif data.dtype == 'leveling':
+                self.d[data.name] = data.vel
 
         for gf_type, gf_values in zip(['strikeslip', 'dipslip', 'tensile', 'coupling'], [strikeslip, dipslip, tensile, coupling]):
             if len(gf_values) == 3:
@@ -3002,9 +3515,8 @@ class Fault(SourceInv):
 
         # print
         if verbose:
-            print ("---------------------------------")
-            print ("---------------------------------")
-            print("Assembling G for fault {}".format(self.name))
+            logger.info("---------------------------------")
+            logger.info("Assembling G for fault {}".format(self.name))
 
         # Store the assembled slip directions
         self.slipdir = slipdir
@@ -3020,13 +3532,23 @@ class Fault(SourceInv):
         if polys.__class__ is not list:
             for data in datas:
                 if (polys.__class__ is not str) and (polys is not None):
-                    self.poly[data.name] = polys*data.obs_per_station
+                    if data.dtype == 'crossfaultoffset':
+                        self.poly[data.name] = polys
+                    elif data.dtype == 'leveling':
+                        self.poly[data.name] = polys
+                    else:
+                        self.poly[data.name] = polys*data.obs_per_station
                 else:
                     self.poly[data.name] = polys
         elif polys.__class__ is list:
             for data, poly in zip(datas, polys):
                 if (poly.__class__ is not str) and (poly is not None) and (poly.__class__ is not list):
-                    self.poly[data.name] = poly*data.obs_per_station
+                    if data.dtype == 'crossfaultoffset':
+                        self.poly[data.name] = poly
+                    elif data.dtype == 'leveling':
+                        self.poly[data.name] = poly
+                    else:
+                        self.poly[data.name] = poly*data.obs_per_station
                 else:
                     self.poly[data.name] = poly
 
@@ -3096,11 +3618,12 @@ class Fault(SourceInv):
                     self.transformation[data.name] = tmpNpo
             elif transformation is not None:
                 # 1 or 3 only represent ramp correction, not a real transformation
+                tmpNpo = data.getNumberOfTransformParameters(transformation)
                 self.transform_indices[data.name] = {
-                    'polynomial': (global_transform_start + Npo, global_transform_start + Npo + transformation)
+                    'polynomial': (global_transform_start + Npo, global_transform_start + Npo + tmpNpo)
                 }
-                Npo += transformation
-                self.numberofpolys[data.name] = transformation
+                Npo += tmpNpo
+                self.numberofpolys[data.name] = tmpNpo
                 
         Np = Nps + Npo
 
@@ -3124,18 +3647,18 @@ class Fault(SourceInv):
             Npc = 0
 
         if verbose:
-            print(f"Parameter summary:")
-            print(f"  Slip parameters: {Nps} (indices 0-{Nps-1})")
-            print(f"  Transform parameters: {Npo} (indices {Nps}-{Nps+Npo-1})")
+            logger.info(f"Parameter summary:")
+            logger.info(f"  Slip parameters: {Nps} (indices 0-{Nps-1})")
+            logger.info(f"  Transform parameters: {Npo} (indices {Nps}-{Nps+Npo-1})")
             if custom:
-                print(f"  Custom parameters: {Npc} (indices {Nps+Npo}-{Np-1})")
-            print(f"  Total parameters: {Np}")
+                logger.info(f"  Custom parameters: {Npc} (indices {Nps+Npo}-{Np-1})")
+            logger.info(f"  Total parameters: {Np}")
             
             # Display transformation parameter positions for each dataset
             for data_name, transform_dict in self.transform_indices.items():
-                print(f"  {data_name} transforms:")
+                logger.info(f"  {data_name} transforms:")
                 for trans_name, (start, end) in transform_dict.items():
-                    print(f"    {trans_name}: indices {start}-{end-1}")
+                    logger.info(f"    {trans_name}: indices {start}-{end-1}")
 
         # Get the number of data
         Nd = 0
@@ -3162,7 +3685,7 @@ class Fault(SourceInv):
 
             # print
             if verbose:
-                print("Dealing with {} of type {}".format(data.name, data.dtype))
+                logger.info("Dealing with {} of type {}".format(data.name, data.dtype))
 
             # Elastic Green's functions
 
@@ -3202,6 +3725,10 @@ class Fault(SourceInv):
                     orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact, verbose=verbose)
                 elif data.dtype == 'tsunami':
                     orb = data.getRampEstimator(self.poly[data.name])
+                elif data.dtype == 'crossfaultoffset':
+                    orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact)
+                elif data.dtype == 'leveling':
+                    orb = data.getTransformEstimator(self.poly[data.name], computeNormFact=computeNormFact)
 
                 # Number of columns
                 nc = orb.shape[1]
@@ -3254,7 +3781,7 @@ class Fault(SourceInv):
         for data in datas:
             # Fill in Cd
             if verbose:
-                print("{0}: data vector shape {1}".format(data.name, self.d[data.name].shape))
+                logger.info("{0}: data vector shape {1}".format(data.name, self.d[data.name].shape))
             se = st + self.d[data.name].shape[0]
             Cd[st:se, st:se] = data.Cd
             # Add some Cp if asked
@@ -3478,7 +4005,7 @@ class Fault(SourceInv):
                 / (np.unique(self.centers[:,2]).size))
             lam0 = np.sqrt(xd**2 + yd**2 + zd**2)
         if verbose:
-            print("Lambda0 = {}".format(lam0))
+            logger.info("Lambda0 = {}".format(lam0))
         C = (sigma * lam0 / lam)**2
 
         # Creates the principal Cm matrix
@@ -3569,7 +4096,7 @@ class Fault(SourceInv):
                 / (np.unique(self.centers[:,2]).size))
             lam0 = np.sqrt(xd**2 + yd**2 + zd**2)
         if verbose:
-            print("Lambda0 = {}".format(lam0))
+            logger.info("Lambda0 = {}".format(lam0))
         C = (sigma * lam0 / lam[0]) * (sigma * lam0 / lam[1])
 
         # Creates the principal Cm matrix
@@ -3875,7 +4402,7 @@ class Fault(SourceInv):
                     assert False, 'No value called {}'.format(slip)
 
         # Write something
-        print('Writing geometry to file {}'.format(filename))
+        logger.info('Writing geometry to file {}'.format(filename))
 
         # Open the file
         fout = open(filename, 'w')
@@ -4215,6 +4742,14 @@ class Fault(SourceInv):
             # If InSAR, do the dot product with the los
             # print(data.los.shape, Gss.shape)
             Gss, Gds, Gts, Gcs = [np.einsum('ij,ijk->ik', data.los, np.transpose(G, (1, 0, 2))) if s in slipdir else G for G, s in zip([Gss, Gds, Gts, Gcs], 'sdtc')]
+        elif data.dtype == 'leveling':
+            # Leveling uses only the vertical (U) component — index 2
+            Gss, Gds, Gts, Gcs = [G[2, :, :] if s in slipdir else G for G, s in zip([Gss, Gds, Gts, Gcs], 'sdtc')]
+        elif data.dtype == 'crossfaultoffset':
+            raise RuntimeError(
+                'crossfaultoffset GFs must be projected before _buildGFsdict. '
+                'Use cutdeGFs / homogeneousGFs / edksGFs / pscmpGFs / edcmpGFs which '
+                'dispatch to the crossfaultoffset-specific handler automatically.')
 
         # Create the dictionary
         G = {'strikeslip':[], 'dipslip':[], 'tensile':[], 'coupling':[]}

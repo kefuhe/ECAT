@@ -209,7 +209,7 @@ class FaultAnalysisMixin:
                 
                 # Calculate seismic moment: Mo = μ * A * D
                 patch_areas = getattr(ifault, 'area', ifault.compute_patch_areas())
-                areas = np.array(patch_areas) * 1e6  # Convert km² to m²
+                areas = np.array(patch_areas) * 1e6  # Convert km^2 to m^2
                 moment = np.sum(mu * areas * total_slip)
                 
                 # Calculate moment magnitude using Hankel formula
@@ -465,7 +465,7 @@ class FaultAnalysisMixin:
                 
                 # Calculate seismic moment
                 patch_areas = getattr(ifault, 'area', ifault.compute_patch_areas())
-                areas = np.array(patch_areas) * 1e6  # Convert km² to m²
+                areas = np.array(patch_areas) * 1e6  # Convert km^2 to m^2
                 mu = getattr(self, 'shear_modulus', 3e10)  # Default shear modulus
                 moment = np.sum(mu * areas * total_slip)
                 moment_magnitude = 2.0 / 3.0 * (np.log10(moment) - 9.1)
@@ -571,6 +571,12 @@ class FaultAnalysisMixin:
         elif data.dtype in ('opticorr', 'optical'):
             observed = np.hstack((data.east, data.north))
             synthetic = np.hstack((data.east_synth, data.north_synth))
+        elif data.dtype == 'leveling':
+            observed = data.vel
+            synthetic = data.synth
+        elif data.dtype == 'crossfaultoffset':
+            observed = data.data_vector
+            synthetic = data.synth_vector
         else:
             raise ValueError(f"Unsupported data type: {data.dtype}")
         

@@ -1,0 +1,12 @@
+# eqtools — minimal style
+# Clean: no top/right spines, no minor ticks, no grid.
+# Designed to layer on top of another preset (e.g. science + minimal).
+
+axes.spines.top         : False
+axes.spines.right       : False
+xtick.top               : False
+ytick.right             : False
+xtick.minor.visible     : False
+ytick.minor.visible     : False
+axes.grid               : False
+legend.frameon          : False

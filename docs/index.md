@@ -22,7 +22,8 @@
 | --- | --- | --- | --- |
 | 安装并跑通最小路线 | [安装与环境检查](getting_started/installation.md), [标准两步走路线](getting_started/quickstart_two_step.md) | [Wushi](casebook/wushi_nonlinear_geometry.md), [Dingri](casebook/dingri_blse_vce.md) | [CLI 命令参考](reference/cli.md) |
 | 读入 InSAR/GPS 数据 | [InSAR 与 GPS 数据读取](workflows/01_data_reading_insar_gps.md) | [Ridgecrest](casebook/ridgecrest_gps_insar.md), [Wushi](casebook/wushi_nonlinear_geometry.md) | [SAR Reader 参考](reference/sar_reader.md) |
-| 从原始 SAR/offset 生成反演输入 | [InSAR 降采样](workflows/02_insar_downsampling.md), [降采样两步走](workflows/02a_insar_downsampling_two_step.md) | [InSAR 降采样案例](casebook/insar_downsampling_gamma_geotiff.md) | [CLI 命令参考](reference/cli.md), [SAR Reader 参考](reference/sar_reader.md) |
+| 从原始 SAR/offset 生成反演输入 | [InSAR 降采样](workflows/02_insar_downsampling.md), [降采样两步走](workflows/02a_insar_downsampling_two_step.md) | [InSAR/Offset 降采样案例](casebook/insar_downsampling_gamma_geotiff.md) | [降采样超级入口参考](reference/downsampling_app.md), [CLI 命令参考](reference/cli.md), [SAR Reader 参考](reference/sar_reader.md) |
+| 自定义读入或时序 InSAR 复用网格 | [自定义读入 Adapter 降采样](workflows/02b_adapter_downsampling.md) | [InSAR/Offset 降采样案例](casebook/insar_downsampling_gamma_geotiff.md) | [降采样超级入口参考：input_adapter](reference/downsampling_app.md#input_adapter), [CLI 命令参考](reference/cli.md#高级自定义读入-adapter) |
 | 做 Bayesian 非线性几何反演 | [Bayesian 非线性几何反演](workflows/03_nonlinear_geometry_bayesian.md) | [Wushi](casebook/wushi_nonlinear_geometry.md), [Ridgecrest](casebook/ridgecrest_gps_insar.md) | [非线性几何反演配置](reference/config_nonlinear_geometry.md), [Sigmas 与 Alpha 配置模式](reference/sigmas_alpha.md) |
 | 做 BLSE/VCE 线性滑动反演 | [BLSE/VCE 线性滑动分布反演](workflows/04_linear_slip_blse_vce.md) | [Dingri 2020](casebook/dingri_blse_vce.md) | [线性滑动反演配置](reference/config_linear_slip.md), [ECAT 约束管理器](reference/constraint_manager.md), [BLSE/VCE 参考](reference/blse_vce.md) |
 
@@ -36,6 +37,7 @@
 - [InSAR 与 GPS 数据读取](workflows/01_data_reading_insar_gps.md)
 - [InSAR 降采样](workflows/02_insar_downsampling.md)
 - [InSAR 降采样两步走](workflows/02a_insar_downsampling_two_step.md)
+- [自定义读入 Adapter 降采样](workflows/02b_adapter_downsampling.md)
 - [Bayesian 非线性几何反演](workflows/03_nonlinear_geometry_bayesian.md)
 - [BLSE/VCE 线性滑动分布反演](workflows/04_linear_slip_blse_vce.md)
 
@@ -47,11 +49,12 @@
 - [Wushi：InSAR-only 非线性几何反演](casebook/wushi_nonlinear_geometry.md)
 - [Ridgecrest：GPS+InSAR 非线性几何反演](casebook/ridgecrest_gps_insar.md)
 - [Dingri 2020：BLSE/VCE 线性滑动反演](casebook/dingri_blse_vce.md)
-- [InSAR 降采样案例](casebook/insar_downsampling_gamma_geotiff.md)
+- [InSAR/Offset 降采样案例](casebook/insar_downsampling_gamma_geotiff.md)
 
 ## 参考手册
 
 - [CLI 命令参考](reference/cli.md)
+- [降采样超级入口参考](reference/downsampling_app.md)
 - [SAR Reader 参考](reference/sar_reader.md)
 - [非线性几何反演配置](reference/config_nonlinear_geometry.md)
 - [线性滑动反演配置](reference/config_linear_slip.md)
@@ -64,6 +67,6 @@
 - [文档架构说明](developer/architecture.md)
 - [文档维护规范](developer/contributing_docs.md)
 
-## 技术材料
+## 手册范围
 
-[ECAT 仓库的 `eqtools/csiExtend/docs/`](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/docs) 中已有大量技术材料，可作为实现细节和开发参考。面向用户的手册放在 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs)，并按学习路线重新组织。
+本手册放在 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs)，按学习路线组织常用工作流、案例导读和字段参考。实现入口可从参考页跳转到 [ECAT](https://github.com/kefuhe/ECAT) 中的对应源码；真实数据和可运行脚本放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)。

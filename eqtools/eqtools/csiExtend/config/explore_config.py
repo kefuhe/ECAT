@@ -189,14 +189,14 @@ class ExploreFaultConfig(CommonConfigBase):
             else:
                 datas = self.geodata.get('polys', {}).get('estimate', [])
 
-            insar_data = [d for d in self.geodata.get('data', []) if d.dtype == 'insar']
+            polys_eligible_data = [d for d in self.geodata.get('data', []) if d.dtype in ('insar', 'leveling')]
             default_bounds = self.geodata['polys']['boundaries'].get('defaults', None)
             
             if not datas:
-                datas = [d.name for d in insar_data]
+                datas = [d.name for d in polys_eligible_data]
                 self.geodata['polys']['estimate'] = datas
             
-            for data in insar_data:
+            for data in polys_eligible_data:
                 if data.name in datas:
                     boundary_key = data.name
                     if boundary_key not in self.geodata['polys']['boundaries']:

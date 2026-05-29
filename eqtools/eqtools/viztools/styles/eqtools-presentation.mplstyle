@@ -1,0 +1,43 @@
+# eqtools — presentation style
+# Large fonts and thick lines for slides / posters.
+
+font.family                 : sans-serif
+font.size                   : 14.0
+axes.labelsize              : 14.0
+xtick.labelsize             : 12.0
+ytick.labelsize             : 12.0
+legend.fontsize             : 12.0
+figure.titlesize            : 16.0
+
+axes.linewidth              : 1.5
+axes.spines.top             : True
+axes.spines.right           : True
+
+lines.linewidth             : 2.0
+lines.markersize            : 7.0
+
+xtick.direction             : out
+ytick.direction             : out
+xtick.top                   : False
+ytick.right                 : False
+xtick.major.size            : 5.0
+xtick.minor.size            : 3.0
+xtick.major.width           : 1.5
+xtick.minor.width           : 1.0
+ytick.major.size            : 5.0
+ytick.minor.size            : 3.0
+ytick.major.width           : 1.5
+ytick.minor.width           : 1.0
+
+figure.dpi                  : 100
+savefig.dpi                 : 150
+savefig.bbox                : tight
+
+text.usetex                 : False
+mathtext.fontset            : dejavusans
+axes.formatter.use_mathtext : False
+
+pdf.fonttype                : 42
+ps.fonttype                 : 42
+
+legend.frameon              : False

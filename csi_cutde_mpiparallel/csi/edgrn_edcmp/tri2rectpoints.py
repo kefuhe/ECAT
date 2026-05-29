@@ -22,40 +22,57 @@ def triangle_area(vertices):
 def triangle_to_rectangles(vertices, dx=0.1, dy=0.1, area_threshold=1/2):
     """
     Cover a triangle with equally spaced rectangular elements and filter out valid elements.
+    Uses shapely.prepared for fast containment queries.
     """
     x_min, y_min = np.min(vertices, axis=0)
     x_max, y_max = np.max(vertices, axis=0)
     xs = np.arange(x_min, x_max+dx/2.0, dx)
     ys = np.arange(y_min, y_max+dy/2.0, dy)
-    rects = []
-    centers = []
     buffer_dist = (dx + dy) / 4.0
 
     from shapely.geometry import Polygon, Point
+    from shapely.prepared import prep
     tri_poly = Polygon(vertices)
+    tri_prep = prep(tri_poly)
     tri_buffer = tri_poly.buffer(buffer_dist)
-    for x0 in xs:
-        for y0 in ys:
-            rect = np.array([
-                [x0, y0], # Bottom-Left
-                [x0+dx, y0], # Bottom-Right
-                [x0+dx, y0+dy], # Top-Right
-                [x0, y0+dy] # Top-Left
+    tri_buffer_prep = prep(tri_buffer)
+
+    # Vectorised center generation
+    cx = xs + dx / 2.0
+    cy = ys + dy / 2.0
+    gx, gy = np.meshgrid(cx, cy, indexing='ij')
+    all_centers = np.column_stack([gx.ravel(), gy.ravel()])
+
+    rects = []
+    centers = []
+    for center in all_centers:
+        pt = Point(center)
+        if tri_prep.contains(pt):
+            x0, y0 = center[0] - dx / 2.0, center[1] - dy / 2.0
+            rects.append(np.array([
+                [x0, y0],
+                [x0+dx, y0],
+                [x0+dx, y0+dy],
+                [x0, y0+dy]
+            ]))
+            centers.append(center)
+        elif tri_buffer_prep.contains(pt):
+            x0, y0 = center[0] - dx / 2.0, center[1] - dy / 2.0
+            rect_poly = Polygon([
+                [x0, y0], [x0+dx, y0], [x0+dx, y0+dy], [x0, y0+dy]
             ])
-            center = np.mean(rect, axis=0)
-            pt = Point(center)
-            if tri_poly.contains(pt):
-                rects.append(rect)
+            inter_area = tri_poly.intersection(rect_poly).area
+            if inter_area >= area_threshold * dx * dy:
+                rects.append(np.array([
+                    [x0, y0],
+                    [x0+dx, y0],
+                    [x0+dx, y0+dy],
+                    [x0, y0+dy]
+                ]))
                 centers.append(center)
-            elif tri_buffer.contains(pt):
-                rect_poly = Polygon(rect)
-                inter_area = tri_poly.intersection(rect_poly).area
-                if inter_area >= area_threshold * dx * dy:
-                    rects.append(rect)
-                    centers.append(center)
-    rect_corners = rects
-    rect_centers = np.array(centers)
-    return rect_centers, rect_corners
+
+    rect_centers = np.array(centers) if centers else np.empty((0, 2))
+    return rect_centers, rects
 
 def patch_local2d(vertices_3d, cx_km, cy_km, depth_km, strike_rad, dip_rad):
     """

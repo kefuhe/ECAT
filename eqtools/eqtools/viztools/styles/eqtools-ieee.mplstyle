@@ -1,0 +1,6 @@
+# eqtools — IEEE linestyle cycling (B&W print safe)
+# 4 colors x 4 linestyles: distinguishable in both color and grayscale.
+# Usage: PlotStyle('ieee')  or  PlotStyle(['science', 'ieee'])
+#
+# Linestyle guide: solid / dashed / dotted / dash-dot
+axes.prop_cycle : (cycler('color', ['k', 'r', 'b', 'g']) + cycler('ls', ['-', '--', ':', '-.']))

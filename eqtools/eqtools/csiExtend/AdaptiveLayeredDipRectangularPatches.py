@@ -122,7 +122,7 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
             interpolation_axis = self.dip_interpolator.interpolation_axis
             xydip_expanded = self.handle_buffer_nodes(
                 xydip, buffer_nodes, buffer_radius,
-                interpolation_axis, update_ref=False)
+                interpolation_axis)
             
             # Find new nodes (buffer nodes)
             existing_locs = set(zip(xydip['x'], xydip['y']))

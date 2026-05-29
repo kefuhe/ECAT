@@ -1,12 +1,16 @@
 from ruamel.yaml import YAML
 import os
 
-def generate_default_config(output_path, gf_method=None, include_euler_constraints=False, include_des_config=False):
+def generate_default_config(output_path, gf_method=None, include_euler_constraints=False, 
+                            include_des_config=False,
+                            pressure_sources=None, sbarbot_sources=None):
     """
     Generate a default configuration file for Bayesian inversion with comments.
     If gf_method is 'pscmp' or 'edcmp', specific options will be included.
     If include_euler_constraints is True, Euler pole constraints configuration will be added.
     If include_des_config is True, Depth-Equalized Smoothing (DES) configuration will be added.
+    If pressure_sources is provided, a pressure_sources section will be generated.
+    If sbarbot_sources is provided, a sbarbot_sources section will be generated.
     """
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -161,6 +165,8 @@ euler_constraints:
 
 # ----------- Fault Parameters ----------- #
 # Parameters for fault geometry and mesh generation
+# Note: This section is for Fault-type sources only.
+# Pressure and Sbarbot sources should be configured in their own sections below.
 faults:
   defaults:
     geometry:
@@ -179,6 +185,7 @@ faults:
         show: false  # Whether to show Gmsh GUI
       update_GFs:
         method: null
+        # slipdir: sd  # Slip direction chars: s=strikeslip, d=dipslip, t=tensile, c=coupling (default: sd)
         geodata: null
         verticals: null
       update_Laplacian:
@@ -204,6 +211,92 @@ faults:
         disct_z: 8
 """
 
+    # Add Pressure source section if requested
+    if pressure_sources:
+        pressure_entries = ""
+        for src in pressure_sources:
+            pressure_entries += f"""
+  {src}:
+    method_parameters:
+      update_GFs:
+        method: homogeneous  # Green's function method for {src}
+        options: {{}}"""
+        config_text += f"""
+# ----------- Pressure Source Parameters ----------- #
+# Parameters for Pressure sources (Mogi, CDM, pCDM, Yang, etc.)
+# Note: Pressure sources do NOT support smoothing (Laplacian), mesh generation,
+# or geometry updates. Only update_GFs is meaningful.
+pressure_sources:
+  defaults:
+    method_parameters:
+      update_GFs:
+        method: homogeneous  # Default GF method for Pressure sources
+        options: {{}}{pressure_entries}
+"""
+    else:
+        config_text += """
+# ----------- Pressure Source Parameters ----------- #
+# Uncomment and configure if you have Pressure sources (Mogi, CDM, pCDM, Yang, etc.)
+# Note: Pressure sources do NOT support smoothing (Laplacian), mesh generation,
+# or geometry updates. Only update_GFs is meaningful.
+# pressure_sources:
+#   defaults:
+#     method_parameters:
+#       update_GFs:
+#         method: homogeneous
+#         options: {}
+#   MyPressureSource:
+#     method_parameters:
+#       update_GFs:
+#         method: homogeneous
+#         options: {}
+"""
+
+    # Add Sbarbot source section if requested
+    if sbarbot_sources:
+        sbarbot_entries = ""
+        for src in sbarbot_sources:
+            sbarbot_entries += f"""
+  {src}:
+    method_parameters:
+      update_GFs:
+        method: null  # Must specify GF method for {src}
+        # strain_components: [eps11, eps12, eps13, eps22, eps23, eps33]  # Default: all 6 symmetric tensor components
+        options: {{}}"""
+        config_text += f"""
+# ----------- Sbarbot Source Parameters ----------- #
+# Parameters for Sbarbot sources (volumetric strain sources)
+# Note: Sbarbot sources do NOT support smoothing (Laplacian), mesh generation,
+# or geometry updates. The GF method must be explicitly specified.
+sbarbot_sources:
+  defaults:
+    method_parameters:
+      update_GFs:
+        method: null  # Must be explicitly set per source (no default inference)
+        # strain_components: [eps11, eps12, eps13, eps22, eps23, eps33]  # Default: all 6 symmetric tensor components
+        options: {{}}{sbarbot_entries}
+"""
+    else:
+        config_text += """
+# ----------- Sbarbot Source Parameters ----------- #
+# Uncomment and configure if you have Sbarbot sources (volumetric strain)
+# Note: Sbarbot sources do NOT support smoothing (Laplacian), mesh generation,
+# or geometry updates. The GF method must be explicitly specified.
+# sbarbot_sources:
+#   defaults:
+#     method_parameters:
+#       update_GFs:
+#         method: null  # Must be explicitly set per source
+#         # strain_components: [eps11, eps12, eps13, eps22, eps23, eps33]  # Default: all 6
+#         options: {}
+#   MySbarbotSource:
+#     method_parameters:
+#       update_GFs:
+#         method: null  # Specify here
+#         # strain_components: [eps12, eps13]  # Override per source if needed
+#         options: {}
+"""
+
     # Load the configuration
     config = yaml.load(config_text)
 
@@ -211,24 +304,17 @@ faults:
     if gf_method is not None:
         config['faults']['defaults']['method_parameters']['update_GFs']['method'] = gf_method
         if gf_method.lower() == "pscmp":
-            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = {
-                "pscmpgrns": "pscmpgrns",
-                "psgrndir": "psgrnfcts",
-                "pscmp_workdir": "pscmp_ecat",
-                "n_jobs": 4,
-                "cleanup_inp": True,
-                "force_recompute": True
-            }
+            from csi.psgrn_pscmp.pscmp_options import PscmpOptions
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = \
+                PscmpOptions.to_commented_map()
         elif gf_method.lower() == "edcmp":
-            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = {
-                "edcmpgrns": "edcmpgrns",
-                "edgrndir": "edgrnfcts",
-                "edcmp_workdir": "edcmp_ecat",
-                "edcmp_layered_model": True,
-                "n_jobs": 8,
-                "cleanup_inp": True,
-                "force_recompute": False
-            }
+            from csi.edgrn_edcmp.edcmp_backends import EdcmpOptions
+            defaults = EdcmpOptions(
+                fallback_engines=["exe"],
+                n_jobs=8, cleanup_inp=False, force_recompute=False,
+            )
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = \
+                EdcmpOptions.to_commented_map(defaults)
         else:
             config['faults']['defaults']['method_parameters']['update_GFs']['options'] = None
 
@@ -239,6 +325,10 @@ faults:
     print(f"Default configuration file generated at: {output_path}")
     if include_euler_constraints:
         print("Euler pole constraints configuration included.")
+    if pressure_sources:
+        print(f"Pressure source(s) configured: {pressure_sources}")
+    if sbarbot_sources:
+        print(f"Sbarbot source(s) configured: {sbarbot_sources}")
 
 def main():
     import argparse
@@ -266,12 +356,48 @@ def main():
         action="store_true",
         help="Include Depth-Equalized Smoothing (DES) configuration in the generated file"
     )
+    parser.add_argument(
+        "-p", "--pressure",
+        type=str,
+        nargs="+",
+        help="Pressure source name(s) to include (e.g., 'Mogi1 CDM1 pCDM1')"
+    )
+    parser.add_argument(
+        "-s", "--sbarbot",
+        type=str,
+        nargs="+",
+        help="Sbarbot source name(s) to include (e.g., 'Sbarbot1 Sbarbot2')"
+    )
+    parser.add_argument(
+        "--show-gf-options",
+        type=str,
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="METHOD",
+        help="Show available options for a GF method (edcmp, pscmp) or all methods if no argument given, then exit"
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=["text", "yaml"],
+        default="yaml",
+        help="Output format for --show-gf-options (default: yaml)"
+    )
     args = parser.parse_args()
+
+    if args.show_gf_options:
+        from csi import describe_gf_options
+        method = None if args.show_gf_options == "all" else args.show_gf_options
+        describe_gf_options(method, format=args.format)
+        return
 
     output_path = os.path.abspath(args.output)
     generate_default_config(output_path, gf_method=args.gf_method, 
                           include_euler_constraints=args.include_euler_constraints,
-                          include_des_config=args.include_des_config)
+                          include_des_config=args.include_des_config,
+                          pressure_sources=args.pressure,
+                          sbarbot_sources=args.sbarbot)
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-'''
+﻿'''
 A parent class that deals with rectangular patches fault
 
 Started by R. Jolivet, November 2013
@@ -443,7 +443,7 @@ class RectangularPatches(Fault):
         '''
 
         if verbose:
-            print('Merging patches {} and {} into patch {}'.format(p1,p2,p1))
+            logger.info('Merging patches {} and {} into patch {}'.format(p1,p2,p1))
 
         newpatch,newpatchll = self._mergePatches(p1, p2, eps=eps)   
 
@@ -668,6 +668,8 @@ class RectangularPatches(Fault):
             # 2. Get the strike of this patch
             vs = p2-p1
             vd = p4-p1
+            if vs[2] != 0.:
+                logger.error('p1 and p2 must be located at the same depth: {}'.format(vs[2]))
             assert vs[2]==0., 'p1 and p2 must be located at the same depth: {}'.format(vs[2])
             vnz = vs[1]*vd[0]-vs[0]*vd[1]
             if vnz<0.:
@@ -1163,7 +1165,9 @@ class RectangularPatches(Fault):
         while i<len(A):
             
             # Assert it works
-            assert A[i].split()[0] == '>', 'Not a patch, reformat your file...'
+            if A[i].split()[0] != '>':
+                logger.error('Not a patch, reformat your file...')
+                raise AssertionError('Not a patch, reformat your file...')
             # Get the Patch Id
             if readpatchindex:
                 self.index_parameter.append([np.int64(A[i].split()[3]),np.int64(A[i].split()[4]),np.int64(A[i].split()[5])])
@@ -1354,7 +1358,7 @@ class RectangularPatches(Fault):
         
         # Find the four edge vertices using the specialized method
         if verbose:
-            print(f"Finding four edge vertices for fault {self.name}...")
+            logger.info(f"Finding four edge vertices for fault {self.name}...")
             
         result = self.find_fault_fouredge_vertices(
             depth_tolerance=depth_tolerance,
@@ -1379,13 +1383,13 @@ class RectangularPatches(Fault):
         
         # Write edges to separate files
         if verbose:
-            print(f"Writing edge files to directory: {dirname}")
+            logger.info(f"Writing edge files to directory: {dirname}")
         
         edge_files = {}
         for i, edge_name in enumerate(edge_names):
             if edge_name not in four_edges:
                 if verbose:
-                    print(f"Warning: No vertices found for {edge_name} edge")
+                    logger.warning(f"No vertices found for {edge_name} edge")
                 continue
                 
             # Create filename
@@ -1398,7 +1402,7 @@ class RectangularPatches(Fault):
             
             if len(edge_points) == 0:
                 if verbose:
-                    print(f"Warning: Empty vertex set for {edge_name} edge")
+                    logger.warning(f"Empty vertex set for {edge_name} edge")
                 continue
             
             # Convert to longitude/latitude coordinates
@@ -1415,14 +1419,14 @@ class RectangularPatches(Fault):
                     fout.write(f'{lon[j]:.6f} {lat[j]:.6f} {edge_points[j, 2]:.3f}\n')
             
             if verbose:
-                print(f"  {edge_name.capitalize()} edge: {len(edge_points)} vertices -> {edge_file}")
+                logger.info(f"  {edge_name.capitalize()} edge: {len(edge_points)} vertices -> {edge_file}")
         
         # Print summary
         if verbose:
-            print(f"  Edge files written:")
+            logger.info(f"  Edge files written:")
             for edge_name, filepath in edge_files.items():
                 vertex_count = len(four_edges[edge_name]) if edge_name in four_edges else 0
-                print(f"    {edge_name}: {vertex_count} vertices -> {os.path.basename(filepath)}")
+                logger.info(f"    {edge_name}: {vertex_count} vertices -> {os.path.basename(filepath)}")
         
         # Convert edge vertices to lon/lat format for return
         four_edges_lonlat = {}
@@ -1462,7 +1466,7 @@ class RectangularPatches(Fault):
         '''
         # Write something
         if self.verbose:
-            print('Writing geometry to file {}'.format(filename))
+            logger.info('Writing geometry to file {}'.format(filename))
     
         # Open the file
         fout = open(filename, 'w')
@@ -1487,13 +1491,16 @@ class RectangularPatches(Fault):
                 elif add_slip.shape[1] == 1:
                     custom_values = add_slip.flatten()
                 else:
+                    logger.error(f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}")
                     raise ValueError(f"2D array must be (1,n) or (n,1), got shape {add_slip.shape}")
             else:
+                logger.error(f"Array must be 1D or 2D, got {add_slip.ndim}D")
                 raise ValueError(f"Array must be 1D or 2D, got {add_slip.ndim}D")
             
             # Verify length matches number of patches
             nPatches = len(self.patch)
             if len(custom_values) != nPatches:
+                logger.error(f"Custom values length ({len(custom_values)}) must match number of patches ({nPatches})")
                 raise ValueError(f"Custom values length ({len(custom_values)}) must match "
                                f"number of patches ({nPatches})")
     
@@ -1538,8 +1545,10 @@ class RectangularPatches(Fault):
                     elif add_slip == 'coupling':
                         slp = self.coupling[p]
                     else:
+                        logger.error(f"Unknown add_slip option: {add_slip}")
                         raise ValueError(f"Unknown add_slip option: {add_slip}")
                 else:
+                    logger.error(f"add_slip must be str or np.ndarray, got {type(add_slip)}")
                     raise TypeError(f"add_slip must be str or np.ndarray, got {type(add_slip)}")
                 
                 # Make string
@@ -1618,7 +1627,7 @@ class RectangularPatches(Fault):
 
         # Write something
         if self.verbose:
-            print('Writing slip direction to file {}'.format(filename))
+            logger.info('Writing slip direction to file {}'.format(filename))
 
         # Open the file
         fout = open(filename, 'w')
@@ -1795,7 +1804,7 @@ class RectangularPatches(Fault):
                 elif scale in ('tensile'):
                     sca = slip[2]*factor
                 else:
-                    print('Unknown Slip Direction in computeSlipDirection')
+                    logger.warning('Unknown Slip Direction in computeSlipDirection')
                     sys.exit(1)
             x *= sca
             y *= sca
@@ -2227,6 +2236,7 @@ class RectangularPatches(Fault):
         # Use equivpatch if available, otherwise patch
         source = getattr(self, 'equivpatch', self.patch)
         if patch is None:
+            logger.error('getpatchgeometry: Patch not found')
             raise ValueError('getpatchgeometry: Patch not found')
         p = source[patch]
 
@@ -2716,7 +2726,8 @@ class RectangularPatches(Fault):
         # Load the slip values if provided
         if slipVec is not None:
             nPatches = len(self.patch)
-            print(nPatches, slipVec.shape)
+            if slipVec.shape != (nPatches,3):
+                logger.error(f'Mismatch in shape for input slip vector: expected ({nPatches},3), got {slipVec.shape}')
             assert slipVec.shape == (nPatches,3), 'mismatch in shape for input slip vector'
             self.slip = slipVec
 
@@ -2825,10 +2836,10 @@ class RectangularPatches(Fault):
         """
         
         if verbose:
-            print(f"\n{'='*70}")
-            print(f"Computing surface displacement for rectangular fault: {self.name}")
-            print(f"Converting {len(self.patch)} rectangular patches to triangular elements")
-            print(f"{'='*70}\n")
+            logger.info(f"{'='*70}")
+            logger.info(f"Computing surface displacement for rectangular fault: {self.name}")
+            logger.info(f"Converting {len(self.patch)} rectangular patches to triangular elements")
+            logger.info(f"{'='*70}")
         
         # Create a temporary TriangularPatches instance
         from .TriangularPatches import TriangularPatches
@@ -2844,21 +2855,21 @@ class RectangularPatches(Fault):
         
         # Convert rectangular patches to triangular patches
         if verbose:
-            print("Converting rectangular patches to triangular elements...")
+            logger.info("Converting rectangular patches to triangular elements...")
         
         tri_fault.Faces, tri_fault.Vertices, tri_slip = self._rect2triangular(slipVec)
         
         if verbose:
-            print(f"  Created {len(tri_fault.Faces)} triangular faces")
-            print(f"  Total vertices: {len(tri_fault.Vertices)}")
-            print(f"  Slip vectors: {tri_slip.shape}")
+            logger.info(f"  Created {len(tri_fault.Faces)} triangular faces")
+            logger.info(f"  Total vertices: {len(tri_fault.Vertices)}")
+            logger.info(f"  Slip vectors: {tri_slip.shape}")
         
         # Set the slip on the triangular fault
         tri_fault.slip = tri_slip
         
         # Call the TriangularPatches compute_surface_displacement method
         if verbose:
-            print("\nDelegating computation to TriangularPatches implementation...")
+            logger.info("Delegating computation to TriangularPatches implementation...")
         
         obs_pts, disp_total = tri_fault.compute_surface_displacement(
             box=box,
@@ -2882,9 +2893,9 @@ class RectangularPatches(Fault):
         )
         
         if verbose:
-            print(f"\n{'='*70}")
-            print(f"Surface displacement computation completed for {self.name}")
-            print(f"{'='*70}\n")
+            logger.info(f"{'='*70}")
+            logger.info(f"Surface displacement computation completed for {self.name}")
+            logger.info(f"{'='*70}")
         
         # All done
         return obs_pts, disp_total
@@ -3064,7 +3075,11 @@ class RectangularPatches(Fault):
         for sar in insars:
             dlon = sar.AlongStrikeOffsets[name]['lon']
             dlat = sar.AlongStrikeOffsets[name]['lat']
+            if list(dlon) != list(lon):
+                logger.error('{} dataset rejected (longitude mismatch)'.format(sar.name))
             assert (list(dlon)==list(lon)), '{} dataset rejected'.format(sar.name)
+            if list(dlat) != list(lat):
+                logger.error('{} dataset rejected (latitude mismatch)'.format(sar.name))
             assert (list(dlat)==list(lat)), '{} dataset rejected'.format(sar.name)
 
         # Get distance
@@ -3638,6 +3653,10 @@ class RectangularPatches(Fault):
         '''
     
         # Check if Tractions have been computed
+        if not hasattr(self, 'Normal'):
+            logger.error('Compute Tractions first...')
+        if not hasattr(self, 'Normal'):
+            logger.error('Compute Tractions first...')
         assert hasattr(self, 'Normal'), 'Compute Tractions first...'
 
         # Sign
@@ -3716,7 +3735,7 @@ class RectangularPatches(Fault):
         self.slip = Slip
 
         # Clean up screen 
-        print('')
+        logger.info('')
 
         # all done
         return
@@ -3991,6 +4010,10 @@ class RectangularPatches(Fault):
         '''
 
         # Assert faults are compatible
+        if not ((self.lon==deepfault.lon).all() and (self.lat==deepfault.lat).all()):
+            logger.error('Surface traces are different...')
+        if not ((self.lon==deepfault.lon).all() and (self.lat==deepfault.lat).all()):
+            logger.error('Surface traces are different...')
         assert ( (self.lon==deepfault.lon).all() and (self.lat==deepfault.lat).all()), 'Surface traces are different...'
 
         # Check that all patches are verticals
@@ -4121,10 +4144,9 @@ class RectangularPatches(Fault):
         '''
 
         if verbose:
-            print('---------------------------------')
-            print('---------------------------------')
-            print('Map Slip from fault {} into fault {}'.format(fault.name, self.name))
-            print('Build the best plane')
+            logger.info('---------------------------------')
+            logger.info('Map Slip from fault {} into fault {}'.format(fault.name, self.name))
+            logger.info('Build the best plane')
 
         # 1. Find the best fitting plane for self
         # 1.1 Compute the average strike and the average dip of the fault
@@ -4160,7 +4182,7 @@ class RectangularPatches(Fault):
         n1, n2, n3 = self.strikedip2normal(strike, dip)
 
         if verbose:
-            print('Project on the best plane')
+            logger.info('Project on the best plane')
 
         # 4. Project patch centers from self on the plane P
         # 4.1 Build vectors from new plane center to each patch center
@@ -4208,7 +4230,7 @@ class RectangularPatches(Fault):
         fault.x2 = np.dot(faultvector, n3).reshape((size,))
 
         if verbose:
-            print('Run the interpolation')
+            logger.info('Run the interpolation')
 
         # 6. Now, resample the slip that is on 
         # 6.0 import scipy
@@ -4283,18 +4305,18 @@ class RectangularPatches(Fault):
 
         '''
         if verbose:
-            print('Computing adjacency matrix for fault %s' % self.name)
+            logger.info('Computing adjacency matrix for fault %s' % self.name)
 
         # Get numbers
         npatch = len(self.patch)
         if self.numz is None:
-            print('We try a wild guess for the number of patches along dip')
+            logger.warning('We try a wild guess for the number of patches along dip')
             width = np.mean([self.getpatchgeometry(p, center=True)[3] for p in self.patch])
             depths = [ [p[j][2] for j in range(4)] for p in self.patch]
             depthRange = np.max(depths)-np.min(depths)
             self.numz = np.rint(depthRange/width)
-            print('The guess is that there is {} patches along dip'.format(np.int64(self.numz)))
-            print('If that is not correct, please provide self.numz')
+            logger.warning('The guess is that there is {} patches along dip'.format(np.int64(self.numz)))
+            logger.warning('If that is not correct, please provide self.numz')
 
         # Get number of Patches along strike
         nstrike = np.int64(npatch // self.numz)
@@ -4326,7 +4348,7 @@ class RectangularPatches(Fault):
             Jmat[range(0,npatch-self.numz),range(self.numz,npatch)] = np.ones((nd,), dtype=int)
 
         else:
-            print('patchinc should either be ''alongstrike'' or ''alongdip''')
+            logger.error('patchinc should either be ''alongstrike'' or ''alongdip''')
             sys.exit(1)
 
         # Return symmetric part to fill lower triangular part
@@ -4379,7 +4401,7 @@ class RectangularPatches(Fault):
         row=ifault//nstrike #Row number corresponding to this subfault
         column=ifault-(nstrike*row)
         if nstrike<4 or ndip<4:
-            print("Warning: The fault model is too small for Laplacian regualrization. You need a minimum of 4 rows and 4 columns in the model.")
+            logger.warning(" The fault model is too small for Laplacian regualrization. You need a minimum of 4 rows and 4 columns in the model.")
             return False,False
         if row==0 and column==0: #Top right corner
             stencil=array([ifault,ifault+1,ifault+nstrike])
@@ -4461,6 +4483,10 @@ class RectangularPatches(Fault):
             self.computeAdjacencyMat(verbose=verbose)
         Jmat = self.adjacencyMat
         npatch = Jmat.shape[0]
+        if Jmat.shape[1] != npatch:
+            logger.error('adjacency matrix is not square')
+        if Jmat.shape[1] != npatch:
+            logger.error('adjacency matrix is not square')
         assert Jmat.shape[1] == npatch, 'adjacency matrix is not square'
 
         # Build Laplacian by looping over each patch
@@ -4502,14 +4528,14 @@ class RectangularPatches(Fault):
             ndip    : Number of patches along dip
         '''
         if verbose:
-            print("------------------------------------------")
-            print("Pre-computing geometric adjacency and distances...")
+            logger.info("------------------------------------------")
+            logger.info("Pre-computing geometric adjacency and distances...")
 
         npatch = len(self.patch)
         
         # Validate dimensions
         if npatch != nstrike * ndip:
-            print(f"Error: Dimensions mismatch. {nstrike}x{ndip} != {npatch}")
+            logger.error(f" Dimensions mismatch. {nstrike}x{ndip} != {npatch}")
             return
 
         centers = np.array(self.getcenters())
@@ -4541,7 +4567,7 @@ class RectangularPatches(Fault):
             self._distance_map.append(geo_info)
             
         if verbose:
-            print("Adjacency cache built.")
+            logger.info("Adjacency cache built.")
         return
     # ----------------------------------------------------------------------
 
@@ -4569,7 +4595,7 @@ class RectangularPatches(Fault):
             self._build_adjacency_cache(nstrike, ndip, verbose=verbose)
             
         if verbose:
-            print("Assembling distance-weighted Laplacian...")
+            logger.info("Assembling distance-weighted Laplacian...")
         
         logger.debug(f"Building distance-weighted Laplacian with nstrike={nstrike}, ndip={ndip}")
 
@@ -4672,7 +4698,7 @@ class RectangularPatches(Fault):
         # 1. Determine Dimensions (Legacy Logic)
         npatch = len(self.patch)
         if self.numz is None:
-            if verbose: print('Guessing numz...')
+            if verbose: logger.info('Guessing numz...')
             width = np.mean([self.getpatchgeometry(p, center=True)[3] for p in self.patch])
             depths = [[p[j][2] for j in range(4)] for p in self.patch]
             self.numz = np.rint((np.max(depths) - np.min(depths)) / width)
@@ -4682,7 +4708,7 @@ class RectangularPatches(Fault):
         nstrike = np.int64(npatch // ndip)
 
         if nstrike * ndip != npatch:
-            print(f"Error: Dimensions mismatch ({nstrike}x{ndip} != {npatch}). Check geometry.")
+            logger.error(f" Dimensions mismatch ({nstrike}x{ndip} != {npatch}). Check geometry.")
             return None
 
         # 2. Build Matrix
@@ -4693,7 +4719,7 @@ class RectangularPatches(Fault):
         D *= 4.0
 
         if verbose:
-            print("Laplacian matrix built (Mudpy compatible).")
+            logger.info("Laplacian matrix built (Mudpy compatible).")
 
         return D
     # ----------------------------------------------------------------------
@@ -4721,7 +4747,7 @@ class RectangularPatches(Fault):
             D = self.buildLaplacian_csi(verbose=verbose, irregular=irregular)
         elif method in ('Mudpy', 'MUDPY', 'mudpy', 'mud', 'Diego'):
             if bounds is None:
-                print('Bounds must be given for the method of Mudpy!!!')
+                logger.error('Bounds must be given for the method of Mudpy!!!')
                 sys.exit(1)
             D = self.buildLaplacian_mudpy(verbose=verbose, irregular=irregular, bounds=bounds)
         return D
@@ -4806,7 +4832,7 @@ class RectangularPatches(Fault):
                 Patch processing statistics:
                 - 'total_patches'     : int, number of input patches
                 - 'unique_vertices'   : int, number of unique vertices after merging
-                - 'original_vertices' : int, original number of vertices (patches × 4)
+                - 'original_vertices' : int, original number of vertices (patches 脳 4)
         
         Sets Attributes:
         ----------------
@@ -4876,12 +4902,12 @@ class RectangularPatches(Fault):
         # Print summary if requested
         if verbose:
             analyzer.print_edge_summary()
-            print(f"Merge threshold used: {merge_threshold} km")
+            logger.info(f"Merge threshold used: {merge_threshold} km")
             original_count = len(self.patch) * 4
             unique_count = len(analyzer.vertices)
             merged_count = original_count - unique_count
             if merged_count > 0:
-                print(f"Merged {merged_count} overlapping vertices (threshold: {merge_threshold} km)")
+                logger.info(f"Merged {merged_count} overlapping vertices (threshold: {merge_threshold} km)")
         
         return result
     # ----------------------------------------------------------------------
@@ -4967,8 +4993,8 @@ class RectangularPatches(Fault):
         from .edge_utils import RectangularPatchAnalyzer
         
         if verbose:
-            print(f"Creating RectangularPatchAnalyzer for fault {self.name}")
-            print(f"Using merge threshold: {merge_threshold} km")
+            logger.info(f"Creating RectangularPatchAnalyzer for fault {self.name}")
+            logger.info(f"Using merge threshold: {merge_threshold} km")
         
         # Create analyzer with specified merge threshold
         analyzer = RectangularPatchAnalyzer(self.patch, merge_threshold=merge_threshold)
@@ -4981,7 +5007,7 @@ class RectangularPatches(Fault):
         )
         
         if verbose:
-            print(f"Found {len(edge_result['depth_layers'])} depth layers for interpolation")
+            logger.info(f"Found {len(edge_result['depth_layers'])} depth layers for interpolation")
         
         # Perform curve interpolation
         curve_points, curve_info = analyzer.interpolate_curve_at_depth(
@@ -4996,8 +5022,8 @@ class RectangularPatches(Fault):
         )
         
         if verbose:
-            print(f"Generated curve with {len(curve_points)} points")
-            print(f"Converting coordinates from X/Y to Longitude/Latitude...")
+            logger.info(f"Generated curve with {len(curve_points)} points")
+            logger.info(f"Converting coordinates from X/Y to Longitude/Latitude...")
         
         # Convert X/Y coordinates to longitude/latitude
         x_coords = curve_points[:, 0]
@@ -5011,10 +5037,10 @@ class RectangularPatches(Fault):
         curve_lonlat = np.column_stack([lon_coords, lat_coords, depths])
         
         if verbose:
-            print(f"Coordinate conversion completed")
-            print(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
-            print(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
-            print(f"Depth range: {depths.min():.3f} to {depths.max():.3f} km")
+            logger.info(f"Coordinate conversion completed")
+            logger.info(f"Longitude range: {lon_coords.min():.6f} to {lon_coords.max():.6f}")
+            logger.info(f"Latitude range: {lat_coords.min():.6f} to {lat_coords.max():.6f}")
+            logger.info(f"Depth range: {depths.min():.3f} to {depths.max():.3f} km")
         
         # Update curve_info with coordinate conversion info
         curve_info.update({
@@ -5070,11 +5096,11 @@ class RectangularPatches(Fault):
                     f.write(f"{point[0]:.8f} {point[1]:.8f} {point[2]:.3f}\n")
             
             if verbose:
-                print(f"Curve written to GMT file: {output_file}")
-                print(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
+                logger.info(f"Curve written to GMT file: {output_file}")
+                logger.info(f"File contains {len(curve_lonlat)} points in longitude/latitude format")
                 
         except Exception as e:
-            print(f"Error writing GMT file: {e}")
+            logger.error(f"Error writing GMT file: {e}")
             raise
     # ----------------------------------------------------------------------
 

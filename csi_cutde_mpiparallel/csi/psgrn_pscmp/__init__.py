@@ -17,6 +17,7 @@ Functions:
 
 from .psgrn_config import PSGRNConfig, LayerModel, PSGRNParameters
 from .pscmp_config import PSCMPConfig, FaultSource, PSCMPParameters
+from .pscmp_options import PscmpOptions
 # from .green_function import LayeredGreenFunction
 # from .runner import run_psgrn, run_pscmp
 
