@@ -186,7 +186,6 @@ pep517=0.13.1=pypi_0
 pexpect=4.8.0=pyhd3eb1b0_3
 pickleshare=0.7.5=pyhd3eb1b0_1003
 pillow=10.0.1=py310ha6cbd5a_0
-pip=24.1.1=pypi_0
 pixman=0.43.2=h59595ed_0
 platformdirs=3.11.0=pyhd8ed1ab_0
 plotly=5.22.0=py_0
@@ -203,8 +202,6 @@ pybind11=2.11.1=py310hd41b1e2_2
 pybind11-global=2.11.1=py310hd41b1e2_2
 pycuda=2022.2.2=py310hd456308_2
 pygments=2.15.1=py310h06a4308_1
-pymc=5.13.1=hd8ed1ab_0
-pymc-base=5.13.1=pyhd8ed1ab_0
 pyparsing=3.0.9=py310h06a4308_0
 pyproj=3.4.1=py310h49a4818_0
 pyqt=5.15.10=py310h6a678d5_0

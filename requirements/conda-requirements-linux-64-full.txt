@@ -226,8 +226,6 @@ pybind11=2.11.1=py310hd41b1e2_2
 pybind11-global=2.11.1=py310hd41b1e2_2
 pycparser=2.22=pyh29332c3_1
 pygments=2.15.1=py310h06a4308_1
-pymc=5.13.1=hd8ed1ab_0
-pymc-base=5.13.1=pyhd8ed1ab_0
 pyparsing=3.0.9=py310h06a4308_0
 pyproj=3.6.1=py310hd5c30f3_5
 pyqt=5.15.10=py310h6a678d5_0

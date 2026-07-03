@@ -18,7 +18,6 @@ mkl_random=1.2.4=py310h378cecd_2
 mpi4py=3.1.4=py310hfc96bbd_0
 numba=0.58.1=py310h7dc5dd1_0
 pcre=8.45=h295c915_0
-pymc=5.13.1=hd8ed1ab_0
 pysocks=1.7.1=pyha55dd90_7
 python=3.10.13=h955ad1f_0
 python-kaleido=0.2.1=py310h06a4308_0

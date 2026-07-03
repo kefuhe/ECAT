@@ -30,7 +30,6 @@ mercantile=1.2.1=pypi_0
 multiprocess=0.70.16=pypi_0
 nbformat=5.10.4=pypi_0
 obspy=1.4.1=pypi_0
-pip=25.2=pypi_0
 pyastronomy=0.20.0=pypi_0
 pyproject-hooks=1.1.0=pypi_0
 pyyaml=6.0.1=pypi_0

@@ -204,7 +204,6 @@ pybind11=2.11.1=py310h232114e_2
 pybind11-global=2.11.1=py310h232114e_2
 pygments=2.16.1=pyhd8ed1ab_0
 pygpu=0.7.6=py310h2873277_1003
-pymc=5.13.1=hd8ed1ab_0
 pyparsing=3.1.1=pyhd8ed1ab_0
 pyproj=3.6.1=py310h05d47c7_5
 pyqt=5.15.10=py310hd77b12b_0
