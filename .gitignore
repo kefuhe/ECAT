@@ -1,6 +1,14 @@
 # Ignore dependencies folder
 dependencies/
 
+# Ignore dot-prefixed local files and directories, while keeping Git metadata files.
+.*
+!.gitignore
+!.gitmodules
+
+# Ignore Python cache directories everywhere.
+__pycache__/
+
 # Ignore build and csi.egg-info folders in csi_cutde_mpiparallel
 csi_cutde_mpiparallel/build/
 csi_cutde_mpiparallel/csi.egg-info/
