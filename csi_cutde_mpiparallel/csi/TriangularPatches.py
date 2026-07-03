@@ -1373,7 +1373,9 @@ class TriangularPatches(Fault):
 
     # ----------------------------------------------------------------------
     def writeFourEdges2File(self, filename=None, dirname='.', top_tolerance=0.1, 
-                            bottom_tolerance=0.1, method='hybrid', merge_threshold=0.02):
+                            bottom_tolerance=0.1, method='hybrid', merge_threshold=0.02,
+                            edge_method='topology', gap_policy='clean',
+                            short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
         '''
         Write the four edges of the patches to a file.
 
@@ -1382,6 +1384,11 @@ class TriangularPatches(Fault):
             * dirname       : Directory where the files will be written
             * top_tolerance : Tolerance for the top edge
             * bottom_tolerance : Tolerance for the bottom edge
+            * edge_method  : Edge extraction backend ('legacy', 'topology', or 'auto').
+                             Default uses the topology backend. Use 'legacy'
+                             only to reproduce historical behavior.
+            * gap_policy   : Topology gap handling ('strict', 'clean', 'diagnostic',
+                             or 'standardize') when edge_method is not 'legacy'.
 
         Returns:
             * None
@@ -1389,7 +1396,11 @@ class TriangularPatches(Fault):
         if not os.path.exists(dirname):
             os.makedirs(dirname)
         self.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance,
-                                           refind=True, method=method, merge_threshold=merge_threshold)
+                                           refind=True, method=method, merge_threshold=merge_threshold,
+                                           edge_method=edge_method, gap_policy=gap_policy,
+                                           short_gap_points=short_gap_points,
+                                           bridge_gap_points=bridge_gap_points,
+                                           side_axis=side_axis)
 
         # Write edges to four edges file
         edge_names = ['top', 'bottom', 'left', 'right']
@@ -2840,10 +2851,43 @@ class TriangularPatches(Fault):
         # All done
         return
 
-    def find_fault_edge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False):
+    def find_fault_edge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False,
+                                 edge_method='topology', gap_policy='clean',
+                                 short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
         '''
         Left: In West, Right: In East
         '''
+        if edge_method not in ['legacy', 'topology', 'auto']:
+            raise ValueError("edge_method must be 'legacy', 'topology', or 'auto'.")
+        if edge_method in ['topology', 'auto']:
+            from .edge_utils.topology_boundary import extract_four_edges_topology
+            try:
+                result = extract_four_edges_topology(
+                    self.Vertices, self.Faces,
+                    top_tolerance=top_tolerance,
+                    bottom_tolerance=bottom_tolerance,
+                    gap_policy=gap_policy,
+                    bridge_gap_points=bridge_gap_points,
+                    short_gap_points=short_gap_points,
+                    side_axis=side_axis,
+                )
+            except Exception as exc:
+                if edge_method == 'topology':
+                    raise
+                self.logger.warning(f"Topology edge extraction failed; falling back to legacy: {exc}")
+            else:
+                self.edge_vertices = result['edge_vertices']
+                self.edge_vertex_indices = result['edge_vertex_indices']
+                self.edge_triangles_indices = result['edge_triangles_indices']
+                self.edge_triangle_vertex_indices = result['edge_triangle_vertex_indices']
+                self.edge_dict = result['edge_dict']
+                self.corner_dict = result['corner_dict']
+                self.edge_segments = result['edge_segments']
+                self.edge_index_segments = result['edge_index_segments']
+                self.edge_extraction_info = result['info']
+                self.edge_extraction_method = 'topology'
+                return
+
         import copy
         # find boundary and corner triangles indexes in fault.Faces
         if not hasattr(self, 'edge_dict') or refind:
@@ -2879,11 +2923,35 @@ class TriangularPatches(Fault):
             'right': rpnt_inds, 
             'top': tpnt_inds, 
             'bottom': bpnt_inds}
+        self.edge_extraction_method = 'legacy'
         # All Done
         return
     
     def find_fault_fouredge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, 
-                                     refind=False, method='hybrid', merge_threshold=0.02):
+                                     refind=False, method='hybrid', merge_threshold=0.02,
+                                     edge_method='topology', gap_policy='clean',
+                                     short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
+        if edge_method not in ['legacy', 'topology', 'auto']:
+            raise ValueError("edge_method must be 'legacy', 'topology', or 'auto'.")
+        if edge_method in ['topology', 'auto']:
+            try:
+                self.find_fault_edge_vertices(
+                    top_tolerance=top_tolerance,
+                    bottom_tolerance=bottom_tolerance,
+                    refind=refind,
+                    edge_method=edge_method,
+                    gap_policy=gap_policy,
+                    short_gap_points=short_gap_points,
+                    bridge_gap_points=bridge_gap_points,
+                    side_axis=side_axis,
+                )
+            except Exception:
+                if edge_method == 'topology':
+                    raise
+            else:
+                if getattr(self, 'edge_extraction_method', None) == 'topology':
+                    return
+
         from .edge_utils.mesh_edge_finder import find_left_or_right_edgeline_points
         if not hasattr(self, 'edge_triangles_indices') or refind:
             self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
@@ -2934,6 +3002,7 @@ class TriangularPatches(Fault):
         self.edge_vertex_indices['bottom'] = bottom_inds
         self.edge_vertices['top'] = top_edge
         self.edge_vertices['bottom'] = bottom_edge
+        self.edge_extraction_method = 'legacy'
         return
     # ----------------------------------------------------------------------
 

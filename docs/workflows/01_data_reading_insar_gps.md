@@ -6,9 +6,11 @@
 
 | 你要确认的问题 | 推荐案例 | 相关参考 |
 | --- | --- | --- |
-| 降采样 InSAR `.txt/.rsp/.cov` 如何读入 | [Wushi：InSAR-only 非线性几何反演](../casebook/wushi_nonlinear_geometry.md), [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md) | [InSAR 降采样](02_insar_downsampling.md#后续反演中读取) |
-| 外部 ASCII InSAR 点位格式如何读入 | [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md) | [SAR Reader 参考](../reference/sar_reader.md#外部-ascii-点位数据) |
-| 原始 GAMMA/GeoTIFF/GMTSAR/HyP3/offset 产品如何进入降采样 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#降采样配置) |
+| 降采样 InSAR `.txt/.rsp/.cov` 如何读入 | [Wushi：InSAR-only 非线性几何反演](../casebook/wushi_nonlinear_geometry.md), [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md) | [InSAR 降采样](02_insar_downsampling.md#read-downsampled-output) |
+| 外部 ASCII InSAR 点位格式如何读入 | [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md) | [SAR Reader 参考](../reference/sar_reader.md#external-ascii-point-data) |
+| 原始 GAMMA/GeoTIFF/GMTSAR/HyP3/offset 产品如何进入降采样 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#downsampling-config) |
+
+<a id="insar-data-entry"></a>
 
 ## InSAR 数据入口
 

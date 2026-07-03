@@ -87,7 +87,7 @@ coAscsar.read_from_varres(varres_t056a, cov=True)
 geodata = [coAscsar, coDscsar]
 ```
 
-`read_from_varres(...)` 读取的是同名前缀，对应 `S1T056A_ifg.txt/.rsp/.cov` 这一组文件。降采样输出如何进入反演见 [InSAR 降采样](../workflows/02_insar_downsampling.md#后续反演中读取)。
+`read_from_varres(...)` 读取的是同名前缀，对应 `S1T056A_ifg.txt/.rsp/.cov` 这一组文件。降采样输出如何进入反演见 [InSAR 降采样](../workflows/02_insar_downsampling.md#read-downsampled-output)。
 
 ### 3. 用配置文件构造 `explorefault`
 
@@ -154,7 +154,7 @@ expfault.plot_kde_matrix(
 
 ### 6. 进入线性滑动反演
 
-非线性输出中的 `model_results_median.txt` 或等价摘要提供优选几何。进入 BLSE/VCE 时，`lon/lat/depth` 要作为断层顶边中点三维坐标传给 `clon/clat/cdepth`；`top/depth` 则是线性滑动面扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#结果进入线性反演)。
+非线性输出中的 `model_results_median.txt` 或等价摘要提供优选几何。进入 BLSE/VCE 时，`lon/lat/depth` 要作为断层顶边中点三维坐标传给 `clon/clat/cdepth`；`top/depth` 则是线性滑动面扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#geometry-results-to-linear-inversion)。
 
 ## 跑通判据
 

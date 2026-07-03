@@ -14,6 +14,8 @@ default_config.yml
 bounds_config.yml
 ```
 
+<a id="file-sources"></a>
+
 ## 文件来源与生成方式
 
 `test_tri_inv_BLSE_CovDiag.py` 是 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 中的案例脚本，负责把数据读取、断层网格构建、配置加载、求解和结果导出串起来。这个脚本不是 CLI 自动生成的。
@@ -68,7 +70,7 @@ insardata = [sar_t012a, sar_t121d]
 geodata = [sar_t012a, sar_t121d]
 ```
 
-降采样输出进入线性反演时，脚本读取的是标准前缀对应的 `.txt/.rsp/.cov` 文件组；协方差可按完整矩阵或对角阵进入求解。格式约定见 [InSAR 降采样](../workflows/02_insar_downsampling.md#后续反演中读取)。
+降采样输出进入线性反演时，脚本读取的是标准前缀对应的 `.txt/.rsp/.cov` 文件组；协方差可按完整矩阵或对角阵进入求解。格式约定见 [InSAR 降采样](../workflows/02_insar_downsampling.md#read-downsampled-output)。
 
 ### 2. 建立固定三角断层网格
 
@@ -90,7 +92,7 @@ fault_em1.generate_mesh(top_size=1.0, bottom_size=1.5, show=False, verbose=0)
 fault_em1.initializeslip(values="depth")
 ```
 
-这里的 `cdepth` 与 `clon/clat` 一起表示非线性反演得到的顶边中点三维坐标；`top/depth` 才是线性滑动网格向上、向下扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#结果进入线性反演)。
+这里的 `cdepth` 与 `clon/clat` 一起表示非线性反演得到的顶边中点三维坐标；`top/depth` 才是线性滑动网格向上、向下扩展后的顶部和底部深度。完整桥接逻辑见 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md#geometry-results-to-linear-inversion)。
 
 ### 3. 加载配置并构造 BLSE 反演对象
 
@@ -111,6 +113,8 @@ inversion = BoundLSEMultiFaultsInversion(
 ```
 
 配置字段的含义见 [线性滑动反演配置](../reference/config_linear_slip.md)，rake、Euler 和自定义线性约束见 [ECAT 约束管理器](../reference/constraint_manager.md)。
+
+<a id="single-mode-fixed-alpha"></a>
 
 ### 4. `single` 模式：用固定平滑参数求解
 
@@ -140,6 +144,8 @@ elif args.mode == "loop":
         verbose=True,
     )
 ```
+
+<a id="export-slip-and-model-data"></a>
 
 ### 6. 导出滑动、滑动方向和模型数据
 

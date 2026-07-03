@@ -52,8 +52,10 @@ setup(
     entry_points={
         "console_scripts": [
             "ecat-generate-config=eqtools.cli_tools.generate_config:main",
+            "ecat-generate-interseismic=eqtools.cli_tools.generate_interseismic_config:main",
             "ecat-generate-boundary=eqtools.cli_tools.generate_bounds_config:main",
             "ecat-generate-nonlinear=eqtools.cli_tools.generate_nonlinear_config:main",
+            "ecat-generate-nonlinear-geometry=eqtools.cli_tools.generate_nonlinear_geometry_config:main",
             "ecat-generate-downsample=eqtools.cli_tools.generate_downsample_config:main",
             "ecat-downsample=eqtools.cli_tools.process_data_downsampling:main",
             "ecat-psgrn=eqtools.cli_tools.psgrn_cli:main",

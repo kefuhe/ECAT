@@ -14,7 +14,13 @@ from csi.leveling import leveling
 from csi.crossfaultoffset import crossfaultoffset
 
 # Import utility functions for parsing configuration updates
-from .config_utils import parse_data_faults, parse_update, parse_initial_values, parse_sigmas_config
+from .config_utils import (
+    normalize_units_config,
+    parse_data_faults,
+    parse_initial_values,
+    parse_sigmas_config,
+    parse_update,
+)
 
 
 class CommonConfigBase:
@@ -28,6 +34,7 @@ class CommonConfigBase:
         self.nchains = 100 # Number of chains for BayesianMultiFaultsInversion
         self.chain_length = 50 # Length of each chain for BayesianMultiFaultsInversion
         self.geodata = {}
+        self.units = normalize_units_config(None)
         self.lon0 = None
         self.lat0 = None
         self.faultnames = [] # List of fault names

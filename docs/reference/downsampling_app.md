@@ -2,6 +2,13 @@
 
 本页是 `ecat-downsample` 的字段字典和执行逻辑参考。若只是想跑通流程，先读 [InSAR 降采样](../workflows/02_insar_downsampling.md)；若要理解 SAR 观测方向、GMTSAR direct-projection 或 `mode/preset/convention`，读 [SAR Reader 参考](sar_reader.md)。
 
+## 阅读路径
+
+- 入门运行：先看 [InSAR 降采样](../workflows/02_insar_downsampling.md)，按 `-s/-c/-d` 跑通一个标准 reader 案例。
+- 数据格式对照：看 [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md)，按 GAMMA、GeoTIFF、GMTSAR 或 adapter 选择模板。
+- 字段查阅：回到本页确认 YAML 字段语义、默认值、兼容记录和输出文件。
+- 维护扩展：先读 [文档架构说明](../developer/architecture.md) 和 [文档维护规范](../developer/contributing_docs.md)；用户字段语义以本页为准。
+
 ## 入口定位
 
 降采样超级入口负责把原始 SAR、offset 或 optical 产品整理为 CSI 风格的反演输入：
@@ -63,22 +70,26 @@ write run metadata
 
 eqtools 在这里承担流程编排：读入、单位/符号转换、过滤、区域裁剪、YAML 字段校验、报告和输出命名。CSI 承担核心数值对象和算法：`imagecovariance`、`std/data/trirb/from_rsp` 以及最终 varres `.txt/.rsp/.cov` 约定。文档中的配置字段按 eqtools 入口解释；涉及 `imagecovariance` 和 varres 输出时，保持 CSI 命名。
 
-配置文件使用严格字段集：同一含义只保留当前接口，未知字段会直接报错。SAR 绘图配置统一放在 `sar_config.qc.plot`，optical 绘图配置统一放在 `optical_config.qc.plot`；协方差读入抽稀使用 `sar_config.read.downsample_for_covar`，不要在 reader 顶层放快捷字段。
+配置文件使用严格字段集：同一含义只保留当前接口，未知字段会直接报错，并在报错中提示已改名字段。当前模板使用 `min_valid_fraction`、`split_std_threshold` 和 `split_metric_smoothing`；不要再使用旧脚本里的 `tolerance`、`std_threshold` 或 `smooth`。raw quick-look 和 decim 检查图统一由顶层 `check_plots.raw` / `check_plots.decim` 控制。为保护已有案例，`sar_config.qc.plot`、`optical_config.qc.plot` 和 `downsample.plot_decim` 仍会被读入并映射到 `check_plots`，但它们是 deprecated compatibility 字段；新 YAML 和 ECAT-Cases 案例应直接使用 `check_plots`，运行 metadata 会记录这些旧字段的使用情况。协方差读入抽稀使用 `sar_config.read.downsample_for_covar` 或 `optical_config.read.downsample_for_covar`，不要和纯绘图抽稀混用。
 
 ## 顶层配置块
 
 | 字段 | 作用 | 常见值 |
 | --- | --- | --- |
+| `config_version` | 配置语义版本；当前只支持 `1`，旧 YAML 不写时按 `1` 处理 | `1` |
 | `data_type` | 选择主数据类型 | `sar`, `optical` |
 | `general` | 投影原点和局部坐标设置 | `origin/lon0/lat0` |
-| `sar_config` | SAR/InSAR/offset 读入、过滤、quick-look 设置 | 见下文 |
-| `optical_config` | optical offset 读入和显示设置 | `filename/factor_to_m/bands` |
+| `sar_config` | SAR/InSAR/offset 读入、过滤和 summary 设置 | 见下文 |
+| `optical_config` | optical offset 读入、过滤和 summary 设置 | `filename/read/grid` |
 | `input_adapter` | 可选自定义读入开关；只在 adapter 模板中使用 | `enabled` |
+| `check_plots` | raw quick-look 和 decim 检查图显示/保存设置 | `raw`, `decim` |
 | `processing_region` | SAR 或 optical 的协方差和正式降采样处理区域 | `enabled/coord_type/geometry` |
 | `covar` | 协方差估计设置 | `mask_out/function/frac/every/distmax` |
 | `downsample` | 降采样方法、计算后端和参数 | `compute`, `std`, `data`, `trirb`, `from_rsp` |
 | `fault_traces` | 可选断层迹线叠加，只用于 raw/decim 检查图 | lon/lat 文本文件 |
 | `fault_models` | 可选断层模型，用于 `trirb` 计算或 GMT 网格叠加 | `generated_from_trace`, `csi_gmt` |
+
+`config_version` 用于固定当前 YAML 语义。当前版本为 `1`；已有旧配置未写该字段时会按 `1` 归一化。运行时写出的 `<outputName>_run_metadata.yml` 会记录 `config_version` 和 `compatibility.deprecated_fields`，方便后续判断案例是否仍依赖旧字段。
 
 ## `general`
 
@@ -128,10 +139,11 @@ general:
 | 数据配置 | `sar_config` | `optical_config` |
 | 观测量 | 单个标量 `vel`，配套 ENU projection/LOS | `east` 和 `north` 两个水平分量 |
 | 粗差过滤 | `sar_config.data_filters`，按转换后的单标量观测和 projection 过滤 | `optical_config.data_filters`，按 `east/north` 分量或水平模长过滤 |
-| quick-look 范围 | `sar_config.qc.plot.coordrange` | `optical_config.qc.plot.coordrange` |
+| quick-look 范围 | `check_plots.raw.coordrange` | `check_plots.raw.coordrange` |
 | 正式处理范围 | 顶层 `processing_region` | 顶层 `processing_region` |
 | 协方差输出 | `Covariance_estimator.cov` | `Covariance_estimator_East.cov` 和 `Covariance_estimator_North.cov` |
-| 降采样检查图 | `<outName>_decim.png` | `<outName>_East_decim.png` 和 `<outName>_North_decim.png` |
+| 降采样结果文件 | `<outputName>_ifg.txt/.rsp/.cov` | `<outputName>_ifg.txt/.rsp/.cov` |
+| 降采样检查图 | `<outName>_decim.png` | `<outName>_decim.png`，默认两列显示 east/north |
 
 ## `sar_config`
 
@@ -148,7 +160,7 @@ general:
 | `read` | 读入抽稀、单位缩放和波长 |
 | `grid` | raster/grid 技术读入细节，例如 band、变量名、engine 和坐标名 |
 | `data_filters` | 真实删除数据点的过滤规则；默认关闭 |
-| `qc` | summary 和 quick-look 绘图设置 |
+| `qc` | summary 百分位等诊断设置；绘图统一放在顶层 `check_plots` |
 
 `reader/mode/preset/convention` 的语义见 [SAR Reader 参考](sar_reader.md)。
 
@@ -189,7 +201,7 @@ sar_config:
 | `downsample` | quick-look 和正式降采样读入时的抽稀 |
 | `downsample_for_covar` | 协方差估计读入时的抽稀 |
 | `zero2nan` | 读入时将 0 值视为无效值 |
-| `wavelength` | phase 转 LOS displacement 的波长 |
+| `wavelength` | phase 转 LOS disp. 的波长 |
 | `factor_to_m` | 位移/offset 产品单位缩放到米；相位通常保持 `1.0` |
 
 ## `sar_config.grid`
@@ -274,7 +286,7 @@ data_filters:
 | `remove_outside` | 删除区域外点 |
 | `keep_outside` | 只保留区域外点 |
 
-`value_space: observation` 表示阈值作用于转换后的 `vel`，即反演实际使用的观测值；它不受 `qc.plot.factor4plot` 影响。过滤报告默认写入 `<outName>_filter_report.yml`。
+`value_space: observation` 表示阈值作用于转换后的 `vel`，即反演实际使用的观测值；它不受 `check_plots.raw.factor4plot` 影响。过滤报告默认写入 `<outName>_filter_report.yml`。
 
 ## `optical_config`
 
@@ -286,10 +298,15 @@ optical_config:
   directory: ..
   filename: Sagaing_S2_Part1.tif
   vel_type: north
-  factor_to_m: 10.0
-  ew_band: 1
-  sn_band: 2
-  remove_nan: true
+  read:
+    downsample: 1
+    downsample_for_covar: 1
+    zero2nan: true
+    remove_nan: true
+    factor_to_m: 10.0
+  grid:
+    ew_band: 1
+    sn_band: 2
   output_check: true
   data_filters:
     enabled: false
@@ -304,34 +321,30 @@ optical_config:
         max:
   qc:
     summary_percentile: 99.0
-    plot:
-      save_fig: true
-      file_path:
-      show: true
-      rawdownsample4plot: 1
-      coordrange:
-      data: [east, north]
-      vmin: [-1.0, -3.0]
-      vmax: [1.0, 3.0]
-      factor4plot: 1.0
-      symmetry: true
-      cmap: cmc.roma_r
 ```
 
 | 字段 | 作用 |
 | --- | --- |
 | `outName` | 输出前缀 |
 | `directory` / `filename` | optical offset GeoTIFF 所在目录和文件名 |
-| `ew_band` / `sn_band` | 东西向和南北向分量所在 band |
-| `factor_to_m` | 产品单位转米的比例 |
-| `remove_nan` | 读入时删除 NaN 像素 |
+| `read.downsample` | `-s` quick-look 和 `-d` 降采样读入时的像素步长 |
+| `read.downsample_for_covar` | `-c` 协方差估计读入时的像素步长；大 optical 数据可设为 `2/4/8` 试算 |
+| `read.zero2nan` | 读 GeoTIFF 后先把 0 值转为 NaN |
+| `read.remove_nan` | 构造 CSI `opticorr` 时删除 east 或 north 为 NaN 的像素 |
+| `read.factor_to_m` | 产品单位转米的比例 |
+| `grid.ew_band` / `grid.sn_band` | 东西向和南北向分量所在 band |
 | `vel_type` | `trirb` 使用的 optical 分量，`north` 或 `east` |
 | `output_check` | 是否输出降采样检查图 |
 | `data_filters` | 真实删除 optical 坏点/粗差的规则；默认关闭 |
 | `qc.summary_percentile` | summary 和 metadata 使用的稳健统计中心百分比 |
-| `qc.plot` | `-s` 原始 optical quick-look 显示设置 |
+
+optical quick-look 和 decim 检查图统一使用顶层 `check_plots`。旧配置里的 `optical_config.qc.plot` 仍会被映射到 `check_plots.raw` 并记录到 metadata，但新配置不要再写旧入口。`check_plots.raw.components: auto` 表示同时画 east/north；`check_plots.decim.components: auto` 表示在一个 `<outName>_decim.png` 中用两列显示 east/north。`check_plots.raw.plot_stride` 只减少绘图点数，不减少读入、summary、协方差或降采样点数；需要真实降密度时使用 `optical_config.read.downsample` 或 `downsample_for_covar`。
 
 optical 的 `data_filters` 与 SAR 在同一时机执行，但规则含义不同：SAR 的 `value_*` 规则作用于单标量 `vel`，optical 的 `component_*` 和 `vector_norm_range` 作用于 `east/north` 双分量。不要把 SAR 的 `projection_norm` 或 `value_space` 用到 optical。
+
+当前标准 optical 入口面向一个 GeoTIFF 中的 EW/SN 两个 band。`read.factor_to_m` 只做单位缩放；`read.downsample*` 会同步抽稀 east、north 和投影坐标轴，并在转换为 lon/lat mesh 后继续使用真实像素坐标绘制，不退化为 `imshow(extent=...)` 的规则经纬度框。`vel_type` 只决定 `trirb` 这类单分量分辨率判据使用 east 还是 north，不会丢弃另一个分量。正式 `-d` 输出仍使用 CSI varres 前缀 `<outputName>_ifg.txt/.rsp/.cov`，其中 `.cov` 由 East 和 North 两个分量块组成；当前运行时不加入 East-North 交叉协方差。
+
+<a id="data-filters-top-level"></a>
 
 ### `data_filters` 顶层字段
 
@@ -586,25 +599,17 @@ processing_region:
 
 | 配置 | 改变数据点 | 作用阶段 |
 | --- | --- | --- |
-| `sar_config.qc.plot.coordrange` | 否 | 只控制 `-s` quick-look 显示范围 |
-| `optical_config.qc.plot.coordrange` | 否 | 只控制 `-s` optical quick-look 显示范围 |
+| `check_plots.raw.coordrange` | 否 | 只控制 `-s` quick-look 显示范围 |
 | `processing_region` | 是 | 控制 `-c` 和 `-d` 的实际处理区域 |
-| `downsample.plot_decim.coordrange` | 否 | 只控制降采样检查图显示范围 |
+| `check_plots.decim.coordrange` | 否 | 只控制降采样检查图显示范围 |
 
 如果开启了 `processing_region`，协方差估计和正式降采样应使用同一个配置重新运行。`covar.mask_out` 仍然只表示在协方差估计中排除震源形变区；它应位于处理区域之内或与处理区域有足够交集。
 
-## `sar_config.qc`
+## `sar_config.qc` 和 `optical_config.qc`
 
 | 字段 | 作用 |
 | --- | --- |
-| `summary_percentile` | summary 和 metadata 中 robust range 的中心百分比 |
-| `plot.value_space` | `observation` 画转换后的观测值；`raw` 画产品原始值 |
-| `plot.factor4plot` | 仅显示用比例，例如米转厘米用 `100` |
-| `plot.vmin/vmax` | quick-look 色标；命令行 `--vmin/--vmax` 可覆盖 |
-| `plot.symmetry` | 是否让色标关于 0 对称 |
-| `plot.rawdownsample4plot` | 绘图抽稀 |
-| `plot.coordrange` | `-s` quick-look 的显示范围 `[minlon, maxlon, minlat, maxlat]`；不裁剪数据 |
-| `plot.file_path/save_fig/show` | quick-look 输出控制 |
+| `summary_percentile` | summary、metadata 和默认稳健色标范围使用的中心百分比 |
 
 `sar_output.txt` 记录：
 
@@ -614,20 +619,121 @@ processing_region:
 | `plot_robust_99_range` | 稳健中心范围，用于判断显示量级 |
 | `plot_clipped` | 当前 `vmin/vmax` 截掉的有效点比例 |
 
-## `optical_config.qc`
+`optical_output.txt` 记录 `east/north` 的完整范围、稳健中心范围、当前色标裁剪比例和水平模长稳健范围。
+
+## `check_plots`
+
+`check_plots` 是降采样超级入口唯一的绘图配置入口，只控制 raw quick-look 和 decim 检查图，不改变读入、过滤、协方差、降采样或输出 `.txt/.rsp/.cov` 的数值逻辑。
+
+```yaml
+check_plots:
+  raw:
+    show: true
+    save_fig: true
+    file_path: auto       # SAR: sar_values.png; optical: <outName>_deformation_map.jpg
+    coordrange:           # [minlon, maxlon, minlat, maxlat]; only display extent
+    plot_stride: 1
+    figsize: single       # SAR 常用 single；optical 双列常用 double；高瘦图可试 [4, 5] 或 [7, 5]
+    dpi: 300              # 保存图 dpi；屏显交互窗口会内部限制到不超过 200 dpi
+    fontsize:             # 空值 = 按 figsize 自动，约 6-10 pt
+    factor4plot: auto     # SAR auto=100; optical auto=1
+    vmin:
+    vmax:
+    symmetry: true
+    cmap: cmc.roma_r
+    axis_tick_direction: out
+    colorbar_orientation: auto
+    colorbar_pad:
+    colorbar_size:
+    colorbar_thickness:
+    panel_pad:
+    colorbar_tick_direction: out
+    colorbar_max_major_ticks: 3
+
+  decim:
+    show: false
+    save_fig: true
+    file_path: auto       # <outName>_decim.png
+    coordrange:
+    cell_style: cells     # cells | points
+    figsize: double       # 常规检查图起步值；紧凑 SAR 可用 single，optical 双列可试 [7, 5]
+    dpi: 300              # 保存图 dpi；屏显交互窗口会内部限制到不超过 200 dpi
+    fontsize:             # 空值 = 按 figsize 自动，约 6-10 pt
+    factor4plot: inherit_raw
+    vmin:
+    vmax:
+    symmetry: true
+    cmap: cmc.roma_r
+    axis_tick_direction: out
+    colorbar_orientation: auto
+    colorbar_pad:
+    colorbar_size:
+    colorbar_thickness:
+    panel_pad:
+    colorbar_tick_direction: out
+    colorbar_max_major_ticks: 3
+    edgewidth: 0.1
+    edgecolor: black
+    alpha: 1.0
+    markersize: 10
+```
+
+`minimal` 模板只写出上面这些高频字段；它们足够完成读入检查、降采样检查图和常规论文图微调。需要更细的双列布局、分量选择、色标位置、字体、次刻度或 trace 样式时，使用 `--template full` 生成包含高级绘图字段的模板，或按下表手动补充字段。
 
 | 字段 | 作用 |
 | --- | --- |
-| `summary_percentile` | optical summary 和 metadata 中 robust range 的中心百分比 |
-| `plot.data` | quick-look 绘制的分量，常用 `[east, north]` |
-| `plot.factor4plot` | 仅显示用比例，例如米转厘米用 `100` |
-| `plot.vmin/vmax` | quick-look 色标；可为单个值或 `[east, north]` 两个值，命令行 `--vmin/--vmax` 会同时覆盖两个分量 |
-| `plot.symmetry` | 是否让色标关于 0 对称；主要用于 decimated plot 继承 |
-| `plot.rawdownsample4plot` | 绘图抽稀；当前主要作为配置记录 |
-| `plot.coordrange` | `-s` optical quick-look 的显示范围 `[minlon, maxlon, minlat, maxlat]`；不裁剪数据 |
-| `plot.file_path/save_fig/show` | quick-look 输出控制 |
+| `raw` | `-s` 原始数据 quick-look；输出 summary metadata 后绘图 |
+| `decim` | `-d` 结束后读回降采样结果并绘图 |
+| `show` | 是否屏显真实 Matplotlib 坐标窗口；`decim.show: true` 可让降采样完成后弹出检查图 |
+| `save_fig/file_path` | 是否保存图；`auto` 使用标准文件名 |
+| `coordrange` | 只控制显示范围，不裁剪数据 |
+| `components` | SAR 固定为 observation；optical 可用 `east`、`north`、`both` 或 `auto` |
+| `layout` | `auto` 自动选择单图或双列；也可写 `single`、`columns` |
+| `figsize` | 支持 `[width, height]` 或 viztools 注册宽度字符串；常用 `single`、`double`、`full`，也可用期刊预设如 `nature`、`science`、`pnas` |
+| `dpi` | 保存图 dpi；屏显交互窗口会内部限制到不超过 200 dpi，避免 `dpi: 600` 导致窗口过大 |
+| `fontsize` | 主图基础字号；空值按 `figsize` 宽度自动映射到约 6-10 pt，显式数字则固定 |
+| `tickfontsize` | colorbar tick label 字号；空值默认取 `max(fontsize - 1, 6)` |
+| `labelfontsize` | colorbar label 字号；空值默认等于 `fontsize` |
+| `factor4plot` | 仅显示缩放；`inherit_raw` 只用于 decim |
+| `vmin/vmax` | 显式色标范围；optical 支持 `[east, north]` |
+| `auto_percentile` | 不写 `vmin/vmax` 时的稳健中心百分比；空值继承对应 `qc.summary_percentile` |
+| `symmetry` | 自动色标是否关于 0 对称 |
+| `cell_style` | decim 图绘制 cell polygon 或采样中心点 |
+| `axis_tick_direction` | 主图经纬度坐标轴刻度线方向，`out`、`in` 或 `inout`；默认 `out`，避免刻度线被形变图遮住 |
+| `axis_max_major_ticks` | 主图每个坐标轴最多显示的主刻度数量；默认 `5`，设为空则交给 Matplotlib/viztools 自动决定 |
+| `axis_minor_ticks` | 是否启用主图次刻度；默认 `false`，避免高分辨率图中次刻度过密 |
+| `axis_minor_subdivisions` | 主图次刻度分段数；仅在 `axis_minor_ticks: true` 时使用 |
+| `colorbar_orientation` | `auto`、`vertical` 或 `horizontal`；`auto` 对单图用竖向色标，对 optical 双列图用横向色标 |
+| `colorbar_loc` | 色标相对对应主图的位置；空值使用方向默认值，横向外置居中，竖向外置在右侧 |
+| `colorbar_pad` | 组内距离：色标与对应主图或 tick label 区域的距离 |
+| `colorbar_size` | 色标长边长度，相对对应主图轴尺寸；横向控制宽度，竖向控制高度 |
+| `colorbar_thickness` | 色标短边厚度，相对对应主图轴尺寸；横向控制高度，竖向控制宽度 |
+| `panel_pad` | 组间最小距离：相邻 map+colorbar panel group 的间距，单位为整张 figure 宽度比例；空值表示自动紧凑且不重叠 |
+| `colorbar_tick_direction` | colorbar 刻度线方向，`out`、`in` 或 `inout`；默认 `out`，避免刻度线被色带吞掉 |
+| `colorbar_max_major_ticks` | colorbar 最多显示的主刻度数量；默认 `3` |
+| `colorbar_minor_ticks` | 是否启用 colorbar 次刻度；默认 `false` |
+| `colorbar_minor_subdivisions` | colorbar 次刻度分段数；仅在 `colorbar_minor_ticks: true` 时使用 |
 
-`optical_output.txt` 记录 `east/north` 的完整范围、稳健中心范围、当前色标裁剪比例和水平模长稳健范围。
+当 `vmin/vmax` 为空时，程序使用中心百分位的稳健范围计算色标；`symmetry: true` 时取正负对称范围。命令行 `--vmin/--vmax` 仍会覆盖当前图的上下限。optical raw 和 decim 默认都在一张图中用两列显示 east/north，各分量有独立 colorbar，避免 east/north 色标范围互相遮蔽；默认 `colorbar_orientation: auto` 会为这种双列图使用横向色标，减少分量标签与另一列地图互相遮挡。主图和 colorbar 默认只显示受 `*_max_major_ticks` 限制的主刻度，次刻度默认关闭；如果论文图需要更细读数，再显式启用 `axis_minor_ticks` 或 `colorbar_minor_ticks`。
+
+典型起步值：SAR 单图用 `figsize: single`，需要更高的经纬度图幅时试 `[4, 5]`；optical east/north 双列图用 `figsize: double`，高瘦图幅或横向 colorbar 较拥挤时试 `[7, 5]` 或 `[8, 5]`。`single/double/full` 会由 viztools 转成出版列宽和默认高宽比；显式 `[width, height]` 的单位是 inch，适合最终微调。`fontsize/tickfontsize/labelfontsize` 留空时，程序按最终 `figsize` 宽度自动给字号：`single` 及以下约 6 pt，`double` 及以上约 10 pt，中间线性过渡。正式论文图如果要求统一字号，可显式写定这些字段。
+
+`show: true` 使用真实 Matplotlib figure，保留坐标读数、缩放、圈选等交互能力。保存图仍使用配置中的 `dpi`，例如 300 或 600；屏显前程序会把交互窗口的 figure dpi 限制到不超过 200，避免高保存 dpi 直接生成超大窗口。由于保存图使用 `bbox_inches="tight"`，屏显窗口和保存图不保证逐像素完全相同，最终排版以保存文件为准。
+
+外置 colorbar 会绑定到对应主图的当前 active box；因此 `equal aspect` 图件在后端重绘后，色标仍会跟随主图重新定位。`colorbar_pad` 只调同一 panel 内主图和色标的距离；多列图中左右 panel group 之间的间距用 `panel_pad` 控制。程序会先把 tick label 和 axis label 保持在 figure canvas 内，`save_fig` 写图时再使用 tight bbox 防止边缘文字被裁切。如果最终排版需要把色标放入图内，可在 `--template full` 中使用：
+
+```yaml
+check_plots:
+  raw:
+    colorbar_mode: inside
+    colorbar_orientation: horizontal
+    colorbar_loc: lower right
+    colorbar_size: 0.35
+    colorbar_thickness: 0.04
+    colorbar_pad: 0.03
+```
+
+图内色标可能遮挡形变场，建议只用于最终排版；常规检查和批处理保持默认外置色标更稳妥。
 
 ## `covar`
 
@@ -671,24 +777,24 @@ cutde GF，但仍保留同一配置入口，避免同一降采样命令在不同
 | `std` | `std_config` | 入门首选；按块内统计逐级细化 |
 | `data` | `data_config` | 按振幅、梯度或曲率等数据特征细化 |
 | `trirb` | `trirb_config` | 有断层模型时按三角分辨率控制降采样，会构建 cutde GF |
-| `from_rsp` | `from_rsp_config` | 复用已有 CSI `.rsp` 格网 |
+| `from_rsp` | `from_rsp_config` | 复用已有 CSI `.rsp` 格网；支持 10 列 legacy 矩形、18 列 full-corner 矩形和 8 列正式三角形 |
 
 通用提取统计由 `downsample.extraction` 控制，对 `std`、`data`、`trirb` 和
-`from_rsp` 都生效。默认值完全等价于 CSI 旧行为：块内观测取均值，误差取标准差，
-坐标取块内像素均值，InSAR 投影向量取均值后归一化。
+`from_rsp` 都生效。新模板默认块内观测取中位数，误差取标准差，坐标取块内像素均值，
+InSAR 投影向量取均值后归一化；需要复现 CSI 旧行为时，把 `value_statistic` 显式改为 `mean`。
 
 ```yaml
 downsample:
   extraction:
-    value_statistic: mean        # mean | median | center_nearest | trimmed_mean
+    value_statistic: median      # mean | median | center_nearest | trimmed_mean
     error_statistic: std         # std | mad | sem | none
     coordinate_statistic: mean   # mean | block_center | center_nearest
     projection_statistic: mean_normalized # mean_normalized | center_nearest
     trim_fraction: 0.1           # value_statistic: trimmed_mean 时使用
 ```
 
-`value_statistic` 控制 `<outName>_ifg.txt` 中的降采样观测值。`median` 和
-`trimmed_mean` 更抗离群点；`center_nearest` 使用最靠近 cell 中心的原始像素。
+`value_statistic` 控制 `<outName>_ifg.txt` 中的降采样观测值。默认 `median`
+更抗离群点；`trimmed_mean` 也是稳健选项；`center_nearest` 使用最靠近 cell 中心的原始像素。
 `error_statistic` 控制输出误差列，`mad` 是按 median absolute deviation 缩放的稳健误差，
 `sem` 是标准误，`none` 写 0。`coordinate_statistic: block_center` 会把输出点放在
 cell 几何中心；默认 `mean` 保持旧行为。
@@ -752,10 +858,10 @@ downsample:
 | `low_amplitude_cap` | 低振幅区域限制过度细分 |
 
 `std_config.split_metric_correction` 只控制 std-based quadtree 的“是否继续分裂”判据，不控制最终
-`<outName>_ifg.txt` 的 cell 值。默认 `std` 保持 CSI 原行为；`bilinear` 会在每个候选块内
+`<outName>_ifg.txt` 的 cell 值。新模板默认 `median`，需要复现 CSI 原行为时可显式设置为 `std`；`bilinear` 会在每个候选块内
 先拟合并去掉一个局部平面趋势，再用残差标准差判断是否分裂，适合存在长波坡度但不希望坡度本身
 导致过度细分的引导图。最终输出值仍由 `downsample.extraction.value_statistic` 决定。
-新数据调参时建议优先尝试 `median`，它更容易解释为“围绕块内中位数评估离散程度”，对局部离群点也更稳健；当前模板仍保留 `std` 是为了让不主动修改配置的旧流程结果保持一致。
+`median` 更容易解释为“围绕块内中位数评估离散程度”，对局部离群点也更稳健。
 
 `<outName>_downsample_report.yml` 中的 `observation.*.nanstd` 是处理区域内整幅观测的标准差，
 可作为设置 `split_std_threshold` 或比较不同场景噪声/形变量级的第一参考，但不应直接机械等同于最终阈值。
@@ -771,9 +877,13 @@ downsample:
 | `split_metric_smoothing` | 可选的分裂判据平滑长度；传给 CSI `dataBased(smooth=...)` |
 
 `trirb_config.min_valid_fraction` 和 `from_rsp_config.min_valid_fraction` 也是有效像素比例阈值；
-它们保留同一含义，但分别作用于三角初始块和复用 `.rsp` cell。
+它们保留同一含义，但分别作用于三角初始块和复用 `.rsp` cell。`from_rsp` 读取 `.rsp` 中的
+lon/lat 顶点并投影到当前数据对象的局部坐标；10 列 legacy 矩形只有左上和右下角，18 列
+full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` 复用的正式三角 cell。
 
-`downsample.plot_decim.coordrange` 只控制降采样检查图显示范围，不控制数据范围。
+降采样检查图由 `check_plots.decim` 控制；`coordrange` 只裁剪显示视野，不控制数据范围。`vmin/vmax`
+为空时会使用稳健自动色标，`factor4plot: inherit_raw` 会继承 raw quick-look 的显示比例。optical 可写
+二元列表 `[east, north]` 分别控制双列图中两个分量的色标；命令行 `--vmin/--vmax` 仍会用同一个标量覆盖两个分量。
 
 ## `fault_traces` 与 `fault_models`
 
@@ -862,15 +972,14 @@ fault_models:
 | `<outName>_deformation_map.jpg` | `-s` optical quick-look | 原始 optical east/north 形变图 |
 | `<outputName>_filter_report.yml` | 启用 `data_filters` | 记录每条过滤规则删除点数 |
 | `<outputName>_processing_region_report.yml` | 启用 `processing_region` 且运行 `-c` 或 `-d` | 记录正式处理区域保留/删除点数 |
-| `<outputName>_run_metadata.yml` | 每次运行 | 有效配置、执行步骤和预期输出 |
+| `<outputName>_run_metadata.yml` | 每次运行 | 有效配置、配置版本、deprecated compatibility 字段、执行步骤和预期输出 |
 | `<outputName>_downsample_report.yml` | `-d` 且 `downsample.report.enabled: true` | 记录降采样点数、格网、guide-grid、提取规则和质量诊断 |
 | `Covariance_estimator.cov` | `-c` | SAR CSI 协方差估计器 |
 | `Covariance_estimator_East.cov` / `Covariance_estimator_North.cov` | `-c` | optical east/north CSI 协方差估计器 |
-| `<outputName>_ifg.txt` | SAR `-d` | 降采样观测值 |
-| `<outputName>_ifg.rsp` | SAR `-d` | 降采样单元几何 |
-| `<outputName>_ifg.cov` | SAR `-d` | 降采样协方差矩阵 |
-| `<outputName>_decim.png` | SAR `-d` | 降采样结果检查图 |
-| `<outName>_East_decim.png` / `<outName>_North_decim.png` | `-d` optical | optical 降采样结果检查图 |
+| `<outputName>_ifg.txt` | SAR/optical `-d` | 降采样观测值；SAR 为单标量，optical 为 east/north 双分量 |
+| `<outputName>_ifg.rsp` | SAR/optical `-d` | 降采样单元几何；矩形输出默认 18 列 full-corner，三角输出为 8 列 |
+| `<outputName>_ifg.cov` | SAR/optical `-d` | 降采样协方差矩阵；optical 为 East/North 分量块矩阵 |
+| `<outputName>_decim.png` | SAR/optical `-d` | 降采样结果检查图；optical 默认双列显示 east/north |
 
 ## 常见歧义
 
@@ -878,12 +987,13 @@ fault_models:
 | --- | --- |
 | `data_filters` vs `covar.mask_out` | 前者真实删除点；后者只在协方差估计时排除震源形变区 |
 | `data_filters` vs `processing_region` | 前者用于数据质量过滤；后者用于科学关注区域，会影响 `-c/-d` |
-| `qc.plot.coordrange` vs `processing_region` | 前者只裁剪 quick-look 视野；后者裁剪正式处理数据 |
+| `check_plots.*.coordrange` vs `processing_region` | 前者只裁剪图件视野；后者裁剪正式处理数据 |
 | `processing_region` vs `std_config.focus_region` | 前者保留处理区域；后者只控制 std-based 细分层级 |
 | `guide_grid` vs `extraction` | 前者只控制 `std/data` 的网格怎么生成；后者控制所有方法最终如何从原始数据提取 cell 值 |
 | `std_config.split_metric_correction` vs `extraction.value_statistic` | 前者只影响 std quadtree 分裂判据；后者决定最终输出 cell 观测值 |
 | `read.downsample` vs `downsample.method` | 前者是读入抽稀；后者是正式降采样算法 |
-| `qc.plot.value_space` vs `data_filters.value_space` | 前者控制画什么；后者控制过滤阈值作用在哪个数值空间 |
+| `check_plots.raw.value_space` vs `data_filters.value_space` | 前者控制 raw SAR 图画什么；后者控制过滤阈值作用在哪个数值空间 |
+| `sar_config.qc.plot` / `optical_config.qc.plot` / `downsample.plot_decim` vs `check_plots` | 前三者只作为旧配置兼容入口读取并记录；当前推荐入口是顶层 `check_plots.raw/decim` |
 | SAR `value_*` vs optical `component_*` | `value_*` 只用于 SAR 单标量 `vel`；`component_*` 只用于 optical `east/north` |
 | `factor4plot` vs 真实单位 | `factor4plot` 只影响显示；过滤阈值按读入后的真实观测单位设置 |
 | `outName` vs `output_suffix` | `outName` 是基础名；SAR range/azimuth offset 的最终前缀由 `output_suffix` 决定 |
@@ -895,7 +1005,8 @@ fault_models:
 ## 相关页面
 
 - 跑通流程：[InSAR 降采样](../workflows/02_insar_downsampling.md)
-- 手动调参：[InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md)
+- 手动调参：[InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)
 - 自定义读入和时序网格复用：[自定义读入 Adapter 降采样](../workflows/02b_adapter_downsampling.md)
 - Reader 和符号约定：[SAR Reader 参考](sar_reader.md)
 - 命令行入口：[CLI 命令参考](cli.md)
+- 图件样式和出版尺寸：[ECAT 图件样式参考 / Viztools](viztools.md)

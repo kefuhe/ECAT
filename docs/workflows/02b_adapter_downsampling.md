@@ -25,13 +25,7 @@ csi.insar 或 csi.opticorr -> ECAT 标准 covar/std/data/trirb/from_rsp/plot/rep
 在案例处理目录生成配置和 adapter 模板：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma \
-  --sar-mode unwrapped_phase \
-  --downsample-method std \
-  -o downsample.yml \
-  --copy-adapter-template
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase --downsample-method std -o downsample.yml --copy-adapter-template
 ```
 
 这会在当前目录生成：
@@ -169,6 +163,6 @@ python run_timeseries_downsampling.py -f downsample.yml -d
 ## 与标准流程的关系
 
 - 跑通标准数据：读 [InSAR 降采样](02_insar_downsampling.md)。
-- 按 Step1/Step2 教学调参：读 [InSAR 降采样两步走](02a_insar_downsampling_two_step.md)。
+- 按 Step1/Step2 教学调参：读 [InSAR 降采样 Step1/Step2 调参](02a_insar_downsampling_two_step.md)。
 - 查全部字段：读 [降采样超级入口参考](../reference/downsampling_app.md)。
 - 查 reader/mode/符号约定：读 [SAR Reader 参考](../reference/sar_reader.md)。

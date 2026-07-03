@@ -13,6 +13,9 @@ Version: 1.0.0
 import numpy as np
 from tabulate import tabulate
 
+from .config.config_utils import get_observation_unit_info
+from .fault_summary import print_faults_summary, summarize_faults
+
 
 class FaultAnalysisMixin:
     """
@@ -50,8 +53,123 @@ class FaultAnalysisMixin:
         else:
             raise AttributeError("Cannot find faults in this object. "
                                "Please ensure the class has either 'faults' or 'multifaults.faults' attribute.")
+
+    def _select_faults(self, faults=None):
+        """
+        Select fault objects from this inversion object.
+
+        ``faults`` may be ``None`` for all faults, a list of fault objects, or
+        a list of fault names. The helper keeps summary and moment APIs aligned.
+        """
+        if faults is None:
+            return self._get_faults()
+
+        if isinstance(faults, list):
+            if len(faults) == 0:
+                return self._get_faults()
+            if isinstance(faults[0], str):
+                all_faults = self._get_faults()
+                fault_dict = {fault.name: fault for fault in all_faults}
+                target_faults = []
+                for fault_name in faults:
+                    if fault_name in fault_dict:
+                        target_faults.append(fault_dict[fault_name])
+                    else:
+                        print(f"Warning: Fault '{fault_name}' not found in available faults")
+                return target_faults
+            return faults
+
+        print("Warning: Invalid faults parameter, using available faults")
+        return self._get_faults()
+
+    def _default_fault_groups(self, target_faults):
+        """
+        Return configured fault groups when available.
+        """
+        if (hasattr(self, 'config') and hasattr(self.config, 'alpha')
+            and isinstance(self.config.alpha, dict)
+            and 'faults' in self.config.alpha):
+            return self.config.alpha['faults']
+        return None
+
+    def _resolve_slip_factor(self, slip_factor=None):
+        """
+        Return the factor converting stored slip values to meters.
+
+        ECAT assumes observations, Green's functions, slip variables and
+        constraint right-hand sides are already in one numerical unit. Moment
+        magnitude is different: it requires physical slip in meters.
+        """
+        if slip_factor is not None:
+            return float(slip_factor), {
+                "observation": None,
+                "kind": None,
+                "assumed": False,
+                "explicit_slip_factor": True,
+            }
+
+        unit_info = get_observation_unit_info(self, default="m")
+        if unit_info["kind"] != "displacement":
+            raise ValueError(
+                "Moment magnitude requires displacement slip. "
+                f"units.observation is '{unit_info['observation']}', which is a rate unit. "
+                "Pass slip_factor explicitly if you intentionally converted rates to cumulative slip."
+            )
+        unit_info = dict(unit_info)
+        unit_info["explicit_slip_factor"] = False
+        return float(unit_info["to_si"]), unit_info
+
+    def _resolve_summary_slip_context(self, slip_factor=None, include_moment=True):
+        """
+        Resolve slip and moment scaling for fault summaries.
+
+        Direct moment APIs must still reject rate units unless the caller passes
+        ``slip_factor`` explicitly. Interactive summaries are diagnostic: for
+        rate-unit inversions they keep the slip table in the configured rate
+        unit and report moment rate in ``N*m/yr``.
+        """
+        if slip_factor is not None:
+            factor, unit_info = self._resolve_slip_factor(slip_factor)
+            return {
+                "slip_factor": factor,
+                "slip_unit_label": "m",
+                "moment_slip_factor": factor,
+                "moment_kind": "moment",
+                "moment_unit_label": "N*m",
+                "equivalent_duration_years": None,
+                "include_moment": include_moment,
+                "unit_info": unit_info,
+            }
+
+        unit_info = get_observation_unit_info(self, default="m")
+        unit_info = dict(unit_info)
+        unit_info["explicit_slip_factor"] = False
+
+        if unit_info["kind"] == "displacement":
+            factor = float(unit_info["to_si"])
+            return {
+                "slip_factor": factor,
+                "slip_unit_label": "m",
+                "moment_slip_factor": factor,
+                "moment_kind": "moment",
+                "moment_unit_label": "N*m",
+                "equivalent_duration_years": None,
+                "include_moment": include_moment,
+                "unit_info": unit_info,
+            }
+
+        return {
+            "slip_factor": 1.0,
+            "slip_unit_label": unit_info.get("observation") or "stored",
+            "moment_slip_factor": float(unit_info["to_si"]),
+            "moment_kind": "moment_rate",
+            "moment_unit_label": "N*m/yr",
+            "equivalent_duration_years": 1.0,
+            "include_moment": include_moment,
+            "unit_info": unit_info,
+        }
     
-    def calculate_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=1.0, mode='hankel'):
+    def calculate_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=None, mode='hankel'):
         """
         Calculate seismic moment and moment magnitude for specified faults.
         
@@ -63,7 +181,8 @@ class FaultAnalysisMixin:
             faults (list, optional): List of fault objects or fault names to analyze.
                                    If None, uses all available faults. Defaults to None.
             mu (float, optional): Shear modulus in Pa. Defaults to 3.e10.
-            slip_factor (float, optional): Factor to scale the slip values. Defaults to 1.0.
+            slip_factor (float, optional): Factor to convert stored slip values to meters.
+                If omitted, inferred from units.observation for displacement units.
             mode (str, optional): Calculation mode ('csi' or 'hankel'). Defaults to 'hankel'.
         
         Returns:
@@ -98,14 +217,16 @@ class FaultAnalysisMixin:
         else:
             target_faults = self._get_faults()
         
+        resolved_slip_factor, unit_info = self._resolve_slip_factor(slip_factor)
+
         if mode == 'csi':
-            return self._calculate_moment_magnitude_csi(target_faults, mu, slip_factor)
+            return self._calculate_moment_magnitude_csi(target_faults, mu, resolved_slip_factor, unit_info)
         elif mode == 'hankel':
-            return self._calculate_moment_magnitude_hankel(target_faults, mu, slip_factor)
+            return self._calculate_moment_magnitude_hankel(target_faults, mu, resolved_slip_factor, unit_info)
         else:
             raise ValueError(f"Unsupported mode: {mode}. Use 'csi' or 'hankel'.")
     
-    def _calculate_moment_magnitude_csi(self, target_faults, mu=3.e10, slip_factor=1.0):
+    def _calculate_moment_magnitude_csi(self, target_faults, mu=3.e10, slip_factor=1.0, unit_info=None):
         """
         Calculate moment magnitude using CSI faultpostproc method.
         
@@ -169,10 +290,12 @@ class FaultAnalysisMixin:
             'total_magnitude': fault_processor.Mw,
             'mode': 'csi',
             'processor': fault_processor,
-            'faults': [fault.name for fault in target_faults]
+            'faults': [fault.name for fault in target_faults],
+            'slip_factor': slip_factor,
+            'unit_context': unit_info or {},
         }
     
-    def _calculate_moment_magnitude_hankel(self, target_faults, mu=3.e10, slip_factor=1.0):
+    def _calculate_moment_magnitude_hankel(self, target_faults, mu=3.e10, slip_factor=1.0, unit_info=None):
         """
         Calculate moment magnitude using the standard Hankel formula.
         
@@ -235,10 +358,11 @@ class FaultAnalysisMixin:
             'mode': 'hankel',
             'mu': mu,
             'slip_factor': slip_factor,
+            'unit_context': unit_info or {},
             'faults': [fault.name for fault in target_faults]
         }
     
-    def print_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=1.0, mode='hankel'):
+    def print_moment_magnitude(self, faults=None, mu=3.e10, slip_factor=None, mode='hankel'):
         """
         Print seismic moment and moment magnitude information in a formatted table.
         
@@ -249,7 +373,8 @@ class FaultAnalysisMixin:
             faults (list, optional): List of fault objects or fault names to analyze.
                                    If None, uses all available faults. Defaults to None.
             mu (float, optional): Shear modulus in Pa. Defaults to 3.e10.
-            slip_factor (float, optional): Factor to scale slip values. Defaults to 1.0.
+            slip_factor (float, optional): Factor to convert stored slip values to meters.
+                If omitted, inferred from units.observation for displacement units.
             mode (str, optional): Calculation mode ('csi' or 'hankel'). Defaults to 'hankel'.
         
         Returns:
@@ -265,13 +390,17 @@ class FaultAnalysisMixin:
         print(f"Seismic Moment and Magnitude ({mode.upper()} mode)")
         print(f"Analyzed faults: {fault_list_str}")
         print("="*60)
+        unit_context = results.get('unit_context') or {}
+        if unit_context.get("observation"):
+            assumed = " (assumed)" if unit_context.get("assumed") else ""
+            print(f"Slip unit: {unit_context['observation']}{assumed}; converted to meters for Mo")
         
         if mode == 'csi':
             # Simple output for CSI mode
             print(f"Mo is: {results['total_moment']:.8e} N·m")
             print(f"Mw is: {results['total_magnitude']:.2f}")
             print(f"Shear modulus: {mu:.2e} Pa")
-            print(f"Slip scaling factor: {slip_factor:.2f}")
+            print(f"Slip scaling factor: {results['slip_factor']:.6g}")
             
         elif mode == 'hankel':
             # Detailed table output for Hankel mode
@@ -300,12 +429,87 @@ class FaultAnalysisMixin:
             
             print(f"\nParameters:")
             print(f"Shear modulus: {results['mu']:.2e} Pa")
-            print(f"Slip scaling factor: {results['slip_factor']:.2f}")
+            print(f"Slip scaling factor: {results['slip_factor']:.6g}")
             print(f"Formula: Mw = 2/3 * (log10(Mo) - 9.1)")
         
         print("="*60)
         
         return results
+
+    def get_faults_summary(self, faults=None, fault_groups=None, mu=None,
+                           slip_factor=None, include_slip=True, include_moment=True):
+        """
+        Return structured geometry, slip, and moment summaries for selected faults.
+
+        This is the public summary API for inversion objects. Use
+        ``print_faults_summary`` or ``show_faults_summary`` for formatted
+        interactive output.
+        """
+        target_faults = self._select_faults(faults)
+        if mu is None:
+            mu = getattr(self, 'shear_modulus', 3.e10)
+        if fault_groups is None:
+            fault_groups = self._default_fault_groups(target_faults)
+        summary_context = self._resolve_summary_slip_context(slip_factor, include_moment)
+
+        summary = summarize_faults(
+            target_faults,
+            fault_groups=fault_groups,
+            mu=mu,
+            slip_factor=summary_context["slip_factor"],
+            slip_unit_label=summary_context["slip_unit_label"],
+            moment_slip_factor=summary_context["moment_slip_factor"],
+            moment_kind=summary_context["moment_kind"],
+            moment_unit_label=summary_context["moment_unit_label"],
+            equivalent_duration_years=summary_context["equivalent_duration_years"],
+            include_slip=include_slip,
+            include_moment=summary_context["include_moment"],
+        )
+        summary["unit_context"] = summary_context["unit_info"]
+        return summary
+
+    def get_fault_summary(self, *args, **kwargs):
+        """Alias for ``get_faults_summary`` for interactive use."""
+        return self.get_faults_summary(*args, **kwargs)
+
+    def print_faults_summary(self, faults=None, fault_groups=None, mu=None,
+                             slip_factor=None, include_slip=True,
+                             include_moment=True, file=None, tablefmt='grid'):
+        """
+        Print and return fault summaries for selected faults.
+        """
+        target_faults = self._select_faults(faults)
+        if mu is None:
+            mu = getattr(self, 'shear_modulus', 3.e10)
+        if fault_groups is None:
+            fault_groups = self._default_fault_groups(target_faults)
+        summary_context = self._resolve_summary_slip_context(slip_factor, include_moment)
+
+        summary = print_faults_summary(
+            target_faults,
+            fault_groups=fault_groups,
+            mu=mu,
+            slip_factor=summary_context["slip_factor"],
+            slip_unit_label=summary_context["slip_unit_label"],
+            moment_slip_factor=summary_context["moment_slip_factor"],
+            moment_kind=summary_context["moment_kind"],
+            moment_unit_label=summary_context["moment_unit_label"],
+            equivalent_duration_years=summary_context["equivalent_duration_years"],
+            include_slip=include_slip,
+            include_moment=summary_context["include_moment"],
+            file=file,
+            tablefmt=tablefmt,
+        )
+        summary["unit_context"] = summary_context["unit_info"]
+        return summary
+
+    def print_fault_summary(self, *args, **kwargs):
+        """Alias for ``print_faults_summary`` for interactive use."""
+        return self.print_faults_summary(*args, **kwargs)
+
+    def show_faults_summary(self, *args, **kwargs):
+        """Alias for ``print_faults_summary`` for interactive use."""
+        return self.print_faults_summary(*args, **kwargs)
 
     def _print_fault_statistics(self, faults=None, fault_groups=None):
         """
@@ -324,222 +528,8 @@ class FaultAnalysisMixin:
                                          If None, treats each fault as its own group.
                                          Defaults to None.
         """
-        # Handle faults parameter
-        if faults is None:
-            target_faults = self._get_faults()
-        elif isinstance(faults, list):
-            if len(faults) > 0:
-                if isinstance(faults[0], str):
-                    # List of fault names
-                    all_faults = self._get_faults()
-                    fault_dict = {fault.name: fault for fault in all_faults}
-                    target_faults = []
-                    for fault_name in faults:
-                        if fault_name in fault_dict:
-                            target_faults.append(fault_dict[fault_name])
-                        else:
-                            print(f"Warning: Fault '{fault_name}' not found in available faults")
-                else:
-                    # List of fault objects
-                    target_faults = faults
-            else:
-                target_faults = self._get_faults()
-        else:
-            print("Warning: Invalid faults parameter, using available faults")
-            target_faults = self._get_faults()
+        return self.print_faults_summary(faults=faults, fault_groups=fault_groups)
         
-        print("\n" + "="*80)
-        print("Fault Statistics Summary")
-        print("="*80)
-        
-        # Fault geometry statistics table
-        geometry_table_data = []
-        for ifault in target_faults:
-            mean_strike = np.mean(ifault.getStrikes() * 180 / np.pi)
-            mean_dip = np.mean(ifault.getDips() * 180 / np.pi)
-            num_patches = len(ifault.patch)
-            
-            # Calculate fault length using cumdistance method
-            try:
-                fault_length = ifault.cumdistance(discretized=False)[-1]
-                length_str = f"{fault_length:.2f} km"
-            except:
-                length_str = 'N/A'
-            
-            geometry_table_data.append([
-                ifault.name,
-                f"{mean_strike:.2f}°",
-                f"{mean_dip:.2f}°",
-                num_patches,
-                length_str
-            ])
-        
-        geometry_headers = ['Fault Name', 'Mean Strike', 'Mean Dip', 'Patches', 'Length']
-        print("\nFault Geometry:")
-        print(tabulate(geometry_table_data, headers=geometry_headers, 
-                      tablefmt='grid', stralign='left'))
-        
-        # Fault slip statistics table
-        slip_table_data = []
-        for ifault in target_faults:
-            if hasattr(ifault, 'slip') and ifault.slip is not None:
-                # Extract slip components
-                if ifault.slip.shape[1] >= 2:
-                    strike_slip = ifault.slip[:, 0]  # Strike-slip component
-                    dip_slip = ifault.slip[:, 1]     # Dip-slip component
-                    total_slip = np.sqrt(strike_slip**2 + dip_slip**2)  # Total slip magnitude
-                    
-                    # Calculate statistics (min, mean, max)
-                    ss_stats = {
-                        'mean': np.mean(strike_slip),
-                        'max': np.max(strike_slip),
-                        'min': np.min(strike_slip)
-                    }
-                    
-                    ds_stats = {
-                        'mean': np.mean(dip_slip),
-                        'max': np.max(dip_slip),
-                        'min': np.min(dip_slip)
-                    }
-                    
-                    total_stats = {
-                        'mean': np.mean(total_slip),
-                        'max': np.max(total_slip),
-                        'min': np.min(total_slip)
-                    }
-                    
-                    # Add rows for each slip component
-                    slip_table_data.extend([
-                        [ifault.name, 'Strike-slip', f"{ss_stats['mean']:.4f}", 
-                         f"{ss_stats['max']:.4f}", f"{ss_stats['min']:.4f}"],
-                        ['', 'Dip-slip', f"{ds_stats['mean']:.4f}", 
-                         f"{ds_stats['max']:.4f}", f"{ds_stats['min']:.4f}"],
-                        ['', 'Total slip', f"{total_stats['mean']:.4f}", 
-                         f"{total_stats['max']:.4f}", f"{total_stats['min']:.4f}"]
-                    ])
-                else:
-                    # Single slip component only
-                    slip = ifault.slip[:, 0]
-                    slip_stats = {
-                        'mean': np.mean(slip),
-                        'max': np.max(slip),
-                        'min': np.min(slip)
-                    }
-                    
-                    slip_table_data.append([
-                        ifault.name, 'Slip', f"{slip_stats['mean']:.4f}",
-                        f"{slip_stats['max']:.4f}", f"{slip_stats['min']:.4f}"
-                    ])
-            else:
-                slip_table_data.append([
-                    ifault.name, 'No slip data', 'N/A', 'N/A', 'N/A'
-                ])
-        
-        slip_headers = ['Fault Name', 'Component', 'Mean (m)', 'Max (m)', 'Min (m)']
-        print("\nFault Slip Statistics:")
-        print(tabulate(slip_table_data, headers=slip_headers, 
-                      tablefmt='grid', stralign='left'))
-        
-        # Seismic moment calculations
-        moment_table_data = []
-        
-        # Use default fault groups if not provided
-        if fault_groups is None:
-            # Check for configuration-based fault groups
-            if (hasattr(self, 'config') and hasattr(self.config, 'alpha') 
-                and 'faults' in self.config.alpha):
-                fault_groups = self.config.alpha['faults']
-            else:
-                # Fallback: treat each fault as its own group
-                fault_groups = [[fault.name] for fault in target_faults]
-        
-        # Calculate individual fault moments
-        fault_moments = {}
-        for ifault in target_faults:
-            if hasattr(ifault, 'slip') and ifault.slip is not None:
-                # Calculate total slip magnitude
-                if ifault.slip.shape[1] >= 2:
-                    total_slip = np.sqrt(ifault.slip[:, 0]**2 + ifault.slip[:, 1]**2)
-                else:
-                    total_slip = np.abs(ifault.slip[:, 0])
-                
-                # Calculate seismic moment
-                patch_areas = getattr(ifault, 'area', ifault.compute_patch_areas())
-                areas = np.array(patch_areas) * 1e6  # Convert km^2 to m^2
-                mu = getattr(self, 'shear_modulus', 3e10)  # Default shear modulus
-                moment = np.sum(mu * areas * total_slip)
-                moment_magnitude = 2.0 / 3.0 * (np.log10(moment) - 9.1)
-                
-                fault_moments[ifault.name] = {
-                    'moment': moment,
-                    'magnitude': moment_magnitude,
-                    'mean_slip': np.mean(total_slip),
-                    'max_slip': np.max(total_slip)
-                }
-                
-                moment_table_data.append([
-                    ifault.name,
-                    f"{moment:.3e}",
-                    f"{moment_magnitude:.2f}",
-                    f"{np.mean(total_slip):.4f}",
-                    f"{np.max(total_slip):.4f}"
-                ])
-        
-        # Add separator line for grouped results
-        if len(fault_groups) > 1 or (len(fault_groups) == 1 and len(fault_groups[0]) > 1):
-            moment_table_data.append(['-'*10, '-'*10, '-'*10, '-'*10, '-'*10])
-        
-        # Calculate group moments
-        total_moment = 0
-        for i, group in enumerate(fault_groups):
-            if isinstance(group, str):
-                group = [group]  # Convert single fault name to list
-            
-            group_moment = 0
-            group_names = []
-            
-            for fault_name in group:
-                if fault_name in fault_moments:
-                    group_moment += fault_moments[fault_name]['moment']
-                    group_names.append(fault_name)
-            
-            if group_moment > 0:
-                group_magnitude = 2.0 / 3.0 * (np.log10(group_moment) - 9.1)
-                total_moment += group_moment
-                
-                # Create group display name
-                if len(group_names) == 1:
-                    group_display_name = f"Event {i+1}: {group_names[0]}"
-                else:
-                    group_display_name = f"Event {i+1}: {', '.join(group_names)}"
-
-                moment_table_data.append([
-                    group_display_name,
-                    f"{group_moment:.3e}",
-                    f"{group_magnitude:.2f}",
-                    '-',
-                    '-'
-                ])
-        
-        # Add total row
-        if total_moment > 0:
-            total_magnitude = 2.0 / 3.0 * (np.log10(total_moment) - 9.1)
-            moment_table_data.append([
-                'TOTAL',
-                f"{total_moment:.3e}",
-                f"{total_magnitude:.2f}",
-                '-',
-                '-'
-            ])
-        
-        moment_headers = ['Fault Name/Group', 'Moment (N·m)', 'Magnitude', 
-                         'Mean Slip (m)', 'Max Slip (m)']
-        print("\nSeismic Moment and Magnitude:")
-        print(tabulate(moment_table_data, headers=moment_headers, 
-                      tablefmt='grid', stralign='left'))
-        
-        print("="*80)
-    
     def calculate_data_fit_metrics(self, data, vertical=True):
         """
         Calculate RMS and VR for different data types.

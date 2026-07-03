@@ -63,6 +63,8 @@ Lon Lat Los(m) wt E N U
 
 `read_from_ascii` 的列语义是 `lon lat data err Elos Nlos Ulos`。这里 `Los(m)` 是 LOS 观测，`E/N/U` 是 LOS 投影向量；第 4 列会被读成 `sar.err` 并用于 `buildDiagCd()`。因此，Ridgecrest 文件中的 `wt` 在本案例脚本里按误差列处理；如果自己的外部 ASCII 文件第 4 列是真正的权重，应先转换为误差。更完整的数据格式说明见 [InSAR 与 GPS 数据读取](../workflows/01_data_reading_insar_gps.md)。
 
+<a id="multi-event-coverage"></a>
+
 ## 多事件覆盖关系
 
 Ridgecrest 案例不是单一事件单一断层。它同时包含 Mw6.4 前震和 Mw7.1 主震，数据覆盖关系也不完全相同：
@@ -123,7 +125,7 @@ coAscsar.read_from_ascii("../InSAR/coAscending_los_CSI.dat", factor=1.0, header=
 coAscsar.buildDiagCd()
 ```
 
-外部 ASCII InSAR 点位读入时，第 4 列按 `sar.err` 进入误差字段。InSAR/GPS 数据入口的完整约定见 [InSAR 与 GPS 数据读取](../workflows/01_data_reading_insar_gps.md#insar-数据入口)。
+外部 ASCII InSAR 点位读入时，第 4 列按 `sar.err` 进入误差字段。InSAR/GPS 数据入口的完整约定见 [InSAR 与 GPS 数据读取](../workflows/01_data_reading_insar_gps.md#insar-data-entry)。
 
 ### 3. 保持 `geodata` 和配置顺序一致
 

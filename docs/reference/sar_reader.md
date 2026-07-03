@@ -8,6 +8,13 @@ scalar_observation = ENU_displacement dot projection
 
 代码里历史上常用 `self.los` 保存这个三分量向量；在本手册中应把它理解为 `projection`，即 east/north/up 投影向量。
 
+## 阅读路径
+
+- 已经有 `.txt/.rsp/.cov` 或整理好的 ASCII 点位：先看 [快速选择](#快速选择)，通常不需要再走原始 SAR reader。
+- 原始 GAMMA、GeoTIFF、HyP3 或 GMTSAR 产品进入降采样：先看 [Reader 和 Mode](#reader-和-mode)，再看对应 [最小示例](#最小示例)。
+- 不确定正负号、LOS/range/azimuth 方向或 projection 含义：重点看 [目标正方向](#目标正方向)、[单位和正负号](#单位和正负号) 和 [诊断和 Quick-Look](#诊断和-quick-look)。
+- 正在写 `downsample.yml`：先理解本页 reader 语义，再查 [降采样超级入口参考](downsampling_app.md) 的字段字典。
+
 ## 快速选择
 
 先判断数据处于哪一层，再选择入口：
@@ -18,7 +25,7 @@ scalar_observation = ENU_displacement dot projection
 | 外部整理好的 ASCII 点位：`lon lat data err Elos Nlos Ulos` | `csi.insar.read_from_ascii(...)` | Ridgecrest 的普通文本 InSAR 点位 |
 | GAMMA 二进制产品：`.phs/.azi/.inc/.rsc` | `GammasarReader` | 原始或栅格化 GAMMA 产品进入降采样 |
 | GAMMA GeoTIFF 产品 | `GammaTiffReader` | GeoTIFF 相位、LOS/range 位移或 offset |
-| HyP3 GeoTIFF 产品 | `Hyp3TiffReader` | HyP3 解缠相位或 LOS displacement |
+| HyP3 GeoTIFF 产品 | `Hyp3TiffReader` | HyP3 解缠相位或 LOS disp. |
 | GMTSAR-style direct-projection NetCDF/GRD + ENU 投影系数 | `GmtsarReader` | GMTSAR phase/LOS/range/azimuth 栅格产品 |
 
 如果数据已经是 varres 或 ASCII 点位，不要再走原始 SAR reader。原始 SAR/offset 产品才需要 SAR reader，然后通常进入 [InSAR 降采样](../workflows/02_insar_downsampling.md)。降采样入口的完整字段字典见 [降采样超级入口参考](downsampling_app.md)。
@@ -51,9 +58,9 @@ SAR reader 的内部合同是：原始产品可以有自己的正号约定，但
 | GAMMA GeoTIFF range offset | `gamma_tiff` | `GammaTiffReader` | `range_offset` |
 | GAMMA GeoTIFF azimuth offset | `gamma_tiff` | `GammaTiffReader` | `azimuth_offset` |
 | HyP3 解缠相位 TIFF | `hyp3` | `Hyp3TiffReader` | `unwrapped_phase` |
-| HyP3 LOS displacement TIFF | `hyp3` | `Hyp3TiffReader` | `los_displacement` |
+| HyP3 LOS disp. TIFF | `hyp3` | `Hyp3TiffReader` | `los_displacement` |
 | GMTSAR-style 解缠相位 GRD/NetCDF | `gmtsar` | `GmtsarReader` | `phase_los` 或 `unwrapped_phase` |
-| GMTSAR-style LOS displacement GRD/NetCDF | `gmtsar` | `GmtsarReader` | `los_displacement` |
+| GMTSAR-style LOS disp. GRD/NetCDF | `gmtsar` | `GmtsarReader` | `los_displacement` |
 | GMTSAR-style range offset GRD/NetCDF | `gmtsar` | `GmtsarReader` | `range_offset` |
 | GMTSAR-style azimuth offset GRD/NetCDF | `gmtsar` | `GmtsarReader` | `azimuth_offset` |
 
@@ -78,6 +85,8 @@ GammaTiffReader.available_presets()
 | `gmtsar` / `GmtsarReader` | 不建议依赖 prefix | `files.value`, `files.projection.east/north/up` | `files.value` 是标量观测；`projection.east/north/up` 是该观测正方向的 ENU 投影系数。direct azimuth 可省略 `projection.up`，由 reader 填 0 |
 
 offset 产品或同一目录下候选文件较多时，优先写显式文件名，避免 `prefix` 匹配到多个 value raster。GMTSAR 建议始终显式写 value 和 ENU 投影文件，让观测值与投影系数的配对关系清楚可查。
+
+GAMMA 二进制 LOS 数据只想做 `-s` 快速预览时，可用 `ecat-downsample -s --sar-prefix <prefix>`，它固定走上表 `gamma` 的 prefix 匹配规则；解缠相位需显式加 `--sar-mode unwrapped_phase`。完整命令说明见 [CLI 命令参考：执行降采样](cli.md#run-downsampling)。
 
 上表是 YAML 配置字段。直接调用 Python reader 的 `extract_raw_grd(...)` 时仍使用各 reader 的底层参数名，例如 GAMMA 的 `phsname/rscname/azifile/incfile` 和 GMTSAR 的 `valuefile/eastfile/northfile/upfile`；CLI 会把 YAML 的 `files` 结构映射到这些底层参数。
 
@@ -253,6 +262,8 @@ sar.extract_raw_grd(
 sar.read_observation()
 ```
 
+<a id="external-ascii-point-data"></a>
+
 ### 外部 ASCII 点位数据
 
 如果 InSAR 数据已经由外部流程整理为点位文本，直接使用 CSI 的 ASCII 入口：
@@ -286,13 +297,13 @@ lon lat data err Elos Nlos Ulos
 | `GammaTiffReader` | `range_offset` | `gamma_tiff_range_offset` | GAMMA GeoTIFF range offset | heading | away from satellite |
 | `GammaTiffReader` | `azimuth_offset` | `gamma_tiff_azimuth_offset` | GAMMA GeoTIFF azimuth offset | heading | along heading |
 | `Hyp3TiffReader` | `unwrapped_phase` | `hyp3_unwrapped_phase` | HyP3 解缠相位 TIFF | right LOS toward | unwrapped phase |
-| `Hyp3TiffReader` | `los_displacement` | `hyp3_los_displacement` | HyP3 LOS displacement TIFF | right LOS toward | toward satellite |
+| `Hyp3TiffReader` | `los_displacement` | `hyp3_los_displacement` | HyP3 LOS disp. TIFF | right LOS toward | toward satellite |
 | `GmtsarReader` | `phase_los` / `unwrapped_phase` | `gmtsar_unwrapped_phase` | GMTSAR-style 解缠相位 GRD/NetCDF | direct ENU projection | unwrapped phase |
-| `GmtsarReader` | `los_displacement` | `gmtsar_los_displacement` | GMTSAR-style LOS displacement GRD/NetCDF | direct ENU projection | toward satellite |
+| `GmtsarReader` | `los_displacement` | `gmtsar_los_displacement` | GMTSAR-style LOS disp. GRD/NetCDF | direct ENU projection | toward satellite |
 | `GmtsarReader` | `range_offset` | `gmtsar_range_offset` | GMTSAR-style range offset GRD/NetCDF | direct ENU projection | toward satellite |
 | `GmtsarReader` | `azimuth_offset` | `gmtsar_azimuth_offset` | GMTSAR-style azimuth offset GRD/NetCDF | direct ENU projection | along heading |
 
-`range_offset` 不是底层 `observation_type`。它是 preset 层的产品语义：底层仍按 `los_displacement` 类型处理，最终目标正方向与 LOS displacement 一样是朝向卫星。不同产品的原始正号由 `input_value_convention` 表达；例如 GAMMA range preset 可声明原始值远离卫星为正，而 GMTSAR range preset 默认声明原始值朝向卫星为正。
+`range_offset` 不是底层 `observation_type`。它是 preset 层的产品语义：底层仍按 `los_displacement` 类型处理，最终目标正方向与 LOS disp. 一样是朝向卫星。不同产品的原始正号由 `input_value_convention` 表达；例如 GAMMA range preset 可声明原始值远离卫星为正，而 GMTSAR range preset 默认声明原始值朝向卫星为正。
 
 GMTSAR 的 `direct ENU projection` 表示 reader 不再用方位角/入射角构造 projection，而是直接读取 `files.projection.east/north/up`。这些系数的正方向由 direct projection convention 解释；内置 GMTSAR preset 默认认为系数和原始 value 正方向配对。
 
@@ -382,7 +393,7 @@ sar.read_observation(
 | --- | --- |
 | `observation_type` | 原始观测类型：`phase_los`, `los_displacement`, `azimuth_offset` |
 | `input_azimuth_role` | 输入方位角物理含义：航向、look-away、LOS-toward |
-| `look_side` | 右视或左视；只在 phase/LOS displacement 投影中需要 |
+| `look_side` | 右视或左视；只在 phase/LOS disp. 投影中需要 |
 | `input_value_convention` | 原始观测值正号约定 |
 | `wavelength` | 解缠相位转 LOS 位移时使用的波长 |
 
@@ -433,39 +444,26 @@ sar.plot_sar_values(value_space="raw", factor4plot=1, cb_label="Raw value")
 
 `raw` 不做相位到位移转换，也不按 `mode/preset` 解释目标正方向。SAR reader 的绘图入口统一使用 `plot_sar_values()`。
 
-在 CLI 降采样流程中，`ecat-downsample -f downsample.yml -s` 就是用于这类 quick-look 检查。若启用了 `sar_config.data_filters`，reader 会先按规则删除粗差点，再输出 summary 和 quick-look；`sar_config.qc.plot.coordrange` 只控制 `-s` 图的显示范围，不裁剪正式处理数据。`sar_output.txt` 会记录 `plot_full_range`、`plot_robust_99_range` 和 `plot_clipped`；前两个分别对应完整极值和稳健显示范围，`plot_clipped` 表示当前色标上下限会截掉多少有效点。后续 `-c` 做协方差估计，`-d` 正式降采样；如果只希望 `-c/-d` 处理关注区域，使用顶层 `processing_region`。完整流程见 [InSAR 降采样](../workflows/02_insar_downsampling.md)，字段字典见 [降采样超级入口参考](downsampling_app.md)，按案例 Step1/Step2 手动调参见 [InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md)。
+在 CLI 降采样流程中，`ecat-downsample -f downsample.yml -s` 就是用于这类 quick-look 检查。若启用了 `sar_config.data_filters`，reader 会先按规则删除粗差点，再输出 summary 和 quick-look；`check_plots.raw.coordrange` 只控制 `-s` 图的显示范围，不裁剪正式处理数据。`sar_output.txt` 会记录 `plot_full_range`、`plot_robust_99_range` 和 `plot_clipped`；前两个分别对应完整极值和稳健显示范围，`plot_clipped` 表示当前色标上下限会截掉多少有效点。后续 `-c` 做协方差估计，`-d` 正式降采样；如果只希望 `-c/-d` 处理关注区域，使用顶层 `processing_region`。完整流程见 [InSAR 降采样](../workflows/02_insar_downsampling.md)，字段字典见 [降采样超级入口参考](downsampling_app.md)，按案例 Step1/Step2 手动调参见 [InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)。
 
 ## 降采样配置入口
 
 新建 SAR 降采样目录时，先生成配置模板：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma \
-  --sar-mode unwrapped_phase \
-  --downsample-method std \
-  -o downsample.yml
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase --downsample-method std -o downsample.yml
 ```
 
 GeoTIFF 示例：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma_tiff \
-  --sar-mode unwrapped_phase \
-  -o downsample_gamma_tiff.yml
+ecat-generate-downsample --mode sar --sar-reader gamma_tiff --sar-mode unwrapped_phase -o downsample_gamma_tiff.yml
 ```
 
 GMTSAR 示例：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gmtsar \
-  --sar-mode range_offset \
-  -o downsample_gmtsar_range.yml
+ecat-generate-downsample --mode sar --sar-reader gmtsar --sar-mode range_offset -o downsample_gmtsar_range.yml
 ```
 
 生成后重点检查：
@@ -477,7 +475,7 @@ ecat-generate-downsample \
 - `wavelength` 是否与产品元数据一致。
 - `covar.mask_out` 是否排除主形变区。
 
-CLI 参数详见 [CLI 命令参考](cli.md#降采样配置)，案例见 [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md)。
+CLI 参数详见 [CLI 命令参考](cli.md#downsampling-config)，案例见 [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md)。
 
 ## 输出进入反演
 

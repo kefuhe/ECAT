@@ -6,6 +6,7 @@ BLSE and SMC constraint managers.
 """
 
 import warnings
+from types import MappingProxyType
 
 import numpy as np
 import yaml
@@ -77,6 +78,94 @@ class ConstraintManagerBase:
             'applied_time': None,
         }
 
+    @staticmethod
+    def _validate_rake_interval(fault_name: str, rake_limits):
+        """Return a validated ``(min_rake, max_rake)`` pair in degrees.
+
+        Linear rake inequalities represent one convex sector in ``(ss, ds)``
+        space.  That sector must have a positive aperture no larger than
+        180 degrees.  Wider ranges are non-convex and endpoints separated by
+        360 degrees collapse to a line in the current half-plane formula.
+        """
+        values = np.asarray(rake_limits, dtype=float)
+        if values.shape != (2,):
+            raise ValueError(
+                f"rake_angle for '{fault_name}' must be a two-value "
+                f"[min_rake, max_rake] interval, got shape {values.shape}"
+            )
+
+        rake_start, rake_end = float(values[0]), float(values[1])
+        aperture = (rake_end - rake_start) % 360.0
+        tol = 1.0e-10
+        if aperture <= tol:
+            raise ValueError(
+                f"rake_angle for '{fault_name}' has zero aperture after "
+                "360-degree wrapping. Use fixed_rake for a single rake, or "
+                "omit rake_angle if the rake should be unconstrained."
+            )
+        if aperture > 180.0 + tol:
+            raise ValueError(
+                f"rake_angle for '{fault_name}' spans {aperture:g} degrees. "
+                "Linear rake constraints can only represent one convex "
+                "sector with aperture <= 180 degrees; split the range or use "
+                "direct strikeslip/dipslip bounds instead."
+            )
+        return rake_start, rake_end
+
+    @staticmethod
+    def _source_component_slices(fault, source_start: int, adapter=None):
+        """Return global slices for each ordered source component block."""
+        if adapter is not None:
+            param_names = list(adapter.get_param_names())
+            params_per_component = dict(adapter.get_n_params_per_component())
+        else:
+            from .source_adapters import FaultAdapter
+            slipdir = FaultAdapter._canonicalize_slipdir(getattr(fault, 'slipdir', 'sd'))
+            char_to_name = {
+                's': 'strikeslip',
+                'd': 'dipslip',
+                't': 'tensile',
+                'c': 'coupling',
+            }
+            param_names = [char_to_name[char] for char in slipdir if char in char_to_name]
+            n_spatial = len(getattr(fault, 'patch', []))
+            params_per_component = {name: n_spatial for name in param_names}
+
+        offset = 0
+        slices = {}
+        for name in param_names:
+            n_component = int(params_per_component[name])
+            start = int(source_start) + offset
+            slices[name] = slice(start, start + n_component)
+            offset += n_component
+        return slices
+
+    @staticmethod
+    def _rake_component_starts(fault, source_start: int, n_patch: int, adapter=None):
+        """Return global starts for strike-slip and dip-slip component blocks."""
+        component_slices = ConstraintManagerBase._source_component_slices(
+            fault, source_start, adapter=adapter
+        )
+        param_names = list(component_slices.keys())
+        required = {'strikeslip', 'dipslip'}
+        missing = required.difference(param_names)
+        if missing:
+            missing_str = ', '.join(sorted(missing))
+            raise ValueError(
+                f"rake constraints for '{fault.name}' require strikeslip and "
+                f"dipslip components; missing {missing_str}"
+            )
+
+        for name in required:
+            n_component = component_slices[name].stop - component_slices[name].start
+            if int(n_component) != int(n_patch):
+                raise ValueError(
+                    f"rake constraints for '{fault.name}' expected {n_patch} "
+                    f"{name} parameters, got {n_component}"
+                )
+
+        return component_slices['strikeslip'].start, component_slices['dipslip'].start
+
     # ------------------------------------------------------------------
     # Cache management
     # ------------------------------------------------------------------
@@ -85,6 +174,75 @@ class ConstraintManagerBase:
         """Invalidate combined-constraint caches after mutation."""
         self._combined_cache['inequality']['valid'] = False
         self._combined_cache['equality']['valid'] = False
+
+    # ------------------------------------------------------------------
+    # Read-only diagnostics
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _readonly_snapshot(cls, value):
+        """Return a recursive read-only copy for diagnostic views."""
+        if isinstance(value, np.ndarray):
+            array = value.copy()
+            array.setflags(write=False)
+            return array
+        if isinstance(value, dict):
+            return MappingProxyType({
+                key: cls._readonly_snapshot(item)
+                for key, item in value.items()
+            })
+        if isinstance(value, list):
+            return tuple(cls._readonly_snapshot(item) for item in value)
+        if isinstance(value, tuple):
+            return tuple(cls._readonly_snapshot(item) for item in value)
+        return value
+
+    @staticmethod
+    def _constraint_group_summary(groups: Dict[str, Dict]) -> Dict[str, Dict[str, Any]]:
+        """Summarise constraint groups without exposing dense matrices."""
+        return {
+            name: {
+                'rows': int(group['A'].shape[0]),
+                'cols': int(group['A'].shape[1]),
+                'source': group.get('source'),
+                'shape': tuple(group.get('shape', group['A'].shape)),
+            }
+            for name, group in groups.items()
+        }
+
+    def get_constraint_snapshot(self, include_matrices: bool = False) -> Dict[str, Any]:
+        """Return a compact diagnostic snapshot of bounds and constraints.
+
+        The constraint manager is the single writable source of truth.  Use
+        ``set_*``, ``add_*constraint`` and ``remove_constraint`` methods to
+        update state.  This method is intended for inspection and logging.
+        """
+        n_parameters = None
+        if self._bounds.get('lb') is not None:
+            n_parameters = int(len(self._bounds['lb']))
+        elif self._bounds.get('ub') is not None:
+            n_parameters = int(len(self._bounds['ub']))
+
+        snapshot = {
+            'bounds': {
+                'has_lb': self._bounds.get('lb') is not None,
+                'has_ub': self._bounds.get('ub') is not None,
+                'n_parameters': n_parameters,
+                'global': dict(self._bounds.get('global', {})),
+                'source': self._bounds.get('source'),
+                'config_file': self._bounds.get('config_file'),
+            },
+            'inequality_constraints': self._constraint_group_summary(
+                self._inequality_constraints
+            ),
+            'equality_constraints': self._constraint_group_summary(
+                self._equality_constraints
+            ),
+        }
+        if include_matrices:
+            snapshot['inequality_constraints'] = self.inequality_constraints
+            snapshot['equality_constraints'] = self.equality_constraints
+        return snapshot
 
     # ------------------------------------------------------------------
     # YAML normalisation (static, 100 % identical in both subclasses)
@@ -217,6 +375,67 @@ class ConstraintManagerBase:
         else:
             raise ValueError(f"Constraint '{name}' not found")
 
+    def set_parameter_bounds_by_indices(self, indices, lower, upper, source: str = "manual"):
+        """Set bounds for explicit model-vector indices.
+
+        This is the low-level write path for helpers that resolve semantic
+        parameters, such as data-correction transform components, to concrete
+        solver columns.  ``indices`` are always in the full parameter vector
+        used by the owning constraint manager.
+        """
+        initialize_bounds = getattr(self, '_initialize_bounds_arrays', None)
+        if callable(initialize_bounds):
+            initialize_bounds()
+
+        lb_array = self._bounds.get('lb')
+        ub_array = self._bounds.get('ub')
+        if lb_array is None or ub_array is None:
+            raise ValueError(
+                "Bounds arrays are not initialized. Build parameter positions "
+                "before setting index-based bounds."
+            )
+
+        index_array = np.asarray(indices, dtype=int).reshape(-1)
+        if index_array.size == 0:
+            raise ValueError("At least one parameter index is required")
+        if np.unique(index_array).size != index_array.size:
+            raise ValueError(f"Duplicate parameter indices are not allowed: {index_array.tolist()}")
+        if np.any(index_array < 0) or np.any(index_array >= len(lb_array)):
+            raise ValueError(
+                f"Parameter index out of range for bounds vector of length {len(lb_array)}: "
+                f"{index_array.tolist()}"
+            )
+
+        def _broadcast(values, name):
+            array = np.asarray(values, dtype=float)
+            if array.ndim == 0:
+                return np.full(index_array.size, float(array), dtype=float)
+            array = array.reshape(-1)
+            if array.size == 1:
+                return np.full(index_array.size, float(array[0]), dtype=float)
+            if array.size != index_array.size:
+                raise ValueError(
+                    f"{name} must be a scalar or have {index_array.size} value(s), "
+                    f"got {array.size}"
+                )
+            return array.astype(float, copy=False)
+
+        lower_array = _broadcast(lower, "lower bounds")
+        upper_array = _broadcast(upper, "upper bounds")
+        if np.any(np.isnan(lower_array)) or np.any(np.isnan(upper_array)):
+            raise ValueError("Bounds cannot contain NaN")
+        if np.any(lower_array > upper_array):
+            bad = np.where(lower_array > upper_array)[0]
+            raise ValueError(
+                "Lower bound is greater than upper bound for parameter "
+                f"indices {index_array[bad].tolist()}"
+            )
+
+        self._bounds['lb'][index_array] = lower_array
+        self._bounds['ub'][index_array] = upper_array
+        self._bounds['source'] = source
+        self._bounds['applied_time'] = datetime.now()
+
     # ------------------------------------------------------------------
     # Combined constraints (DRY helper from SMC pattern)
     # ------------------------------------------------------------------
@@ -283,7 +502,7 @@ class ConstraintManagerBase:
         A_combined = np.vstack(A_list)
         b_combined = np.hstack(b_list)
 
-        if constraint_type == 'equality' and len(constraints) > 1:
+        if constraint_type == 'equality':
             A_combined, b_combined = self._deduplicate_equality_constraints(
                 A_combined, b_combined
             )
@@ -417,7 +636,7 @@ class ConstraintManagerBase:
                 result['valid'] = False
 
         # Check combined equality constraint rank (CVXOPT requires full row rank)
-        if len(self._equality_constraints) > 1:
+        if self._equality_constraints:
             try:
                 Aeq, beq = self.get_combined_equality_constraints()
                 if Aeq is not None:
@@ -450,13 +669,26 @@ class ConstraintManagerBase:
         return self._bounds['ub'].copy() if self._bounds['ub'] is not None else None
 
     @property
+    def bounds(self):
+        """Read-only diagnostic view of bounds.
+
+        Update bounds through manager methods such as ``set_global_bounds`` or
+        inversion-level helpers.  The returned mapping is not a write API.
+        """
+        return self._readonly_snapshot(self._bounds)
+
+    @property
     def inequality_constraints(self) -> Dict[str, Dict]:
-        """Inequality constraints dict (name → {A, b})."""
-        return {name: {'A': c['A'], 'b': c['b']}
-                for name, c in self._inequality_constraints.items()}
+        """Read-only diagnostic view of inequality constraints."""
+        return self._readonly_snapshot({
+            name: {'A': c['A'], 'b': c['b'], 'source': c.get('source')}
+            for name, c in self._inequality_constraints.items()
+        })
 
     @property
     def equality_constraints(self) -> Dict[str, Dict]:
-        """Equality constraints dict (name → {A, b})."""
-        return {name: {'A': c['A'], 'b': c['b']}
-                for name, c in self._equality_constraints.items()}
+        """Read-only diagnostic view of equality constraints."""
+        return self._readonly_snapshot({
+            name: {'A': c['A'], 'b': c['b'], 'source': c.get('source')}
+            for name, c in self._equality_constraints.items()
+        })

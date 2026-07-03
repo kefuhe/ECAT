@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 
+SUPPORTED_CONFIG_VERSION = 1
 SAR_MODE_CHOICES = ("unwrapped_phase", "phase_los", "los_displacement", "range_offset", "azimuth_offset")
 SAR_READER_CHOICES = ("gamma", "gamma_tiff", "gmtsar", "hyp3")
 SAR_READER_ALIASES = {
@@ -96,7 +97,7 @@ DEFAULT_INPUT_ADAPTER_CONFIG = {
 }
 
 DEFAULT_EXTRACTION_CONFIG = {
-    "value_statistic": "mean",
+    "value_statistic": "median",
     "error_statistic": "std",
     "coordinate_statistic": "mean",
     "projection_statistic": "mean_normalized",
@@ -119,6 +120,98 @@ DEFAULT_DOWNSAMPLE_REPORT_CONFIG = {
     "enabled": True,
     "report_file": "auto",
     "quality": True,
+}
+
+DEFAULT_CHECK_PLOTS = {
+    "raw": {
+        "save_fig": True,
+        "file_path": "auto",
+        "show": True,
+        "plot_stride": 1,
+        "coordrange": None,
+        "components": "auto",
+        "layout": "auto",
+        "value_space": "auto",
+        "figsize": "single",
+        "figsize_aspect": None,
+        "figsize_height": None,
+        "dpi": 300,
+        "factor4plot": "auto",
+        "vmin": None,
+        "vmax": None,
+        "auto_percentile": None,
+        "symmetry": True,
+        "cmap": "cmc.roma_r",
+        "style_context": "science",
+        "fontsize": None,
+        "axis_tick_direction": "out",
+        "axis_max_major_ticks": 5,
+        "axis_minor_ticks": False,
+        "axis_minor_subdivisions": 2,
+        "colorbar_label": "auto",
+        "colorbar_orientation": "auto",
+        "colorbar_mode": "outside",
+        "colorbar_loc": None,
+        "colorbar_size": None,
+        "colorbar_thickness": None,
+        "colorbar_pad": None,
+        "panel_pad": None,
+        "colorbar_tick_direction": "out",
+        "colorbar_max_major_ticks": 3,
+        "colorbar_minor_ticks": False,
+        "colorbar_minor_subdivisions": 2,
+        "cb_label_loc": None,
+        "tickfontsize": None,
+        "labelfontsize": None,
+        "trace_color": "black",
+        "trace_linewidth": 0.5,
+    },
+    "decim": {
+        "save_fig": True,
+        "file_path": "auto",
+        "show": False,
+        "coordrange": None,
+        "components": "auto",
+        "layout": "auto",
+        "cell_style": "cells",
+        "figsize": "double",
+        "figsize_aspect": None,
+        "figsize_height": None,
+        "dpi": 300,
+        "factor4plot": "inherit_raw",
+        "vmin": None,
+        "vmax": None,
+        "auto_percentile": None,
+        "symmetry": True,
+        "cmap": "cmc.roma_r",
+        "style_context": "science",
+        "fontsize": None,
+        "axis_tick_direction": "out",
+        "axis_max_major_ticks": 5,
+        "axis_minor_ticks": False,
+        "axis_minor_subdivisions": 2,
+        "edgewidth": 0.1,
+        "edgecolor": "black",
+        "alpha": 1.0,
+        "markersize": 10,
+        "colorbar_label": "auto",
+        "colorbar_orientation": "auto",
+        "colorbar_mode": "outside",
+        "colorbar_loc": None,
+        "colorbar_size": None,
+        "colorbar_thickness": None,
+        "colorbar_pad": None,
+        "panel_pad": None,
+        "colorbar_tick_direction": "out",
+        "colorbar_max_major_ticks": 3,
+        "colorbar_minor_ticks": False,
+        "colorbar_minor_subdivisions": 2,
+        "cb_label_loc": None,
+        "tickfontsize": None,
+        "labelfontsize": None,
+        "trace_color": "black",
+        "trace_linewidth": 0.5,
+    },
 }
 
 DEFAULT_SAR_CONFIG = {
@@ -230,6 +323,17 @@ DEFAULT_OPTICAL_CONFIG = {
     "ew_band": 1,
     "sn_band": 2,
     "remove_nan": True,
+    "read": {
+        "downsample": 1,
+        "downsample_for_covar": 1,
+        "zero2nan": True,
+        "remove_nan": True,
+        "factor_to_m": 10.0,
+    },
+    "grid": {
+        "ew_band": 1,
+        "sn_band": 2,
+    },
     "output_check": True,
     "data_filters": {
         "enabled": False,
@@ -277,6 +381,8 @@ OPTICAL_CONFIG_KEYS = {
     "ew_band",
     "sn_band",
     "remove_nan",
+    "read",
+    "grid",
     "output_check",
     "data_filters",
     "qc",
@@ -331,6 +437,201 @@ def deep_update(base, updates):
 
 def compact_kwargs(kwargs):
     return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def collect_deprecated_config_fields(config):
+    """Return deprecated config fields used by a raw user config."""
+
+    deprecated = []
+    sar_plot = ((config.get("sar_config") or {}).get("qc") or {}).get("plot")
+    if isinstance(sar_plot, dict) and sar_plot:
+        deprecated.append(
+            {
+                "field": "sar_config.qc.plot",
+                "replacement": "check_plots.raw",
+                "status": "deprecated",
+            }
+        )
+    optical_plot = ((config.get("optical_config") or {}).get("qc") or {}).get("plot")
+    if isinstance(optical_plot, dict) and optical_plot:
+        deprecated.append(
+            {
+                "field": "optical_config.qc.plot",
+                "replacement": "check_plots.raw",
+                "status": "deprecated",
+            }
+        )
+    downsample = config.get("downsample") or {}
+    if isinstance(downsample, dict) and "plot_decim" in downsample:
+        deprecated.append(
+            {
+                "field": "downsample.plot_decim",
+                "replacement": "check_plots.decim",
+                "status": "deprecated",
+            }
+        )
+    return deprecated
+
+
+def _legacy_raw_check_plot(data_type, config):
+    if data_type == "sar":
+        raw_plot = ((config.get("sar_config") or {}).get("qc") or {}).get("plot", {}) or {}
+    else:
+        raw_plot = ((config.get("optical_config") or {}).get("qc") or {}).get("plot", {}) or {}
+    section = {}
+    key_map = {
+        "save_fig": "save_fig",
+        "file_path": "file_path",
+        "show": "show",
+        "rawdownsample4plot": "plot_stride",
+        "coordrange": "coordrange",
+        "data": "components",
+        "value_space": "value_space",
+        "factor4plot": "factor4plot",
+        "vmin": "vmin",
+        "vmax": "vmax",
+        "symmetry": "symmetry",
+        "cmap": "cmap",
+        "figsize": "figsize",
+        "dpi": "dpi",
+        "style": "style_context",
+        "fontsize": "fontsize",
+        "cb_label": "colorbar_label",
+        "colorbar_orientation": "colorbar_orientation",
+        "colorbar_mode": "colorbar_mode",
+        "colorbar_loc": "colorbar_loc",
+        "colorbar_size": "colorbar_size",
+        "colorbar_thickness": "colorbar_thickness",
+        "colorbar_pad": "colorbar_pad",
+        "panel_pad": "panel_pad",
+        "cb_label_loc": "cb_label_loc",
+        "tickfontsize": "tickfontsize",
+        "labelfontsize": "labelfontsize",
+        "trace_color": "trace_color",
+        "trace_linewidth": "trace_linewidth",
+    }
+    for old_key, new_key in key_map.items():
+        if old_key in raw_plot:
+            value = raw_plot[old_key]
+            if old_key == "file_path" and value is None:
+                value = "auto"
+            section[new_key] = value
+    return section
+
+
+def _legacy_decim_check_plot(config):
+    plot_decim = ((config.get("downsample") or {}).get("plot_decim")) or {}
+    section = {}
+    key_map = {
+        "save_fig": "save_fig",
+        "file_path": "file_path",
+        "show": "show",
+        "coordrange": "coordrange",
+        "style": "cell_style",
+        "factor4plot": "factor4plot",
+        "vmin": "vmin",
+        "vmax": "vmax",
+        "symmetry": "symmetry",
+        "cmap": "cmap",
+        "figsize": "figsize",
+        "dpi": "dpi",
+        "edgewidth": "edgewidth",
+        "edgecolor": "edgecolor",
+        "alpha": "alpha",
+        "markersize": "markersize",
+        "style_context": "style_context",
+        "fontsize": "fontsize",
+        "cb_label": "colorbar_label",
+        "colorbar_orientation": "colorbar_orientation",
+        "colorbar_mode": "colorbar_mode",
+        "colorbar_loc": "colorbar_loc",
+        "colorbar_size": "colorbar_size",
+        "colorbar_thickness": "colorbar_thickness",
+        "colorbar_pad": "colorbar_pad",
+        "panel_pad": "panel_pad",
+        "cb_label_loc": "cb_label_loc",
+        "tickfontsize": "tickfontsize",
+        "labelfontsize": "labelfontsize",
+        "trace_color": "trace_color",
+        "trace_linewidth": "trace_linewidth",
+    }
+    for old_key, new_key in key_map.items():
+        if old_key in plot_decim:
+            section[new_key] = plot_decim[old_key]
+    if section.get("factor4plot") is None:
+        section["factor4plot"] = "inherit_raw"
+    return section
+
+
+def _flatten_check_plot_section(section):
+    section = deepcopy(section or {})
+    nested_key_map = {
+        "figure": {
+            "figsize": "figsize",
+            "aspect": "figsize_aspect",
+            "height": "figsize_height",
+            "dpi": "dpi",
+            "style_context": "style_context",
+            "fontsize": "fontsize",
+        },
+        "limits": {
+            "vmin": "vmin",
+            "vmax": "vmax",
+            "auto_percentile": "auto_percentile",
+            "percentile": "auto_percentile",
+            "symmetry": "symmetry",
+        },
+        "colorbar": {
+            "label": "colorbar_label",
+            "orientation": "colorbar_orientation",
+            "mode": "colorbar_mode",
+            "loc": "colorbar_loc",
+            "size": "colorbar_size",
+            "thickness": "colorbar_thickness",
+            "pad": "colorbar_pad",
+            "panel_pad": "panel_pad",
+            "tick_direction": "colorbar_tick_direction",
+            "max_major_ticks": "colorbar_max_major_ticks",
+            "minor_ticks": "colorbar_minor_ticks",
+            "minor_subdivisions": "colorbar_minor_subdivisions",
+            "label_loc": "cb_label_loc",
+        },
+        "axis": {
+            "tick_direction": "axis_tick_direction",
+            "max_major_ticks": "axis_max_major_ticks",
+            "minor_ticks": "axis_minor_ticks",
+            "minor_subdivisions": "axis_minor_subdivisions",
+        },
+    }
+    for nested_key, mapping in nested_key_map.items():
+        nested = section.pop(nested_key, None)
+        if not isinstance(nested, dict):
+            continue
+        for old_key, new_key in mapping.items():
+            if old_key in nested and new_key not in section:
+                section[new_key] = nested[old_key]
+    if "rawdownsample4plot" in section and "plot_stride" not in section:
+        section["plot_stride"] = section.pop("rawdownsample4plot")
+    if "data" in section and "components" not in section:
+        section["components"] = section.pop("data")
+    if "cb_label" in section and "colorbar_label" not in section:
+        section["colorbar_label"] = section.pop("cb_label")
+    return section
+
+
+def normalize_check_plots(config):
+    data_type = config.get("data_type")
+    raw = deepcopy(DEFAULT_CHECK_PLOTS["raw"])
+    decim = deepcopy(DEFAULT_CHECK_PLOTS["decim"])
+    raw.update(_legacy_raw_check_plot(data_type, config))
+    decim.update(_legacy_decim_check_plot(config))
+
+    user_check_plots = deepcopy(config.get("check_plots", {}) or {})
+    if not isinstance(user_check_plots, dict):
+        return user_check_plots
+    raw.update(_flatten_check_plot_section(user_check_plots.get("raw", {}) or {}))
+    decim.update(_flatten_check_plot_section(user_check_plots.get("decim", {}) or {}))
+    return {"raw": raw, "decim": decim}
 
 
 def _require_mapping(container, key, errors, label):
@@ -882,6 +1183,188 @@ def _validate_downsample_report_config(report, errors, label="downsample.report"
         errors.append(f"{label}.report_file must be 'auto', a path string, null, or false.")
 
 
+def _validate_plot_factor(section, key, errors, label):
+    value = section.get(key)
+    if value is None:
+        return
+    if isinstance(value, str) and value.replace("-", "_").lower() in ("auto", "inherit_raw"):
+        return
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        errors.append(f"{label}.{key} must be positive, 'auto', 'inherit_raw', or null.")
+        return
+    if value <= 0.0:
+        errors.append(f"{label}.{key} must be positive.")
+
+
+def _validate_figsize_value(value, errors, label):
+    if value is None:
+        return
+    if isinstance(value, str):
+        if not value:
+            errors.append(f"{label} must not be empty.")
+        return
+    if isinstance(value, (int, float)):
+        if float(value) <= 0.0:
+            errors.append(f"{label} must be positive.")
+        return
+    figsize = _check_number_sequence(value, 2, errors, label)
+    if figsize is not None and any(item <= 0.0 for item in figsize):
+        errors.append(f"{label} values must be positive.")
+
+
+def _validate_check_plot_components(value, data_type, errors, label):
+    if value in (None, "auto"):
+        return
+    allowed = ("observation",) if data_type == "sar" else ("east", "north", "both")
+    values = value if isinstance(value, (list, tuple)) and not isinstance(value, str) else [value]
+    if not values:
+        errors.append(f"{label} must not be empty.")
+        return
+    for item in values:
+        key = _mode_key(item)
+        if key not in allowed:
+            errors.append(f"{label} supports only {allowed} for data_type={data_type!r}; got {item!r}.")
+
+
+def _validate_check_plot_stage(section, data_type, stage, errors):
+    label = f"check_plots.{stage}"
+    if not isinstance(section, dict):
+        errors.append(f"{label} must be a mapping.")
+        return
+    common_keys = {
+        "save_fig",
+        "file_path",
+        "show",
+        "coordrange",
+        "components",
+        "layout",
+        "figsize",
+        "figsize_aspect",
+        "figsize_height",
+        "dpi",
+        "factor4plot",
+        "vmin",
+        "vmax",
+        "auto_percentile",
+        "symmetry",
+        "cmap",
+        "style_context",
+        "fontsize",
+        "axis_tick_direction",
+        "axis_max_major_ticks",
+        "axis_minor_ticks",
+        "axis_minor_subdivisions",
+        "colorbar_label",
+        "colorbar_orientation",
+        "colorbar_mode",
+        "colorbar_loc",
+        "colorbar_size",
+        "colorbar_thickness",
+        "colorbar_pad",
+        "panel_pad",
+        "colorbar_tick_direction",
+        "colorbar_max_major_ticks",
+        "colorbar_minor_ticks",
+        "colorbar_minor_subdivisions",
+        "cb_label_loc",
+        "tickfontsize",
+        "labelfontsize",
+        "trace_color",
+        "trace_linewidth",
+    }
+    raw_keys = {"plot_stride", "value_space"}
+    decim_keys = {"cell_style", "edgewidth", "edgecolor", "alpha", "markersize"}
+    allowed_keys = common_keys | (raw_keys if stage == "raw" else decim_keys)
+    unknown = sorted(set(section) - allowed_keys)
+    if unknown:
+        errors.append(f"Unsupported {label} keys: {', '.join(unknown)}.")
+    for bool_key in ("save_fig", "show", "symmetry", "axis_minor_ticks", "colorbar_minor_ticks"):
+        if bool_key in section and not isinstance(section[bool_key], bool):
+            errors.append(f"{label}.{bool_key} must be true or false.")
+    if section.get("file_path") not in (None, False, "auto") and not isinstance(section.get("file_path"), str):
+        errors.append(f"{label}.file_path must be 'auto', a path string, null, or false.")
+    coordrange = section.get("coordrange")
+    if coordrange is not None:
+        values = _check_number_sequence(coordrange, 4, errors, f"{label}.coordrange")
+        if values is not None and (values[0] >= values[1] or values[2] >= values[3]):
+            errors.append(f"{label}.coordrange must satisfy minlon < maxlon and minlat < maxlat.")
+    _validate_check_plot_components(section.get("components"), data_type, errors, f"{label}.components")
+    layout = _mode_key(section.get("layout", "auto"))
+    if layout not in ("auto", "single", "columns"):
+        errors.append(f"{label}.layout must be 'auto', 'single', or 'columns'.")
+    _validate_figsize_value(section.get("figsize"), errors, f"{label}.figsize")
+    _check_positive_number(section, "figsize_aspect", errors, label)
+    _check_positive_number(section, "figsize_height", errors, label)
+    _check_positive_int(section, "dpi", errors, label)
+    _check_positive_number(section, "fontsize", errors, label)
+    _validate_plot_factor(section, "factor4plot", errors, label)
+    if data_type == "optical":
+        _validate_scalar_or_pair(section.get("vmin"), errors, f"{label}.vmin")
+        _validate_scalar_or_pair(section.get("vmax"), errors, f"{label}.vmax")
+    else:
+        _check_optional_number(section, "vmin", errors, label)
+        _check_optional_number(section, "vmax", errors, label)
+    _check_positive_number(section, "auto_percentile", errors, label)
+    if section.get("auto_percentile") is not None:
+        try:
+            percentile = float(section["auto_percentile"])
+        except (TypeError, ValueError):
+            percentile = None
+        if percentile is not None and percentile > 100.0:
+            errors.append(f"{label}.auto_percentile must be <= 100.")
+    if section.get("colorbar_orientation") not in (None, "auto", "horizontal", "vertical", "h", "v"):
+        errors.append(f"{label}.colorbar_orientation must be 'auto', 'horizontal', or 'vertical'.")
+    if section.get("colorbar_mode") not in (None, "auto", "inside", "outside", "manual"):
+        errors.append(f"{label}.colorbar_mode must be 'auto', 'inside', 'outside', or 'manual'.")
+    if section.get("axis_tick_direction") not in (None, "auto", "in", "out", "inout"):
+        errors.append(f"{label}.axis_tick_direction must be 'auto', 'in', 'out', or 'inout'.")
+    if section.get("colorbar_tick_direction") not in (None, "auto", "in", "out", "inout"):
+        errors.append(f"{label}.colorbar_tick_direction must be 'auto', 'in', 'out', or 'inout'.")
+    _check_positive_int(section, "axis_max_major_ticks", errors, label)
+    _check_positive_int(section, "axis_minor_subdivisions", errors, label)
+    _check_positive_int(section, "colorbar_max_major_ticks", errors, label)
+    _check_positive_int(section, "colorbar_minor_subdivisions", errors, label)
+    _check_positive_number(section, "colorbar_size", errors, label)
+    _check_positive_number(section, "colorbar_thickness", errors, label)
+    _check_positive_number(section, "colorbar_pad", errors, label, allow_zero=True)
+    _check_positive_number(section, "panel_pad", errors, label, allow_zero=True)
+    _check_positive_number(section, "tickfontsize", errors, label)
+    _check_positive_number(section, "labelfontsize", errors, label)
+    _check_positive_number(section, "trace_linewidth", errors, label, allow_zero=True)
+    if stage == "raw":
+        _check_positive_int(section, "plot_stride", errors, label)
+        value_space = _mode_key(section.get("value_space", "auto"))
+        if data_type == "sar" and value_space not in ("auto", "observation", "raw"):
+            errors.append(f"{label}.value_space must be 'auto', 'observation', or 'raw'.")
+    else:
+        cell_style = _mode_key(section.get("cell_style", "cells"))
+        if cell_style not in ("cells", "points"):
+            errors.append(f"{label}.cell_style must be 'cells' or 'points'.")
+        _check_positive_number(section, "edgewidth", errors, label, allow_zero=True)
+        _check_positive_number(section, "markersize", errors, label)
+        _check_positive_number(section, "alpha", errors, label, allow_zero=True)
+        if section.get("alpha") is not None:
+            try:
+                alpha = float(section["alpha"])
+            except (TypeError, ValueError):
+                alpha = None
+            if alpha is not None and alpha > 1.0:
+                errors.append(f"{label}.alpha must be <= 1.")
+
+
+def _validate_check_plots(check_plots, data_type, errors):
+    if not isinstance(check_plots, dict):
+        errors.append("check_plots must be a mapping.")
+        return
+    unknown = sorted(set(check_plots) - {"raw", "decim"})
+    if unknown:
+        errors.append(f"Unsupported check_plots keys: {', '.join(unknown)}.")
+    for stage in ("raw", "decim"):
+        _validate_check_plot_stage(check_plots.get(stage, {}), data_type, stage, errors)
+
+
 def _reject_legacy_downsample_fields(config, field_names, errors, label):
     for field_name in field_names:
         if field_name in config:
@@ -1229,14 +1712,39 @@ def normalize_optical_config(optical_config, validate=True):
         "outName",
         "filename",
         "vel_type",
-        "factor_to_m",
-        "ew_band",
-        "sn_band",
-        "remove_nan",
         "output_check",
     ):
         if key in raw:
             normalized[key] = raw[key]
+
+    read = deepcopy(DEFAULT_OPTICAL_CONFIG["read"])
+    for legacy_key in ("factor_to_m", "remove_nan"):
+        if legacy_key in raw:
+            read[legacy_key] = raw[legacy_key]
+    raw_read = raw.get("read", {}) or {}
+    if isinstance(raw_read, dict):
+        read.update(raw_read)
+    else:
+        read = raw_read
+    normalized["read"] = read
+
+    grid = deepcopy(DEFAULT_OPTICAL_CONFIG["grid"])
+    for legacy_key in ("ew_band", "sn_band"):
+        if legacy_key in raw:
+            grid[legacy_key] = raw[legacy_key]
+    raw_grid = raw.get("grid", {}) or {}
+    if isinstance(raw_grid, dict):
+        grid.update(raw_grid)
+    else:
+        grid = raw_grid
+    normalized["grid"] = grid
+
+    if isinstance(read, dict):
+        normalized["factor_to_m"] = read.get("factor_to_m")
+        normalized["remove_nan"] = read.get("remove_nan")
+    if isinstance(grid, dict):
+        normalized["ew_band"] = grid.get("ew_band")
+        normalized["sn_band"] = grid.get("sn_band")
 
     if normalized.get("vel_type") is not None:
         normalized["vel_type"] = _mode_key(normalized["vel_type"])
@@ -1268,6 +1776,43 @@ def validate_optical_config(optical_config):
         _check_positive_int(optical_config, key, errors, "optical_config")
     if "remove_nan" in optical_config and not isinstance(optical_config["remove_nan"], bool):
         errors.append("optical_config.remove_nan must be true or false.")
+    read = optical_config.get("read", {})
+    if not isinstance(read, dict):
+        errors.append("optical_config.read must be a mapping.")
+        read = {}
+    allowed_read_keys = {
+        "downsample",
+        "downsample_for_covar",
+        "zero2nan",
+        "remove_nan",
+        "factor_to_m",
+    }
+    unknown_read_keys = sorted(set(read) - allowed_read_keys)
+    if unknown_read_keys:
+        errors.append(
+            "Unsupported optical_config.read keys: "
+            f"{', '.join(unknown_read_keys)}."
+        )
+    for key in ("downsample", "downsample_for_covar"):
+        _check_positive_int(read, key, errors, "optical_config.read")
+    _check_positive_number(read, "factor_to_m", errors, "optical_config.read")
+    for key in ("zero2nan", "remove_nan"):
+        if key in read and not isinstance(read[key], bool):
+            errors.append(f"optical_config.read.{key} must be true or false.")
+
+    grid = optical_config.get("grid", {})
+    if not isinstance(grid, dict):
+        errors.append("optical_config.grid must be a mapping.")
+        grid = {}
+    allowed_grid_keys = {"ew_band", "sn_band"}
+    unknown_grid_keys = sorted(set(grid) - allowed_grid_keys)
+    if unknown_grid_keys:
+        errors.append(
+            "Unsupported optical_config.grid keys: "
+            f"{', '.join(unknown_grid_keys)}."
+        )
+    for key in ("ew_band", "sn_band"):
+        _check_positive_int(grid, key, errors, "optical_config.grid")
     if "output_check" in optical_config and not isinstance(optical_config["output_check"], bool):
         errors.append("optical_config.output_check must be true or false.")
     if "vel_type" in optical_config and optical_config["vel_type"] not in ("east", "north"):
@@ -1338,6 +1883,17 @@ def validate_optical_config(optical_config):
 
 def normalize_downsample_config(config, validate=True):
     normalized = deepcopy(config or {})
+    raw_config = deepcopy(normalized)
+    existing_compatibility = normalized.get("_compatibility")
+    if normalized.get("config_version") is None:
+        normalized["config_version"] = SUPPORTED_CONFIG_VERSION
+    if isinstance(existing_compatibility, dict):
+        deprecated_fields = deepcopy(existing_compatibility.get("deprecated_fields", []))
+    else:
+        deprecated_fields = collect_deprecated_config_fields(raw_config)
+    normalized["_compatibility"] = {
+        "deprecated_fields": deprecated_fields,
+    }
     data_type = normalized.get("data_type")
     if data_type not in ("sar", "optical"):
         raise ValueError("data_type must be 'sar' or 'optical'.")
@@ -1429,6 +1985,7 @@ def normalize_downsample_config(config, validate=True):
             report.update(raw_report)
             downsample["report"] = report
 
+    normalized["check_plots"] = normalize_check_plots(normalized)
     normalized.setdefault("fault_traces", [])
     normalized.setdefault("fault_models", [])
     if validate:
@@ -1438,6 +1995,16 @@ def normalize_downsample_config(config, validate=True):
 
 def validate_downsample_config(config):
     errors = []
+    config_version = config.get("config_version", SUPPORTED_CONFIG_VERSION)
+    if isinstance(config_version, bool) or not isinstance(config_version, int):
+        errors.append(
+            f"config_version must be integer {SUPPORTED_CONFIG_VERSION}; got {config_version!r}."
+        )
+    elif config_version != SUPPORTED_CONFIG_VERSION:
+        errors.append(
+            f"config_version must be {SUPPORTED_CONFIG_VERSION} for this release; got {config_version!r}."
+        )
+
     data_type = config.get("data_type")
     if data_type not in ("sar", "optical"):
         errors.append("data_type must be 'sar' or 'optical'.")
@@ -1471,6 +2038,7 @@ def validate_downsample_config(config):
     _validate_processing_region(config.get("processing_region", {}), errors)
     _validate_fault_traces(config, errors)
     _validate_fault_models(config, errors)
+    _validate_check_plots(config.get("check_plots", {}), data_type, errors)
 
     covar = _require_mapping(config, "covar", errors, "config")
     if covar is not None:
@@ -1558,7 +2126,7 @@ def validate_downsample_config(config):
             _check_positive_number(std_config, "split_metric_smoothing", errors, "downsample.std_config")
             if "use_variance" in std_config and not isinstance(std_config["use_variance"], bool):
                 errors.append("downsample.std_config.use_variance must be true or false.")
-            correction = std_config.get("split_metric_correction", "std")
+            correction = std_config.get("split_metric_correction", "median")
             if correction not in STD_CORRECTION_CHOICES:
                 errors.append(
                     "downsample.std_config.split_metric_correction must be one of "
@@ -1763,6 +2331,12 @@ def validate_downsample_config(config):
                         "minlon < maxlon and minlat < maxlat."
                     )
             _check_positive_number(plot_decim, "factor4plot", errors, "downsample.plot_decim")
+            if data_type == "optical":
+                _validate_scalar_or_pair(plot_decim.get("vmin"), errors, "downsample.plot_decim.vmin")
+                _validate_scalar_or_pair(plot_decim.get("vmax"), errors, "downsample.plot_decim.vmax")
+            else:
+                _check_optional_number(plot_decim, "vmin", errors, "downsample.plot_decim")
+                _check_optional_number(plot_decim, "vmax", errors, "downsample.plot_decim")
             _check_positive_number(plot_decim, "edgewidth", errors, "downsample.plot_decim", allow_zero=True)
             _check_positive_number(plot_decim, "markersize", errors, "downsample.plot_decim")
             _check_positive_number(plot_decim, "alpha", errors, "downsample.plot_decim", allow_zero=True)
@@ -1777,6 +2351,7 @@ def validate_downsample_config(config):
             _check_positive_number(plot_decim, "colorbar_size", errors, "downsample.plot_decim")
             _check_positive_number(plot_decim, "colorbar_thickness", errors, "downsample.plot_decim")
             _check_positive_number(plot_decim, "colorbar_pad", errors, "downsample.plot_decim", allow_zero=True)
+            _check_positive_number(plot_decim, "panel_pad", errors, "downsample.plot_decim", allow_zero=True)
             if plot_decim.get("figsize") is not None:
                 figsize = _check_number_sequence(plot_decim["figsize"], 2, errors, "downsample.plot_decim.figsize")
                 if figsize is not None and any(value <= 0.0 for value in figsize):

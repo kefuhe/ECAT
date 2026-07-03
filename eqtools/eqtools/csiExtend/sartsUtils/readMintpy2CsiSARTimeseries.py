@@ -387,10 +387,10 @@ if __name__ == '__main__':
     from csi import RectangularPatches as csiRect
     main_fault = csiRect('main', lon0=lon0, lat0=lat0)
     main_fault.trace(main_rupture.lon.values, main_rupture.lat.values)
-    main_fault.discretize()
+    main_fault.discretize_trace(every=2.0, threshold=1.0)
     sec_fault = csiRect('sec', lon0=lon0, lat0=lat0)
     sec_fault.trace(tip_rupture.lon.values, tip_rupture.lat.values)
-    sec_fault.discretize()
+    sec_fault.discretize_trace(every=2.0, threshold=1.0)
     faults = [main_fault, sec_fault]
 
 

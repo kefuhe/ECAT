@@ -16,6 +16,11 @@ from ..multifaults_base import MyMultiFaultsInversion
 from .config_utils import parse_update, parse_initial_values
 from .config_utils import parse_alpha_faults, parse_data_faults, parse_sigmas_config
 from .base_config import CommonConfigBase
+from .prior_bounds import (
+    LOWER_RANGE,
+    normalize_prior_bounds_tree,
+    validate_prior_bounds_format,
+)
 
 
 class AliasManager:
@@ -75,8 +80,12 @@ class AliasManager:
         return faults_list
 
 class ExploreFaultConfig(CommonConfigBase):
+    default_prior_bounds_format = LOWER_RANGE
+
     def __init__(self, config_file=None, geodata=None, verbose=False, parallel_rank=None):
         self._sigmas_param_name = 'values'  # ExploreFaultConfig uses 'values' for sigmas
+        self.input_prior_bounds_format = self.default_prior_bounds_format
+        self.prior_bounds_format = LOWER_RANGE
         super().__init__(config_file=config_file, geodata=geodata, verbose=verbose, parallel_rank=parallel_rank)
         self.bounds = {}
         self.initial = {} # Initial parameters for each fault
@@ -114,6 +123,10 @@ class ExploreFaultConfig(CommonConfigBase):
         """
         with open(config_file, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
+        if config is None:
+            config = {}
+
+        self._normalize_prior_bounds_config(config)
 
         nfaults = config.get('nfaults', 1)
         user_aliases = config.get('fault_aliasnames', config.get('fault_names', None))
@@ -179,6 +192,43 @@ class ExploreFaultConfig(CommonConfigBase):
         # Update polygon boundaries
         self.update_polys_estimate_and_boundaries()
         self._select_data_sets()
+
+    def _normalize_prior_bounds_config(self, config):
+        """Normalize user prior bounds into scipy ``loc/scale`` arguments."""
+        input_format = validate_prior_bounds_format(
+            config.get('prior_bounds_format', self.default_prior_bounds_format)
+        )
+        self.input_prior_bounds_format = input_format
+
+        if 'bounds' in config:
+            config['bounds'] = normalize_prior_bounds_tree(
+                config['bounds'],
+                input_format,
+                context='bounds',
+            )
+
+        geodata = config.get('geodata') or {}
+        polys = geodata.get('polys')
+        if isinstance(polys, dict):
+            boundaries = polys.get('boundaries')
+            if boundaries is not None:
+                polys['boundaries'] = normalize_prior_bounds_tree(
+                    boundaries,
+                    input_format,
+                    context='geodata.polys.boundaries',
+                )
+
+        sigmas = geodata.get('sigmas')
+        if isinstance(sigmas, dict) and sigmas.get('bounds') is not None:
+            sigmas['bounds'] = normalize_prior_bounds_tree(
+                sigmas['bounds'],
+                input_format,
+                context='geodata.sigmas.bounds',
+            )
+
+        # The legacy sampler always consumes lower+range after parsing.
+        config['prior_bounds_format'] = LOWER_RANGE
+        self.prior_bounds_format = LOWER_RANGE
 
     def update_polys_estimate_and_boundaries(self, datas=None):
         if self.geodata.get('polys', {}).get('enabled', False):
@@ -307,6 +357,7 @@ class ExploreFaultConfig(CommonConfigBase):
         fixed_params_ordered = _ordered_fault_dict(fixed_params_export)
     
         export_dict = OrderedDict([
+            ('prior_bounds_format', getattr(self, 'prior_bounds_format', LOWER_RANGE)),
             ('nchains', getattr(self, 'nchains', None)),
             ('chain_length', getattr(self, 'chain_length', None)),
             ('nfaults', self.nfaults),

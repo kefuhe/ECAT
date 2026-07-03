@@ -1,4 +1,4 @@
-from ..sarUtils.readTiffUtils import read_tiff_with_metadata
+from ..sarUtils.readTiffUtils import read_tiff, read_tiff_info, utm_to_latlon
 from ...plottools import sci_plot_style, set_degree_formatter
 from ..sarUtils.readTiffUtils import save_to_tiff
 from csi.opticorr import opticorr as csiopticorr
@@ -14,8 +14,15 @@ class TiffoptiReader(csiopticorr):
         super().__init__(name, utmzone=utmzone, lon0=lon0, lat0=lat0, verbose=verbose)
         self.directory_name = directory_name
 
+    @staticmethod
+    def _normalize_downsample(downsample):
+        downsample = 1 if downsample is None else int(downsample)
+        if downsample <= 0:
+            raise ValueError("downsample must be a positive integer.")
+        return downsample
+
     def extract_raw_grd(self, directory_name=None, filename=None, ew_band=1, sn_band=2, vert_band=None,
-                        factor_to_m=1.0, zero2nan=True, wavelength=None):
+                        factor_to_m=1.0, zero2nan=True, wavelength=None, downsample=1):
         """
         Extract raw optical offset images.
     
@@ -28,6 +35,8 @@ class TiffoptiReader(csiopticorr):
             * factor_to_m (float, optional): Factor to convert to meters. Defaults to 1.0.
             * zero2nan (bool, optional): Whether to convert zeros to NaN. Defaults to True.
             * wavelength (float, optional): Wavelength of the radar. Defaults to None.
+            * downsample (int, optional): Pixel stride applied consistently to
+              EW/SN values and projected coordinate axes before lon/lat conversion.
             
         """
         if directory_name is None:
@@ -37,27 +46,44 @@ class TiffoptiReader(csiopticorr):
         assert sn_band is not None, "North-South band must be provided."
 
         file_path = os.path.join(directory_name, filename)
-        data_ew = read_tiff_with_metadata(file_path, band_index=ew_band, factor=factor_to_m, meshout=True)
-        data_sn = read_tiff_with_metadata(file_path, band_index=sn_band, factor=factor_to_m, meshout=False)
+        downsample = self._normalize_downsample(downsample)
+        raw_east, im_geotrans, im_proj, im_width, im_height = read_tiff(
+            file_path, band_index=ew_band, factor=factor_to_m
+        )
+        raw_north, _, _, _, _ = read_tiff(
+            file_path, band_index=sn_band, factor=factor_to_m
+        )
+        x_coord, _, y_coord, _ = read_tiff_info(
+            file_path, im_width, im_height, meshout=False
+        )
+        if downsample > 1:
+            raw_east = raw_east[::downsample, ::downsample]
+            raw_north = raw_north[::downsample, ::downsample]
+            x_coord = x_coord[::downsample]
+            y_coord = y_coord[::downsample]
 
-        # 提取经纬度网格和数据
-        mesh_lon, mesh_lat = data_ew['mesh_lon'], data_ew['mesh_lat']
+        mesh_x, mesh_y = np.meshgrid(x_coord, y_coord)
+        im_height, im_width = mesh_x.shape
+        mesh_lat, mesh_lon = utm_to_latlon(mesh_x.flatten(), mesh_y.flatten(), im_proj)
+        mesh_lat = mesh_lat.reshape(im_height, im_width)
+        mesh_lon = mesh_lon.reshape(im_height, im_width)
 
         if zero2nan:
-            data_ew['data'][data_ew['data'] == 0] = np.nan
-            data_sn['data'][data_sn['data'] == 0] = np.nan
+            raw_east[raw_east == 0] = np.nan
+            raw_north[raw_north == 0] = np.nan
 
         # Save in self
         self.factor_to_m = factor_to_m
         self.wavelength = wavelength
-        self.raw_east = data_ew['data']
-        self.raw_north = data_sn['data']
+        self.downsample = downsample
+        self.raw_east = raw_east
+        self.raw_north = raw_north
         self.raw_lon = mesh_lon.mean(axis=0)
         self.raw_lat = mesh_lat.mean(axis=1)
         self.raw_mesh_lon = mesh_lon
         self.raw_mesh_lat = mesh_lat
-        self.im_geotrans = data_ew['geotrans']
-        self.im_proj = data_ew['proj']
+        self.im_geotrans = im_geotrans
+        self.im_proj = im_proj
     
     def read_from_tiff(self, remove_nan=True):
         east = self.raw_east

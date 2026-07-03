@@ -2,6 +2,14 @@
 
 本文说明线性滑动分布反演中 `BoundLSEMultiFaultsInversion` 的常用运行模式、参数关系和结果检查。完整工作流见 [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md)，可运行案例见 [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md)。
 
+## 阅读路径
+
+- 只想跑通线性滑动反演：先读 workflow 和案例，本页作为方法和结果检查参考。
+- 不确定 BLSE、smoothing loop、VCE 的区别：看 [三种运行模式](#三种运行模式)。
+- 正在配置 sigma/alpha 或 poly：先查 [线性滑动反演配置](config_linear_slip.md) 和 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)，再回到本页看运行模式。
+- 正在检查物理约束是否生效：看 [约束检查](#约束检查) 和 [ECAT 约束管理器](constraint_manager.md)。
+- 准备论文或报告：看 [推荐报告内容](#recommended-reporting)。
+
 ## 数据流
 
 ```text
@@ -146,7 +154,9 @@ inv.extract_and_plot_blse_results(
 - GPS、InSAR 或其他数据类型的 data/synth/resid 文件。
 - 控制台中的拟合统计和断层统计。
 
-案例脚本也可额外调用断层和数据对象的方法，例如写出 `slip_<FaultName>.gmt`、`slipdir_<FaultName>.txt`、每条 InSAR 的 `data/synth/resid` 文本文件。Dingri 案例的对应代码见 [脚本对照：导出滑动、滑动方向和模型数据](../casebook/dingri_blse_vce.md#6-导出滑动滑动方向和模型数据)。
+断层统计由 `inv.print_faults_summary()` 使用统一的 [Fault Summary / 断层概览和统计](fault_summary.md) 接口输出。它会报告 trace 长度、patch/mesh 数、面积、深度范围、平均走向倾角、slip 统计；位移单位模型报告 Moment/Mw，速率单位模型报告 moment rate。如果只想在脚本中拿结构化结果，使用 `inv.get_faults_summary()`。
+
+案例脚本也可额外调用断层和数据对象的方法，例如写出 `slip_<FaultName>.gmt`、`slipdir_<FaultName>.txt`、每条 InSAR 的 `data/synth/resid` 文本文件。Dingri 案例的对应代码见 [脚本对照：导出滑动、滑动方向和模型数据](../casebook/dingri_blse_vce.md#export-slip-and-model-data)。
 
 ## 约束检查
 
@@ -159,7 +169,9 @@ BLSE/VCE 支持的约束主要包括：
 - `zero_edge_slip(...)` 这类边界零滑等式约束。
 - 用户通过 `source_constraints` 添加的线性等式/不等式约束。
 
-这些约束由统一约束管理器应用。固定权重 BLSE、smoothing loop 和 VCE 共用同一套约束矩阵；VCE 只估计权重，不改变约束写法。`rake_angle` 在线性 BLSE/VCE 中不是待求滑动参数，而是限制 `strikeslip/dipslip` 的角度范围；零滑和边界零滑的配置细节见 [ECAT 约束管理器](constraint_manager.md#零滑与边界零滑约束)。
+这些约束由统一约束管理器应用。固定权重 BLSE、smoothing loop 和 VCE 共用同一套约束矩阵；VCE 只估计权重，不改变约束写法。`rake_angle` 在线性 BLSE/VCE 中不是待求滑动参数，而是限制 `strikeslip/dipslip` 的角度范围；零滑和边界零滑的配置细节见 [ECAT 约束管理器](constraint_manager.md#zero-slip-constraints)。
+
+<a id="recommended-reporting"></a>
 
 ## 推荐报告内容
 
@@ -173,7 +185,7 @@ BLSE/VCE 支持的约束主要包括：
 - sigma/alpha 模式和最终权重。
 - smoothing loop 或 VCE 诊断结果。
 - 每个数据集的 RMS、normalized RMS 或 variance reduction。
-- 地震矩、Mw 和主要滑动区。
+- 断层概览统计，包括 trace 长度、mesh/patch 数、面积、深度范围、主要滑动区；位移模型报告地震矩和 Mw，速率模型报告矩率。字段见 [Fault Summary](fault_summary.md)。
 - 滑动模型、滑动方向和 data/synth/resid 输出路径。
 
 ## 常见问题

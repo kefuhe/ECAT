@@ -22,6 +22,79 @@ from matplotlib.ticker import FuncFormatter
 from mpl_toolkits.mplot3d import Axes3D
 import cmcrameri # cmc.devon_r cmc.lajolla_r cmc.batlow
 
+
+_LSQLIN_ACCEPTED_STATUS = {"optimal", "optimal_inaccurate"}
+_LINEAR_CONSTRAINT_TOL = 1.0e-6
+
+
+def _validate_lsqlin_status(ret, context="lsqlin"):
+    """Raise a clear error when the underlying QP solver did not converge."""
+    status = str(ret.get("status", "")).lower()
+    if status and status not in _LSQLIN_ACCEPTED_STATUS:
+        objective = ret.get("primal objective", None)
+        suffix = "" if objective is None else f"; primal objective={objective}"
+        raise ValueError(f"{context} failed: solver status is '{status}'{suffix}")
+
+
+def _constraint_vector(value):
+    if value is None:
+        return None
+    return np.asarray(value, dtype=float).reshape(-1)
+
+
+def _constraint_matrix(value):
+    if value is None:
+        return None
+    return value
+
+
+def _max_violation(values):
+    if values is None:
+        return 0.0
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size == 0:
+        return 0.0
+    return float(np.max(values))
+
+
+def _validate_linear_solution_constraints(
+    x,
+    lb,
+    ub,
+    A_ineq,
+    b_ineq,
+    A_eq,
+    b_eq,
+    *,
+    context="linear solve",
+    tol=_LINEAR_CONSTRAINT_TOL,
+):
+    """Validate the recovered solution against original linear constraints."""
+    x = np.asarray(x, dtype=float).reshape(-1)
+    lb = _constraint_vector(lb)
+    ub = _constraint_vector(ub)
+    b_ineq = _constraint_vector(b_ineq)
+    b_eq = _constraint_vector(b_eq)
+    A_ineq = _constraint_matrix(A_ineq)
+    A_eq = _constraint_matrix(A_eq)
+
+    violations = {}
+    if lb is not None:
+        violations["lower_bound"] = _max_violation(lb - x)
+    if ub is not None:
+        violations["upper_bound"] = _max_violation(x - ub)
+    if A_ineq is not None and b_ineq is not None:
+        violations["inequality"] = _max_violation(A_ineq.dot(x) - b_ineq)
+    if A_eq is not None and b_eq is not None:
+        eq_residual = np.asarray(A_eq.dot(x), dtype=float).reshape(-1) - b_eq
+        violations["equality"] = _max_violation(np.abs(eq_residual))
+
+    failed = {name: value for name, value in violations.items() if value > tol}
+    if failed:
+        details = ", ".join(f"{name}={value:.3e}" for name, value in failed.items())
+        raise ValueError(f"{context} produced a solution that violates constraints: {details}")
+
+
 class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
     '''
     Enhanced multi-fault solver with unified constraint management.
@@ -158,9 +231,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             self.poly_positions[fault.name] = (slip_end_idx, current_idx)
 
             # --- DES configuration (only for sources that support it) ---
-            # For Fault: ss = first component, ds = second component
-            ss_indices = comp_indices.get(comp_names[0], []) if comp_names else []
-            ds_indices = comp_indices.get(comp_names[1], []) if len(comp_names) > 1 else []
+            ss_indices = comp_indices.get('strikeslip', [])
+            ds_indices = comp_indices.get('dipslip', [])
             des_cfg = adapter.get_des_config(ss_indices, ds_indices, poly_indices)
             if des_cfg is not None:
                 self.des_indices_config.append(des_cfg)
@@ -310,22 +382,12 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
     @property
     def inequality_constraints(self):
-        """Inequality constraints for backward compatibility."""
-        return self.constraint_manager._inequality_constraints
-
-    @property
-    def equality_constraints(self):
-        """Equality constraints for backward compatibility."""
-        return self.constraint_manager._equality_constraints
-
-    @property
-    def inequality_constraints(self):
-        """Inequality constraints for backward compatibility."""
+        """Read-only inequality-constraint view for diagnostics."""
         return self.constraint_manager.inequality_constraints
 
     @property
     def equality_constraints(self):
-        """Equality constraints for backward compatibility."""
+        """Read-only equality-constraint view for diagnostics."""
         return self.constraint_manager.equality_constraints
 
     def add_inequality_constraint(self, A, b, name=None, source=None):
@@ -397,21 +459,21 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         """Print constraint summary using constraint manager."""
         self.constraint_manager.print_summary()
 
+    def get_constraint_snapshot(self, include_matrices=False):
+        """Return a diagnostic snapshot of manager-owned constraints.
+
+        The returned object is for inspection.  Use ``set_bounds``,
+        ``add_inequality_constraint``, ``add_equality_constraint`` and
+        ``constraint_manager.remove_constraint`` to mutate constraints.
+        """
+        return self.constraint_manager.get_constraint_snapshot(
+            include_matrices=include_matrices
+        )
+
     @property
     def bounds(self):
-        """Bounds dict for backward compatibility."""
-        return {
-            'lb': self.constraint_manager._bounds['global']['lb'],
-            'ub': self.constraint_manager._bounds['global']['ub'], 
-            'strikeslip': self.constraint_manager._bounds['strikeslip'],
-            'dipslip': self.constraint_manager._bounds['dipslip'],
-            'poly': self.constraint_manager._bounds['poly']
-        }
-
-    # Convenience methods (delegate to constraint manager)
-    def add_parameter_equality(self, indices, name=None):
-        """Convenience method for adding parameter equality constraints."""
-        self.add_equality_constraint(indices=indices, name=name)
+        """Read-only bounds view for diagnostics."""
+        return self.constraint_manager.bounds
 
     def add_linear_combination_constraint(self, coefficients, indices, value, constraint_type='equality', name=None):
         """Convenience method for adding linear combination constraints."""
@@ -431,6 +493,55 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             self.add_inequality_constraint(A, b, name=name)
         else:
             raise ValueError("constraint_type must be 'equality' or 'inequality'")
+
+    @staticmethod
+    def _normalize_fault_slip_component(component):
+        comp = str(component).lower().replace(' ', '').replace('_', '')
+        if comp in ('strikeslip', 'ss', 's', 'strike'):
+            return 'strikeslip'
+        if comp in ('dipslip', 'ds', 'd', 'dip'):
+            return 'dipslip'
+        raise ValueError(
+            f"Unknown slip component '{component}'. Please use 'strikeslip' or 'dipslip'."
+        )
+
+    def _component_columns_for_patches(self, fault_name, component, patch_indices, source_start=None):
+        """Return global columns for one named Fault slip component."""
+        if fault_name not in self.faults_dict:
+            raise ValueError(
+                f"Fault '{fault_name}' not found. Available: {list(self.faults_dict.keys())}"
+            )
+
+        adapter = self.adapters[fault_name]
+        if adapter.source_type != 'Fault':
+            raise TypeError(
+                f"Slip constraints can only be applied to 'Fault' sources, "
+                f"but '{fault_name}' is '{adapter.source_type}'."
+            )
+
+        if source_start is None:
+            source_start, _ = self.slip_positions[fault_name]
+
+        fault = self.faults_dict[fault_name]
+        component = self._normalize_fault_slip_component(component)
+        component_slices = self.constraint_manager._source_component_slices(
+            fault, int(source_start), adapter=adapter
+        )
+        if component not in component_slices:
+            raise ValueError(
+                f"Fault '{fault_name}' has no {component} component "
+                f"(slipdir='{adapter.slipdir}')."
+            )
+
+        patch_indices = np.asarray(patch_indices, dtype=int)
+        n_component = component_slices[component].stop - component_slices[component].start
+        if np.any(patch_indices >= n_component) or np.any(patch_indices < 0):
+            raise ValueError(
+                f"Invalid patch indices found for fault '{fault_name}'. "
+                f"Indices must be between 0 and {n_component - 1}."
+            )
+
+        return component_slices[component].start + patch_indices
 
     def add_zero_edge_slip_constraint(self, fault_names, edges, slip_modes):
         """
@@ -468,17 +579,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if isinstance(slip_modes, str):
             slip_modes = [slip_modes]
 
-        def _normalize(mode):
-            m = mode.lower().replace(' ', '').replace('_', '')
-            if m in ('strikeslip', 'ss', 's', 'strike'):
-                return 'strikeslip'
-            elif m in ('dipslip', 'ds', 'd', 'dip'):
-                return 'dipslip'
-            raise ValueError(
-                f"Unknown slip mode '{mode}'. Use 'strikeslip' or 'dipslip'."
-            )
-
-        slip_modes = list(dict.fromkeys(_normalize(m) for m in slip_modes))
+        slip_modes = list(dict.fromkeys(self._normalize_fault_slip_component(m) for m in slip_modes))
 
         for fault_name in fault_names:
             if fault_name not in self.faults_dict:
@@ -494,7 +595,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 )
 
             slip_st, _ = self.slip_positions[fault_name]
-            n_patches = len(fault.patch)
 
             for edge in edges:
                 if edge not in fault.edge_triangles_indices:
@@ -506,17 +606,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 tri_indices = np.asarray(fault.edge_triangles_indices[edge])
 
                 for slip_mode in slip_modes:
-                    if slip_mode == 'strikeslip':
-                        offset = slip_st
-                    else:  # dipslip
-                        if len(fault.slipdir) < 2:
-                            raise ValueError(
-                                f"Fault '{fault_name}' has no dip-slip component "
-                                f"(slipdir={fault.slipdir})."
-                            )
-                        offset = slip_st + n_patches
-
-                    global_indices = tri_indices + offset
+                    global_indices = self._component_columns_for_patches(
+                        fault_name, slip_mode, tri_indices, source_start=slip_st
+                    )
                     n_constrained = len(global_indices)
 
                     A = np.zeros((n_constrained, self.lsq_parameters))
@@ -562,34 +654,13 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             if f_name not in self.faults_dict:
                 raise ValueError(f"Fault '{f_name}' not found. Available faults: {list(self.faults_dict.keys())}")
 
-            adapter = self.adapters[f_name]
-
-            if adapter.source_type != 'Fault':
-                raise TypeError(f"Slip constraints can only be applied to 'Fault' sources, but '{f_name}' is '{adapter.source_type}'.")
-
             slip_st, _ = self.slip_positions[f_name]
-            n_patches = adapter.get_n_spatial_elements()
-
-            patch_indices = np.asarray(patch_indices)
-
-            if np.any(patch_indices >= n_patches) or np.any(patch_indices < 0):
-                raise ValueError(f"Invalid patch indices found for fault '{f_name}'. Indices must be between 0 and {n_patches-1}.")
 
             for s_comp in slip_components:
-                slip_component_norm = s_comp.lower().replace(' ', '').replace('_', '')
-                if slip_component_norm in ('strikeslip', 'ss', 's', 'strike'):
-                    if 's' not in adapter.slipdir:
-                        raise ValueError(f"Fault '{f_name}' does not have a strike-slip component (slipdir='{adapter.slipdir}').")
-                    offset = slip_st
-                elif slip_component_norm in ('dipslip', 'ds', 'd', 'dip'):
-                    if 'd' not in adapter.slipdir:
-                        raise ValueError(f"Fault '{f_name}' does not have a dip-slip component (slipdir='{adapter.slipdir}').")
-                    # Dip-slip parameters follow strike-slip parameters
-                    offset = slip_st + n_patches
-                else:
-                    raise ValueError(f"Unknown slip component '{s_comp}'. Please use 'strikeslip' or 'dipslip'.")
-
-                all_global_indices.extend((patch_indices + offset).tolist())
+                columns = self._component_columns_for_patches(
+                    f_name, s_comp, patch_indices, source_start=slip_st
+                )
+                all_global_indices.extend(columns.tolist())
 
         n_constrained = len(all_global_indices)
         if n_constrained == 0:
@@ -707,7 +778,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     else:
                         lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     lap_sd = blkdiag(lap, lap)
-                    Nsd = len(fault.slipdir)
+                    Nsd = len(adapter.get_param_names())
                     # TODO: The following code is not clear, need to be modified
                     if Nsd == 1:
                         lap_sd = lap
@@ -834,6 +905,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 stacklevel=2,
             )
             ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, None, None, lb_prime, ub_prime, None, opts)
+        _validate_lsqlin_status(ret, context="BLSE constrained least squares")
         mpost_prime = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
         
         # ----------------------------Recover solution if DES was used-----------------------------#
@@ -850,6 +922,16 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         
         # Store mpost
         self.mpost = mpost
+        _validate_linear_solution_constraints(
+            self.mpost,
+            lb,
+            ub,
+            A_ueq,
+            b_ueq,
+            Aeq_final,
+            beq_final,
+            context="BLSE constrained least squares",
+        )
 
         # All done
         return
@@ -1006,7 +1088,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     from scipy.linalg import block_diag as blkdiag
                     lap_sd = blkdiag(lap, lap)
-                    Nsd = len(fault.slipdir)
+                    Nsd = len(adapter.get_param_names())
                     if Nsd == 1:
                         lap_sd = lap
                     se = st + Nsd * lap.shape[0]
@@ -1225,7 +1307,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     else:
                         lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
                     lap_sd = blkdiag(lap, lap)
-                    Nsd = len(fault.slipdir)
+                    Nsd = len(adapter.get_param_names())
                     # TODO: The following code is not clear, need to be modified
                     if Nsd == 1:
                         lap_sd = lap

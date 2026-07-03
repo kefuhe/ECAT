@@ -17,7 +17,12 @@ from ..multifaults_base import MyMultiFaultsInversion
 # Import utility functions for parsing configuration updates
 from .config_utils import parse_update, parse_initial_values
 from .config_utils import parse_alpha_faults, parse_data_faults, parse_sigmas_config, parse_alpha_config
-from .config_utils import parse_euler_constraints_config, parse_euler_units
+from .config_utils import normalize_units_config
+from .interseismic_config import (
+    empty_interseismic_config,
+    load_interseismic_config_data,
+    parse_interseismic_config,
+)
 from .base_config import CommonConfigBase
 
 
@@ -49,7 +54,6 @@ class LinearInversionConfig(CommonConfigBase):
         self.multifaults = multifaults
         self.use_bounds_constraints = True
         self.use_rake_angle_constraints = True
-        self.use_euler_constraints = False
         self.GLs = None
         self.moment_magnitude_threshold = None
         self.patch_areas = None
@@ -83,13 +87,9 @@ class LinearInversionConfig(CommonConfigBase):
         # Initialize DES configuration with default values
         self.des = self._parse_des_config(None)
 
-        # Initialize Euler constraints with default values
-        self.euler_constraints = {
-            'enabled': False,
-            'defaults': {},
-            'faults': {},
-            'configured_faults': []
-        }
+        # Interseismic block motion and optional backslip/cap constraints.
+        self.interseismic_config = empty_interseismic_config()
+        self.interseismic_config_file = None
 
         # Initialize faults
         assert multifaults or faults_list, "Either multifaults or faults_list must be provided"
@@ -131,10 +131,6 @@ class LinearInversionConfig(CommonConfigBase):
         fault_names = self.faultnames
         self.alpha = parse_alpha_config(self.alpha, faultnames=fault_names,
                                         smoothing_faultnames=self._smoothing_faultnames)
-
-        # Parse Euler constraints if enabled
-        if self.use_euler_constraints:
-            self._parse_euler_constraints()
 
         # Update Green's function parameters
         self.update_GFs_parameters(self.geodata['data'], self.geodata['verticals'],
@@ -287,10 +283,17 @@ class LinearInversionConfig(CommonConfigBase):
             self.alpha.update(config_data['alpha'])
             config_data.pop('alpha')
 
-        # Handle Euler constraints configuration
-        if 'euler_constraints' in config_data:
-            self.euler_constraints.update(config_data['euler_constraints'])
-            config_data.pop('euler_constraints')
+        if 'use_euler_constraints' in config_data or 'euler_constraints' in config_data:
+            raise ValueError(
+                "Old 'use_euler_constraints'/'euler_constraints' entries are no longer supported in "
+                "default_config.yml. Use a separate interseismic_config.yml with blocks, "
+                "fault_loading, cap_constraints, and backslip_constraints."
+            )
+        if 'interseismic_config_file' in config_data:
+            self.interseismic_config_file = config_data.pop('interseismic_config_file')
+
+        if 'units' in config_data:
+            self.units = normalize_units_config(config_data.pop('units'))
 
         # Process faults configuration
         self._process_faults_config(config_data)
@@ -298,194 +301,56 @@ class LinearInversionConfig(CommonConfigBase):
         # Set attributes
         self.set_attributes(**config_data)
 
-    def _parse_euler_constraints(self):
-        """
-        Parse Euler pole constraints configuration and handle unit conversions.
-        """
-        try:
-            # Get dataset names if available
-            dataset_names = [d.name for d in self.geodata.get('data', [])] if self.geodata.get('data') else None
-            
-            # Parse Euler constraints configuration
-            self.euler_constraints = parse_euler_constraints_config(
-                self.euler_constraints, 
-                self.faultnames, 
-                dataset_names=dataset_names
-            )
-            
-            # Process unit conversions for each fault
-            if self.euler_constraints['enabled']:
-                self._process_euler_unit_conversions()
-                
-            if self.verbose and self.euler_constraints['enabled']:
-                logger.info(f"Euler constraints parsed for faults: {self.euler_constraints['configured_faults']}")
-                
-        except Exception as e:
-            if self.verbose:
-                logger.warning(f"Warning: Failed to parse Euler constraints: {e}")
-            # Disable Euler constraints if parsing fails
-            self.euler_constraints['enabled'] = False
-            self.use_euler_constraints = False
+    def load_interseismic_config(self, interseismic_config, encoding='utf-8'):
+        """Load and parse ``interseismic_config.yml``.
 
-    def _process_euler_unit_conversions(self):
-        """
-        Process unit conversions for Euler constraints.
-        """
-        # Process defaults
-        defaults = self.euler_constraints['defaults']
-        
-        # Parse default units
-        if 'euler_pole_units' in defaults:
-            pole_units = parse_euler_units(defaults['euler_pole_units'], 'euler_pole')
-            defaults['_euler_pole_conversion'] = pole_units
-            
-        if 'euler_vector_units' in defaults:
-            vector_units = parse_euler_units(defaults['euler_vector_units'], 'euler_vector')
-            defaults['_euler_vector_conversion'] = vector_units
-        
-        # Process fault-specific configurations
-        for fault_name, fault_config in self.euler_constraints['faults'].items():
-            # Use fault-specific units or fall back to defaults
-            fault_units = fault_config.get('units', {})
-            
-            # Euler pole units
-            pole_units_config = fault_units.get('euler_pole_units', defaults['euler_pole_units'])
-            pole_conversion = parse_euler_units(pole_units_config, 'euler_pole')
-            fault_config['_euler_pole_conversion'] = pole_conversion
-            
-            # Euler vector units
-            vector_units_config = fault_units.get('euler_vector_units', defaults['euler_vector_units'])
-            vector_conversion = parse_euler_units(vector_units_config, 'euler_vector')
-            fault_config['_euler_vector_conversion'] = vector_conversion
-            
-            # Convert block parameters to standard units
-            self._convert_block_parameters(fault_config)
+        Parameters
+        ----------
+        interseismic_config : str or mapping
+            Path to an interseismic configuration file, or an already loaded
+            mapping with ``blocks``, ``fault_loading``, ``cap_constraints`` and
+            optional ``backslip_constraints`` sections.
+        encoding : str, default ``"utf-8"``
+            Text encoding used when ``interseismic_config`` is a path.
 
-    def _convert_block_parameters(self, fault_config):
-        """
-        Convert block parameters to standard units (radians and radians/year).
-        """
-        block_types = fault_config['block_types']
-        blocks = fault_config['blocks']
-        
-        converted_blocks = []
-        
-        for i, (block_type, block) in enumerate(zip(block_types, blocks)):
-            if block_type == 'dataset':
-                # Dataset names don't need conversion
-                converted_blocks.append(block)
-            elif block_type == 'euler_pole':
-                # Convert [lat, lon, omega] to standard units
-                conversion = fault_config['_euler_pole_conversion']
-                factors = conversion['conversion_factors']
-                
-                converted_block = [
-                    block[0] * factors[0],  # latitude to radians
-                    block[1] * factors[1],  # longitude to radians
-                    block[2] * factors[2]   # angular velocity to radians/year
-                ]
-                converted_blocks.append(converted_block)
-                
-            elif block_type == 'euler_vector':
-                # Convert [wx, wy, wz] to standard units
-                conversion = fault_config['_euler_vector_conversion']
-                factors = conversion['conversion_factors']
-                
-                converted_block = [
-                    block[0] * factors[0],  # wx to radians/year
-                    block[1] * factors[1],  # wy to radians/year
-                    block[2] * factors[2]   # wz to radians/year
-                ]
-                converted_blocks.append(converted_block)
-        
-        # Store both original and converted blocks
-        fault_config['blocks_original'] = blocks
-        fault_config['blocks_standard'] = converted_blocks
-
-    def get_euler_constraint_parameters(self, fault_name):
-        """
-        Get Euler constraint parameters for a specific fault in standard units.
-        
-        Parameters:
-        -----------
-        fault_name : str
-            Name of the fault
-            
-        Returns:
-        --------
-        dict or None
-            Dictionary containing constraint parameters in standard units, or None if not configured
-        """
-        if not self.euler_constraints['enabled']:
-            return None
-            
-        if fault_name not in self.euler_constraints['faults']:
-            return None
-            
-        fault_config = self.euler_constraints['faults'][fault_name]
-        
-        return {
-            'block_types': fault_config['block_types'],
-            'blocks_standard': fault_config['blocks_standard'],
-            'block_names': fault_config['block_names'],
-            'fix_reference_block': fault_config['fix_reference_block'],
-            'apply_to_patches': fault_config['apply_to_patches'],
-            'normalization': fault_config.get('normalization', self.euler_constraints['defaults']['normalization']),
-            'regularization': fault_config.get('regularization', self.euler_constraints['defaults']['regularization'])
-        }
-
-    def get_all_euler_constraints(self):
-        """
-        Get all Euler constraint parameters for configured faults.
-        
-        Returns:
-        --------
+        Returns
+        -------
         dict
-            Dictionary mapping fault names to their constraint parameters
+            Parsed interseismic configuration stored on
+            ``self.interseismic_config``.
         """
-        if not self.euler_constraints['enabled']:
-            return {}
-            
-        result = {}
-        for fault_name in self.euler_constraints['configured_faults']:
-            result[fault_name] = self.get_euler_constraint_parameters(fault_name)
-            
-        return result
+        raw = load_interseismic_config_data(interseismic_config, encoding=encoding)
+        dataset_names = [d.name for d in self.geodata.get('data', [])] if self.geodata.get('data') else None
+        self.interseismic_config = parse_interseismic_config(
+            raw,
+            self.faultnames,
+            dataset_names=dataset_names,
+        )
+        if isinstance(interseismic_config, str):
+            self.interseismic_config_file = interseismic_config
+        if self.verbose and self.interseismic_config['fault_loading'].get('enabled', False):
+            logger.info(
+                "Interseismic fault loading parsed for faults: %s",
+                self.interseismic_config['fault_loading']['configured_faults'],
+            )
+        return self.interseismic_config
 
-    def convert_euler_parameter_units(self, values, from_units, to_units, param_type):
-        """
-        Convert Euler parameter units.
-        
-        Parameters:
-        -----------
-        values : list or array
-            Parameter values to convert
-        from_units : list
-            Source units
-        to_units : list  
-            Target units
-        param_type : str
-            'euler_pole' or 'euler_vector'
-            
-        Returns:
-        --------
-        list
-            Converted values
-        """
-        from_conversion = parse_euler_units(from_units, param_type)
-        to_conversion = parse_euler_units(to_units, param_type)
-        
-        from_factors = from_conversion['conversion_factors']
-        to_factors = to_conversion['conversion_factors']
-        
-        # Convert to standard units first, then to target units
-        converted = []
-        for i, value in enumerate(values):
-            standard_value = value * from_factors[i]
-            target_value = standard_value / to_factors[i]
-            converted.append(target_value)
-            
-        return converted
+    def get_fault_loading_parameters(self, fault_name):
+        """Return parsed interseismic fault-loading parameters for one fault."""
+        fault_loading = self.interseismic_config.get('fault_loading', {})
+        if not fault_loading.get('enabled', False):
+            return None
+        return fault_loading.get('faults', {}).get(fault_name)
+
+    def get_all_fault_loading_parameters(self):
+        """Return parsed interseismic fault-loading parameters for all configured faults."""
+        fault_loading = self.interseismic_config.get('fault_loading', {})
+        if not fault_loading.get('enabled', False):
+            return {}
+        return {
+            fault_name: fault_loading['faults'][fault_name]
+            for fault_name in fault_loading.get('configured_faults', [])
+        }
 
     def _process_faults_config(self, config_data):
         """
@@ -1026,7 +891,8 @@ class LinearInversionConfig(CommonConfigBase):
         add_field('use_bounds_constraints', self.use_bounds_constraints)
         add_field('use_rake_angle_constraints', self.use_rake_angle_constraints)
         add_field('rake_angle', self.rake_angle)
-        add_field('use_euler_constraints', self.use_euler_constraints)
+        add_field('interseismic_config_file', self.interseismic_config_file)
+        add_field('units', self.units)
         add_field('shear_modulus', '{:.1f} GPa'.format(self.shear_modulus/1e9))
         add_field('moment_magnitude_threshold', self.moment_magnitude_threshold)
         add_field('magnitude_tolerance', self.magnitude_tolerance)
@@ -1034,7 +900,7 @@ class LinearInversionConfig(CommonConfigBase):
 
         add_field('geodata', geodata_export)
         add_field('alpha', self.alpha)
-        add_field('euler_constraints', self.euler_constraints)
+        add_field('interseismic_config', self.interseismic_config)
         add_field('faults', faults_export)
 
         if format == 'yaml':

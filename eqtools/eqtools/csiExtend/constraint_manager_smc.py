@@ -280,7 +280,7 @@ class ConstraintManagerSMC(ConstraintManagerBase):
                     print(f"[!]  Warning: Fault '{fault_name}' not found in faults_list, skipping slip bounds")
                 continue
             
-            # Skip non-Fault sources — they don't have strikeslip/dipslip/rake semantics
+            # Skip non-Fault sources 鈥?they don't have strikeslip/dipslip/rake semantics
             if self._get_source_type(fault_name) != 'Fault':
                 continue
             
@@ -372,26 +372,45 @@ class ConstraintManagerSMC(ConstraintManagerBase):
                 
         elif self.slip_sampling_mode == 'ss_ds':
             # Strike-slip and dip-slip bounds (each n_patches values)
+            adapter = None
+            if hasattr(self.multifaults, 'adapters'):
+                adapter = self.multifaults.adapters.get(fault_name)
+            component_slices = self._source_component_slices(
+                fault_obj, slip_start, adapter=adapter
+            )
+
             if strikeslip is not None:
+                if 'strikeslip' not in component_slices:
+                    raise ValueError(
+                        f"Fault '{fault_name}' has no strikeslip component for bounds"
+                    )
+                ss_slice = component_slices['strikeslip']
+                n_ss = ss_slice.stop - ss_slice.start
                 lb_vals, ub_vals = self._process_parameter_bounds(
-                    strikeslip, expected_patches, f"strikeslip for {fault_name}"
+                    strikeslip, n_ss, f"strikeslip for {fault_name}"
                 )
                 if lb_vals is not None and ub_vals is not None:
                     self._bounds['strikeslip'][fault_name] = (lb_vals, ub_vals)
-                    self._bounds['lb'][slip_start:slip_half] = lb_vals
-                    self._bounds['ub'][slip_start:slip_half] = ub_vals
+                    self._bounds['lb'][ss_slice] = lb_vals
+                    self._bounds['ub'][ss_slice] = ub_vals
                     
                     if self.verbose:
                         print(f"[<>]  Set strike-slip bounds for '{fault_name}': {len(lb_vals)} patches (source: {source})")
                 
             if dipslip is not None:
+                if 'dipslip' not in component_slices:
+                    raise ValueError(
+                        f"Fault '{fault_name}' has no dipslip component for bounds"
+                    )
+                ds_slice = component_slices['dipslip']
+                n_ds = ds_slice.stop - ds_slice.start
                 lb_vals, ub_vals = self._process_parameter_bounds(
-                    dipslip, expected_patches, f"dipslip for {fault_name}"
+                    dipslip, n_ds, f"dipslip for {fault_name}"
                 )
                 if lb_vals is not None and ub_vals is not None:
                     self._bounds['dipslip'][fault_name] = (lb_vals, ub_vals)
-                    self._bounds['lb'][slip_half:slip_end] = lb_vals
-                    self._bounds['ub'][slip_half:slip_end] = ub_vals
+                    self._bounds['lb'][ds_slice] = lb_vals
+                    self._bounds['ub'][ds_slice] = ub_vals
                     
                     if self.verbose:
                         print(f"[UD]  Set dip-slip bounds for '{fault_name}': {len(lb_vals)} patches (source: {source})")
@@ -439,7 +458,7 @@ class ConstraintManagerSMC(ConstraintManagerBase):
         source_name : str
             Name of the source (fault/pressure/sbarbot).
         comp_bounds : dict
-            {component_name: bounds_input} — component names from adapter.get_param_names().
+            {component_name: bounds_input} 鈥?component names from adapter.get_param_names().
             Each bounds_input is processed by _process_parameter_bounds (supports
             [lb, ub] uniform or per-element formats).
         source : str
@@ -709,7 +728,7 @@ class ConstraintManagerSMC(ConstraintManagerBase):
         else:
             if not hasattr(self, '_bounds_config') or self._bounds_config is None:
                 self._bounds_config = {}
-            self._bounds_config['rake_angle'].update(rake_angle)
+            self._bounds_config.setdefault('rake_angle', {}).update(rake_angle)
         
         return self._generate_rake_inequality_constraints(rake_angle)
 
@@ -744,26 +763,31 @@ class ConstraintManagerSMC(ConstraintManagerBase):
         A = np.zeros((2 * npatch, nlinear))
         b = np.zeros(2 * npatch)
 
-        patch_count = 0
+        row_offset = 0
         for fault in constrained_faults:
             start, end = self.slip_positions[fault.name]
             start -= linear_sample_start
             end -= linear_sample_start
-            half = (start + end) // 2
             
-            rake_start, rake_end = rake_angle[fault.name]
+            rake_start, rake_end = self._validate_rake_interval(
+                fault.name, rake_angle[fault.name]
+            )
             inpatch = self._get_n_spatial_elements(fault)
+            adapter = getattr(self.multifaults, 'adapters', {}).get(fault.name)
+            ss_start, ds_start = self._rake_component_starts(
+                fault, start, inpatch, adapter=adapter
+            )
             
             for i in range(inpatch):
                 # Lower bound: ss*sin(rake_start) - ds*cos(rake_start) <= 0
-                A[patch_count + i, start + i] = np.sin(np.deg2rad(rake_start))
-                A[patch_count + i, half + i] = -np.cos(np.deg2rad(rake_start))
+                A[row_offset + i, ss_start + i] = np.sin(np.deg2rad(rake_start))
+                A[row_offset + i, ds_start + i] = -np.cos(np.deg2rad(rake_start))
                 
                 # Upper bound: -ss*sin(rake_end) + ds*cos(rake_end) <= 0
-                A[patch_count + inpatch + i, start + i] = -np.sin(np.deg2rad(rake_end))
-                A[patch_count + inpatch + i, half + i] = np.cos(np.deg2rad(rake_end))
+                A[row_offset + inpatch + i, ss_start + i] = -np.sin(np.deg2rad(rake_end))
+                A[row_offset + inpatch + i, ds_start + i] = np.cos(np.deg2rad(rake_end))
                 
-            patch_count += inpatch
+            row_offset += 2 * inpatch
         
         return A, b
 
@@ -792,15 +816,18 @@ class ConstraintManagerSMC(ConstraintManagerBase):
             start, end = self.slip_positions[fault.name]
             start -= linear_sample_start
             end -= linear_sample_start
-            half = (start + end) // 2
             
             rake = fixed_rake[fault.name]
             inpatch = self._get_n_spatial_elements(fault)
+            adapter = getattr(self.multifaults, 'adapters', {}).get(fault.name)
+            ss_start, ds_start = self._rake_component_starts(
+                fault, start, inpatch, adapter=adapter
+            )
             
             for i in range(inpatch):
                 # Fixed rake: ss*sin(rake) - ds*cos(rake) = 0
-                A_eq[patch_count + i, start + i] = np.sin(np.deg2rad(rake))
-                A_eq[patch_count + i, half + i] = -np.cos(np.deg2rad(rake))
+                A_eq[patch_count + i, ss_start + i] = np.sin(np.deg2rad(rake))
+                A_eq[patch_count + i, ds_start + i] = -np.cos(np.deg2rad(rake))
                 
             patch_count += inpatch
         
@@ -867,44 +894,96 @@ class ConstraintManagerSMC(ConstraintManagerBase):
         if A_eq.size > 0:
             self.add_equality_constraint(A_eq, b_eq, name='fixed_rake_constraints', source='manual', overwrite=True)
 
-    def add_euler_constraints(self):
-        """Add Euler constraints if enabled in config (SMC_F_J mode only, Fault-only)."""
+
+    def add_euler_cap_constraints(self):
+        """Add optional interseismic Euler-cap constraints for SMC_F_J mode."""
         if not self._is_smc_fj_mode():
             return
-            
+
         try:
-            if (not hasattr(self.config, 'euler_constraints') or 
-                not self.config.euler_constraints.get('enabled', False)):
+            interseismic_config = getattr(self.config, 'interseismic_config', {})
+            if not interseismic_config.get('cap_constraints', {}).get('enabled', False):
                 return
-            
-            from .euler_inequality_constraints import generate_euler_inequality_constraints
-            
-            euler_config = copy.deepcopy(self.config.euler_constraints)
-            
-            # Filter out non-Fault sources from euler config (Euler is Fault-specific)
-            if 'faults' in euler_config:
-                non_fault_names = [fn for fn in euler_config['faults']
-                                   if self._get_source_type(fn) != 'Fault']
-                for fn in non_fault_names:
-                    if self.verbose:
-                        print(f"[!]  Warning: Euler constraint skipping non-Fault source '{fn}'")
-                    del euler_config['faults'][fn]
-            
+
+            from .euler_inequality_constraints import generate_euler_cap_constraints
+
+            active_config = copy.deepcopy(interseismic_config)
+            cap_faults = active_config.get('cap_constraints', {}).get('faults', {})
+            non_fault_names = [
+                fn for fn in list(cap_faults)
+                if self._get_source_type(fn) != 'Fault'
+            ]
+            for fn in non_fault_names:
+                if self.verbose:
+                    print(f"[!]  Warning: Euler-cap constraint skipping non-Fault source '{fn}'")
+                del cap_faults[fn]
+
             all_datasets = self.config.geodata['data']
-            
-            A_ineq, b_ineq = generate_euler_inequality_constraints(
-                self.inversion_instance, euler_config, all_datasets
+            A_ineq, b_ineq = generate_euler_cap_constraints(
+                self.inversion_instance,
+                active_config,
+                all_datasets,
             )
-            
             if A_ineq is not None and A_ineq.size > 0:
                 self.add_inequality_constraint(
-                    A_ineq, b_ineq, name='euler_constraints', 
-                    source='config.euler_constraints', overwrite=True
+                    A_ineq,
+                    b_ineq,
+                    name='euler_cap_constraints',
+                    source='interseismic_config.cap_constraints',
+                    overwrite=True,
                 )
-                
         except Exception as e:
             if self.verbose:
-                print(f"[X] Failed to apply Euler constraints: {e}")
+                print(f"[X] Failed to apply Euler-cap constraints: {e}")
+            raise
+
+    def apply_interseismic_backslip_constraints(self):
+        """Apply hard backslip/coupling constraints from interseismic_config."""
+        if not self._is_smc_fj_mode():
+            return
+        constraints = getattr(self.config, 'interseismic_config', {}).get('backslip_constraints', [])
+        for index, spec in enumerate(constraints):
+            if self._get_source_type(spec['fault']) != 'Fault':
+                if self.verbose:
+                    print(f"[!]  Warning: Interseismic backslip constraint skipping non-Fault source '{spec['fault']}'")
+                continue
+            self.inversion_instance.add_interseismic_backslip_constraint(
+                spec['fault'],
+                spec['state'],
+                selector=spec.get('selector'),
+                component=spec.get('component', 'strikeslip'),
+                coupling=spec.get('coupling'),
+                value=spec.get('value'),
+                name=spec.get('name', f"interseismic_backslip_{index}"),
+                overwrite=spec.get('overwrite', True),
+                source='interseismic_config.backslip_constraints',
+            )
+
+    def apply_interseismic_block_constraints(self):
+        """Apply block-level Euler sharing constraints for SMC_F_J mode."""
+        if not self._is_smc_fj_mode():
+            return
+        try:
+            from .interseismic_parameter_model import generate_block_euler_equality_constraints
+
+            interseismic_config = getattr(self.config, 'interseismic_config', {})
+            n_linear = self.mcmc_samples - self.inversion_instance.linear_sample_start_position
+            A_eq, b_eq = generate_block_euler_equality_constraints(
+                self.inversion_instance,
+                interseismic_config,
+                n_total=n_linear,
+            )
+            if A_eq is not None and A_eq.size > 0:
+                self.add_equality_constraint(
+                    A_eq,
+                    b_eq,
+                    name='interseismic_block_euler_constraints',
+                    source='interseismic_config.blocks',
+                    overwrite=True,
+                )
+        except Exception as e:
+            if self.verbose:
+                print(f"[X] Failed to apply interseismic block constraints: {e}")
             raise
 
     def remove_constraint(self, name: str, constraint_type: Optional[str] = None):
@@ -972,7 +1051,7 @@ class ConstraintManagerSMC(ConstraintManagerBase):
             # param_start relative to linear parameter block
             param_start = self.slip_positions[source_name][0] - linear_start
 
-            # Normalise list-of-dicts → dict-of-dicts keyed by constraint name
+            # Normalise list-of-dicts 鈫?dict-of-dicts keyed by constraint name
             constraints_dict = self._normalise_constraint_list(src_cfg)
 
             # Inequality constraints
@@ -1024,10 +1103,14 @@ class ConstraintManagerSMC(ConstraintManagerBase):
             self.config.use_rake_angle_constraints):
             self.apply_rake_constraints(rake_limits)
         
-        # Apply Euler constraints
-        if (hasattr(self.config, 'euler_constraints') and 
-            self.config.euler_constraints.get('enabled', False)):
-            self.add_euler_constraints()
+        # Apply optional interseismic constraints.
+        interseismic_config = getattr(self.config, 'interseismic_config', {})
+        if interseismic_config.get('blocks', {}).get('enabled', False):
+            self.apply_interseismic_block_constraints()
+        if interseismic_config.get('cap_constraints', {}).get('enabled', False):
+            self.add_euler_cap_constraints()
+        if interseismic_config.get('backslip_constraints'):
+            self.apply_interseismic_backslip_constraints()
         
         # Apply source-specific constraints from source_constraints config
         if self._bounds_config and 'source_constraints' in self._bounds_config:

@@ -1,11 +1,14 @@
 """
-_style_utils.py — Figure size utilities, column-width registry, and save_fig.
+_style_utils.py — Figure size utilities, column-width registry, save, and show.
 
 Public API
 ----------
 register_column_width : Register a named publication column width
 publication_figsize   : Return figure size (w, h) in inches for publication columns
 save_fig              : Save figure to one or more file formats
+cap_interactive_dpi   : Cap interactive figure dpi without changing saved output
+show_fig              : Show a figure after capping interactive dpi
+finish_fig            : Common save/show helper for library plotting functions
 """
 
 import json
@@ -323,3 +326,164 @@ def save_fig(fig, path: str, fmts=None, dpi: int = 300,
                     f"Failed to save {out}: {e}. Skipping this format.",
                     UserWarning
                 )
+
+
+def _ensure_figure(fig):
+    import matplotlib.figure
+
+    if not isinstance(fig, matplotlib.figure.Figure):
+        raise TypeError(
+            f"Expected matplotlib.figure.Figure, got {type(fig).__name__}. "
+            f"Pass a Figure object from plt.figure() or fig, ax = plt.subplots()."
+        )
+
+
+def cap_interactive_dpi(fig, max_dpi: Optional[float] = 200, *, redraw: bool = True):
+    """Cap a figure's interactive dpi while keeping its physical size unchanged.
+
+    This is intended for ``plt.show()`` workflows where the saved figure may use
+    a high dpi, such as 300 or 600, but the interactive window should remain
+    usable on screen.  It changes only ``fig.dpi`` for the existing figure; use
+    :func:`save_fig` or ``fig.savefig(..., dpi=...)`` to control saved-output
+    resolution.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure to adjust.
+    max_dpi : float or None, optional
+        Maximum interactive dpi.  ``None`` disables capping.
+    redraw : bool, optional
+        If True, request a canvas redraw after changing dpi.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The same figure instance.
+    """
+    _ensure_figure(fig)
+    if max_dpi is None:
+        return fig
+    max_dpi = float(max_dpi)
+    if max_dpi <= 0:
+        raise ValueError("max_dpi must be positive or None")
+
+    current = float(fig.get_dpi())
+    capped = min(current, max_dpi)
+    if capped != current:
+        fig.set_dpi(capped)
+        if redraw and getattr(fig, "canvas", None) is not None:
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    pass
+    return fig
+
+
+def show_fig(fig=None, *, max_dpi: Optional[float] = 200, block=None):
+    """Show a Matplotlib figure after applying an interactive dpi cap.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure, optional
+        Figure to show.  If omitted, ``matplotlib.pyplot.show`` is called for
+        all open figures.
+    max_dpi : float or None, optional
+        Maximum interactive dpi.  ``None`` leaves figure dpi unchanged.
+    block : bool, optional
+        Forwarded to ``matplotlib.pyplot.show`` when provided.
+    """
+    import matplotlib.pyplot as plt
+
+    if fig is not None:
+        cap_interactive_dpi(fig, max_dpi=max_dpi)
+    if block is None:
+        plt.show()
+    else:
+        plt.show(block=block)
+
+
+def finish_fig(
+    fig,
+    path=None,
+    *,
+    save=None,
+    show: bool = False,
+    dpi: int = 300,
+    screen_dpi: Optional[float] = 200,
+    fmts=None,
+    bbox_inches: str = 'tight',
+    bake_fonts: bool = True,
+    close: bool = False,
+    block=None,
+    **savefig_kwargs,
+):
+    """Common save/show helper for ECAT plotting functions.
+
+    ``PlotStyle`` should continue to manage style, fonts, and figure size.
+    This helper manages the end of a plotting function: optional font baking,
+    saved-output dpi, interactive dpi capping, and optional closing.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure to finish.
+    path : str or path-like, optional
+        Output path.  If provided and ``save`` is None, the figure is saved.
+    save : bool, optional
+        Whether to save.  Defaults to ``path is not None``.
+    show : bool, optional
+        Whether to display the figure interactively.
+    dpi : int, optional
+        Saved-output dpi.  This does not control screen dpi.
+    screen_dpi : float or None, optional
+        Maximum interactive dpi before ``plt.show()``.  ``None`` disables
+        capping.
+    fmts, bbox_inches, **savefig_kwargs
+        Forwarded to :func:`save_fig`.
+    bake_fonts : bool, optional
+        If True, call ``bake_text_fonts(fig)`` before save/show when possible.
+    close : bool, optional
+        If True, close the figure after saving/showing.  Defaults to False so
+        callers can still return and edit ``fig``/``axes``.
+    block : bool, optional
+        Forwarded to :func:`show_fig`.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The same figure instance.
+    """
+    _ensure_figure(fig)
+    if save is None:
+        save = path is not None
+    if save and path is None:
+        raise ValueError("path is required when save=True")
+
+    if bake_fonts:
+        try:
+            from ._font_utils import bake_text_fonts
+
+            bake_text_fonts(fig)
+        except Exception:
+            pass
+
+    if save:
+        save_fig(
+            fig,
+            str(path),
+            fmts=fmts,
+            dpi=dpi,
+            bbox_inches=bbox_inches,
+            **savefig_kwargs,
+        )
+    if show:
+        show_fig(fig, max_dpi=screen_dpi, block=block)
+    if close:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+    return fig

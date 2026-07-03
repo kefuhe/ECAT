@@ -66,7 +66,6 @@ legend.handlelength         : 1.5
 legend.handleheight         : 0.5
 
 # ── Figure & saving ───────────────────────────────────────────────────────────
-figure.dpi                  : 150
 savefig.dpi                 : 300
 savefig.bbox                : tight
 savefig.pad_inches          : 0.05

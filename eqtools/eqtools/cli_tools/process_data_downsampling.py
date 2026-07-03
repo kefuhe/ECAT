@@ -13,12 +13,14 @@ import pandas as pd
 import yaml
 
 from eqtools.csiExtend.downsample.config import (
+    SAR_MODE_CHOICES,
     compact_kwargs,
     get_sar_output_name,
     normalize_downsample_config,
     normalize_optical_config,
     normalize_sar_config,
 )
+from eqtools.cli_tools.generate_downsample_config import build_config
 from eqtools.csiExtend.downsample.data_filters import (
     apply_data_filters,
     filter_report_file,
@@ -32,7 +34,11 @@ from eqtools.csiExtend.downsample.grid_template import (
     apply_rsp_grid_template,
     read_rsp_grid_template,
 )
-from eqtools.csiExtend.downsample.plotting import plot_decimated_geodata
+from eqtools.csiExtend.downsample.check_plots import (
+    ComponentMap,
+    apply_plot_stride,
+    plot_component_maps,
+)
 from eqtools.csiExtend.downsample.processing_region import (
     apply_processing_region,
     format_processing_region_report,
@@ -83,81 +89,102 @@ DEFAULT_CMAP = "cmc.roma_r" if cmc is not None else "RdBu_r"
 SAR_READER_CLASSES = {}
 SAR_CONFIG_CLASSES = {}
 
-SAR_PLOT_KWARGS = {
-    "save_fig",
-    "file_path",
-    "dpi",
-    "show",
-    "rawdownsample4plot",
-    "value_space",
-    "factor4plot",
-    "vmin",
-    "vmax",
-    "symmetry",
-    "cmap",
-    "colorbar_orientation",
-    "colorbar_mode",
-    "colorbar_loc",
-    "colorbar_size",
-    "colorbar_thickness",
-    "colorbar_pad",
-    "colorbar_x",
-    "colorbar_y",
-    "colorbar_length",
-    "colorbar_height",
-    "cb_label",
-    "cb_label_loc",
-    "tickfontsize",
-    "labelfontsize",
-    "figsize",
-    "fontsize",
-    "style",
-    "coordrange",
-    "text",
-    "text_position",
-    "text_fontsize",
-    "text_color",
-}
-
-OPTICAL_PLOT_KWARGS = {
-    "save_fig",
-    "file_path",
-    "dpi",
-    "show",
-    "rawdownsample4plot",
-    "coordrange",
-    "data",
-    "factor4plot",
-    "vmin",
-    "vmax",
-    "symmetry",
-    "cmap",
-    "figsize",
-    "title",
-    "unified_colorbar",
-    "add_colorbar",
-    "cb_label",
-    "trace_color",
-    "trace_linewidth",
-    "style",
-    "fontsize",
-    "colorbar_length",
-    "colorbar_height",
-    "colorbar_x",
-    "colorbar_y",
-    "colorbar_orientation",
-    "cb_label_loc",
-    "tickfontsize",
-    "labelfontsize",
-    "sharey",
-    "equal_aspect",
-}
-
 
 def resolve_cmap(cmap):
     if cmc is None and isinstance(cmap, str) and cmap.startswith("cmc."):
         return "RdBu_r"
     return cmap
+
+
+def check_plot_config(config, stage):
+    check_plots = config.get("check_plots", {}) or {}
+    return deepcopy(check_plots.get(stage, {}) or {})
+
+
+def check_plot_tick_kwargs(plot_config):
+    return {
+        "axis_tick_direction": plot_config.get("axis_tick_direction", "out"),
+        "axis_max_major_ticks": plot_config.get("axis_max_major_ticks", 5),
+        "axis_minor_ticks": plot_config.get("axis_minor_ticks", False),
+        "axis_minor_subdivisions": plot_config.get("axis_minor_subdivisions", 2),
+        "colorbar_tick_direction": plot_config.get("colorbar_tick_direction", "out"),
+        "colorbar_max_major_ticks": plot_config.get("colorbar_max_major_ticks", 3),
+        "colorbar_minor_ticks": plot_config.get("colorbar_minor_ticks", False),
+        "colorbar_minor_subdivisions": plot_config.get("colorbar_minor_subdivisions", 2),
+    }
+
+
+def check_plot_output_path(plot_config, stage, data_type, out_name):
+    file_path = plot_config.get("file_path", "auto")
+    if file_path in (None, False):
+        return None
+    if str(file_path).lower() != "auto":
+        return file_path
+    if stage == "raw":
+        return "sar_values.png" if data_type == "sar" else out_name + "_deformation_map.jpg"
+    return out_name + "_decim.png"
+
+
+def default_check_plot_factor(data_type):
+    return 100.0 if data_type == "sar" else 1.0
+
+
+def resolve_check_plot_factor(plot_config, *, data_type, raw_plot=None):
+    factor = plot_config.get("factor4plot", "auto")
+    if isinstance(factor, str):
+        key = factor.replace("-", "_").lower()
+        if key == "inherit_raw":
+            factor = (raw_plot or {}).get("factor4plot", "auto")
+        elif key == "auto":
+            return default_check_plot_factor(data_type)
+    if factor is None:
+        factor = (raw_plot or {}).get("factor4plot", "auto")
+    if isinstance(factor, str) and factor.replace("-", "_").lower() == "auto":
+        return default_check_plot_factor(data_type)
+    return float(factor)
+
+
+def check_plot_percentile(data_config, plot_config):
+    percentile = plot_config.get("auto_percentile")
+    if percentile is None:
+        percentile = (data_config.get("qc", {}) or {}).get("summary_percentile", 99.0)
+    return float(percentile)
+
+
+def check_plot_explicit_limits(plot_config, args, component_index=None):
+    vmin = args.vmin if args.vmin is not None else plot_config_value(plot_config.get("vmin"), component_index)
+    vmax = args.vmax if args.vmax is not None else plot_config_value(plot_config.get("vmax"), component_index)
+    return vmin, vmax
+
+
+def check_plot_components(plot_config, data_type):
+    components = plot_config.get("components", "auto")
+    if data_type == "sar":
+        return ["observation"]
+    if components in (None, "auto", "both"):
+        return ["east", "north"]
+    if isinstance(components, str):
+        return [components.replace("-", "_").lower()]
+    return [str(component).replace("-", "_").lower() for component in components]
+
+
+def materialize_raw_check_plot(config, data_type):
+    raw_plot = check_plot_config(config, "raw")
+    raw_plot["factor4plot"] = resolve_check_plot_factor(raw_plot, data_type=data_type)
+    if data_type == "sar" and raw_plot.get("value_space", "auto") in (None, "auto"):
+        raw_plot["value_space"] = "observation"
+    return raw_plot
+
+
+def materialize_decim_check_plot(config, data_type):
+    raw_plot = materialize_raw_check_plot(config, data_type)
+    decim_plot = check_plot_config(config, "decim")
+    decim_plot["factor4plot"] = resolve_check_plot_factor(
+        decim_plot,
+        data_type=data_type,
+        raw_plot=raw_plot,
+    )
+    return decim_plot, raw_plot
 
 
 def load_processing_dependencies():
@@ -305,6 +332,49 @@ def load_config(config_file):
         return yaml.safe_load(file)
 
 
+def quick_sar_prefix_requested(args):
+    return bool(getattr(args, "sar_prefix", None))
+
+
+def build_quick_sar_prefix_config(args):
+    prefix = str(args.sar_prefix).strip()
+    if not prefix:
+        raise ValueError("--sar-prefix cannot be empty.")
+
+    config = yaml.safe_load(build_config("sar", "gamma", args.sar_mode, "minimal", "std"))
+    sar_config = config["sar_config"]
+    sar_config["reader"] = "gamma"
+    sar_config["mode"] = args.sar_mode
+    sar_config["directory"] = args.sar_dir
+    sar_config["outName"] = Path(prefix).name or "sar_preview"
+    sar_config["files"] = {
+        "prefix": prefix,
+        "value": None,
+        "metadata": None,
+        "geometry": {
+            "azimuth": None,
+            "incidence": None,
+        },
+        "projection": {
+            "east": None,
+            "north": None,
+            "up": None,
+        },
+    }
+    config["_config_source"] = "quick_sar_prefix"
+    return config
+
+
+def print_quick_sar_prefix_explanation(args):
+    print("Quick SAR preview:")
+    print("  source : in-memory GAMMA config from --sar-prefix")
+    print(f"  prefix : {args.sar_prefix}")
+    print(f"  directory : {args.sar_dir}")
+    print(f"  mode : {args.sar_mode}")
+    print("  files : <prefix>*.phs, <prefix>*.phs.rsc, <prefix>*.azi, <prefix>*.inc")
+    print("  scope : -s quick-look only; use a YAML config for -c/-d or non-GAMMA products")
+
+
 def resolve_config_relative_path(path, config_dir=None):
     path = Path(path)
     if path.is_absolute() or config_dir is None:
@@ -326,6 +396,30 @@ def parse_arguments():
     parser.add_argument("--do_covar", "-c", action="store_true", help="Perform covariance estimation.")
     parser.add_argument("--do_downsample", "-d", action="store_true", help="Perform downsampling.")
     parser.add_argument("--show_raw_data", "-s", action="store_true", help="Show a data quick-look plot.")
+    quick_sar = parser.add_argument_group("GAMMA quick preview")
+    quick_sar.add_argument(
+        "--sar-prefix",
+        type=str,
+        help=(
+            "GAMMA file prefix for a quick -s preview without a YAML config. "
+            "Matches <prefix>*.phs, <prefix>*.phs.rsc, <prefix>*.azi, and <prefix>*.inc."
+        ),
+    )
+    quick_sar.add_argument(
+        "--sar-dir",
+        type=str,
+        default=".",
+        help="Directory containing the GAMMA files used by --sar-prefix. Default: current directory.",
+    )
+    quick_sar.add_argument(
+        "--sar-mode",
+        choices=SAR_MODE_CHOICES,
+        default="los_displacement",
+        help=(
+            "Observation mode for --sar-prefix quick preview. Default: los_displacement; "
+            "use unwrapped_phase for phase rasters."
+        ),
+    )
     parser.add_argument("--vmin", type=float, help="Minimum value for quick-look color scale.")
     parser.add_argument("--vmax", type=float, help="Maximum value for quick-look color scale.")
     parser.add_argument(
@@ -677,10 +771,26 @@ def process_sar_data(sar_config, lon0, lat0, do_covar=False, config_dir=None):
     return mysar, sar_config
 
 
-def process_optical_data(optical_config, lon0, lat0, config_dir=None):
+def optical_read_kwargs(optical_config, do_covar=False):
+    read = optical_config.get("read", {}) or {}
+    grid = optical_config.get("grid", {}) or {}
+    downsample = read.get("downsample_for_covar") if do_covar else read.get("downsample")
+    downsample = 1 if downsample is None else int(downsample)
+    return {
+        "factor_to_m": read.get("factor_to_m", optical_config.get("factor_to_m", 10.0)),
+        "ew_band": grid.get("ew_band", optical_config.get("ew_band", 1)),
+        "sn_band": grid.get("sn_band", optical_config.get("sn_band", 2)),
+        "zero2nan": read.get("zero2nan", True),
+        "downsample": downsample,
+        "remove_nan": read.get("remove_nan", optical_config.get("remove_nan", True)),
+    }
+
+
+def process_optical_data(optical_config, lon0, lat0, do_covar=False, config_dir=None):
     require_processing_dependencies()
     optical_config = normalize_optical_config(optical_config)
     filename = optical_config["filename"]
+    read_kwargs = optical_read_kwargs(optical_config, do_covar=do_covar)
     opti_data = TiffoptiReader(
         "myopti",
         lon0=lon0,
@@ -689,11 +799,13 @@ def process_optical_data(optical_config, lon0, lat0, config_dir=None):
     )
     opti_data.extract_raw_grd(
         filename=filename,
-        factor_to_m=optical_config.get("factor_to_m", 10.0),
-        ew_band=optical_config.get("ew_band", 1),
-        sn_band=optical_config.get("sn_band", 2),
+        factor_to_m=read_kwargs["factor_to_m"],
+        ew_band=read_kwargs["ew_band"],
+        sn_band=read_kwargs["sn_band"],
+        zero2nan=read_kwargs["zero2nan"],
+        downsample=read_kwargs["downsample"],
     )
-    opti_data.read_from_tiff(remove_nan=optical_config.get("remove_nan", True))
+    opti_data.read_from_tiff(remove_nan=read_kwargs["remove_nan"])
 
     filter_report = apply_data_filters(
         opti_data,
@@ -817,7 +929,10 @@ def resolve_plot_limits(plot_config, args, values):
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return vmin, vmax
-    percentile = float(plot_config.get("auto_percentile", plot_config.get("robust_percentile", 99.0)))
+    percentile = plot_config.get("auto_percentile", plot_config.get("robust_percentile", 99.0))
+    if percentile is None:
+        percentile = 99.0
+    percentile = float(percentile)
     stats = finite_value_diagnostics(finite, central_percentile=percentile)
     auto_min = stats["robust_min"]
     auto_max = stats["robust_max"]
@@ -827,8 +942,12 @@ def resolve_plot_limits(plot_config, args, values):
     return (auto_min if vmin is None else vmin), (auto_max if vmax is None else vmax)
 
 
-def write_sar_metadata_file(mysar, sar_config, args, output_file="sar_output.txt"):
-    plot_config = deepcopy(sar_config["qc"]["plot"])
+def write_sar_metadata_file(mysar, sar_config, args, output_file="sar_output.txt", plot_config=None):
+    plot_config = deepcopy(plot_config or sar_config["qc"]["plot"])
+    if plot_config.get("factor4plot") in (None, "auto"):
+        plot_config["factor4plot"] = default_check_plot_factor("sar")
+    if plot_config.get("value_space", "auto") in (None, "auto"):
+        plot_config["value_space"] = "observation"
     values = sar_plot_values_for_stats(mysar, plot_config)
     vmin, vmax = resolve_plot_limits(plot_config, args, values)
     percentile = sar_config["qc"].get("summary_percentile", 99.0)
@@ -912,32 +1031,40 @@ def write_sar_metadata_file(mysar, sar_config, args, output_file="sar_output.txt
     return vmin, vmax
 
 
-def optical_plot_config_with_overrides(plot_config, args):
-    plot_config = deepcopy(plot_config)
-    if args.vmin is not None:
-        plot_config["vmin"] = args.vmin
-    if args.vmax is not None:
-        plot_config["vmax"] = args.vmax
-    return plot_config
-
-
-def write_optical_metadata_file(opti_data, optical_config, args, output_file="optical_output.txt"):
-    plot_config = optical_plot_config_with_overrides(optical_config["qc"]["plot"], args)
+def write_optical_metadata_file(opti_data, optical_config, args, output_file="optical_output.txt", plot_config=None):
+    plot_config = deepcopy(plot_config or optical_config["qc"]["plot"])
+    if plot_config.get("factor4plot") in (None, "auto"):
+        plot_config["factor4plot"] = default_check_plot_factor("optical")
     percentile = optical_config["qc"].get("summary_percentile", 99.0)
     summary = opti_data.input_summary(central_percentile=percentile)
-    factor = plot_config.get("factor4plot", 1.0)
+    factor = float(plot_config.get("factor4plot", 1.0))
     output_lines = [
         f"# outName: {optical_config.get('outName')}",
         f"# filename: {optical_config.get('filename')}",
-        f"# factor_to_m: {optical_config.get('factor_to_m')}",
+        f"# read_downsample: {optical_config.get('read', {}).get('downsample')}",
+        f"# read_downsample_for_covar: {optical_config.get('read', {}).get('downsample_for_covar')}",
+        f"# zero2nan: {optical_config.get('read', {}).get('zero2nan')}",
+        f"# remove_nan: {optical_config.get('read', {}).get('remove_nan')}",
+        f"# factor_to_m: {optical_config.get('read', {}).get('factor_to_m', optical_config.get('factor_to_m'))}",
+        f"# ew_band: {optical_config.get('grid', {}).get('ew_band', optical_config.get('ew_band'))}",
+        f"# sn_band: {optical_config.get('grid', {}).get('sn_band', optical_config.get('sn_band'))}",
         f"# plot_factor: {factor}",
         f"# valid_pair: {summary['valid_pair_count']}/{summary['total_count']}",
     ]
     for index, component in enumerate(("east", "north")):
-        values = np.asarray(getattr(opti_data, component), dtype=float) * float(factor)
+        values = np.asarray(getattr(opti_data, component), dtype=float) * factor
         stats = finite_value_diagnostics(values, central_percentile=percentile)
-        vmin = plot_config_value(plot_config.get("vmin"), index)
-        vmax = plot_config_value(plot_config.get("vmax"), index)
+        component_plot = deepcopy(plot_config)
+        component_plot["vmin"], component_plot["vmax"] = check_plot_explicit_limits(
+            plot_config,
+            args,
+            component_index=index,
+        )
+        vmin, vmax = resolve_plot_limits(
+            component_plot,
+            argparse.Namespace(vmin=None, vmax=None),
+            values,
+        )
         clipping = clipping_diagnostics(values, vmin, vmax)
         output_lines.extend(
             [
@@ -965,7 +1092,7 @@ def write_optical_metadata_file(opti_data, optical_config, args, output_file="op
             np.asarray(opti_data.east, dtype=float) ** 2
             + np.asarray(opti_data.north, dtype=float) ** 2
         )
-        * float(factor)
+        * factor
     )
     norm_stats = finite_value_diagnostics(norm_values, central_percentile=percentile)
     output_lines.append(
@@ -980,17 +1107,76 @@ def write_optical_metadata_file(opti_data, optical_config, args, output_file="op
     return plot_config.get("vmin"), plot_config.get("vmax")
 
 
-def plot_sar_quicklook(data, sar_config, selected_faults, args):
-    plot_config = deepcopy(sar_config["qc"]["plot"])
-    values = sar_plot_values_for_stats(data, plot_config)
-    vmin, vmax = resolve_plot_limits(plot_config, args, values)
-    plot_config["vmin"] = vmin
-    plot_config["vmax"] = vmax
+def sar_raw_plot_label(data, plot_config, factor4plot):
+    value_space = plot_config.get("value_space", "observation")
+    try:
+        spec = data.observation_spec if data.observation_spec is not None else data.build_observation_spec()
+        return data._default_raw_sar_plot_label(value_space, spec, factor4plot)
+    except Exception:
+        return sar_decimated_label({"mode": getattr(data, "observation_type", None)}, factor4plot=factor4plot)
 
-    kwargs = {key: value for key, value in plot_config.items() if key in SAR_PLOT_KWARGS and value is not None}
-    kwargs["cmap"] = resolve_cmap(kwargs.get("cmap"))
-    kwargs["faults"] = selected_faults
-    data.plot_sar_values(**kwargs)
+
+def plot_sar_quicklook(data, config, selected_faults, args):
+    sar_config = config["sar_config"] if "sar_config" in config else config
+    plot_config = (
+        materialize_raw_check_plot(config, "sar")
+        if "check_plots" in config
+        else deepcopy(sar_config["qc"]["plot"])
+    )
+    if plot_config.get("factor4plot") in (None, "auto"):
+        plot_config["factor4plot"] = default_check_plot_factor("sar")
+    if plot_config.get("value_space", "auto") in (None, "auto"):
+        plot_config["value_space"] = "observation"
+    factor4plot = float(plot_config.get("factor4plot", 1.0))
+    plot_stride = int(plot_config.get("plot_stride", plot_config.get("rawdownsample4plot", 1)) or 1)
+    values = sar_plot_values_for_stats(
+        data,
+        {**plot_config, "factor4plot": 1.0},
+    )
+    lon, lat, values = apply_plot_stride(data.raw_mesh_lon, data.raw_mesh_lat, values, plot_stride)
+    vmin, vmax = check_plot_explicit_limits(plot_config, args)
+    component = ComponentMap(
+        name="observation",
+        lon=lon,
+        lat=lat,
+        values=values,
+        label=sar_raw_plot_label(data, plot_config, factor4plot),
+        vmin=vmin,
+        vmax=vmax,
+    )
+    plot_component_maps(
+        [component],
+        file_path=check_plot_output_path(plot_config, "raw", "sar", sar_config.get("outName", "sar")),
+        save_fig=plot_config.get("save_fig", True),
+        show=plot_config.get("show", True),
+        layout="single",
+        coordrange=plot_config.get("coordrange"),
+        factor4plot=factor4plot,
+        percentile=check_plot_percentile(sar_config, plot_config),
+        symmetry=plot_config.get("symmetry", True),
+        cmap=resolve_cmap(plot_config.get("cmap", DEFAULT_CMAP)),
+        figsize=plot_config.get("figsize", "single"),
+        figsize_aspect=plot_config.get("figsize_aspect"),
+        figsize_height=plot_config.get("figsize_height"),
+        dpi=plot_config.get("dpi", 300),
+        style_context=plot_config.get("style_context", "science"),
+        fontsize=plot_config.get("fontsize"),
+        faults=selected_faults,
+        trace_color=plot_config.get("trace_color", "black"),
+        trace_linewidth=plot_config.get("trace_linewidth", 0.5),
+        colorbar_label=plot_config.get("colorbar_label", "auto"),
+        colorbar_orientation=plot_config.get("colorbar_orientation", "auto"),
+        colorbar_mode=plot_config.get("colorbar_mode", "outside"),
+        colorbar_loc=plot_config.get("colorbar_loc"),
+        colorbar_size=plot_config.get("colorbar_size"),
+        colorbar_thickness=plot_config.get("colorbar_thickness"),
+        colorbar_pad=plot_config.get("colorbar_pad"),
+        panel_pad=plot_config.get("panel_pad"),
+        **check_plot_tick_kwargs(plot_config),
+        tickfontsize=plot_config.get("tickfontsize"),
+        labelfontsize=plot_config.get("labelfontsize"),
+        cb_label_loc=plot_config.get("cb_label_loc"),
+    )
 
 
 def estimate_covariance(data, config):
@@ -1487,7 +1673,7 @@ def std_based_kwargs(downsampler, std_config, config_dir=None):
         "itmax": std_config.get("itmax", 100),
         "use_variance": std_config.get("use_variance", False),
         "amplitude_stat": std_config.get("amplitude_stat", "mean_abs"),
-        "correction": std_config.get("split_metric_correction", "std"),
+        "correction": std_config.get("split_metric_correction", "median"),
     }
 
     focus_region = std_config.get("focus_region") or {}
@@ -1715,7 +1901,10 @@ def run_downsampling(data, data_type, config, selected_faults, out_name):
     else:
         raise ValueError(f"Unsupported downsample method: {method!r}.")
 
-    downsampler.writeDownsampled2File(prefix=out_name + "_ifg", rsp=True)
+    write_kwargs = {"prefix": out_name + "_ifg", "rsp": True}
+    if not uses_triangular_sampler:
+        write_kwargs["full_corners"] = True
+    downsampler.writeDownsampled2File(**write_kwargs)
     return downsampler
 
 
@@ -1862,90 +2051,62 @@ def optical_decimated_label(component, factor4plot=1.0):
     return f"{component.capitalize()}ward disp.{unit}"
 
 
-def resolved_decim_factor(plot_decim, raw_plot):
-    factor = plot_decim.get("factor4plot", raw_plot.get("factor4plot", 1.0))
-    return raw_plot.get("factor4plot", 1.0) if factor is None else factor
-
-
-def decimated_plot_kwargs(config, raw_plot=None, args=None, component_index=None, cb_label=None):
-    plot_decim = config["downsample"].get("plot_decim", {}) or {}
-    raw_plot = raw_plot or {}
-    factor4plot = resolved_decim_factor(plot_decim, raw_plot)
-
-    vmin = plot_decim.get("vmin", raw_plot.get("vmin"))
-    vmax = plot_decim.get("vmax", raw_plot.get("vmax"))
-    if args is not None:
-        vmin = args.vmin if args.vmin is not None else vmin
-        vmax = args.vmax if args.vmax is not None else vmax
-    vmin = plot_config_value(vmin, component_index)
-    vmax = plot_config_value(vmax, component_index)
-
-    label = plot_decim.get("cb_label", plot_decim.get("cblabel"))
-    if label is None:
-        label = cb_label
-
-    return {
-        "style": plot_decim.get("style", "cells"),
-        "coordrange": plot_decim.get("coordrange"),
-        "factor4plot": factor4plot,
-        "vmin": vmin,
-        "vmax": vmax,
-        "symmetry": plot_decim.get("symmetry", raw_plot.get("symmetry", True)),
-        "cmap": resolve_cmap(plot_decim.get("cmap", raw_plot.get("cmap", DEFAULT_CMAP))),
-        "figsize": plot_decim.get("figsize", [3.0, 5.0]),
-        "dpi": plot_decim.get("dpi", 300),
-        "edgewidth": plot_decim.get("edgewidth", 0.1),
-        "edgecolor": plot_decim.get("edgecolor", "black"),
-        "alpha": plot_decim.get("alpha", 1.0),
-        "markersize": plot_decim.get("markersize", 10),
-        "colorbar_orientation": plot_decim.get(
-            "colorbar_orientation",
-            plot_decim.get("cborientation", "vertical"),
-        ),
-        "colorbar_mode": plot_decim.get("colorbar_mode", "auto"),
-        "colorbar_loc": plot_decim.get("colorbar_loc"),
-        "colorbar_size": plot_decim.get("colorbar_size"),
-        "colorbar_thickness": plot_decim.get("colorbar_thickness"),
-        "colorbar_pad": plot_decim.get("colorbar_pad"),
-        "colorbar_x": plot_decim.get("colorbar_x"),
-        "colorbar_y": plot_decim.get("colorbar_y"),
-        "colorbar_length": plot_decim.get("colorbar_length"),
-        "colorbar_height": plot_decim.get("colorbar_height"),
-        "cb_label": label,
-        "cb_label_loc": plot_decim.get("cb_label_loc"),
-        "tickfontsize": plot_decim.get("tickfontsize", 10),
-        "labelfontsize": plot_decim.get("labelfontsize", 10),
-        "style_context": plot_decim.get("style_context", ["science"]),
-        "fontsize": plot_decim.get("fontsize"),
-    }
-
-
 def plot_sar_downsample_check(sardecim, config, selected_faults, out_name, args):
     require_processing_dependencies()
     output_check = config["sar_config"].get("output_check", True)
     if not output_check:
         return
 
-    raw_plot = config["sar_config"]["qc"]["plot"]
-    plot_decim = config["downsample"].get("plot_decim", {}) or {}
-    factor4plot = resolved_decim_factor(plot_decim, raw_plot)
-    plot_kwargs = decimated_plot_kwargs(
-        config,
-        raw_plot=raw_plot,
-        args=args,
-        cb_label=sar_decimated_label(config["sar_config"], factor4plot=factor4plot),
-    )
-    plot_decimated_geodata(
-        sardecim.lon,
-        sardecim.lat,
-        sardecim.vel,
+    decim_plot, _raw_plot = materialize_decim_check_plot(config, "sar")
+    factor4plot = float(decim_plot.get("factor4plot", 1.0))
+    vmin, vmax = check_plot_explicit_limits(decim_plot, args)
+    component = ComponentMap(
+        name="observation",
+        lon=sardecim.lon,
+        lat=sardecim.lat,
+        values=sardecim.vel,
         corners=getattr(sardecim, "corner", None),
+        label=sar_decimated_label(config["sar_config"], factor4plot=factor4plot),
+        vmin=vmin,
+        vmax=vmax,
+    )
+    plot_component_maps(
+        [component],
+        file_path=check_plot_output_path(decim_plot, "decim", "sar", out_name),
+        save_fig=decim_plot.get("save_fig", True),
+        show=decim_plot.get("show", False),
+        layout="single",
+        coordrange=decim_plot.get("coordrange"),
+        factor4plot=factor4plot,
+        percentile=check_plot_percentile(config["sar_config"], decim_plot),
+        symmetry=decim_plot.get("symmetry", True),
+        cmap=resolve_cmap(decim_plot.get("cmap", DEFAULT_CMAP)),
+        figsize=decim_plot.get("figsize", "single"),
+        figsize_aspect=decim_plot.get("figsize_aspect"),
+        figsize_height=decim_plot.get("figsize_height"),
+        dpi=decim_plot.get("dpi", 300),
+        style_context=decim_plot.get("style_context", "science"),
+        fontsize=decim_plot.get("fontsize"),
+        cell_style=decim_plot.get("cell_style", "cells"),
+        edgewidth=decim_plot.get("edgewidth", 0.1),
+        edgecolor=decim_plot.get("edgecolor", "black"),
+        alpha=decim_plot.get("alpha", 1.0),
+        markersize=decim_plot.get("markersize", 10),
         faults=selected_faults,
-        trace_color=plot_decim.get("trace_color", "black"),
-        trace_linewidth=plot_decim.get("trace_linewidth", 0.5),
-        show=False,
-        savefig=out_name + "_decim.png",
-        **plot_kwargs,
+        trace_color=decim_plot.get("trace_color", "black"),
+        trace_linewidth=decim_plot.get("trace_linewidth", 0.5),
+        colorbar_label=decim_plot.get("colorbar_label", "auto"),
+        colorbar_orientation=decim_plot.get("colorbar_orientation", "auto"),
+        colorbar_mode=decim_plot.get("colorbar_mode", "outside"),
+        colorbar_loc=decim_plot.get("colorbar_loc"),
+        colorbar_size=decim_plot.get("colorbar_size"),
+        colorbar_thickness=decim_plot.get("colorbar_thickness"),
+        colorbar_pad=decim_plot.get("colorbar_pad"),
+        panel_pad=decim_plot.get("panel_pad"),
+        **check_plot_tick_kwargs(decim_plot),
+        tickfontsize=decim_plot.get("tickfontsize"),
+        labelfontsize=decim_plot.get("labelfontsize"),
+        cb_label_loc=decim_plot.get("cb_label_loc"),
     )
 
 
@@ -1955,45 +2116,121 @@ def plot_optical_downsample_check(optdecim, config, selected_faults, out_name, a
     if not output_check:
         return
 
-    raw_plot = config["optical_config"]["qc"]["plot"]
-    plot_decim = config["downsample"].get("plot_decim", {}) or {}
-    factor4plot = resolved_decim_factor(plot_decim, raw_plot)
-    for index, component, values, suffix in (
-        (0, "east", optdecim.east, "_East_decim.png"),
-        (1, "north", optdecim.north, "_North_decim.png"),
-    ):
-        plot_kwargs = decimated_plot_kwargs(
-            config,
-            raw_plot=raw_plot,
-            args=args,
-            component_index=index,
-            cb_label=optical_decimated_label(component, factor4plot=factor4plot),
+    decim_plot, _raw_plot = materialize_decim_check_plot(config, "optical")
+    factor4plot = float(decim_plot.get("factor4plot", 1.0))
+    components = []
+    for index, component_name in enumerate(check_plot_components(decim_plot, "optical")):
+        values = getattr(optdecim, component_name)
+        vmin, vmax = check_plot_explicit_limits(decim_plot, args, component_index=index)
+        components.append(
+            ComponentMap(
+                name=component_name,
+                lon=optdecim.lon,
+                lat=optdecim.lat,
+                values=values,
+                corners=getattr(optdecim, "corner", None),
+                label=optical_decimated_label(component_name, factor4plot=factor4plot),
+                vmin=vmin,
+                vmax=vmax,
+            )
         )
-        plot_decimated_geodata(
-            optdecim.lon,
-            optdecim.lat,
-            values,
-            corners=getattr(optdecim, "corner", None),
-            faults=selected_faults,
-            trace_color=plot_decim.get("trace_color", "black"),
-            trace_linewidth=plot_decim.get("trace_linewidth", 0.5),
-            show=False,
-            savefig=out_name + suffix,
-            **plot_kwargs,
-        )
+    plot_component_maps(
+        components,
+        file_path=check_plot_output_path(decim_plot, "decim", "optical", out_name),
+        save_fig=decim_plot.get("save_fig", True),
+        show=decim_plot.get("show", False),
+        layout=decim_plot.get("layout", "auto"),
+        coordrange=decim_plot.get("coordrange"),
+        factor4plot=factor4plot,
+        percentile=check_plot_percentile(config["optical_config"], decim_plot),
+        symmetry=decim_plot.get("symmetry", True),
+        cmap=resolve_cmap(decim_plot.get("cmap", DEFAULT_CMAP)),
+        figsize=decim_plot.get("figsize", "double"),
+        figsize_aspect=decim_plot.get("figsize_aspect"),
+        figsize_height=decim_plot.get("figsize_height"),
+        dpi=decim_plot.get("dpi", 300),
+        style_context=decim_plot.get("style_context", "science"),
+        fontsize=decim_plot.get("fontsize"),
+        cell_style=decim_plot.get("cell_style", "cells"),
+        edgewidth=decim_plot.get("edgewidth", 0.1),
+        edgecolor=decim_plot.get("edgecolor", "black"),
+        alpha=decim_plot.get("alpha", 1.0),
+        markersize=decim_plot.get("markersize", 10),
+        faults=selected_faults,
+        trace_color=decim_plot.get("trace_color", "black"),
+        trace_linewidth=decim_plot.get("trace_linewidth", 0.5),
+        colorbar_label=decim_plot.get("colorbar_label", "auto"),
+        colorbar_orientation=decim_plot.get("colorbar_orientation", "auto"),
+        colorbar_mode=decim_plot.get("colorbar_mode", "outside"),
+        colorbar_loc=decim_plot.get("colorbar_loc"),
+        colorbar_size=decim_plot.get("colorbar_size"),
+        colorbar_thickness=decim_plot.get("colorbar_thickness"),
+        colorbar_pad=decim_plot.get("colorbar_pad"),
+        panel_pad=decim_plot.get("panel_pad"),
+        **check_plot_tick_kwargs(decim_plot),
+        tickfontsize=decim_plot.get("tickfontsize"),
+        labelfontsize=decim_plot.get("labelfontsize"),
+        cb_label_loc=decim_plot.get("cb_label_loc"),
+    )
 
 
 def plot_optical_quicklook(data, config, selected_faults, out_name, args):
-    raw_plot = optical_plot_config_with_overrides(
-        config["optical_config"]["qc"]["plot"],
-        args,
+    raw_plot = materialize_raw_check_plot(config, "optical")
+    factor4plot = float(raw_plot.get("factor4plot", 1.0))
+    plot_stride = int(raw_plot.get("plot_stride", raw_plot.get("rawdownsample4plot", 1)) or 1)
+    components = []
+    for index, component_name in enumerate(check_plot_components(raw_plot, "optical")):
+        lon, lat, values = apply_plot_stride(
+            data.raw_mesh_lon,
+            data.raw_mesh_lat,
+            getattr(data, f"raw_{component_name}"),
+            plot_stride,
+        )
+        vmin, vmax = check_plot_explicit_limits(raw_plot, args, component_index=index)
+        components.append(
+            ComponentMap(
+                name=component_name,
+                lon=lon,
+                lat=lat,
+                values=values,
+                label=optical_decimated_label(component_name, factor4plot=factor4plot),
+                vmin=vmin,
+                vmax=vmax,
+            )
+        )
+    plot_component_maps(
+        components,
+        file_path=check_plot_output_path(raw_plot, "raw", "optical", out_name),
+        save_fig=raw_plot.get("save_fig", True),
+        show=raw_plot.get("show", True),
+        layout=raw_plot.get("layout", "auto"),
+        coordrange=raw_plot.get("coordrange"),
+        factor4plot=factor4plot,
+        percentile=check_plot_percentile(config["optical_config"], raw_plot),
+        symmetry=raw_plot.get("symmetry", True),
+        cmap=resolve_cmap(raw_plot.get("cmap", DEFAULT_CMAP)),
+        figsize=raw_plot.get("figsize", "double"),
+        figsize_aspect=raw_plot.get("figsize_aspect"),
+        figsize_height=raw_plot.get("figsize_height"),
+        dpi=raw_plot.get("dpi", 300),
+        style_context=raw_plot.get("style_context", "science"),
+        fontsize=raw_plot.get("fontsize"),
+        faults=selected_faults,
+        trace_color=raw_plot.get("trace_color", "black"),
+        trace_linewidth=raw_plot.get("trace_linewidth", 0.5),
+        colorbar_label=raw_plot.get("colorbar_label", "auto"),
+        colorbar_orientation=raw_plot.get("colorbar_orientation", "auto"),
+        colorbar_mode=raw_plot.get("colorbar_mode", "outside"),
+        colorbar_loc=raw_plot.get("colorbar_loc"),
+        colorbar_size=raw_plot.get("colorbar_size"),
+        colorbar_thickness=raw_plot.get("colorbar_thickness"),
+        colorbar_pad=raw_plot.get("colorbar_pad"),
+        panel_pad=raw_plot.get("panel_pad"),
+        **check_plot_tick_kwargs(raw_plot),
+        tickfontsize=raw_plot.get("tickfontsize"),
+        labelfontsize=raw_plot.get("labelfontsize"),
+        cb_label_loc=raw_plot.get("cb_label_loc"),
     )
-    if raw_plot.get("file_path") is None:
-        raw_plot["file_path"] = out_name + "_deformation_map.jpg"
-    kwargs = {key: value for key, value in raw_plot.items() if key in OPTICAL_PLOT_KWARGS and value is not None}
-    kwargs["cmap"] = resolve_cmap(kwargs.get("cmap", DEFAULT_CMAP))
-    kwargs["faults"] = selected_faults
-    data.plot_optical_values(**kwargs)
 
 
 def resolve_run_steps(args, config):
@@ -2019,14 +2256,18 @@ def expected_outputs_for_run(config, out_name, steps):
     if steps["show_raw_data"]:
         if data_type == "sar":
             outputs.append("sar_output.txt")
-            plot_config = config["sar_config"]["qc"]["plot"]
+            plot_config = check_plot_config(config, "raw")
             if plot_config.get("save_fig", False):
-                outputs.append(plot_config.get("file_path", "sar_values.png"))
+                output_path = check_plot_output_path(plot_config, "raw", "sar", out_name)
+                if output_path:
+                    outputs.append(output_path)
         elif data_type == "optical":
             outputs.append("optical_output.txt")
-            raw_plot = config["optical_config"]["qc"]["plot"]
+            raw_plot = check_plot_config(config, "raw")
             if raw_plot.get("save_fig", True):
-                outputs.append(raw_plot.get("file_path") or out_name + "_deformation_map.jpg")
+                output_path = check_plot_output_path(raw_plot, "raw", "optical", out_name)
+                if output_path:
+                    outputs.append(output_path)
 
     if steps["do_covar"]:
         if data_type == "sar":
@@ -2040,10 +2281,17 @@ def expected_outputs_for_run(config, out_name, steps):
         report_path = downsample_report_file(report_config, out_name)
         if report_config.get("enabled", True) and report_path:
             outputs.append(report_path)
+        decim_plot = check_plot_config(config, "decim")
         if data_type == "sar" and config["sar_config"].get("output_check", True):
-            outputs.append(out_name + "_decim.png")
+            if decim_plot.get("save_fig", True):
+                output_path = check_plot_output_path(decim_plot, "decim", "sar", out_name)
+                if output_path:
+                    outputs.append(output_path)
         if data_type == "optical" and config["optical_config"].get("output_check", True):
-            outputs.extend([out_name + "_East_decim.png", out_name + "_North_decim.png"])
+            if decim_plot.get("save_fig", True):
+                output_path = check_plot_output_path(decim_plot, "decim", "optical", out_name)
+                if output_path:
+                    outputs.append(output_path)
 
     if data_type in ("sar", "optical"):
         data_config = config["sar_config"] if data_type == "sar" else config["optical_config"]
@@ -2071,9 +2319,12 @@ def write_run_metadata(config, args, out_name, steps, outputs, metadata_file=Non
     compute_config = config.get("downsample", {}).get("compute", {}) or {}
     metadata = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "config_file": args.config,
+        "config_source": config.get("_config_source", "file"),
+        "config_file": None if config.get("_config_source") == "quick_sar_prefix" else args.config,
+        "config_version": config.get("config_version", 1),
         "data_type": config["data_type"],
         "out_name": out_name,
+        "compatibility": config.get("_compatibility", {"deprecated_fields": []}),
         "projection": {
             "origin": general.get("origin"),
             "origin_resolved_from": general.get("origin_resolved_from"),
@@ -2122,8 +2373,15 @@ def configure_downsample_compute_backend(config, steps=None):
 
 
 def prepare_run(args):
-    config = normalize_downsample_config(load_config(args.config))
-    config["_config_dir"] = str(Path(args.config).resolve().parent)
+    if quick_sar_prefix_requested(args):
+        if not args.show_raw_data or args.do_covar or args.do_downsample:
+            raise ValueError("--sar-prefix is only supported with -s/--show_raw_data; use YAML for -c/-d.")
+        config = normalize_downsample_config(build_quick_sar_prefix_config(args))
+        config["_config_dir"] = str(Path.cwd())
+        print_quick_sar_prefix_explanation(args)
+    else:
+        config = normalize_downsample_config(load_config(args.config))
+        config["_config_dir"] = str(Path(args.config).resolve().parent)
     if getattr(args, "workers", None) is not None and args.workers < 1:
         raise ValueError("--workers must be a positive integer.")
     config["_workers"] = getattr(args, "workers", None)
@@ -2160,6 +2418,7 @@ def load_input_data(config, args, steps):
             config["optical_config"],
             lon0,
             lat0,
+            do_covar=steps["do_covar"],
             config_dir=config.get("_config_dir"),
         )
         config["optical_config"] = normalized_optical_config
@@ -2308,10 +2567,12 @@ def execute_requested_steps(data, config, compute_faults, plot_faults, out_name,
 
     if steps["show_raw_data"]:
         if data_type == "sar":
-            write_sar_metadata_file(data, config["sar_config"], args)
-            plot_sar_quicklook(data, config["sar_config"], plot_faults.get("raw", []), args)
+            raw_plot = materialize_raw_check_plot(config, "sar")
+            write_sar_metadata_file(data, config["sar_config"], args, plot_config=raw_plot)
+            plot_sar_quicklook(data, config, plot_faults.get("raw", []), args)
         elif data_type == "optical":
-            write_optical_metadata_file(data, config["optical_config"], args)
+            raw_plot = materialize_raw_check_plot(config, "optical")
+            write_optical_metadata_file(data, config["optical_config"], args, plot_config=raw_plot)
             plot_optical_quicklook(data, config, plot_faults.get("raw", []), out_name, args)
 
 

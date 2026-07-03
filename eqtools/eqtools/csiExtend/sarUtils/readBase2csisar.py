@@ -854,7 +854,7 @@ class ReadBase2csisar(insar):
 
         if spec is not None and spec.observation_type == ObservationType.AZIMUTH_OFFSET:
             return f"Azimuth offset{unit}"
-        return f"LOS displacement{unit}"
+        return f"LOS disp.{unit}"
 
     def _normalize_colorbar_orientation(self, orientation):
         key = str(orientation).replace("-", "_").lower()

@@ -17,6 +17,7 @@ import copy
 import sys
 import os
 import logging
+import warnings
 from types import SimpleNamespace
 from dataclasses import dataclass
 
@@ -785,6 +786,14 @@ class Fault(SourceInv):
         Returns:
             * None
         '''
+
+        warnings.warn(
+            "Fault.discretize() is deprecated and will be removed in a future "
+            "release. Use Fault.discretize_trace(every=..., threshold=...) "
+            "for surface trace discretization.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         # Check if the fault is in UTM coordinates
         if self.xf is None:

@@ -12,8 +12,15 @@ setup(
     include_package_data=True,
     package_data={
         "csi": [
+            "bin/edcmp4py_ctypes.py",
             "bin/windows/*",
             "bin/ubuntu20.04/*",
+            "edgrn_edcmp/build/*.f90",
+            "edgrn_edcmp/build/*.f",
+            "edgrn_edcmp/build/build_edcmp4py_ctypes.py",
+            "sbarbot_src/*.f90",
+            "sbarbot_src/build_sbarbot.py",
+            "sbarbot_src/sbarbot_python.py",
         ],
     },
     entry_points={

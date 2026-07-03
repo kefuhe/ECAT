@@ -2,6 +2,8 @@
 
 本工作流说明 Bayesian 非线性几何反演：用紧凑源估计断层几何，并把优选几何传递给后续 BLSE/VCE 分布式滑动反演。
 
+如果已经有 `clon/clat/cdepth/strike/dip/length` 等几何结果，只想看如何构建矩形元或三角元 fault object，直接看 [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)。
+
 ## 对应案例与参考
 
 | 你要确认的问题 | 推荐案例 | 相关参考 |
@@ -27,34 +29,48 @@
 
 ## 入口
 
-非线性几何反演的配置文件可以先用 CLI 在当前目录生成模板：
+ECAT 现在保留两套非线性几何入口：
+
+| 入口 | 配置文件 | 生成命令 | 适用场景 |
+| --- | --- | --- | --- |
+| 旧版 legacy `explorefault` | `default_config.yml` | `ecat-generate-nonlinear` | 复现旧案例或继续使用旧参数组织 |
+| 新版 `NonlinearGeometrySMCInversion` | `nonlinear_geometry.yml` | `ecat-generate-nonlinear-geometry` | 新项目推荐入口，参数注册、数据改正和诊断更清晰 |
+
+新建案例目录时，推荐先生成新版配置：
 
 ```bash
-ecat-generate-nonlinear -o default_config.yml
+ecat-generate-nonlinear-geometry -o nonlinear_geometry.yml
 ```
 
 等价模块形式：
 
 ```bash
-python -m eqtools.cli_tools.generate_nonlinear_config -o default_config.yml
+python -m eqtools.cli_tools.generate_nonlinear_geometry_config -o nonlinear_geometry.yml
 ```
 
-不指定 `-o` 时，默认也会在当前工作目录写出 `default_config.yml`。生成模板后，再参照案例逐项设置 `bounds`、`fixed_params`、`geodata`、`fault_aliasnames`、`nchains` 和 `chain_length` 等参数。
+不指定 `-o` 时，新版命令默认在当前工作目录写出 `nonlinear_geometry.yml`。模板生成后，再按案例修改 `bounds`、`fixed_params`、`geodata.polys`、`geodata.sigmas`、`fault_aliasnames`、`nchains` 和 `chain_length`。
 
-案例脚本主要使用：
+新版参考脚本在：
 
-```python
-from eqtools.csiExtend.exploremultifaults_smc import explorefault
+```text
+scripts/test_nonlinear_geometry_smc.py
 ```
 
-该入口适合做低维非线性几何搜索，并使用案例目录中的 `default_config.yml`。
+用户通常需要修改脚本中的：
+
+- `lon0/lat0`：CSI 局部投影原点，不是反演参数。
+- 数据文件路径和读取方式：例如 `read_from_varres(...)`、`read_from_enu(...)`。
+- `geodata = [...]` 的数据集顺序。
+- `config_file` 和 HDF5 样本文件名，若案例中使用不同命名。
+
+脚本中的 `geodata` 顺序必须和 `nonlinear_geometry.yml` 中的 `geodata.verticals`、`geodata.faults`、`geodata.polys`、`geodata.sigmas` 顺序一致。
 
 ## 典型脚本流程
 
 ```python
 from mpi4py import MPI
 from csi.insar import insar
-from eqtools.csiExtend.exploremultifaults_smc import explorefault
+from eqtools.csiExtend import NonlinearGeometrySMCInversion
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
@@ -70,32 +86,43 @@ dsc.read_from_varres("../InSAR/downsample/S1T034D_ifg", cov=True)
 
 geodata = [asc, dsc]
 
-expfault = explorefault(
+inv = NonlinearGeometrySMCInversion(
     "geometry_search",
     lon0=lon0,
     lat0=lat0,
-    config_file="default_config.yml",
+    config_file="nonlinear_geometry.yml",
     geodata=geodata,
-    verbose=False,
+    verbose=rank == 0,
 )
 
-expfault.setPriors(bounds=None, initialSample=None, datas=None)
-expfault.setLikelihood(datas=None, verticals=None)
-expfault.walk(
-    nchains=expfault.nchains,
-    chain_length=expfault.chain_length,
+inv.setPriors(bounds=None, initialSample=None, datas=None)
+inv.setLikelihood(datas=None, verticals=None)
+
+inv.walk(
+    nchains=inv.nchains,
+    chain_length=inv.chain_length,
     comm=comm,
     filename="samples_mag_rake_multifaults.h5",
 )
 
-expfault.extract_and_plot_bayesian_results(
+inv.extract_and_plot_bayesian_results(
     rank=rank,
     filename="samples_mag_rake_multifaults.h5",
     plot_faults=True,
     plot_sigmas=True,
     plot_data=True,
+    plot_data_corrections=True,
 )
+
+if rank == 0:
+    inv.load_samples_from_h5("samples_mag_rake_multifaults.h5")
+    inv.plot_fault_parameter_trends(
+        save_path="fault_parameter_trends.png",
+        show=False,
+    )
 ```
+
+<a id="geometry-results-to-linear-inversion"></a>
 
 ## 结果进入线性反演
 
@@ -109,6 +136,8 @@ model_results_median.json
 ```
 
 两步走路线中，线性 BLSE/VCE 阶段不直接把非线性样本文件当作滑动模型读入。实际做法是：从 `model_results_median.txt`、`model_results_median.json` 或同等摘要中选定一组几何参数，再在线性脚本中生成固定断层网格。摘要中的 `lon/lat/depth` 仍然表示**断层顶边中点**，对应线性脚本中的 `clon/clat/cdepth`。
+
+如果需要在矩形元、三角元、trace、等深线或外部 mesh 等不同输入之间选择构建方式，先读 [Fault Geometry Construction](../reference/fault_geometry_construction.md)。
 
 典型桥接代码如下：
 
@@ -160,17 +189,18 @@ fault.initializeslip(values="depth")
 ## MPI 运行
 
 ```bash
-mpiexec -n 4 python test_nonlinear_mag_rake.py -r
-python test_nonlinear_mag_rake.py
+mpiexec -n 4 python test_nonlinear_geometry_smc.py -r
+python test_nonlinear_geometry_smc.py
 ```
 
-第一条命令采样，第二条命令应能读取保存的 HDF5 样本并绘图。
+第一条命令采样，第二条命令读取已有 HDF5 样本并重新生成摘要、诊断和图件。`-r` 和非 `-r` 后处理都会触发新版收敛诊断；若 HDF5 是旧式结果且不含过程统计，诊断会自动降级。
 
 ## 配置概念
 
-非线性几何配置通常包含以下内容。下面的 `lon`、`lat`、`depth` 分别表示断层顶边中点的经度、纬度和深度：
+新版 `nonlinear_geometry.yml` 通常包含以下内容。下面的 `lon`、`lat`、`depth` 分别表示断层顶边中点的经度、纬度和深度：
 
 ```yaml
+prior_bounds_format: lower_upper
 nchains: 100
 chain_length: 50
 nfaults: 1
@@ -178,39 +208,38 @@ slip_sampling_mode: mag_rake
 
 bounds:
   defaults:
-    lon: [Uniform, 78.56, 2.0]
-    lat: [Uniform, 41.19, 2.0]
-    depth: [Uniform, 5.0, 20.0]
-    dip: [Uniform, 45.0, 44.9]
-    width: [Uniform, 0.1, 29.9]
-    length: [Uniform, 5.0, 45.0]
-    strike: [Uniform, 180.0, 180.0]
-    magnitude: [Uniform, 0.0, 10.0]
-    rake: [Uniform, -90.0, 180.0]
+    lon: [Uniform, 78.56, 80.56]
+    lat: [Uniform, 41.19, 43.19]
+    depth: [Uniform, 5.0, 25.0]
+    dip: [Uniform, 45.0, 89.9]
+    width: [Uniform, 0.1, 30.0]
+    length: [Uniform, 5.0, 50.0]
+    strike: [Uniform, 180.0, 360.0]
+    slip: [Uniform, 0.0, 10.0]
+    rake: [Uniform, -90.0, 90.0]
 
 geodata:
   verticals: [true, true]
-  polys:
-    enabled: true
-    boundaries:
-      defaults: [Uniform, -200.0, 400.0]
+  polys: [3, 1]
+  poly_bounds: [Uniform, -1000.0, 1000.0]
   sigmas:
     mode: individual
     update: true
     bounds:
-      defaults: [Uniform, -3.0, 6.0]
-      sigma_0: [Uniform, -3.0, 6.0]
+      defaults: [Uniform, -3.0, 3.0]
     values: [0.0, 0.0]
     log_scaled: true
 ```
 
-当前配置里的 `Uniform` 不是 `[下界, 上界]`。它沿用 `scipy.stats.uniform` 风格的输入：
+新版模板默认使用 `prior_bounds_format: lower_upper`，因此 `Uniform` 写法是：
 
 ```text
-[Uniform, start, range]
+[Uniform, lower, upper]
 ```
 
-第二个数是起点或 loc，第三个数是范围或 scale；实际采样上界是 `start + range`。例如 `dip: [Uniform, 45.0, 44.9]` 表示倾角从 `45.0` 到 `89.9` 度。这里的 `start` 不等同于 `setPriors(..., initialSample=...)` 里的初始样本。以后配置格式可能改为直接写下界和上界，但当前手册先按这个现有格式说明。
+解析后内部会统一转换成底层采样需要的 lower/range 形式。旧版 `default_config.yml` 仍默认使用 `prior_bounds_format: lower_range`，即 `[Uniform, lower, range]`；不要在两个配置文件之间直接复制边界数值而不检查格式。
+
+`geodata.polys` 与脚本里的 `geodata` 顺序一一对应。SAR/InSAR 常用 `1` 表示 offset，`3` 表示 offset + x/y ramp，`4` 表示二阶 ramp。普通用户通常只需要设置 `polys` 和统一的 `poly_bounds`；只有需要逐数据集或逐参数覆盖边界、显示名时，才使用 `data_corrections` 高级段。
 
 `geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 字段作为初值，若 `update: true`，`bounds` 给出 sigma 采样范围；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 可设为 `single`、`individual` 或 `grouped`，详见 [Sigmas 与 Alpha 配置模式](../reference/sigmas_alpha.md)。本几何工作流不设置 `alpha`；`alpha` 是后续分布式滑动反演中的平滑尺度。
 
@@ -220,10 +249,14 @@ geodata:
 - 几何反演配置
 - 运行与绘图脚本
 - HDF5 样本文件，若体量可接受
+- `samples_mag_rake_multifaults_convergence.txt` 和 `.yml` 诊断报告
 - `model_results_median.txt` 或等价摘要
 - data/synthetic/residual 图
 - 几何参数和 sigma 参数 KDE 图
+- `fault_parameter_trends.png` 断层参数 stage 演化图
 
 ## 下一步
 
 选定优选几何后，进入 [BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md)。如果需要先理解配置字段，查 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)；如果要解释 sigma 参数，查 [Sigmas 与 Alpha 配置模式](../reference/sigmas_alpha.md)。
+
+如果研究目标是把可扰动断层几何和分布式滑动放在同一个后验中，而不是先选一个优选几何再固定求解滑动，转到高级路线 [Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)。

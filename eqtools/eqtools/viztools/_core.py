@@ -243,7 +243,10 @@ class PlotStyle:
     legend_frame : bool
         Draw a frame around legends (default False).
     dpi : float, optional
-        Sets both ``figure.dpi`` and ``savefig.dpi``.
+        Saved-output dpi.  Sets ``savefig.dpi`` only.
+    figure_dpi : float, optional
+        Interactive figure dpi.  Use this only when the preview figure itself
+        should use a non-default dpi.
     pdf_fonttype : {3, 42}, optional
         Sets ``pdf.fonttype`` and ``ps.fonttype``.
     usetex : bool, optional
@@ -315,6 +318,7 @@ class PlotStyle:
         title_fontsize: Optional[float] = None,
         legend_frame: bool = False,
         dpi: Optional[float] = None,
+        figure_dpi: Optional[float] = None,
         pdf_fonttype: Optional[int] = None,
         usetex: Optional[bool] = None,
         mathfont: Optional[str] = None,
@@ -334,6 +338,7 @@ class PlotStyle:
         self._title_fontsize = title_fontsize
         self._legend_frame = legend_frame
         self._dpi = dpi
+        self._figure_dpi = figure_dpi
         self._pdf_fonttype = pdf_fonttype
         self._usetex = usetex
         self._mathfont = mathfont
@@ -488,8 +493,9 @@ class PlotStyle:
 
     def _apply_dpi(self, acc: Dict) -> None:
         if self._dpi is not None:
-            acc['figure.dpi']  = float(self._dpi)
             acc['savefig.dpi'] = float(self._dpi)
+        if self._figure_dpi is not None:
+            acc['figure.dpi'] = float(self._figure_dpi)
 
     def _apply_pdf_fonttype(self, acc: Dict) -> None:
         if self._pdf_fonttype is not None:
@@ -1063,6 +1069,8 @@ class PlotStyle:
             params.append(f"usetex={self._usetex}")
         if self._dpi is not None:
             params.append(f"dpi={self._dpi}")
+        if self._figure_dpi is not None:
+            params.append(f"figure_dpi={self._figure_dpi}")
         if self._legend_frame:
             params.append("legend_frame=True")
 

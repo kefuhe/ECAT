@@ -180,10 +180,16 @@ class FaultAdapter(SourceAdapter):
     """Adapter for CSI Fault objects (rectangular / triangular patches)."""
 
     _DEFAULT_SLIPDIR = 'sd'
+    _SLIPDIR_ORDER = 'sdtc'
+    _CHAR_TO_NAME = {'s': 'strikeslip', 'd': 'dipslip',
+                     't': 'tensile', 'c': 'coupling'}
 
     def __init__(self, source, slipdir=None):
         super().__init__(source)
-        self._slipdir = slipdir or getattr(source, 'slipdir', self._DEFAULT_SLIPDIR)
+        raw_slipdir = slipdir if slipdir is not None else getattr(
+            source, 'slipdir', self._DEFAULT_SLIPDIR
+        )
+        self._set_slipdir(raw_slipdir)
 
     @property
     def source_type(self):
@@ -191,24 +197,68 @@ class FaultAdapter(SourceAdapter):
 
     # ── slipdir helpers ────────────────────────────────────────────────
 
+    @classmethod
+    def _canonicalize_slipdir(cls, value):
+        """Return Fault slip components in ECAT/CSI canonical column order.
+
+        For Fault sources, ``slipdir`` is treated as the set of enabled
+        physical components.  The linear parameter order is always canonical
+        ``sdtc`` order so CSI GF assembly, constraints, and result
+        distribution share one invariant.
+        """
+        if value is None:
+            value = cls._DEFAULT_SLIPDIR
+        if not isinstance(value, str):
+            raise TypeError("Fault slipdir must be a string containing s, d, t, and/or c")
+
+        compact = value.lower().replace(' ', '').replace('_', '')
+        if not compact:
+            raise ValueError("Fault slipdir cannot be empty")
+
+        invalid = [char for char in compact if char not in cls._SLIPDIR_ORDER]
+        if invalid:
+            invalid_str = ''.join(dict.fromkeys(invalid))
+            raise ValueError(
+                f"Unsupported Fault slipdir character(s): {invalid_str!r}. "
+                "Use a combination of 's', 'd', 't', and 'c'."
+            )
+
+        duplicates = [char for char in cls._SLIPDIR_ORDER if compact.count(char) > 1]
+        if duplicates:
+            duplicate_str = ''.join(duplicates)
+            raise ValueError(f"Fault slipdir contains duplicate component(s): {duplicate_str!r}")
+
+        return ''.join(char for char in cls._SLIPDIR_ORDER if char in compact)
+
+    def _set_source_slipdir(self, slipdir):
+        try:
+            setattr(self.source, 'slipdir', slipdir)
+        except Exception:
+            pass
+
+    def _set_slipdir(self, value):
+        self._slipdir = self._canonicalize_slipdir(value)
+        self._set_source_slipdir(self._slipdir)
+
     @property
     def slipdir(self):
-        """Slip direction string.
+        """Canonical Fault slip direction string.
 
-        After ``assembleGFs()`` the source stores ``slipdir`` as an
-        attribute; that value takes precedence so the adapter always
-        stays in sync with the assembled GF matrix.  Before that call
-        we fall back to the value configured at construction time
-        (default ``'sd'``).
+        Public input may use any order, for example ``'ds'``.  Internally ECAT
+        follows CSI's canonical column order ``sdtc``; therefore ``'ds'`` is
+        interpreted and stored as ``'sd'``.
         """
-        return getattr(self.source, 'slipdir', self._slipdir)
+        raw_slipdir = getattr(self.source, 'slipdir', self._slipdir)
+        canonical = self._canonicalize_slipdir(raw_slipdir)
+        if canonical != self._slipdir:
+            self._slipdir = canonical
+        if raw_slipdir != canonical:
+            self._set_source_slipdir(canonical)
+        return canonical
 
     @slipdir.setter
     def slipdir(self, value):
-        self._slipdir = value
-
-    _CHAR_TO_NAME = {'s': 'strikeslip', 'd': 'dipslip',
-                     't': 'tensile', 'c': 'coupling'}
+        self._set_slipdir(value)
 
     def _slipdir_names(self):
         return [self._CHAR_TO_NAME[c] for c in self.slipdir]
@@ -364,10 +414,25 @@ class FaultAdapter(SourceAdapter):
                 modes.append(canonical)
         return edges, modes
 
+    def _component_columns(self, component_name, param_start):
+        """Return global parameter columns for one slip component."""
+        component_names = self._slipdir_names()
+        if component_name not in component_names:
+            display_name = {
+                'strikeslip': 'strike-slip',
+                'dipslip': 'dip-slip',
+            }.get(component_name, component_name)
+            raise ValueError(
+                f"Source '{self.source.name}' has no {display_name} component "
+                f"(slipdir={self.slipdir})."
+            )
+        n_patches = self.get_n_spatial_elements()
+        component_start = int(param_start) + component_names.index(component_name) * n_patches
+        return component_start + np.arange(n_patches, dtype=int)
+
     def generate_source_inequality_constraints(self, constraint_cfg, param_start, n_total_params):
         results = []
         n_patches = self.get_n_spatial_elements()
-        n_slip_dirs = len(self.slipdir)
 
         for cname, cparams in constraint_cfg.items():
             ctype = cparams.get('type', 'inequality')
@@ -381,23 +446,24 @@ class FaultAdapter(SourceAdapter):
             if rule_lower == 'strikeslip>=0':
                 A = np.zeros((n_patches, n_total_params))
                 b = np.zeros(n_patches)
-                A[np.arange(n_patches), param_start + np.arange(n_patches)] = -1.0
+                columns = self._component_columns('strikeslip', param_start)
+                A[np.arange(n_patches), columns] = -1.0
                 results.append((cname, A, b))
 
             # Positive dipslip: dipslip >= 0  →  -dipslip <= 0
-            elif rule_lower == 'dipslip>=0' and n_slip_dirs >= 2:
+            elif rule_lower == 'dipslip>=0':
                 A = np.zeros((n_patches, n_total_params))
                 b = np.zeros(n_patches)
-                offset = param_start + n_patches  # dipslip offset
-                A[np.arange(n_patches), offset + np.arange(n_patches)] = -1.0
+                columns = self._component_columns('dipslip', param_start)
+                A[np.arange(n_patches), columns] = -1.0
                 results.append((cname, A, b))
 
             # Negative dipslip: dipslip <= 0
-            elif rule_lower == 'dipslip<=0' and n_slip_dirs >= 2:
+            elif rule_lower == 'dipslip<=0':
                 A = np.zeros((n_patches, n_total_params))
                 b = np.zeros(n_patches)
-                offset = param_start + n_patches
-                A[np.arange(n_patches), offset + np.arange(n_patches)] = 1.0
+                columns = self._component_columns('dipslip', param_start)
+                A[np.arange(n_patches), columns] = 1.0
                 results.append((cname, A, b))
 
         return results
@@ -405,8 +471,6 @@ class FaultAdapter(SourceAdapter):
     def generate_source_equality_constraints(self, constraint_cfg, param_start, n_total_params):
         results = []
         n_patches = self.get_n_spatial_elements()
-        n_slip_dirs = len(self.slipdir)
-
         for cname, cparams in constraint_cfg.items():
             ctype = cparams.get('type', 'inequality')
             if ctype != 'equality':
@@ -419,15 +483,16 @@ class FaultAdapter(SourceAdapter):
             if rule_lower == 'strikeslip==0':
                 A = np.zeros((n_patches, n_total_params))
                 b = np.zeros(n_patches)
-                A[np.arange(n_patches), param_start + np.arange(n_patches)] = 1.0
+                columns = self._component_columns('strikeslip', param_start)
+                A[np.arange(n_patches), columns] = 1.0
                 results.append((cname, A, b))
 
             # Zero dipslip: dipslip == 0
-            elif rule_lower == 'dipslip==0' and n_slip_dirs >= 2:
+            elif rule_lower == 'dipslip==0':
                 A = np.zeros((n_patches, n_total_params))
                 b = np.zeros(n_patches)
-                offset = param_start + n_patches
-                A[np.arange(n_patches), offset + np.arange(n_patches)] = 1.0
+                columns = self._component_columns('dipslip', param_start)
+                A[np.arange(n_patches), columns] = 1.0
                 results.append((cname, A, b))
 
             # ── Zero edge slip: zero_edge_slip(edges, modes) ───────────
@@ -447,18 +512,10 @@ class FaultAdapter(SourceAdapter):
                             f"Edge '{edge}' not found in source '{self.source.name}'. "
                             f"Available: {available}"
                         )
-                    tri_idx = np.asarray(self.source.edge_triangles_indices[edge])
+                    tri_idx = np.asarray(self.source.edge_triangles_indices[edge], dtype=int)
                     for mode in modes:
-                        if mode == 'strikeslip':
-                            offset = param_start
-                        else:  # dipslip
-                            if n_slip_dirs < 2:
-                                raise ValueError(
-                                    f"Source '{self.source.name}' has no dip-slip "
-                                    f"component (slipdir={self.slipdir})."
-                                )
-                            offset = param_start + n_patches
-                        global_idx = tri_idx + offset
+                        component_columns = self._component_columns(mode, param_start)
+                        global_idx = component_columns[tri_idx]
                         n_c = len(global_idx)
                         A = np.zeros((n_c, n_total_params))
                         A[np.arange(n_c), global_idx] = 1.0

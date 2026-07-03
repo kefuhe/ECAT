@@ -34,7 +34,8 @@ clipping_options:
 
 # ----------- Bounds Settings ----------- #
 # Define parameter bounds for faults
-# All bounds use the format [lower bound, range increment]
+# Legacy nonlinear configs use [lower bound, range increment].
+prior_bounds_format: lower_range
 bounds:
   defaults:  # Default bounds for all faults
     lon: [Uniform, 87.3, 0.3]  # Longitude bounds
@@ -114,10 +115,27 @@ def main():
         default="default_config.yml",
         help="Output path for the configuration file (default: default_config.yml)"
     )
+    parser.add_argument(
+        "--template",
+        choices=("legacy", "geometry"),
+        default="legacy",
+        help=(
+            "Template family to generate. 'legacy' preserves the old nonlinear "
+            "explore config semantics; 'geometry' generates the new nonlinear "
+            "geometry SMC template."
+        ),
+    )
     args = parser.parse_args()
 
     output_path = os.path.abspath(args.output)
-    generate_nonlinear_config(output_path)
+    if args.template == "geometry":
+        try:
+            from .generate_nonlinear_geometry_config import generate_nonlinear_geometry_config
+        except ImportError:
+            from generate_nonlinear_geometry_config import generate_nonlinear_geometry_config
+        generate_nonlinear_geometry_config(output_path)
+    else:
+        generate_nonlinear_config(output_path)
 
 if __name__ == "__main__":
     main()

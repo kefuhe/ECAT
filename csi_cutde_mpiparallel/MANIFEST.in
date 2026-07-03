@@ -1,1 +1,2 @@
 recursive-include csi/bin *
+recursive-include csi/sbarbot_src *.f90 *.py

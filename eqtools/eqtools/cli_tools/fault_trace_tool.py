@@ -37,11 +37,11 @@ import argparse
 import sys
 import os
 import logging
-from scipy.interpolate import splprep, splev
 
 # Ensure csi is installed in the environment
 from csi import SourceInv
-from ..plottools import sci_plot_style, set_degree_formatter
+from ..csiExtend.trace_ops import simplify_trace, smooth_trace
+from ..viztools import sci_plot_style, set_degree_formatter
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -121,47 +121,6 @@ class FaultTraceProcessor(SourceInv):
             logger.error(f"[Error] Failed to load data: {e}")
             sys.exit(1)
 
-    # =========================================================
-    # Algorithm 1: Ramer-Douglas-Peucker (RDP)
-    # =========================================================
-    def _rdp_recursive(self, points, epsilon):
-        """Recursive implementation of RDP using vectorized operations."""
-        if len(points) < 3:
-            return points[[0, -1]]
-
-        # Vectorized distance calculation
-        start = points[0]
-        end = points[-1]
-        
-        # Vector from start to end
-        vec_line = end - start
-        # Vectors from start to all intermediate points
-        vec_points = points[1:-1] - start
-        
-        line_len = np.linalg.norm(vec_line)
-        
-        if line_len == 0:
-            # Start and end are the same point
-            dists = np.linalg.norm(vec_points, axis=1)
-        else:
-            # Cross product in 2D returns the z-component (scalar)
-            # Distance = |CrossProduct| / Length
-            cross_prod = np.cross(vec_line, vec_points)
-            dists = np.abs(cross_prod) / line_len
-
-        # Find point with maximum distance
-        index_max = np.argmax(dists)
-        dmax = dists[index_max]
-        
-        if dmax > epsilon:
-            # index_max is relative to points[1:-1], so actual index is index_max + 1
-            idx = index_max + 1
-            res1 = self._rdp_recursive(points[:idx+1], epsilon)
-            res2 = self._rdp_recursive(points[idx:], epsilon)
-            return np.vstack((res1[:-1], res2))
-        else:
-            return np.vstack((start, end))
-
     def simplify_rdp(self, epsilon_km=1.0):
         """
         Executes RDP simplification.
@@ -170,17 +129,12 @@ class FaultTraceProcessor(SourceInv):
         """
         if self.trace_xy is None: return
         logger.info(f"[Algo] Running RDP (Tolerance={epsilon_km} km)...")
-        self.processed_xy = self._rdp_recursive(self.trace_xy, epsilon_km)
+        self.processed_xy = simplify_trace(self.trace_xy, method="rdp", tolerance=epsilon_km)
         self.algorithm_info = f"RDP (eps={epsilon_km} km)"
 
     # =========================================================
     # Algorithm 2: Visvalingam-Whyatt (VW)
     # =========================================================
-    def _triangle_area(self, p1, p2, p3):
-        """Calculates the area of a triangle defined by three points."""
-        # Optimization: Use cross product for area
-        return 0.5 * np.abs(np.cross(p2 - p1, p3 - p1))
-
     def simplify_vw(self, area_threshold=1.0):
         """
         Executes Visvalingam-Whyatt simplification.
@@ -189,26 +143,7 @@ class FaultTraceProcessor(SourceInv):
         """
         if self.trace_xy is None: return
         logger.info(f"[Algo] Running Visvalingam-Whyatt (Area Threshold={area_threshold} km^2)...")
-        
-        pts = list(self.trace_xy)
-        
-        # Iteratively remove points with the smallest effective area
-        while len(pts) > 2:
-            areas = []
-            for i in range(1, len(pts) - 1):
-                area = self._triangle_area(pts[i-1], pts[i], pts[i+1])
-                areas.append(area)
-            
-            min_area = min(areas)
-            if min_area > area_threshold:
-                break
-            
-            # Remove the point corresponding to the minimum area
-            # Note: areas[i] corresponds to point pts[i+1]
-            min_index = areas.index(min_area) + 1
-            pts.pop(min_index)
-            
-        self.processed_xy = np.array(pts)
+        self.processed_xy = simplify_trace(self.trace_xy, method="vw", tolerance=area_threshold)
         self.algorithm_info = f"Visvalingam-Whyatt (area={area_threshold})"
 
     # =========================================================
@@ -223,29 +158,20 @@ class FaultTraceProcessor(SourceInv):
         """
         if self.trace_xy is None: return
         logger.info(f"[Algo] Running B-Spline Smoothing (s={smooth_factor})...")
-        
-        # Remove duplicates for splprep
-        unique_points = np.unique(self.trace_xy, axis=0)
-        # Sort by index to maintain order
-        _, idx = np.unique(self.trace_xy, axis=0, return_index=True)
-        unique_points = self.trace_xy[np.sort(idx)]
 
-        if len(unique_points) < 4:
+        if len(self.trace_xy) < 4:
             logger.warning("[Warning] Not enough points for B-Spline (need > 3).")
             self.processed_xy = self.trace_xy
             return
 
-        x, y = unique_points[:, 0], unique_points[:, 1]
         try:
-            # Fit spline in XY space
-            tck, u = splprep([x, y], s=smooth_factor)
-            
-            # Generate new points
             n_out = num_points if num_points else len(self.trace_xy)
-            u_new = np.linspace(0, 1, n_out)
-            new_points = splev(u_new, tck)
-            
-            self.processed_xy = np.column_stack(new_points)
+            self.processed_xy = smooth_trace(
+                self.trace_xy,
+                method="bspline",
+                smoothing=smooth_factor,
+                num_points=n_out,
+            )
             self.algorithm_info = f"B-Spline (s={smooth_factor})"
         except Exception as e:
             logger.error(f"[Error] B-Spline failed: {e}")

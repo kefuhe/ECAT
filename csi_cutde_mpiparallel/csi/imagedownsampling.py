@@ -1958,11 +1958,24 @@ class imagedownsampling(object):
 
         # Loop
         for line in Lines[2:]:
-            ulx, uly, drx, dry = [np.float(line.split()[i]) for i in range(2,6)]
-            c1 = [ulx, uly]
-            c2 = [drx, uly]
-            c3 = [drx, dry]
-            c4 = [ulx, dry]
+            values = line.split()
+            if len(values) == 10:
+                ulx, uly, drx, dry = [float(values[i]) for i in range(2,6)]
+                c1 = [ulx, uly]
+                c2 = [drx, uly]
+                c3 = [drx, dry]
+                c4 = [ulx, dry]
+            elif len(values) == 18:
+                c1 = [float(values[2]), float(values[3])]
+                c2 = [float(values[4]), float(values[5])]
+                c3 = [float(values[6]), float(values[7])]
+                c4 = [float(values[8]), float(values[9])]
+            else:
+                raise ValueError(
+                    "Unsupported .rsp format: expected 10 columns for legacy "
+                    "rectangles or 18 columns for full-corner rectangles, "
+                    f"got {len(values)}."
+                )
             blocks.append([c1, c2, c3, c4])
 
         # Set the blocks

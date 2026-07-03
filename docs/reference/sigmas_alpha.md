@@ -2,6 +2,14 @@
 
 `sigmas` 和 `alpha` 是反演中贯穿数据权重和平滑权重的两类超参数。建议显式写 `mode`，不要依赖省略字段后的默认行为。
 
+## 阅读路径
+
+- 只想确认基本物理含义：先看 [基本含义](#基本含义)。
+- 遇到 `values` 和 `initial_value` 混淆：看 [字段差异](#字段差异)。
+- 不确定 `single / individual / grouped` 怎么组织：看 [Mode](#mode)。
+- 正在配置非线性几何：看 [Sigmas：非线性几何反演](#非线性几何反演)。
+- 正在配置 BLSE/VCE 或滑动 Bayesian：看 [Sigmas：线性滑动与滑动 Bayesian](#线性滑动与滑动-bayesian) 和 [Alpha](#alpha)。
+
 ## 基本含义
 
 | 参数 | 控制对象 | 主要出现位置 | 实际作用 |
@@ -169,6 +177,8 @@ actual_sigma = 10 ** config_sigma
 actual_alpha = 10 ** config_alpha
 ```
 
+非线性几何反演的模型摘要会把这两个尺度分开显示：带参数索引的 `Sigma parameters` 是采样尺度，和 KDE、HDF5 样本列一致；`Physical sigma values used in likelihood` 才是似然实际使用的 `10 ** sampled_sigma`。因此看到 `0.110743` 和 `1.290455` 同时出现时，它们不是两套结果，而是同一个 sigma 的采样尺度和物理尺度。
+
 例如：
 
 | 配置值 | 实际值 |
@@ -213,3 +223,10 @@ inv.run(penalty_weight=[100.0])
 - 单断层滑动反演：`alpha.mode: single` 足够清晰。
 - 多断层或多段断层：若构造上需要不同平滑强度，再使用 `alpha.mode: grouped`。
 - VCE 案例：明确写出哪些 sigma/alpha `update: true`，并保存每轮权重诊断。
+
+## 相关页面
+
+- [非线性几何反演配置 / Nonlinear Config](config_nonlinear_geometry.md)
+- [线性滑动反演配置 / Linear Slip Config](config_linear_slip.md)
+- [BLSE/VCE 参考 / BLSE/VCE](blse_vce.md)
+- [Bayesian 联合反演参考 / Bayesian Joint Inversion](bayesian_joint_inversion.md)

@@ -24,6 +24,8 @@ GAMMA、GeoTIFF、GMTSAR direct-projection 和 adapter 模板。
 - `-s/-c/-d` 三步运行、协方差估计、`std` 降采样、`processing_region` 和 `guide_grid`。
 - 输出 CSI `.txt/.rsp/.cov` 并进入后续非线性几何反演或 BLSE/VCE 线性反演。
 
+<a id="choose-by-format"></a>
+
 ## 按数据格式选择案例
 
 | 手里数据 | 推荐案例目录 | reader / mode | 重点检查 |
@@ -32,7 +34,7 @@ GAMMA、GeoTIFF、GMTSAR direct-projection 和 adapter 模板。
 | GAMMA 旧两步脚本 | `GAMMA/2022_Menyuan/T033D/stdBased` 和 `resolutionBased` | 旧脚本对照 `ecat-downsample -c/-d` | `covarSAR-Step1.py`、`downsampleSAR-Step2.py` 与 YAML 字段映射 |
 | GeoTIFF 解缠相位 | `GeoTiff/Wushi/insar/std_superapp` | `reader: gamma_tiff`, `mode: unwrapped_phase` | `files.value`、`geometry.azimuth/incidence`、band 和 wavelength |
 | GeoTIFF 位移或外部几何产品 | `GeoTiff/Chile` | 优先确认产品语义；标准 reader 不匹配时用 adapter | `gamma_tiff` 只适合 value + azimuth/incidence 可明确表达的产品 |
-| GMTSAR LOS displacement | `GMTSAR/Myanmar/.../Phase_Los/T33D` | `reader: gmtsar`, `mode: los_displacement` | `files.value` 与 `projection.east/north/up` 是否成套对应 |
+| GMTSAR LOS disp. | `GMTSAR/Myanmar/.../Phase_Los/T33D` | `reader: gmtsar`, `mode: los_displacement` | `files.value` 与 `projection.east/north/up` 是否成套对应 |
 | GMTSAR range offset | `GMTSAR/Myanmar/.../Pixel Offset Tracking/T33D` | `reader: gmtsar`, `mode: range_offset` | value 和 projection 默认同为朝向卫星正方向；不要只翻转 value |
 | GMTSAR azimuth offset | `GMTSAR/Myanmar/.../Pixel Offset Tracking/T33D` | `reader: gmtsar`, `mode: azimuth_offset` | 使用沿 heading 的 east/north projection，`projection.up` 可为空 |
 | 自定义读入或时序复用网格 | `GAMMA/2022_Menyuan/T128A/std_adapter_downsampling_workflow` | `input_adapter.enabled: true` | 只改 `input_adapter.py` 和 YAML，后续复用标准 runtime |
@@ -50,50 +52,32 @@ GAMMA、GeoTIFF、GMTSAR direct-projection 和 adapter 模板。
 GAMMA 二进制相位：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma \
-  --sar-mode unwrapped_phase \
-  --downsample-method std \
-  -o downsample.yml
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase --downsample-method std -o downsample.yml
 ```
 
 GeoTIFF 相位：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma_tiff \
-  --sar-mode unwrapped_phase \
-  --downsample-method std \
-  -o downsample_los.yml
+ecat-generate-downsample --mode sar --sar-reader gamma_tiff --sar-mode unwrapped_phase --downsample-method std -o downsample_los.yml
 ```
 
 GMTSAR range offset：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gmtsar \
-  --sar-mode range_offset \
-  --downsample-method std \
-  -o downsample_rng.yml
+ecat-generate-downsample --mode sar --sar-reader gmtsar --sar-mode range_offset --downsample-method std -o downsample_rng.yml
 ```
 
 GMTSAR azimuth offset：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gmtsar \
-  --sar-mode azimuth_offset \
-  --downsample-method std \
-  -o downsample_az.yml
+ecat-generate-downsample --mode sar --sar-reader gmtsar --sar-mode azimuth_offset --downsample-method std -o downsample_az.yml
 ```
 
 命令细节见 [CLI 命令参考](../reference/cli.md)，reader 和 mode 的含义见
 [SAR Reader 参考](../reference/sar_reader.md)，完整字段字典见
 [降采样超级入口参考](../reference/downsampling_app.md)。
+
+<a id="three-step-run"></a>
 
 ## 三步运行顺序
 
@@ -169,7 +153,7 @@ sar_config:
   output_suffix: auto
 ```
 
-正式输出会是 `S1_T033D_RngOff_ifg.txt/.rsp/.cov`。相位或 LOS displacement 没有自动后缀，
+正式输出会是 `S1_T033D_RngOff_ifg.txt/.rsp/.cov`。相位或 LOS disp. 没有自动后缀，
 仍输出 `<outName>_ifg.*`。
 
 如果只希望协方差估计和正式降采样处理一个关注区域，使用顶层 `processing_region`：
@@ -183,7 +167,7 @@ processing_region:
 ```
 
 `processing_region` 不影响 `-s` quick-look。原始图只想放大局部时用
-`sar_config.qc.plot.coordrange`；降采样结果图只想显示局部时用 `downsample.plot_decim.coordrange`。
+`check_plots.raw.coordrange`；降采样结果图只想显示局部时用 `check_plots.decim.coordrange`。
 这两个 `coordrange` 都只是绘图范围，不裁剪正式处理数据。
 
 range/azimuth offset 常有局部粗差或闪烁噪声。若希望用滤波后的图控制 quadtree 网格，但最终观测仍从原始数据提取，可启用
@@ -203,6 +187,8 @@ downsample:
 若要真实删除粗差点，使用 `sar_config.data_filters`；不要把粗差剔除、协方差掩膜、正式处理区域和
 std 近场细化混在一个字段里。
 
+<a id="legacy-script-mapping"></a>
+
 ## 旧脚本到新 CLI 的映射
 
 旧脚本核心逻辑：
@@ -211,6 +197,8 @@ std 近场细化混在一个字段里。
 downsampler.stdBased(threshold=0.02, plot=False, verboseLevel="minimum")
 downsampler.writeDownsampled2File(prefix=outName + "_ifg", rsp=True)
 ```
+
+这段代码是旧脚本的最小示意。当前 `ecat-downsample -d` 写矩形 `.rsp` 时默认使用 18 列 full-corner cell；`trirb` 或三角格网复用正式使用 8 列三角 `.rsp`。旧 10 列矩形 `.rsp` 仍可通过 `from_rsp` 读取，但新案例里的矩形输出应以 full-corner 语义为准。
 
 CLI 路线：
 
@@ -231,7 +219,7 @@ ecat-downsample -f downsample.yml -d
 
 旧脚本里的 `reject_pixels_fault(...)` 不再作为推荐路径维护。通常应判断真实需求：删除粗差用
 `data_filters`，只处理科学关注区用 `processing_region`，让近场更细用 `focus_region` 或
-`trirb`。完整字段对照见 [InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md)。
+`trirb`。完整字段对照见 [InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)。
 
 ## Adapter 与时序数据
 
@@ -239,12 +227,7 @@ ecat-downsample -f downsample.yml -d
 或用户已经自行构造好 `csi.insar` / `csi.opticorr` 对象时，才使用 adapter 模板：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma \
-  --sar-mode unwrapped_phase \
-  -o downsample.yml \
-  --copy-adapter-template
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase -o downsample.yml --copy-adapter-template
 ```
 
 通常只修改 `input_adapter.py` 和 `downsample.yml`。完全绕过标准 reader 时，应设置

@@ -1,5 +1,6 @@
 import numpy as np
 from eqtools.csiExtend.multifaultsolve_boundLSE import multifaultsolve_boundLSE as multifaultsolve
+from eqtools.csiExtend.source_adapters import FaultAdapter
 from csi import (gps, gpstimeseries, 
                  insar, insartimeseries)
 import os
@@ -191,7 +192,7 @@ class FullTimeSeriesInversion(multifaultsolve):
         positions = {}
         start_position = 0
         for ifault in self.faults:
-            start_position += len(ifault.slipdir) * ifault.Faces.shape[0]
+            start_position += len(FaultAdapter._canonicalize_slipdir(ifault.slipdir)) * ifault.Faces.shape[0]
             start_position += np.sum([npoly for npoly in ifault.poly.values() if npoly is not None], dtype=int)
         for data in self.geodata:
             if data.name in self.insar_offset_correction and data.dtype == 'insar':
@@ -233,7 +234,7 @@ class FullTimeSeriesInversion(multifaultsolve):
         start_position = 0
         for fault in self.faults:
             npatches = fault.Faces.shape[0]
-            num_slip_samples = len(fault.slipdir)*npatches
+            num_slip_samples = len(FaultAdapter._canonicalize_slipdir(fault.slipdir)) * npatches
             num_poly_samples = np.sum([npoly for npoly in fault.poly.values() if npoly is not None], dtype=int)
             self.slip_positions[fault.name] = (start_position, start_position + num_slip_samples)
             self.poly_positions[fault.name] = (start_position + num_slip_samples, start_position + num_slip_samples + num_poly_samples)

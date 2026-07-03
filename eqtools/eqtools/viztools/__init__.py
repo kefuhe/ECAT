@@ -7,11 +7,11 @@ decorator pattern.
 
 Quick start
 -----------
->>> from eqtools.viztools import PlotStyle, bake_text_fonts, save_fig
+>>> from eqtools.viztools import PlotStyle, finish_fig
 >>> with PlotStyle('science', figsize='single', fontsize=8):
 ...     fig, ax = plt.subplots()
 ...     ax.plot(x, y)
-...     fig.savefig('figure.pdf')
+...     finish_fig(fig, 'figure.pdf', show=True, dpi=600)
 
 One-step figure creation::
 
@@ -76,6 +76,9 @@ from ._style_utils import (
     save_column_width,
     list_column_widths,
     save_fig,
+    cap_interactive_dpi,
+    show_fig,
+    finish_fig,
 )
 from ._formatters import (
     DegreeFormatter,
@@ -87,6 +90,13 @@ from ._formatters import (
 from ._color_utils import get_color_cycle
 from ._compat import sci_plot_style, set_plot_style, update_style_library
 from ._registry import _registry
+from .raster import (
+    plot_dataarray,
+    plot_geotiff,
+    plot_netcdf_grid,
+    plot_raster,
+    raster_limits,
+)
 
 
 def register_style_directory(path):
@@ -147,6 +157,9 @@ __all__ = [
     'save_column_width',
     'list_column_widths',
     'save_fig',
+    'cap_interactive_dpi',
+    'show_fig',
+    'finish_fig',
     # Tick formatters
     'DegreeFormatter',
     'LatFormatter',
@@ -155,6 +168,12 @@ __all__ = [
     'set_degree_formatter',
     # Color utilities
     'get_color_cycle',
+    # Raster plotting
+    'plot_raster',
+    'plot_dataarray',
+    'plot_geotiff',
+    'plot_netcdf_grid',
+    'raster_limits',
     # Backward-compatible wrappers
     'sci_plot_style',
     'set_plot_style',

@@ -2,11 +2,13 @@
 
 本页帮助用户从 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 中选择合适的学习入口。入门优先选择已经有脚本对照和 workflow 交叉引用的案例；其他案例可作为相同方法的扩展参考。
 
+如果只想复制某个局部任务的最小代码，先看 [Examples / 任务短例](../examples/index.md)；如果想理解两步走、SAR 投影或断层几何状态，先看 [Concepts / 核心概念](../concepts/index.md)。
+
 ## 推荐阅读顺序
 
 | 顺序 | 案例 | 适合学习的问题 | 先读 |
 | --- | --- | --- | --- |
-| 1 | InSAR Downsampling / Menyuan, Wushi, Myanmar | 原始 GAMMA/GeoTIFF/GMTSAR/offset 如何读入、协方差估计和降采样 | [InSAR/Offset 降采样案例](insar_downsampling_gamma_geotiff.md), [InSAR 降采样两步走](../workflows/02a_insar_downsampling_two_step.md) |
+| 1 | InSAR Downsampling / Menyuan, Wushi, Myanmar | 原始 GAMMA/GeoTIFF/GMTSAR/offset 如何读入、协方差估计和降采样 | [InSAR/Offset 降采样案例](insar_downsampling_gamma_geotiff.md), [InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md) |
 | 2 | Wushi 2024 Mw7.0 | InSAR-only Bayesian 非线性几何反演 | [Wushi：InSAR-only 非线性几何反演](wushi_nonlinear_geometry.md) |
 | 3 | Ridgecrest 2019 Mw6.4/Mw7.1 | GPS+InSAR、多事件覆盖关系、`geodata.faults` | [Ridgecrest：GPS+InSAR 非线性几何反演](ridgecrest_gps_insar.md) |
 | 4 | Dingri 2020 Mw5.6 | 固定几何后的 BLSE、smoothing loop 和结果导出 | [Dingri 2020：BLSE/VCE 线性滑动反演](dingri_blse_vce.md) |

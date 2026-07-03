@@ -3,6 +3,12 @@
 '''
 
 from .contour3D_extraction import Contour3DExtraction
+from .fault_contours import (
+    extract_isodepth_contours,
+    fault_to_triangle_mesh,
+    mesh_plane_segments,
+    stitch_segments_to_polylines,
+)
 from .stat_utils import DepthStatistics
 from .statisticsInFaultEdge import StatisticsInFault
 from .earthquakesProj2Fault import EqseqProj2Fault

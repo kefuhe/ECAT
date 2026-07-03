@@ -274,7 +274,7 @@ class GammaTiffReader(TiffsarReader):
     Reader for GAMMA GeoTIFF products.
 
     Use `mode="unwrapped_phase"` for unwrapped phase rasters,
-    `mode="los_displacement"` for LOS displacement rasters, and
+    `mode="los_displacement"` for LOS disp. rasters, and
     `mode="range_offset"` for range-offset rasters. Full Gamma TIFF preset
     names remain available when exact reproducibility in config files is
     preferred. Angle convention changes must be configured before

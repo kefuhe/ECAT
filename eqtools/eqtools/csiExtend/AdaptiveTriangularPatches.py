@@ -3972,29 +3972,22 @@ class AdaptiveTriangularPatches(TriangularPatches):
         >>> obj = YourClass(xi, yi, xf, yf)
         >>> buffer_coords = obj.create_fault_trace_buffer(1, use_discrete_trace=True, return_lonlat=True)
         """
-        from shapely.geometry import LineString, Polygon
         import numpy as np
-    
+        from .trace_ops import buffer_trace
+
         # Select the trace to use based on the value of use_discrete_trace
         x = self.xi if use_discrete_trace else self.xf
         y = self.yi if use_discrete_trace else self.yf
-    
-        # Create a LineString object
-        line = LineString(zip(x, y))
-    
-        # Create the buffer
-        buffer = line.buffer(buffer_size)
-    
-        # If the buffer is a Polygon object, get its exterior coordinates and convert to a numpy array
-        if isinstance(buffer, Polygon):
-            coords = np.array(buffer.exterior.coords[:])
-        else:  # If the buffer is a MultiPolygon object, get the exterior coordinates of all Polygons and convert to a numpy array
-            coords = np.vstack([np.array(poly.exterior.coords[:]) for poly in buffer])
-    
+
+        # Keep this object method as a thin wrapper around the array-level
+        # implementation, preserving the historical single-array return value.
+        polygons = buffer_trace(np.column_stack((x, y)), buffer_size)
+        coords = np.vstack(polygons)
+
         # If return_lonlat is True, convert x, y coordinates to longitude and latitude
         if return_lonlat:
             coords = np.array([self.xy2ll(*coord) for coord in coords])
-    
+
         # Return the coordinates of the buffer
         return coords
 

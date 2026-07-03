@@ -4,7 +4,9 @@ Helpers for reusing CSI downsampling grids.
 The functions here intentionally stay lightweight. They parse CSI ``.rsp``
 files in lon/lat space, then project the cell vertices through the active CSI
 data object. This avoids relying on the original ``.rsp`` x/y columns, which
-may have been generated with a different projection origin.
+may have been generated with a different projection origin. Supported inputs
+are legacy 10-column rectangles, 18-column full-corner rectangles, and
+8-column triangles.
 """
 
 from dataclasses import dataclass
@@ -79,19 +81,15 @@ def _numeric_rows(path):
 
 def _infer_row_geometry(row, requested):
     column_count = len(row)
-    if column_count == 10:
+    if column_count in (10, 18):
         inferred = "rectangle"
     elif column_count == 8:
         inferred = "triangle"
-    elif column_count == 18:
-        raise ValueError(
-            "18-column full-corner rsp files are not supported for from_rsp "
-            "downsampling yet. Use a legacy rectangular rsp or a triangular rsp."
-        )
     else:
         raise ValueError(
             "Unsupported rsp row format: expected 10 columns for legacy "
-            f"rectangles or 8 columns for triangles, got {column_count}."
+            "rectangles, 18 columns for full-corner rectangles, "
+            f"or 8 columns for triangles, got {column_count}."
         )
 
     if requested != "auto" and requested != inferred:
@@ -110,6 +108,15 @@ def _legacy_rectangle_vertices(row):
         [lr_lon, ul_lat],
         [lr_lon, lr_lat],
         [ul_lon, lr_lat],
+    ]
+
+
+def _full_rectangle_vertices(row):
+    return [
+        [row[10], row[11]],
+        [row[12], row[13]],
+        [row[14], row[15]],
+        [row[16], row[17]],
     ]
 
 
@@ -139,7 +146,10 @@ def read_rsp_grid_template(path, geometry="auto"):
             )
         row_geometry = _infer_row_geometry(row, inferred)
         if row_geometry == "rectangle":
-            blocksll.append(_legacy_rectangle_vertices(row))
+            if expected_columns == 18:
+                blocksll.append(_full_rectangle_vertices(row))
+            else:
+                blocksll.append(_legacy_rectangle_vertices(row))
         else:
             blocksll.append(_triangle_vertices(row))
 

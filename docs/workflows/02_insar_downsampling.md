@@ -7,14 +7,16 @@
 3. 掩膜震源形变区域后估计协方差。
 4. 降采样并写出 CSI 风格的 `.txt`、`.rsp`、`.cov` 文件。
 
+如果只是想快速检查 GAMMA prefix 数据能否读入和显示，先看 [GAMMA SAR quick-look 与配置生成](../examples/gamma_sar_quicklook.md)。SAR/offset 的正负号和 projection 约定见 [SAR 投影和观测约定](../concepts/sar_projection_conventions.md)。
+
 ## 对应案例与参考
 
 | 你要确认的问题 | 推荐案例 | 相关参考 |
 | --- | --- | --- |
-| GAMMA/GeoTIFF/GMTSAR 数据如何组织成降采样配置 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#降采样配置) |
-| GMTSAR-style phase/LOS/range/azimuth direct-projection GRD/NetCDF 如何读入 | [InSAR/Offset 降采样案例：GMTSAR](../casebook/insar_downsampling_gamma_geotiff.md#按数据格式选择案例) | [SAR Reader 参考](../reference/sar_reader.md#gmtsar-direct-projection-grd), [CLI 命令参考](../reference/cli.md#降采样配置) |
-| `-s/-c/-d` 每一步输出什么 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md#三步运行顺序) | [CLI 命令参考](../reference/cli.md#执行降采样) |
-| 想按案例脚本 Step1/Step2 手动调参 | [InSAR 降采样两步走](02a_insar_downsampling_two_step.md) | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md#旧脚本到新-cli-的映射) |
+| GAMMA/GeoTIFF/GMTSAR 数据如何组织成降采样配置 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#downsampling-config) |
+| GMTSAR-style phase/LOS/range/azimuth direct-projection GRD/NetCDF 如何读入 | [InSAR/Offset 降采样案例：GMTSAR](../casebook/insar_downsampling_gamma_geotiff.md#choose-by-format) | [SAR Reader 参考](../reference/sar_reader.md#gmtsar-direct-projection-grd), [CLI 命令参考](../reference/cli.md#downsampling-config) |
+| `-s/-c/-d` 每一步输出什么 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md#three-step-run) | [CLI 命令参考](../reference/cli.md#run-downsampling) |
+| 想按案例脚本 Step1/Step2 手动调参 | [InSAR 降采样 Step1/Step2 调参](02a_insar_downsampling_two_step.md) | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md#legacy-script-mapping) |
 | 读入阶段需要自己写代码或处理时序 InSAR | [自定义读入 Adapter 降采样](02b_adapter_downsampling.md) | [降采样超级入口参考：input_adapter](../reference/downsampling_app.md#input_adapter) |
 | 降采样入口全部字段如何查 | [降采样超级入口参考](../reference/downsampling_app.md) | [CLI 命令参考](../reference/cli.md), [SAR Reader 参考](../reference/sar_reader.md) |
 | 降采样结果如何进入反演 | [Wushi：InSAR-only 非线性几何反演](../casebook/wushi_nonlinear_geometry.md), [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md) | [InSAR 与 GPS 数据读取](01_data_reading_insar_gps.md) |
@@ -40,32 +42,19 @@
 GAMMA range offset：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma \
-  --sar-mode range_offset \
-  --downsample-method std \
-  -o downsample_range.yml
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode range_offset --downsample-method std -o downsample_range.yml
 ```
 
 GAMMA GeoTIFF 解缠相位：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gamma_tiff \
-  --sar-mode unwrapped_phase \
-  -o downsample_gamma_tiff.yml
+ecat-generate-downsample --mode sar --sar-reader gamma_tiff --sar-mode unwrapped_phase -o downsample_gamma_tiff.yml
 ```
 
 GMTSAR range offset：
 
 ```bash
-ecat-generate-downsample \
-  --mode sar \
-  --sar-reader gmtsar \
-  --sar-mode range_offset \
-  -o downsample_gmtsar_range.yml
+ecat-generate-downsample --mode sar --sar-reader gmtsar --sar-mode range_offset -o downsample_gmtsar_range.yml
 ```
 
 光学 offset：
@@ -78,6 +67,14 @@ ecat-generate-downsample --mode optical -o downsample_optical.yml
 [自定义读入 Adapter 降采样](02b_adapter_downsampling.md)，只替换数据进入 CSI 对象之前的部分。
 
 ## 三步运行
+
+如果只是先看同一前缀的 GAMMA LOS 数据，可以直接用 prefix 做 `-s` 快速预览：
+
+```bash
+ecat-downsample -s --sar-prefix geo_20250319_20250331
+```
+
+这个快捷入口不读取 YAML，固定使用 GAMMA reader，默认 `--sar-mode los_displacement`；解缠相位栅格用 `--sar-mode unwrapped_phase`。它只用于 `-s`，进入协方差估计和正式降采样前仍建议生成并保存 YAML。
 
 同一个配置文件建议分三次跑。三条命令不是三种算法，而是一次降采样处理的三个阶段：
 
@@ -112,35 +109,9 @@ python -m eqtools.cli_tools.process_data_downsampling -f downsample_range.yml -d
 
 `-s` 阶段的 reader summary、`sar_output.txt` 或 `optical_output.txt` 默认报告转换后的观测/形变值统计。`plot_robust_99_range` 用来判断常规显示范围，`plot_full_range` 用来发现极端噪声尾部，`plot_clipped` 用来检查当前色标上下限会截掉多少有效点。range/azimuth/optical offset 的 full range 经常被孤立坏点拉大，不能单独作为 quick-look 色标依据。
 
-SAR/optical 的内部处理顺序是一致的；差异在读入对象和过滤规则：
+SAR/optical 的处理顺序可以简化理解为：先读入并统一单位、正负号和投影，再做可选数据过滤和 summary；只有运行 `-c/-d` 时才进入正式处理数据对象、`processing_region`、协方差估计或降采样。完整执行顺序和 eqtools/CSI 边界见 [降采样超级入口参考：执行顺序](../reference/downsampling_app.md#执行顺序)。
 
-```text
-extract_raw_grd()
-read_observation() / read_from_tiff()
-checkZeros/checkNaNs/checkLosEqualsOne()  # SAR only
-apply_data_filters()
-print_input_summary()
-if -s: quick-look plot
-if -c or -d:
-  build_processing_image()
-  apply_processing_region()
-  if -c:
-    create CSI imagecovariance from processing data
-    apply covar.mask_out to exclude deformation-source area
-    sample background pixels and fit exp/gauss covariance model
-    write Covariance_estimator*.cov
-  if -d and guide_grid is enabled for std/data:
-    build filtered guide image after processing_region
-    generate the grid on the guide image
-    switch back to unfiltered processing data
-    extract final cell values by downsample.extraction
-  if -d without guide_grid:
-    downsample processing data directly
-```
-
-`data_filters` 会真实删除读入后的坏点或粗差点；SAR 使用 `sar_config.data_filters`，optical 使用 `optical_config.data_filters`。`processing_region` 是正式处理范围，只影响 `-c/-d`，不影响 `-s`；`guide_grid` 在 `processing_region` 之后才生效，只控制 `std/data` 的网格生成；`covar.mask_out` 沿用 CSI 的 `maskOut()` 语义，只在协方差估计时排除震源形变区，不改变最终降采样数据。
-
-责任边界上，eqtools 负责 reader、单位/符号转换、过滤、处理区域、命令行三步流程和输出组织；CSI 负责 `imagecovariance` 的经验协方差模型估计、`std/data/trirb/from_rsp` 降采样核心和最终 `.cov` 矩阵构建。这样用户调 YAML 时只需要看 ECAT 字段，但输出仍保持 CSI varres 文件约定。
+`data_filters` 会真实删除读入后的坏点或粗差点；SAR 使用 `sar_config.data_filters`，optical 使用 `optical_config.data_filters`。`processing_region` 是正式处理范围，只影响 `-c/-d`，不影响 `-s`；`guide_grid` 在 `processing_region` 之后才生效，只控制 `std/data` 的网格生成；`covar.mask_out` 只在协方差估计时排除震源形变区，不改变最终降采样数据。
 
 SAR 和 optical 共享 `processing_region`、`covar`、`downsample` 和三步运行方式。两者主要差异是观测结构：SAR 进入 CSI 是单标量 `vel` 加投影向量，过滤规则使用 `value_*` 和 `projection_norm`；optical 是 `east/north` 两个水平分量，过滤规则使用 `component_*` 和 `vector_norm_range`。
 
@@ -152,7 +123,7 @@ SAR 和 optical 共享 `processing_region`、`covar`、`downsample` 和三步运
 
 如果配置文件中已经设置 `covar.do_covar: true` 或 `downsample.enabled: true`，也可以不传 `-c/-d`。命令行参数优先级更高；`-s` 会强制只做原始数据 quick-look。
 
-面向教学或手动调参时，可以把这三条命令理解为“预检查 + 两步走”：`-s` 做 quick-look，`-c` 是 Step 1 协方差准备，`-d` 是 Step 2 正式降采样。完整的 Step1/Step2 对照见 [InSAR 降采样两步走](02a_insar_downsampling_two_step.md)。
+面向教学或手动调参时，可以把这三条命令理解为“预检查 + Step1/Step2”：`-s` 做 quick-look，`-c` 是 Step 1 协方差准备，`-d` 是 Step 2 正式降采样。完整对照见 [InSAR 降采样 Step1/Step2 调参](02a_insar_downsampling_two_step.md)。
 
 ## 降采样方法选择
 
@@ -161,7 +132,7 @@ SAR 和 optical 共享 `processing_region`、`covar`、`downsample` 和三步运
 | `std` | 入门教程首选；不依赖断层模型。 |
 | `data` | 按振幅、梯度或曲率等数据特征细化。 |
 | `trirb` | 有断层模型时做三角分辨率控制降采样。 |
-| `from_rsp` | 复用已有 CSI `.rsp` 格网。 |
+| `from_rsp` | 复用已有 CSI `.rsp` 格网；支持 10 列 legacy 矩形、18 列 full-corner 矩形和 8 列正式三角形。 |
 
 新用户先用 `std` 跑通流程。`trirb` 应在几何和掩膜稳定后再引入。
 
@@ -229,14 +200,13 @@ downsample:
 如果原始图存在明显闪烁噪声、局部 offset 或离群点，`std/data` 可能会在噪声区过度细分。
 这时可以启用 `downsample.guide_grid`，即 Guided Quadtree Downsampling（引导式四叉树降采样）：
 用 Gaussian 低通后的引导图做基于滤波/平滑干涉图的四叉树划分，再回到原始未滤波数据提取最终观测值。
-最终 cell 值的提取方式由 `downsample.extraction` 控制，默认仍是块内均值和标准差；
-需要稳健代表值时可改为 `value_statistic: median` 或 `trimmed_mean`。完整字段见
+最终 cell 值的提取方式由 `downsample.extraction` 控制；新模板默认用
+`value_statistic: median`，需要复现旧 CSI 块内均值行为时可显式改为 `mean`。完整字段见
 [降采样超级入口参考](../reference/downsampling_app.md)。
 
-若使用 `method: std`，`std_config.split_metric_correction` 还可以控制分裂判据的修正方式。默认 `std`
-保持 CSI 原行为；`bilinear` 会在候选块内先去掉局部平面趋势，再用残差标准差判断是否继续分裂。
-它只影响网格生成，不影响最终 cell 值提取。新数据调参时建议优先尝试 `median`，当前模板默认
-保留 `std` 是为了兼容既有 CSI/ECAT 结果。
+若使用 `method: std`，`std_config.split_metric_correction` 还可以控制分裂判据的修正方式。新模板默认
+`median`，更适合新数据稳健调参；需要保持 CSI 原行为时可显式改为 `std`。`bilinear` 会在候选块内先去掉局部平面趋势，再用残差标准差判断是否继续分裂。
+它只影响网格生成，不影响最终 cell 值提取。
 
 GMTSAR 使用同一套三步运行流程，但 `sar_config.files` 写法不同。它直接读取标量观测和 ENU 投影系数，不再需要 `files.geometry.azimuth/incidence`：
 
@@ -297,6 +267,10 @@ optical_config:
 
 启用后会先自动执行 `finite` 隐式规则删除 NaN/inf。SAR 的 `value_space: observation` 表示按转换后的反演观测值过滤，不受 `factor4plot` 影响；optical 的阈值按读入后的 `east/north` 单位设置。
 
+大 optical offset 数据如果 `-s` 或 `-c` 太慢，优先调 `optical_config.read.downsample` 或
+`optical_config.read.downsample_for_covar`。这是真正的读入阶段抽稀，会同步作用于 east、north 和真实坐标 mesh；
+`check_plots.raw.plot_stride` 只是绘图抽稀，不会减少协方差或降采样点数。
+
 如果只想让协方差和正式降采样处理一个关注区域，不要把它混写成坏点过滤规则，优先使用 `processing_region`：
 
 ```yaml
@@ -307,7 +281,11 @@ processing_region:
   box: [lon_min, lon_max, lat_min, lat_max]
 ```
 
-`processing_region` 不影响 `-s` quick-look。原始图只想放大某个范围时，SAR 用 `sar_config.qc.plot.coordrange`，optical 用 `optical_config.qc.plot.coordrange`；降采样检查图只想显示某个范围时，用 `downsample.plot_decim.coordrange`。这些都只是显示范围，不会裁剪数据。
+`processing_region` 不影响 `-s` quick-look。原始图只想放大某个范围时，用 `check_plots.raw.coordrange`；降采样检查图只想显示某个范围时，用 `check_plots.decim.coordrange`。这些都只是显示范围，不会裁剪数据。
+常规调图优先改 `figsize`、`colorbar_pad`、`colorbar_size`、`colorbar_thickness`、`panel_pad`、`colorbar_orientation`、`vmin/vmax`；`colorbar_pad` 控制主图和对应色标的组内距离，`panel_pad` 控制多列 map+colorbar 组合之间的组间距离。
+`figsize` 常用起步值是：SAR 单图 `single`，高瘦图幅试 `[4, 5]`；optical east/north 双列图 `double`，高瘦或横向色标拥挤时试 `[7, 5]` 或 `[8, 5]`。
+`fontsize/tickfontsize/labelfontsize` 留空时会随 `figsize` 自动取约 6-10 pt；正式论文图需要统一字号时再显式写定。
+`show: true` 显示真实 Matplotlib 坐标窗口，便于缩放、读数和圈选范围；保存图按 `dpi` 输出，屏显窗口会内部限制到不超过 200 dpi，避免高保存 dpi 导致窗口过大。
 
 `processing_region` 是顶层配置，SAR/InSAR/offset 和 optical offset 共用；它不是 `sar_config` 或 `optical_config` 的 reader 参数。
 
@@ -341,13 +319,17 @@ SAR 输出文件使用有效输出前缀，而不是简单地逐字使用 `sar_c
 <effective_outName>_downsample_report.yml
 ```
 
-SAR 检查图通常是 `<effective_outName>_decim.png`；optical 会输出 `<outName>_East_decim.png` 和 `<outName>_North_decim.png`。
+矩形 `std/data/from_rsp` 输出的 `.rsp` 默认保存 18 列 full-corner cell，检查图会使用四个真实角点绘制；三角 `trirb` 或三角 `.rsp` 复用仍保存 8 列三角 cell。
+
+SAR 检查图通常是 `<effective_outName>_decim.png`；optical 也输出 `<outName>_decim.png`，默认在同一张图里用两列显示 east/north。
 
 若启用了顶层 `processing_region`，还会写 `<effective_outName>_processing_region_report.yml`，记录进入协方差/降采样前保留和删除的点数。
 `<effective_outName>_downsample_report.yml` 记录输入点数、输出 cell 数、降采样比例、guide-grid 后端、
 最终提取规则、整幅观测 `nanstd` 和可选 RMS 诊断，是调参时优先查看的文件。
 
 这些文件前缀可以直接进入后续非线性几何反演或 BLSE/VCE 线性反演。
+
+<a id="read-downsampled-output"></a>
 
 ## 后续反演中读取
 
@@ -407,6 +389,18 @@ sar.read_from_varres("../InSAR/downsample/S1_tri_ifg", triangular=True, cov=True
 - 降采样点保留近场梯度。
 - 最终协方差矩阵维度与降采样观测数量一致。
 - 每次运行的 metadata 与输出一起保存。
+
+## 正式案例归档建议
+
+放入 ECAT-Cases 或论文复现实例时，建议最少保留：
+
+- 当前 YAML 配置，推荐写 `config_version: 1` 并使用顶层 `check_plots`。
+- `-s` quick-look 图和 `sar_output.txt`。
+- `-c` 产生的 `Covariance_estimator*.cov`。
+- `-d` 产生的 `<outputName>_ifg.txt/.rsp/.cov`、`<outputName>_decim.png`、`<outputName>_downsample_report.yml` 和 `<outputName>_run_metadata.yml`。
+- 若启用 `processing_region`，同时保留 `<outputName>_processing_region_report.yml`。
+
+矩形 `.rsp` 新输出默认使用 18 列 full-corner；`trirb` 和三角格网复用使用 8 列三角 `.rsp`。旧 10 列矩形 `.rsp` 可以读取复用，但新案例不建议再作为矩形输出格式。
 
 ## 下一步
 

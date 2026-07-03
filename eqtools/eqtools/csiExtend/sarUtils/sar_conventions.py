@@ -43,10 +43,10 @@ class ObservationType(Enum):
     Physical type of the scalar raster read from a SAR product.
 
     `phase_los` is an unwrapped phase raster in radians; it is converted to
-    LOS displacement with wavelength / (-4*pi). `los_displacement` is already
+    LOS disp. with wavelength / (-4*pi). `los_displacement` is already
     a LOS/range-direction displacement or offset. Range-offset products use
     this same observation type, and are converted to the same target positive
-    direction as LOS displacement: toward the satellite. `azimuth_offset` is
+    direction as LOS disp.: toward the satellite. `azimuth_offset` is
     an along-track scalar.
     """
     PHASE_LOS = "phase_los"

@@ -88,8 +88,14 @@ from .BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches
 from .SMC_MPI import SMC_samples_parallel_mpi
 from .config.bayesian_config import BayesianMultiFaultsInversionConfig
 from .fault_analysis_mixin import FaultAnalysisMixin
+from .data_correction_constraints import DataCorrectionConstraintMixin
+from .data_correction_report_mixin import DataCorrectionReportMixin
+from .deep_slip_loading_mixin import DeepSlipLoadingMixin
+from .interseismic_mixin import InterseismicKinematicsMixin
+from .patch_indices import normalize_patch_indices
 from .constraint_manager_smc import ConstraintManager
 from .multifaults_base import MyMultiFaultsInversion
+from .source_adapters import FaultAdapter
 import warnings
 from .bayesian_utils import det_of_laplace_smooth_lu, logpdf_multivariate_normal
 from . import lsqlin
@@ -230,9 +236,15 @@ NT1 = namedtuple('NT1', 'N Neff target LB UB')
 NT2 = namedtuple('NT2', 'allsamples postval beta stage covsmpl resmpl')
 
 
-class BayesianMultiFaultsInversion(FaultAnalysisMixin):
+class BayesianMultiFaultsInversion(
+    DataCorrectionReportMixin,
+    DataCorrectionConstraintMixin,
+    DeepSlipLoadingMixin,
+    InterseismicKinematicsMixin,
+    FaultAnalysisMixin,
+):
     def __init__(self, config="default_config.yml", multifaults=None, geodata=None, faults_list=None, gfmethods=None, 
-                 bounds_config='bounds_config.yml', verbose=True, parallel_rank=None):
+                 bounds_config='bounds_config.yml', interseismic_config=None, verbose=True, parallel_rank=None):
         if isinstance(config, str):
             assert geodata is not None, "geodata must be provided when config is a file"
             parallel_rank = parallel_rank if parallel_rank is not None else MPI.COMM_WORLD.Get_rank()
@@ -240,6 +252,11 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                                                              gfmethods=gfmethods, verbose=verbose, parallel_rank=parallel_rank)
         else:
             self.config = config
+
+        if interseismic_config is None:
+            interseismic_config = getattr(self.config, 'interseismic_config_file', None)
+        if interseismic_config is not None:
+            self.config.load_interseismic_config(interseismic_config)
 
         self.update_config(self.config)
         self._initialize_bounds(bounds_config)
@@ -482,45 +499,101 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                     print(f"[X] Failed to update fixed rake constraints: {e}")
                 raise
     
-    def update_euler_constraints(self, euler_config=None):
+    def update_interseismic_config(self, interseismic_config, reapply=True):
+        """Load a new interseismic config and optionally rebuild its constraints."""
+        parsed = self.config.load_interseismic_config(interseismic_config)
+        if reapply:
+            self.constraint_manager.remove_constraint('euler_cap_constraints', 'inequality')
+            for constraint_name in ('interseismic_block_euler_constraints', 'interseismic_block_euler_sharing'):
+                if constraint_name in getattr(self.constraint_manager, '_equality_constraints', {}):
+                    self.constraint_manager.remove_constraint(constraint_name, 'equality')
+            for name in list(getattr(self.constraint_manager, '_equality_constraints', {})):
+                group = self.constraint_manager._equality_constraints[name]
+                if group.get('source') == 'interseismic_config.backslip_constraints':
+                    self.constraint_manager.remove_constraint(name, 'equality')
+            if parsed.get('blocks', {}).get('enabled', False):
+                self.constraint_manager.apply_interseismic_block_constraints()
+            self.constraint_manager.add_euler_cap_constraints()
+            self.constraint_manager.apply_interseismic_backslip_constraints()
+            self.constraint_manager.get_combined_inequality_constraints()
+            self.constraint_manager.get_combined_equality_constraints()
+        return parsed
+
+    def update_euler_cap_constraint(
+        self,
+        fault_name,
+        *,
+        selector=None,
+        max_coupling=None,
+        mode=None,
+        min_loading_abs=None,
+        enabled=None,
+        reapply=True,
+    ):
+        """Update optional cap-constraint selector for one fault.
+
+        Parameters
+        ----------
+        fault_name : str
+            Fault whose cap constraint should be updated.
+        selector : dict or iterable of int, optional
+            Patch selector for cap rows only.  It does not affect tectonic
+            loading-rate calculation.
+        max_coupling : float, optional
+            Upper multiplier ``k`` in ``|backslip| <= k * |loading|``.
+            Defaults to the value already stored in config, or 1.0.
+        mode : {"motion_sense", "loading_sign"}, optional
+            Cap construction mode.  ``motion_sense`` is the default and works
+            with estimated Euler loading.  ``loading_sign`` requires fixed
+            loading and constrains ``0 <= -q / b <= k`` from the projected sign.
+        min_loading_abs : float, optional
+            Minimum absolute loading accepted by ``mode="loading_sign"``.
+        enabled : bool, optional
+            If provided, update ``cap_constraints.enabled``.
+        reapply : bool, default True
+            If True, rebuild the cap constraint matrix after updating config.
+
+        Returns
+        -------
+        dict
+            Current parsed ``config.interseismic_config`` dictionary.
         """
-        Update Euler constraints and automatically refresh combined constraints.
-        
-        Parameters:
-        -----------
-        euler_config : dict, optional
-            Euler constraint configuration, if None use config from self.config
-        """
-        if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Euler constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
-        
-        if self.constraint_manager.verbose:
-            print("[GEO] Updating Euler constraints...")
-        
-        try:
-            # Update configuration (if provided)
-            if euler_config:
-                if not hasattr(self.config, 'euler_constraints'):
-                    self.config.euler_constraints = {}
-                self.config.euler_constraints.update(euler_config)
-            
-            # Remove old Euler constraints
-            if 'euler_constraints' in self.constraint_manager._inequality_constraints:
-                self.constraint_manager.remove_constraint('euler_constraints', 'inequality')
-            
-            # Add new Euler constraints
-            self.constraint_manager.add_euler_constraints()
-            
-            if self.constraint_manager.verbose:
-                print("[OK] Euler constraints updated successfully")
-            
-            self.constraint_manager.get_combined_inequality_constraints()  # Refresh combined constraints
-        except Exception as e:
-            if self.constraint_manager.verbose:
-                print(f"[X] Failed to update Euler constraints: {e}")
-            raise
+        faults_dict = getattr(getattr(self, 'multifaults', None), 'faults_dict', None)
+        if faults_dict is None:
+            faults_dict = {fault.name: fault for fault in getattr(self, 'faults', [])}
+        if fault_name not in faults_dict:
+            raise ValueError(f"Fault '{fault_name}' not found. Available: {list(faults_dict.keys())}")
+
+        interseismic = copy.deepcopy(getattr(self.config, 'interseismic_config', {}))
+        cap = interseismic.setdefault('cap_constraints', {})
+        if enabled is not None:
+            cap['enabled'] = bool(enabled)
+        cap.setdefault('faults', {})
+        cap['faults'].setdefault(fault_name, {})
+        if selector is not None:
+            if isinstance(selector, (list, tuple, np.ndarray)):
+                indices = normalize_patch_indices(
+                    faults_dict[fault_name],
+                    selector,
+                    allow_none_all=False,
+                    unique=True,
+                    name=f"cap selector for fault '{fault_name}'",
+                )
+                selector = {'patches': indices.tolist()}
+            cap['faults'][fault_name]['selector'] = selector
+        if max_coupling is not None:
+            max_coupling = float(max_coupling)
+            if max_coupling < 0.0:
+                raise ValueError("max_coupling must be non-negative")
+            cap['faults'][fault_name]['max_coupling'] = max_coupling
+        if mode is not None:
+            cap['faults'][fault_name]['mode'] = str(mode)
+        if min_loading_abs is not None:
+            min_loading_abs = float(min_loading_abs)
+            if min_loading_abs < 0.0:
+                raise ValueError("min_loading_abs must be non-negative")
+            cap['faults'][fault_name]['min_loading_abs'] = min_loading_abs
+        return self.update_interseismic_config(interseismic, reapply=reapply)
     
     def add_custom_inequality_constraint(self, A, b, name, source="user_defined"):
         """
@@ -646,6 +719,53 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                     A, b, name=full_name,
                     source=f"incompressibility/{sname}")
 
+    @staticmethod
+    def _normalize_fault_slip_component(component):
+        comp = str(component).lower().replace(' ', '').replace('_', '')
+        if comp in ('strikeslip', 'ss', 's', 'strike'):
+            return 'strikeslip'
+        if comp in ('dipslip', 'ds', 'd', 'dip'):
+            return 'dipslip'
+        raise ValueError(
+            f"Unknown slip component '{component}'. Please use 'strikeslip' or 'dipslip'."
+        )
+
+    def _component_columns_for_patches(self, fault_name, component, patch_indices, source_start):
+        """Return columns for one named Fault slip component in the requested parameter space."""
+        if fault_name not in self.multifaults.faults_dict:
+            raise ValueError(
+                f"Fault '{fault_name}' not found. Available faults: "
+                f"{list(self.multifaults.faults_dict.keys())}"
+            )
+
+        adapter = self.multifaults.adapters[fault_name]
+        if adapter.source_type != 'Fault':
+            raise TypeError(
+                f"Slip constraints can only be applied to 'Fault' sources, "
+                f"but '{fault_name}' is '{adapter.source_type}'."
+            )
+
+        fault = self.multifaults.faults_dict[fault_name]
+        component = self._normalize_fault_slip_component(component)
+        component_slices = self.constraint_manager._source_component_slices(
+            fault, int(source_start), adapter=adapter
+        )
+        if component not in component_slices:
+            raise ValueError(
+                f"Fault '{fault_name}' has no {component} component "
+                f"(slipdir='{adapter.slipdir}')."
+            )
+
+        patch_indices = np.asarray(patch_indices, dtype=int)
+        n_component = component_slices[component].stop - component_slices[component].start
+        if np.any(patch_indices >= n_component) or np.any(patch_indices < 0):
+            raise ValueError(
+                f"Invalid patch indices found for fault '{fault_name}'. "
+                f"Indices must be between 0 and {n_component - 1}."
+            )
+
+        return component_slices[component].start + patch_indices
+
     def add_zero_edge_slip_constraint(self, fault_names, edges, slip_modes):
         """
         Add zero-slip equality constraints for triangles on specified fault edges.
@@ -682,17 +802,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
         if isinstance(slip_modes, str):
             slip_modes = [slip_modes]
 
-        def _normalize(mode):
-            m = mode.lower().replace(' ', '').replace('_', '')
-            if m in ('strikeslip', 'ss', 's', 'strike'):
-                return 'strikeslip'
-            elif m in ('dipslip', 'ds', 'd', 'dip'):
-                return 'dipslip'
-            raise ValueError(
-                f"Unknown slip mode '{mode}'. Use 'strikeslip' or 'dipslip'."
-            )
-
-        slip_modes = list(dict.fromkeys(_normalize(m) for m in slip_modes))
+        slip_modes = list(dict.fromkeys(self._normalize_fault_slip_component(m) for m in slip_modes))
 
         for fault_name in fault_names:
             if fault_name not in self.multifaults.faults_dict:
@@ -714,7 +824,6 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                 )
 
             slip_st, _ = self.slip_positions[fault_name]
-            n_patches = len(fault.patch)
 
             for edge in edges:
                 if edge not in fault.edge_triangles_indices:
@@ -726,17 +835,9 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                 tri_indices = np.asarray(fault.edge_triangles_indices[edge])
 
                 for slip_mode in slip_modes:
-                    if slip_mode == 'strikeslip':
-                        offset = slip_st
-                    else:  # dipslip
-                        if len(fault.slipdir) < 2:
-                            raise ValueError(
-                                f"Fault '{fault_name}' has no dip-slip component "
-                                f"(slipdir={fault.slipdir})."
-                            )
-                        offset = slip_st + n_patches
-
-                    global_indices = tri_indices + offset
+                    global_indices = self._component_columns_for_patches(
+                        fault_name, slip_mode, tri_indices, source_start=slip_st
+                    )
                     n_constrained = len(global_indices)
 
                     # number of linear parameters
@@ -790,36 +891,15 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
             if f_name not in self.multifaults.faults_dict:
                 raise ValueError(f"Fault '{f_name}' not found. Available faults: {list(self.multifaults.faults_dict.keys())}")
 
-            adapter = self.multifaults.adapters[f_name]
-
-            if adapter.source_type != 'Fault':
-                raise TypeError(f"Slip constraints can only be applied to 'Fault' sources, but '{f_name}' is '{adapter.source_type}'.")
-
             slip_st, _ = self.slip_positions[f_name]
             # Adjust offset to index correctly into the linear parameters sub-matrix 
             slip_st_linear = slip_st - self.linear_sample_start_position
-            
-            n_patches = adapter.get_n_spatial_elements()
-            patch_indices = np.asarray(patch_indices)
-
-            if np.any(patch_indices >= n_patches) or np.any(patch_indices < 0):
-                raise ValueError(f"Invalid patch indices found for fault '{f_name}'. Indices must be between 0 and {n_patches-1}.")
 
             for s_comp in slip_components:
-                slip_component_norm = s_comp.lower().replace(' ', '').replace('_', '')
-                if slip_component_norm in ('strikeslip', 'ss', 's', 'strike'):
-                    if 's' not in adapter.slipdir:
-                        raise ValueError(f"Fault '{f_name}' does not have a strike-slip component (slipdir='{adapter.slipdir}').")
-                    offset = slip_st_linear
-                elif slip_component_norm in ('dipslip', 'ds', 'd', 'dip'):
-                    if 'd' not in adapter.slipdir:
-                        raise ValueError(f"Fault '{f_name}' does not have a dip-slip component (slipdir='{adapter.slipdir}').")
-                    # Dip-slip parameters follow strike-slip parameters
-                    offset = slip_st_linear + n_patches
-                else:
-                    raise ValueError(f"Unknown slip component '{s_comp}'. Please use 'strikeslip' or 'dipslip'.")
-
-                all_linear_indices.extend((patch_indices + offset).tolist())
+                columns = self._component_columns_for_patches(
+                    f_name, s_comp, patch_indices, source_start=slip_st_linear
+                )
+                all_linear_indices.extend(columns.tolist())
 
         n_constrained = len(all_linear_indices)
         if n_constrained == 0:
@@ -882,7 +962,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                 print(f"[X] Failed to remove constraint '{name}': {e}")
             raise
     
-    def update_all_constraints(self, rake_angle=None, fixed_rake=None, euler_config=None, 
+    def update_all_constraints(self, rake_angle=None, fixed_rake=None, interseismic_config=None,
                               custom_inequality=None, custom_equality=None):
         """
         Update multiple types of constraints at once.
@@ -893,8 +973,8 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
             Rake angle range constraints
         fixed_rake : dict, optional
             Fixed rake angle constraints
-        euler_config : dict, optional
-            Euler constraint configuration
+        interseismic_config : dict, optional
+            Interseismic block-motion/cap/backslip constraint configuration
         custom_inequality : list of dict, optional
             Custom inequality constraints list, each dict contains {'A', 'b', 'name', 'source'}
         custom_equality : list of dict, optional
@@ -907,9 +987,9 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
         if rake_angle or fixed_rake:
             self.update_rake_constraints(rake_angle, fixed_rake)
         
-        # Update Euler constraints
-        if euler_config:
-            self.update_euler_constraints(euler_config)
+        # Update interseismic constraints
+        if interseismic_config:
+            self.update_interseismic_config(interseismic_config)
         
         # Add custom inequality constraints
         if custom_inequality:
@@ -2312,7 +2392,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                     num_slip_samples //= 2
             else:
                 npatches = len(fault.patch) # Number of patches
-                num_slip_samples = len(fault.slipdir)*npatches
+                num_slip_samples = len(FaultAdapter._canonicalize_slipdir(fault.slipdir)) * npatches
                 if rake_fixed:
                     num_slip_samples //= 2
             # print(fault.poly)
@@ -2557,7 +2637,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
                 num_slip_samples = adapter.get_n_source_params()
             else:
                 npatches = len(fault.patch)
-                num_slip_samples = len(fault.slipdir)*npatches
+                num_slip_samples = len(FaultAdapter._canonicalize_slipdir(fault.slipdir)) * npatches
             num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
             self.slip_positions[fault.name] = (start_position, start_position + num_slip_samples)
             self.poly_positions[fault.name] = (start_position + num_slip_samples, start_position + num_slip_samples + num_poly_samples)
@@ -2600,6 +2680,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
         slip_start, slip_end = self.slip_positions[fault.name]
 
         # Non-Fault sources: return raw absolute values (no slip decomposition)
+        adapter = None
         if hasattr(self.multifaults, 'adapters') and fault.name in self.multifaults.adapters:
             adapter = self.multifaults.adapters[fault.name]
             if adapter.source_type != 'Fault':
@@ -2615,7 +2696,10 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
             return slip
         else:
             slip = samples[slip_start:slip_end].copy()  # Create a copy of slip to avoid modifying samples
-            n_comp = len(fault.slipdir)
+            if adapter is not None:
+                n_comp = len(adapter.get_param_names())
+            else:
+                n_comp = len(FaultAdapter._canonicalize_slipdir(fault.slipdir))
             if n_comp == 2:  # If both components of slip (dip or strikeslip)
                 slip = slip.reshape(2, -1)
                 slip = np.sqrt(np.sum(slip**2, axis=0))
@@ -3299,7 +3383,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
             if hasattr(self.multifaults, 'adapters') and fault.name in self.multifaults.adapters:
                 sizes.append(self.multifaults.adapters[fault.name].get_n_source_params())
             else:
-                sizes.append(len(fault.patch) * len(fault.slipdir))
+                sizes.append(len(fault.patch) * len(FaultAdapter._canonicalize_slipdir(fault.slipdir)))
         return sizes
 
     def _get_smoothing_source_param_sizes(self):
@@ -3316,7 +3400,7 @@ class BayesianMultiFaultsInversion(FaultAnalysisMixin):
             if hasattr(self.multifaults, 'adapters') and fault.name in self.multifaults.adapters:
                 sizes.append(self.multifaults.adapters[fault.name].get_n_source_params())
             else:
-                sizes.append(len(fault.patch) * len(fault.slipdir))
+                sizes.append(len(fault.patch) * len(FaultAdapter._canonicalize_slipdir(fault.slipdir)))
         return sizes
 
     def combine_GL_poly(self, GL_combined=None):

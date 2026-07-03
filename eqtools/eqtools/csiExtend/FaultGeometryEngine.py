@@ -767,24 +767,92 @@ class FaultGeometryEngine(SourceInv):
     def extract_contours_from_fault(self, fault_obj, target_depths, 
                                     update_engine=False, min_len=5,
                                     sort_by=None, reverse=False,
-                                    merge_tol=0.1, subdivision=3):
-        """
-        Extract precise depth contours from an existing Fault object.
-        
-        [Optimization for Rectangular Mesh] Uses "Bilinear Subdivision":
-        Subdivides coarse rectangular patches into dense micro-grids (subdivision^2)
-        before contour extraction. This perfectly reconstructs the hyperbolic paraboloid
-        surface and eliminates depth drift caused by linear approximation errors.
-        
+                                    merge_tol=0.1, subdivision=3,
+                                    method='mesh_plane_intersection',
+                                    largest_only=True, stitch_tol=None,
+                                    return_diagnostics=False):
+        """Extract isodepth contours from an existing fault object.
+
+        The default ``method='mesh_plane_intersection'`` converts the fault to
+        a triangle mesh and intersects every triangle with each target depth
+        plane.  This is projection-independent and keeps returned points in
+        curve order after segment stitching.
+
+        ``method='legacy_map_contour'`` preserves the historical path: build a
+        map-view triangulation and run ``matplotlib.tricontour`` on depth.  It
+        is kept for reproducibility, but it can be unstable for vertical or
+        near-vertical surfaces and may return correctly located points in a
+        non-continuous order.
+
         Args:
-            subdivision (int): Subdivision level.
-                               1 = Keep original (Not recommended).
-                               3 = Split rect into 3x3=9 points (Recommended, fast & smooth).
-                               5 = High precision.
-            merge_tol (float): Vertex welding tolerance (km). Use to weld adjacent patches.
+            fault_obj: CSI/eqtools fault object.  Triangular faults use
+                ``Vertices/Faces``; rectangular faults use ``patch``.
+            target_depths: Positive target depths in kilometers.
+            update_engine (bool): If true, store extracted layers in
+                ``self.layers``.
+            min_len (int): Minimum number of points in a returned line.
+            sort_by (str): Optional endpoint-orientation key for the geometric
+                method (``x``, ``y``, ``lon`` or ``lat``).  The legacy method
+                keeps its historical full point-sort behavior.
+            reverse (bool): Reverse the selected orientation.
+            merge_tol (float): Vertex welding tolerance in kilometers for
+                rectangular preprocessing.
+            subdivision (int): Rectangular preprocessing level.  For the
+                geometric backend, ``1`` means two triangles per rectangle;
+                values greater than ``1`` build a bilinear grid with that many
+                points per side before triangle-plane intersection.
+            method (str): ``mesh_plane_intersection`` (default) or
+                ``legacy_map_contour``.
+            largest_only (bool): If true, return the longest stitched polyline
+                per depth.  If false, the geometric method returns all lines.
+            stitch_tol (float): Optional endpoint tolerance for segment
+                stitching in the geometric method.
+            return_diagnostics (bool): If true, return
+                ``(extracted_layers, diagnostics)``.
+
+        Returns:
+            dict or tuple: By default ``{depth: array}``, where each array has
+            columns ``x, y, depth, lon, lat``.  With ``largest_only=False`` and
+            the geometric method, values are lists of arrays.  With
+            ``return_diagnostics=True``, a second dictionary reports segment
+            counts, stitching counts and residuals.
         """
+        method = 'mesh_plane_intersection' if method is None else str(method).lower()
+        geometric_methods = {'mesh_plane_intersection', 'plane_intersection', 'geometric'}
+        legacy_methods = {'legacy_map_contour', 'map_contour', 'tricontour', 'legacy'}
+
+        if method in geometric_methods:
+            from .statUtils.fault_contours import extract_isodepth_contours
+
+            contour_result = extract_isodepth_contours(
+                fault_obj,
+                target_depths,
+                engine=self,
+                method=method,
+                rect_subdivision=subdivision,
+                merge_tol=merge_tol,
+                stitch_tol=stitch_tol,
+                min_len=min_len,
+                largest_only=largest_only,
+                sort_by=sort_by,
+                reverse=reverse,
+                return_diagnostics=return_diagnostics,
+            )
+            extracted_layers = contour_result[0] if return_diagnostics else contour_result
+            if update_engine:
+                for depth, data in extracted_layers.items():
+                    self.layers[depth] = data[0] if isinstance(data, list) and data else data
+                if self.verbose:
+                    print(f"Updated engine with {len(extracted_layers)} extracted layers.")
+            return contour_result
+
+        if method not in legacy_methods:
+            raise ValueError(
+                "method must be 'mesh_plane_intersection' or 'legacy_map_contour'"
+            )
+
         if self.verbose:
-            print(f"Extracting contours (subdiv={subdivision}, merge={merge_tol}km)...")
+            print(f"Extracting legacy map contours (subdiv={subdivision}, merge={merge_tol}km)...")
         
         from scipy.sparse import coo_matrix
         from scipy.sparse.csgraph import connected_components
@@ -956,6 +1024,8 @@ class FaultGeometryEngine(SourceInv):
             if self.verbose:
                 print(f"Updated engine with {len(extracted_layers)} extracted layers.")
                 
+        if return_diagnostics:
+            return extracted_layers, {"method": method, "depths": {}}
         return extracted_layers
 
     # =================================================================
