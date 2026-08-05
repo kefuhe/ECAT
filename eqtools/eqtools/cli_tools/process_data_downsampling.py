@@ -28,6 +28,7 @@ from eqtools.csiExtend.downsample.data_filters import (
 )
 from eqtools.csiExtend.downsample.fault_inputs import (
     load_fault_models_for_compute,
+    load_fault_traces,
     load_plot_fault_overlays,
 )
 from eqtools.csiExtend.downsample.grid_template import (
@@ -44,11 +45,31 @@ from eqtools.csiExtend.downsample.processing_region import (
     format_processing_region_report,
     processing_region_report_file,
 )
+from eqtools.csiExtend.downsample.observation_correction import (
+    apply_observation_correction,
+    format_observation_correction_report,
+    observation_correction_report_file,
+)
+from eqtools.csiExtend.downsample.phase_cycle_correction import (
+    apply_phase_cycle_correction,
+    format_phase_cycle_correction_report,
+    phase_cycle_correction_report_file,
+)
+from eqtools.csiExtend.downsample.observation_grid import (
+    build_observation_grid,
+    export_observation_grid,
+    format_observation_export_report,
+    observation_export_report_file,
+)
 from eqtools.csiExtend.downsample.report import (
     build_downsample_report,
     downsample_report_file,
     format_downsample_report,
     write_downsample_report,
+)
+from eqtools.csiExtend.downsample.region_utils import (
+    finite_value_range,
+    longitude_intervals_for_data,
 )
 from eqtools.csiExtend.compute.backend import (
     configure_cutde_backend,
@@ -81,6 +102,14 @@ GmtsarConfig = None
 GammaTiffConfig = None
 Hyp3TiffConfig = None
 SarReaderConfig = None
+
+# Guide filters use bounded tiles on recognized rasters. The scattered
+# Gaussian implementation remains useful for small adapter-provided point
+# clouds, but is intentionally guarded because its per-point neighborhood
+# loop is not a safe fallback for satellite-scale rasters.
+GUIDE_GRID_FILTER_TILE_SIZE = 1024
+GUIDE_GRID_SCATTERED_MAX_POINTS = 250_000
+GUIDE_GRID_MAX_RECONSTRUCTION_FACTOR = 10.0
 
 
 DEFAULT_CMAP = "cmc.roma_r" if cmc is not None else "RdBu_r"
@@ -345,7 +374,9 @@ def build_quick_sar_prefix_config(args):
     sar_config = config["sar_config"]
     sar_config["reader"] = "gamma"
     sar_config["mode"] = args.sar_mode
+    sar_config["acquisition_look_side"] = getattr(args, "sar_look_side", "right")
     sar_config["directory"] = args.sar_dir
+    sar_config["read"]["byte_order"] = getattr(args, "sar_byte_order", "native")
     sar_config["outName"] = Path(prefix).name or "sar_preview"
     sar_config["files"] = {
         "prefix": prefix,
@@ -371,8 +402,10 @@ def print_quick_sar_prefix_explanation(args):
     print(f"  prefix : {args.sar_prefix}")
     print(f"  directory : {args.sar_dir}")
     print(f"  mode : {args.sar_mode}")
+    print(f"  acquisition look side : {getattr(args, 'sar_look_side', 'right')}")
+    print(f"  byte order : {getattr(args, 'sar_byte_order', 'native')}")
     print("  files : <prefix>*.phs, <prefix>*.phs.rsc, <prefix>*.azi, <prefix>*.inc")
-    print("  scope : -s quick-look only; use a YAML config for -c/-d or non-GAMMA products")
+    print("  scope : -s or --edit-trace only; use YAML for -c/-d or non-GAMMA products")
 
 
 def resolve_config_relative_path(path, config_dir=None):
@@ -382,7 +415,7 @@ def resolve_config_relative_path(path, config_dir=None):
     return Path(config_dir) / path
 
 
-def parse_arguments():
+def parse_arguments(args=None):
     parser = argparse.ArgumentParser(
         description="Process SAR or optical data for covariance estimation and downsampling."
     )
@@ -396,12 +429,35 @@ def parse_arguments():
     parser.add_argument("--do_covar", "-c", action="store_true", help="Perform covariance estimation.")
     parser.add_argument("--do_downsample", "-d", action="store_true", help="Perform downsampling.")
     parser.add_argument("--show_raw_data", "-s", action="store_true", help="Show a data quick-look plot.")
-    quick_sar = parser.add_argument_group("GAMMA quick preview")
+    parser.add_argument(
+        "--edit-trace",
+        action="store_true",
+        help=(
+            "Open the optional local trace editor over the loaded raw/corrected "
+            "observation. This inspection mode disables covariance and "
+            "downsampling for the current run."
+        ),
+    )
+    parser.add_argument(
+        "--trace-output",
+        help=(
+            "Initial Save As path used by --edit-trace. Default: "
+            "<outName>_adjusted_trace.txt."
+        ),
+    )
+    parser.add_argument(
+        "--trace-component",
+        help=(
+            "Component shown by --edit-trace. Default: observation for SAR; "
+            "east for optical."
+        ),
+    )
+    quick_sar = parser.add_argument_group("GAMMA quick inspection")
     quick_sar.add_argument(
         "--sar-prefix",
         type=str,
         help=(
-            "GAMMA file prefix for a quick -s preview without a YAML config. "
+            "GAMMA file prefix for a quick -s preview or --edit-trace session without a YAML config. "
             "Matches <prefix>*.phs, <prefix>*.phs.rsc, <prefix>*.azi, and <prefix>*.inc."
         ),
     )
@@ -416,9 +472,24 @@ def parse_arguments():
         choices=SAR_MODE_CHOICES,
         default="los_displacement",
         help=(
-            "Observation mode for --sar-prefix quick preview. Default: los_displacement; "
+            "Observation mode for --sar-prefix quick inspection. Default: los_displacement; "
             "use unwrapped_phase for phase rasters."
         ),
+    )
+    quick_sar.add_argument(
+        "--sar-look-side",
+        choices=("right", "left"),
+        default="right",
+        help=(
+            "Acquisition look side for --sar-prefix. It is the side of platform "
+            "heading containing the imaged swath. Default: right."
+        ),
+    )
+    quick_sar.add_argument(
+        "--sar-byte-order",
+        choices=("native", "little", "big"),
+        default="native",
+        help="GAMMA float32 byte order for --sar-prefix. Default: native.",
     )
     parser.add_argument("--vmin", type=float, help="Minimum value for quick-look color scale.")
     parser.add_argument("--vmax", type=float, help="Maximum value for quick-look color scale.")
@@ -430,18 +501,7 @@ def parse_arguments():
             "(1 on Windows, auto on POSIX unless overridden by environment)."
         ),
     )
-    return parser.parse_args()
-
-
-def sar_config_object(reader_key, convention):
-    require_processing_dependencies()
-    config_cls = SAR_CONFIG_CLASSES.get(reader_key, SarReaderConfig)
-    try:
-        return config_cls(**(convention or {}))
-    except TypeError as exc:
-        raise ValueError(
-            f"Unsupported SAR convention keys for reader={reader_key!r}: {exc}"
-        ) from exc
+    return parser.parse_args(args)
 
 
 def build_sar_reader(sar_config, lon0, lat0):
@@ -453,28 +513,23 @@ def build_sar_reader(sar_config, lon0, lat0):
         choices = ", ".join(sorted(SAR_READER_CLASSES))
         raise ValueError(f"Unsupported SAR reader {reader_key!r}. Available readers: {choices}.") from exc
 
-    selected_semantics = [
-        sar_config.get("mode") is not None,
-        sar_config.get("preset") is not None,
-        sar_config.get("convention") is not None,
-    ]
-    if sum(selected_semantics) > 1:
-        raise ValueError("Use only one of sar_config.mode, sar_config.preset, or sar_config.convention.")
-
     reader_kwargs = {
         "name": "mysar",
         "lon0": lon0,
         "lat0": lat0,
         "directory_name": sar_config["directory"],
+        "mode": sar_config["mode"],
     }
-    if sar_config.get("convention") is not None:
-        reader_kwargs["config"] = sar_config_object(reader_key, sar_config["convention"])
-    elif sar_config.get("preset") is not None:
-        reader_kwargs["preset"] = sar_config["preset"]
-    elif sar_config.get("mode") is not None:
-        reader_kwargs["mode"] = sar_config["mode"]
-
-    return reader_cls(**reader_kwargs)
+    reader = reader_cls(**reader_kwargs)
+    reader.config.acquisition_look_side = sar_config["acquisition_look_side"]
+    convention = (
+        sar_config.get("projection_convention")
+        if reader_key == "gmtsar"
+        else sar_config.get("geometry_convention")
+    )
+    for key, value in (convention or {}).items():
+        setattr(reader.config, key, value)
+    return reader
 
 
 def sar_extract_kwargs(sar_config):
@@ -509,6 +564,7 @@ def sar_extract_kwargs(sar_config):
         "zero2nan": read.get("zero2nan"),
         "wavelength": read.get("wavelength"),
         "factor_to_m": read.get("factor_to_m"),
+        "byte_order": read.get("byte_order"),
         "phase_band": grid.get("phase_band"),
         "azi_band": grid.get("azi_band"),
         "inc_band": grid.get("inc_band"),
@@ -730,8 +786,65 @@ def sar_read_observation_kwargs(sar_config, do_covar):
         "zero2nan": read.get("zero2nan"),
         "wavelength": read.get("wavelength"),
     }
-    kwargs.update(read.get("overrides", {}) or {})
     return kwargs
+
+
+def _update_sar_raw_index(data, keep):
+    """Keep the raw-grid index map aligned with CSI pixel rejection."""
+
+    raw_index = getattr(data, "projection_raw_valid_index", None)
+    if raw_index is None:
+        return
+    raw_index = np.asarray(raw_index, dtype=int).reshape(-1)
+    keep = np.asarray(keep, dtype=bool).reshape(-1)
+    if raw_index.size != keep.size:
+        raise ValueError(
+            "SAR raw-grid index map is not aligned with current CSI values "
+            f"({raw_index.size} indices versus {keep.size} values)."
+        )
+    data.projection_raw_valid_index = raw_index[keep]
+
+
+def _sar_non_nan_keep(data):
+    """Mirror exactly the rows removed by CSI ``insar.checkNaNs()``."""
+
+    keep = ~np.isnan(np.asarray(data.vel, dtype=float))
+    for name in ("err", "lon", "lat"):
+        values = getattr(data, name, None)
+        if values is not None:
+            keep &= ~np.isnan(np.asarray(values, dtype=float))
+    los = getattr(data, "los", None)
+    if los is not None:
+        keep &= ~np.any(np.isnan(np.asarray(los, dtype=float)), axis=1)
+    return keep
+
+
+def _sar_los_not_vertical_keep(data):
+    """Mirror exactly the rows removed by CSI ``checkLosEqualsOne()``."""
+
+    los = getattr(data, "los", None)
+    if los is None:
+        return np.ones(np.asarray(data.vel).size, dtype=bool)
+    return np.asarray(los, dtype=float)[:, 2] != 1.0
+
+
+def format_coordinate_summary(data):
+    source_longitude = finite_value_range(
+        getattr(data, "raw_mesh_lon", getattr(data, "raw_lon", []))
+    )
+    stored_longitude = finite_value_range(getattr(data, "lon", []))
+    stored_latitude = finite_value_range(getattr(data, "lat", []))
+    lines = ["Coordinate summary:"]
+    if source_longitude is not None:
+        lines.append(f"  source longitude : {source_longitude}")
+    lines.extend(
+        [
+            f"  CSI longitude    : {stored_longitude}",
+            f"  CSI latitude     : {stored_latitude}",
+            "  longitude note   : equivalent values are matched modulo 360 degrees",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def process_sar_data(sar_config, lon0, lat0, do_covar=False, config_dir=None):
@@ -752,8 +865,14 @@ def process_sar_data(sar_config, lon0, lat0, do_covar=False, config_dir=None):
     )
     mysar.read_observation(**read_kwargs)
 
+    nonzero = np.asarray(mysar.vel) != 0.0
+    _update_sar_raw_index(mysar, nonzero)
     mysar.checkZeros()
+    non_nan = _sar_non_nan_keep(mysar)
+    _update_sar_raw_index(mysar, non_nan)
     mysar.checkNaNs()
+    los_not_vertical = _sar_los_not_vertical_keep(mysar)
+    _update_sar_raw_index(mysar, los_not_vertical)
     mysar.checkLosEqualsOne()
 
     filter_report = apply_data_filters(
@@ -767,6 +886,7 @@ def process_sar_data(sar_config, lon0, lat0, do_covar=False, config_dir=None):
     if filter_report_text:
         print(filter_report_text)
 
+    print(format_coordinate_summary(mysar))
     mysar.print_input_summary(central_percentile=sar_config["qc"].get("summary_percentile", 99.0))
     return mysar, sar_config
 
@@ -818,6 +938,7 @@ def process_optical_data(optical_config, lon0, lat0, do_covar=False, config_dir=
     if filter_report_text:
         print(filter_report_text)
 
+    print(format_coordinate_summary(opti_data))
     opti_data.print_input_summary(
         central_percentile=optical_config["qc"].get("summary_percentile", 99.0)
     )
@@ -856,8 +977,17 @@ def process_plot_fault_overlays(config, lon0, lat0, stage):
 def sar_plot_values_for_stats(mysar, plot_config):
     values = np.array(mysar.raw_vel, dtype=float, copy=True)
     if str(plot_config.get("value_space", "observation")).replace("-", "_").lower() != "raw":
-        spec = mysar.observation_spec if mysar.observation_spec is not None else mysar.build_observation_spec()
-        values = mysar.convert_observation_values(values, spec)
+        observation_grid = getattr(mysar, "observation_grid", None)
+        if observation_grid is not None:
+            values = np.array(
+                observation_grid.display_component("observation"),
+                dtype=float,
+                copy=True,
+            )
+            values[~observation_grid.analysis_valid_mask] = np.nan
+        else:
+            spec = mysar.observation_spec if mysar.observation_spec is not None else mysar.build_observation_spec()
+            values = mysar.convert_observation_values(values, spec)
     filter_index = getattr(mysar, "data_filter_raw_valid_index", None)
     if filter_index is not None:
         flat = values.reshape(-1)
@@ -1111,7 +1241,17 @@ def sar_raw_plot_label(data, plot_config, factor4plot):
     value_space = plot_config.get("value_space", "observation")
     try:
         spec = data.observation_spec if data.observation_spec is not None else data.build_observation_spec()
-        return data._default_raw_sar_plot_label(value_space, spec, factor4plot)
+        label = data._default_raw_sar_plot_label(value_space, spec, factor4plot)
+        correction = getattr(data, "observation_correction_report", {}) or {}
+        phase_cycle = getattr(data, "phase_cycle_correction_report", {}) or {}
+        if str(value_space).replace("-", "_").lower() != "raw":
+            if phase_cycle.get("enabled") and correction.get("enabled"):
+                label += " (phase-cycle + reference corrected)"
+            elif phase_cycle.get("enabled"):
+                label += " (phase-cycle corrected)"
+            elif correction.get("enabled"):
+                label += " (reference corrected)"
+        return label
     except Exception:
         return sar_decimated_label({"mode": getattr(data, "observation_type", None)}, factor4plot=factor4plot)
 
@@ -1181,13 +1321,25 @@ def plot_sar_quicklook(data, config, selected_faults, args):
 
 def estimate_covariance(data, config):
     require_processing_dependencies()
-    mask_out_entries = covariance_mask_out_entries(config["covar"].get("mask_out"))
+    configured_mask_out_entries = covariance_mask_out_entries(
+        config["covar"].get("mask_out")
+    )
+    mask_out_entries = resolved_covariance_mask_out_entries(data, config)
     if not mask_out_entries:
         raise ValueError(
             "covar.mask_out is required when estimating covariance. "
             "Mask the deformation-source area before running covariance estimation."
         )
     covar = imcov("Covariance estimator", data, verbose=True)
+    config.setdefault("_runtime", {})["resolved_covariance_mask_out"] = deepcopy(
+        mask_out_entries
+    )
+    if mask_out_entries != configured_mask_out_entries:
+        print(
+            "Covariance mask_out longitude branches:\n"
+            f"  configured: {configured_mask_out_entries}\n"
+            f"  resolved  : {mask_out_entries}"
+        )
     for mask_out in mask_out_entries:
         covar.maskOut(mask_out)
     covar.computeCovariance(
@@ -1368,52 +1520,326 @@ def estimated_point_spacing(x, y):
     return float(np.nanmedian(nearest))
 
 
-def regular_grid_index(lon, lat, values_size, max_grid_factor=2.0):
-    lon = np.asarray(lon, dtype=float)
-    lat = np.asarray(lat, dtype=float)
+def regular_grid_index(lon, lat, values_size, max_grid_factor=None):
+    """Map sparse samples from a rectilinear lon/lat raster to grid rows/columns."""
+    if max_grid_factor is None:
+        max_grid_factor = GUIDE_GRID_MAX_RECONSTRUCTION_FACTOR
+    lon = np.asarray(lon, dtype=float).reshape(-1)
+    lat = np.asarray(lat, dtype=float).reshape(-1)
     if lon.shape[0] != values_size or lat.shape[0] != values_size:
         return None
     finite = np.isfinite(lon) & np.isfinite(lat)
     if not np.any(finite):
         return None
 
-    unique_lon, lon_inverse = np.unique(lon[finite], return_inverse=True)
-    unique_lat, lat_inverse = np.unique(lat[finite], return_inverse=True)
+    finite_count = int(np.count_nonzero(finite))
+    unique_lon = np.unique(lon[finite])
+    unique_lat = np.unique(lat[finite])
+    if unique_lon.size >= finite_count or unique_lat.size >= finite_count:
+        return None
     grid_size = unique_lon.size * unique_lat.size
-    if grid_size < values_size or grid_size > max(values_size * max_grid_factor, values_size + 1):
+    if (
+        grid_size < finite_count
+        or grid_size > max(finite_count * max_grid_factor, finite_count + 1)
+        or grid_size > np.iinfo(np.int32).max
+    ):
         return None
 
-    row = np.full(values_size, -1, dtype=int)
-    col = np.full(values_size, -1, dtype=int)
-    finite_indices = np.flatnonzero(finite)
-    row[finite_indices] = lat_inverse
-    col[finite_indices] = lon_inverse
+    if finite_count == values_size:
+        row = np.searchsorted(unique_lat, lat).astype(np.int32, copy=False)
+        col = np.searchsorted(unique_lon, lon).astype(np.int32, copy=False)
+        valid_row = row
+        valid_col = col
+    else:
+        row = np.full(values_size, -1, dtype=np.int32)
+        col = np.full(values_size, -1, dtype=np.int32)
+        finite_indices = np.flatnonzero(finite)
+        row[finite_indices] = np.searchsorted(unique_lat, lat[finite]).astype(
+            np.int32,
+            copy=False,
+        )
+        col[finite_indices] = np.searchsorted(unique_lon, lon[finite]).astype(
+            np.int32,
+            copy=False,
+        )
+        valid_row = row[finite_indices]
+        valid_col = col[finite_indices]
 
-    flat_index = row[finite_indices] * unique_lon.size + col[finite_indices]
+    flat_index = valid_row.astype(np.int64) * unique_lon.size + valid_col
     if np.unique(flat_index).size != flat_index.size:
         return None
     return unique_lat.size, unique_lon.size, row, col
 
 
-def grid_spacing_from_coordinates(x_grid, y_grid, axis):
-    dx = np.diff(x_grid, axis=axis)
-    dy = np.diff(y_grid, axis=axis)
-    distances = np.sqrt(dx**2 + dy**2)
-    distances = distances[np.isfinite(distances) & (distances > 0.0)]
-    if distances.size == 0:
+def direct_regular_grid_layout(lon, lat, values_size):
+    """Return a zero-copy layout for a complete row/column-major lon/lat raster."""
+    if lon is None or lat is None:
         return None
-    return float(np.nanmedian(distances))
+    lon = np.asarray(lon, dtype=float).reshape(-1)
+    lat = np.asarray(lat, dtype=float).reshape(-1)
+    if lon.size != values_size or lat.size != values_size or values_size < 4:
+        return None
+    if not np.all(np.isfinite(lon)) or not np.all(np.isfinite(lat)):
+        return None
+
+    lat_changes = lat != lat[0]
+    nlon = int(np.argmax(lat_changes)) if np.any(lat_changes) else values_size
+    del lat_changes
+    if nlon > 1 and values_size % nlon == 0:
+        nlat = values_size // nlon
+        if nlat > 1:
+            lon_grid = lon.reshape(nlat, nlon)
+            lat_grid = lat.reshape(nlat, nlon)
+            if (
+                np.all(lon_grid == lon_grid[0:1, :])
+                and np.all(lat_grid == lat_grid[:, 0:1])
+            ):
+                return nlat, nlon, "row_major"
+
+    lon_changes = lon != lon[0]
+    nlat = int(np.argmax(lon_changes)) if np.any(lon_changes) else values_size
+    del lon_changes
+    if nlat > 1 and values_size % nlat == 0:
+        nlon = values_size // nlat
+        if nlon > 1:
+            lon_columns = lon.reshape(nlon, nlat)
+            lat_columns = lat.reshape(nlon, nlat)
+            if (
+                np.all(lon_columns == lon_columns[:, 0:1])
+                and np.all(lat_columns == lat_columns[0:1, :])
+            ):
+                return nlat, nlon, "column_major"
+    return None
+
+
+def regular_grid_view(values, layout):
+    """View a flat raster as ``(latitude, longitude)`` without copying."""
+    nlat, nlon, order = layout
+    values = np.asarray(values)
+    if order == "row_major":
+        return values.reshape(nlat, nlon)
+    return values.reshape(nlon, nlat).T
+
+
+def flatten_regular_grid_view(values_grid, layout):
+    """Return filtered grid values in the input raster's original order."""
+    if layout[2] == "row_major":
+        return values_grid.reshape(-1)
+    return values_grid.T.reshape(-1)
+
+
+def grid_spacing_from_regular_views(x_grid, y_grid, axis, max_profiles=5):
+    """Estimate pixel spacing from a few complete raster rows or columns."""
+    profile_count = x_grid.shape[1 - axis]
+    if profile_count <= 0:
+        return None
+    profile_indices = np.unique(
+        np.linspace(0, profile_count - 1, min(max_profiles, profile_count), dtype=int)
+    )
+    distance_parts = []
+    for profile_index in profile_indices:
+        if axis == 1:
+            x_values = x_grid[profile_index, :]
+            y_values = y_grid[profile_index, :]
+        else:
+            x_values = x_grid[:, profile_index]
+            y_values = y_grid[:, profile_index]
+        distances = np.sqrt(np.diff(x_values) ** 2 + np.diff(y_values) ** 2)
+        distances = distances[np.isfinite(distances) & (distances > 0.0)]
+        if distances.size:
+            distance_parts.append(distances)
+    if not distance_parts:
+        return None
+    return float(np.nanmedian(np.concatenate(distance_parts)))
+
+
+def grid_spacing_from_indexed_points(
+    x,
+    y,
+    row,
+    col,
+    axis,
+    nlat,
+    nlon,
+    max_profiles=5,
+):
+    """Estimate grid spacing without allocating complete x/y grids."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = (row >= 0) & (col >= 0) & np.isfinite(x) & np.isfinite(y)
+    group_index = row if axis == 1 else col
+    within_index = col if axis == 1 else row
+    group_count = nlat if axis == 1 else nlon
+    counts = np.bincount(group_index[valid], minlength=group_count)
+    candidate_groups = np.argsort(counts)[-min(max_profiles, group_count):]
+    distance_parts = []
+    for group in candidate_groups:
+        if counts[group] < 2:
+            continue
+        indices = np.flatnonzero(valid & (group_index == group))
+        order = np.argsort(within_index[indices])
+        indices = indices[order]
+        adjacent = np.diff(within_index[indices]) == 1
+        if not np.any(adjacent):
+            continue
+        distances = np.sqrt(
+            np.diff(x[indices]) ** 2
+            + np.diff(y[indices]) ** 2
+        )[adjacent]
+        distances = distances[np.isfinite(distances) & (distances > 0.0)]
+        if distances.size:
+            distance_parts.append(distances)
+    if not distance_parts:
+        return None
+    return float(np.nanmedian(np.concatenate(distance_parts)))
+
+
+def gaussian_smooth_grid_blockwise(
+    value_grid,
+    sigma_pixels,
+    radius_sigma,
+    tile_size=None,
+):
+    """Apply a NaN-aware Gaussian filter with bounded temporary arrays."""
+    from scipy.ndimage import gaussian_filter
+
+    value_grid = np.asarray(value_grid, dtype=float)
+    sigma_y, sigma_x = (float(value) for value in sigma_pixels)
+    tile_size = int(tile_size or GUIDE_GRID_FILTER_TILE_SIZE)
+    radius_y = int(np.ceil(float(radius_sigma) * sigma_y))
+    radius_x = int(np.ceil(float(radius_sigma) * sigma_x))
+    output = np.full(value_grid.shape, np.nan, dtype=float)
+
+    for row_start in range(0, value_grid.shape[0], tile_size):
+        row_stop = min(row_start + tile_size, value_grid.shape[0])
+        ext_row_start = max(0, row_start - radius_y)
+        ext_row_stop = min(value_grid.shape[0], row_stop + radius_y)
+        core_row_start = row_start - ext_row_start
+        core_row_stop = core_row_start + (row_stop - row_start)
+        for col_start in range(0, value_grid.shape[1], tile_size):
+            col_stop = min(col_start + tile_size, value_grid.shape[1])
+            ext_col_start = max(0, col_start - radius_x)
+            ext_col_stop = min(value_grid.shape[1], col_stop + radius_x)
+            core_col_start = col_start - ext_col_start
+            core_col_stop = core_col_start + (col_stop - col_start)
+
+            tile = value_grid[
+                ext_row_start:ext_row_stop,
+                ext_col_start:ext_col_stop,
+            ]
+            finite = np.isfinite(tile)
+            weighted_values = gaussian_filter(
+                np.where(finite, tile, 0.0),
+                sigma=(sigma_y, sigma_x),
+                mode="nearest",
+                truncate=float(radius_sigma),
+            )
+            weights = gaussian_filter(
+                finite.astype(float),
+                sigma=(sigma_y, sigma_x),
+                mode="nearest",
+                truncate=float(radius_sigma),
+            )
+            tile_output = np.full(tile.shape, np.nan, dtype=float)
+            valid_weight = weights > 0.0
+            tile_output[valid_weight] = weighted_values[valid_weight] / weights[valid_weight]
+            output[row_start:row_stop, col_start:col_stop] = tile_output[
+                core_row_start:core_row_stop,
+                core_col_start:core_col_stop,
+            ]
+
+    output[~np.isfinite(value_grid)] = np.nan
+    return output
+
+
+def nanmedian_filter_grid_blockwise(value_grid, window_size, tile_size=None):
+    """Apply a finite-value 2-D median without changing the original NaN mask."""
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    value_grid = np.asarray(value_grid, dtype=float)
+    window_size = int(window_size)
+    radius = window_size // 2
+    max_tile_by_window = max(
+        32,
+        int(np.sqrt(20_000_000 / float(window_size ** 2))),
+    )
+    tile_size = int(
+        tile_size
+        or min(GUIDE_GRID_FILTER_TILE_SIZE, 512, max_tile_by_window)
+    )
+    output = np.full(value_grid.shape, np.nan, dtype=float)
+
+    for row_start in range(0, value_grid.shape[0], tile_size):
+        row_stop = min(row_start + tile_size, value_grid.shape[0])
+        source_row_start = max(0, row_start - radius)
+        source_row_stop = min(value_grid.shape[0], row_stop + radius)
+        pad_top = max(0, radius - row_start)
+        pad_bottom = max(0, row_stop + radius - value_grid.shape[0])
+        for col_start in range(0, value_grid.shape[1], tile_size):
+            col_stop = min(col_start + tile_size, value_grid.shape[1])
+            source_col_start = max(0, col_start - radius)
+            source_col_stop = min(value_grid.shape[1], col_stop + radius)
+            pad_left = max(0, radius - col_start)
+            pad_right = max(0, col_stop + radius - value_grid.shape[1])
+
+            tile = value_grid[
+                source_row_start:source_row_stop,
+                source_col_start:source_col_stop,
+            ]
+            if pad_top or pad_bottom or pad_left or pad_right:
+                tile = np.pad(
+                    tile,
+                    ((pad_top, pad_bottom), (pad_left, pad_right)),
+                    mode="edge",
+                )
+            windows = sliding_window_view(tile, (window_size, window_size))
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+                output[row_start:row_stop, col_start:col_stop] = np.nanmedian(
+                    windows,
+                    axis=(-2, -1),
+                )
+
+    output[~np.isfinite(value_grid)] = np.nan
+    return output
 
 
 def gaussian_smooth_regular_grid(x, y, values, sigma, radius_sigma, lon=None, lat=None, return_info=False):
-    from scipy.ndimage import gaussian_filter
-
     if lon is None or lat is None:
         return None
 
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     values = np.asarray(values, dtype=float)
+    layout = direct_regular_grid_layout(lon, lat, values.size)
+    if layout is not None:
+        value_grid = regular_grid_view(values, layout)
+        x_grid = regular_grid_view(x, layout)
+        y_grid = regular_grid_view(y, layout)
+        x_spacing = grid_spacing_from_regular_views(x_grid, y_grid, axis=1)
+        y_spacing = grid_spacing_from_regular_views(x_grid, y_grid, axis=0)
+        if x_spacing is not None and y_spacing is not None:
+            sigma_pixels = (float(sigma) / y_spacing, float(sigma) / x_spacing)
+            smoothed_grid = gaussian_smooth_grid_blockwise(
+                value_grid,
+                sigma_pixels,
+                radius_sigma,
+            )
+            output = flatten_regular_grid_view(smoothed_grid, layout)
+            if not return_info:
+                return output
+            return output, {
+                "backend": "regular_grid",
+                "execution": "blockwise",
+                "grid_layout": layout[2],
+                "grid_shape": [int(layout[0]), int(layout[1])],
+                "grid_coverage": 1.0,
+                "x_spacing": float(x_spacing),
+                "y_spacing": float(y_spacing),
+                "sigma_pixels_x": float(sigma / x_spacing),
+                "sigma_pixels_y": float(sigma / y_spacing),
+            }
+
     grid_index = regular_grid_index(lon, lat, values.size)
     if grid_index is None:
         return None
@@ -1421,14 +1847,26 @@ def gaussian_smooth_regular_grid(x, y, values, sigma, radius_sigma, lon=None, la
     nlat, nlon, row, col = grid_index
     valid_position = (row >= 0) & (col >= 0)
     value_grid = np.full((nlat, nlon), np.nan, dtype=float)
-    x_grid = np.full((nlat, nlon), np.nan, dtype=float)
-    y_grid = np.full((nlat, nlon), np.nan, dtype=float)
     value_grid[row[valid_position], col[valid_position]] = values[valid_position]
-    x_grid[row[valid_position], col[valid_position]] = x[valid_position]
-    y_grid[row[valid_position], col[valid_position]] = y[valid_position]
 
-    x_spacing = grid_spacing_from_coordinates(x_grid, y_grid, axis=1)
-    y_spacing = grid_spacing_from_coordinates(x_grid, y_grid, axis=0)
+    x_spacing = grid_spacing_from_indexed_points(
+        x,
+        y,
+        row,
+        col,
+        axis=1,
+        nlat=nlat,
+        nlon=nlon,
+    )
+    y_spacing = grid_spacing_from_indexed_points(
+        x,
+        y,
+        row,
+        col,
+        axis=0,
+        nlat=nlat,
+        nlon=nlon,
+    )
     if x_spacing is None or y_spacing is None:
         return None
 
@@ -1436,21 +1874,11 @@ def gaussian_smooth_regular_grid(x, y, values, sigma, radius_sigma, lon=None, la
     finite_values = np.isfinite(value_grid)
     if not np.any(finite_values):
         raise ValueError("Cannot build guide grid from data with no finite observation values.")
-    weighted_values = gaussian_filter(
-        np.where(finite_values, value_grid, 0.0),
-        sigma=sigma_pixels,
-        mode="nearest",
-        truncate=float(radius_sigma),
+    smoothed_grid = gaussian_smooth_grid_blockwise(
+        value_grid,
+        sigma_pixels,
+        radius_sigma,
     )
-    weights = gaussian_filter(
-        finite_values.astype(float),
-        sigma=sigma_pixels,
-        mode="nearest",
-        truncate=float(radius_sigma),
-    )
-    smoothed_grid = np.full_like(value_grid, np.nan)
-    valid_weight = weights > 0.0
-    smoothed_grid[valid_weight] = weighted_values[valid_weight] / weights[valid_weight]
 
     output = np.full(values.shape, np.nan, dtype=float)
     valid_output = valid_position & np.isfinite(values)
@@ -1459,11 +1887,58 @@ def gaussian_smooth_regular_grid(x, y, values, sigma, radius_sigma, lon=None, la
         return output
     return output, {
         "backend": "regular_grid",
+        "execution": "blockwise",
+        "grid_layout": "indexed",
         "grid_shape": [int(nlat), int(nlon)],
+        "grid_coverage": float(np.count_nonzero(valid_position) / (nlat * nlon)),
         "x_spacing": float(x_spacing),
         "y_spacing": float(y_spacing),
         "sigma_pixels_x": float(sigma / x_spacing),
         "sigma_pixels_y": float(sigma / y_spacing),
+    }
+
+
+def median_filter_regular_grid(values, window_size, lon=None, lat=None, return_info=False):
+    """Median-filter a recognized regular raster in pixel space."""
+    values = np.asarray(values, dtype=float)
+    layout = direct_regular_grid_layout(lon, lat, values.size)
+    if layout is not None:
+        filtered_grid = nanmedian_filter_grid_blockwise(
+            regular_grid_view(values, layout),
+            window_size,
+        )
+        output = flatten_regular_grid_view(filtered_grid, layout)
+        if not return_info:
+            return output
+        return output, {
+            "backend": "regular_grid",
+            "execution": "blockwise",
+            "grid_layout": layout[2],
+            "grid_shape": [int(layout[0]), int(layout[1])],
+            "grid_coverage": 1.0,
+            "window_size": int(window_size),
+        }
+
+    grid_index = regular_grid_index(lon, lat, values.size)
+    if grid_index is None:
+        return None
+    nlat, nlon, row, col = grid_index
+    valid_position = (row >= 0) & (col >= 0)
+    value_grid = np.full((nlat, nlon), np.nan, dtype=float)
+    value_grid[row[valid_position], col[valid_position]] = values[valid_position]
+    filtered_grid = nanmedian_filter_grid_blockwise(value_grid, window_size)
+    output = np.full(values.shape, np.nan, dtype=float)
+    valid_output = valid_position & np.isfinite(values)
+    output[valid_output] = filtered_grid[row[valid_output], col[valid_output]]
+    if not return_info:
+        return output
+    return output, {
+        "backend": "regular_grid",
+        "execution": "blockwise",
+        "grid_layout": "indexed",
+        "grid_shape": [int(nlat), int(nlon)],
+        "grid_coverage": float(np.count_nonzero(valid_position) / (nlat * nlon)),
+        "window_size": int(window_size),
     }
 
 
@@ -1530,7 +2005,56 @@ def gaussian_smooth_point_values(x, y, values, sigma, radius_sigma=3.0, lon=None
     )
     if grid_result is not None:
         return grid_result
+    valid_points = int(
+        np.count_nonzero(
+            np.isfinite(np.asarray(x, dtype=float))
+            & np.isfinite(np.asarray(y, dtype=float))
+            & np.isfinite(np.asarray(values, dtype=float))
+        )
+    )
+    if valid_points > GUIDE_GRID_SCATTERED_MAX_POINTS:
+        raise ValueError(
+            "Gaussian guide filtering could not recognize a regular lon/lat raster, "
+            f"and scattered filtering is disabled above {GUIDE_GRID_SCATTERED_MAX_POINTS:,} "
+            f"finite points (received {valid_points:,}). Preserve a rectilinear lon/lat "
+            "grid topology or pre-filter the data before downsampling."
+        )
     return gaussian_smooth_scattered_values(x, y, values, sigma, radius_sigma, return_info=return_info)
+
+
+def median_filter_point_values(values, window_size=3, lon=None, lat=None, return_info=False):
+    """Apply a NaN-aware median to a regular SAR/optical raster."""
+    if isinstance(window_size, bool):
+        numeric_window = None
+    else:
+        try:
+            numeric_window = float(window_size)
+        except (TypeError, ValueError):
+            numeric_window = None
+    if (
+        numeric_window is None
+        or not np.isfinite(numeric_window)
+        or not numeric_window.is_integer()
+        or numeric_window < 3
+        or int(numeric_window) % 2 == 0
+    ):
+        raise ValueError(
+            "guide_grid.filter.window_size must be an odd integer greater than or equal to 3."
+        )
+    window_size = int(numeric_window)
+    grid_result = median_filter_regular_grid(
+        values,
+        window_size,
+        lon=lon,
+        lat=lat,
+        return_info=return_info,
+    )
+    if grid_result is None:
+        raise ValueError(
+            "Median guide filtering requires a recognizable regular lon/lat raster; "
+            "it is not defined for scattered point input."
+        )
+    return grid_result
 
 
 def guide_grid_sigma_in_xy_units(data, guide_grid):
@@ -1550,46 +2074,66 @@ def guide_grid_sigma_in_xy_units(data, guide_grid):
 def build_guide_grid_image(data, data_type, guide_grid):
     guide = copy(data)
     guide.name = f"{getattr(data, 'name', 'data')} guide-grid"
-    sigma = guide_grid_sigma_in_xy_units(data, guide_grid)
-    radius_sigma = float((guide_grid.get("filter", {}) or {}).get("radius_sigma", 3.0))
+    guide_filter = guide_grid.get("filter", {}) or {}
+    filter_kind = str(guide_filter.get("kind", "gaussian")).replace("-", "_").lower()
+    gaussian_sigma = (
+        guide_grid_sigma_in_xy_units(data, guide_grid)
+        if filter_kind == "gaussian"
+        else None
+    )
+    radius_sigma = float(guide_filter.get("radius_sigma", 3.0))
     component = str(guide_grid.get("component", "auto")).replace("-", "_").lower()
     component_reports = {}
 
-    def smooth_component(name, values):
-        smoothed, info = gaussian_smooth_point_values(
-            data.x,
-            data.y,
-            values,
-            sigma,
-            radius_sigma,
-            lon=getattr(data, "lon", None),
-            lat=getattr(data, "lat", None),
-            return_info=True,
-        )
+    def filter_component(name, values):
+        if filter_kind == "gaussian":
+            filtered, info = gaussian_smooth_point_values(
+                data.x,
+                data.y,
+                values,
+                gaussian_sigma,
+                radius_sigma,
+                lon=getattr(data, "lon", None),
+                lat=getattr(data, "lat", None),
+                return_info=True,
+            )
+        elif filter_kind == "median":
+            filtered, info = median_filter_point_values(
+                values,
+                window_size=guide_filter.get("window_size", 3),
+                lon=getattr(data, "lon", None),
+                lat=getattr(data, "lat", None),
+                return_info=True,
+            )
+        else:
+            raise ValueError(
+                "downsample.guide_grid.filter.kind must be 'gaussian' or 'median'."
+            )
         component_reports[name] = info
-        return smoothed
+        return filtered
 
     if data_type == "sar":
         if component not in ("auto", "observation"):
             raise ValueError("SAR guide_grid.component must be 'auto' or 'observation'.")
-        guide.vel = smooth_component("observation", data.vel)
+        component = "observation"
+        guide.vel = filter_component("observation", data.vel)
     elif data_type == "optical":
         east = np.asarray(data.east, dtype=float)
         north = np.asarray(data.north, dtype=float)
         if component == "auto":
-            component = "magnitude"
+            component = "both"
         if component == "both":
-            guide.east = smooth_component("east", east)
-            guide.north = smooth_component("north", north)
+            guide.east = filter_component("east", east)
+            guide.north = filter_component("north", north)
         elif component == "east":
-            guide.east = smooth_component("east", east)
+            guide.east = filter_component("east", east)
             guide.north = np.zeros_like(guide.east)
         elif component == "north":
-            guide.north = smooth_component("north", north)
+            guide.north = filter_component("north", north)
             guide.east = np.zeros_like(guide.north)
         elif component == "magnitude":
             magnitude = np.sqrt(east ** 2 + north ** 2)
-            guide.east = smooth_component("magnitude", magnitude)
+            guide.east = filter_component("magnitude", magnitude)
             guide.north = np.zeros_like(guide.east)
         else:
             raise ValueError("Optical guide_grid.component must be auto, magnitude, east, north, or both.")
@@ -1653,7 +2197,28 @@ def resolve_std_focus_polygon(downsampler, std_config, config_dir=None):
     if not focus_region.get("enabled", False):
         return None
 
-    if focus_region.get("polygon_file") is not None:
+    box = focus_region.get("box")
+    if box is not None:
+        coord_type = (
+            str(focus_region.get("coord_type", "lonlat"))
+            .replace("-", "_")
+            .lower()
+        )
+        if coord_type != "lonlat":
+            raise ValueError(
+                "std_config.focus_region.box currently requires coord_type='lonlat'."
+            )
+        minlon, maxlon, minlat, maxlat = (float(value) for value in box)
+        polygon = np.asarray(
+            [
+                [minlon, minlat],
+                [maxlon, minlat],
+                [maxlon, maxlat],
+                [minlon, maxlat],
+            ],
+            dtype=float,
+        )
+    elif focus_region.get("polygon_file") is not None:
         polygon_path = resolve_config_relative_path(focus_region["polygon_file"], config_dir=config_dir)
         polygon = read_polygon_file(polygon_path)
         focus_region["resolved_polygon_file"] = str(polygon_path)
@@ -1952,6 +2517,31 @@ def covariance_mask_out_entries(mask_out):
     return entries
 
 
+def resolved_covariance_mask_out_entries(data, config):
+    """Align covariance-mask boxes to the longitude branch stored by CSI.
+
+    CSI compares mask bounds numerically against ``data.lon``.  Its standard
+    readers store negative input longitudes in the equivalent 0--360 branch,
+    so each configured interval is expanded only to the equivalent branches
+    that overlap the current data.  Neither the data nor user config is
+    mutated.
+    """
+
+    entries = covariance_mask_out_entries(config["covar"].get("mask_out"))
+    longitude = np.asarray(getattr(data, "lon", []), dtype=float)
+    resolved = []
+    for minimum, maximum, min_latitude, max_latitude in entries:
+        for interval in longitude_intervals_for_data(
+            minimum,
+            maximum,
+            longitude,
+        ):
+            resolved.append(
+                [interval[0], interval[1], min_latitude, max_latitude]
+            )
+    return resolved
+
+
 def require_covariance_mask_for_estimation(config):
     if not covariance_mask_out_entries(config["covar"].get("mask_out")):
         raise ValueError(
@@ -2180,10 +2770,22 @@ def plot_optical_quicklook(data, config, selected_faults, out_name, args):
     plot_stride = int(raw_plot.get("plot_stride", raw_plot.get("rawdownsample4plot", 1)) or 1)
     components = []
     for index, component_name in enumerate(check_plot_components(raw_plot, "optical")):
+        observation_grid = getattr(data, "observation_grid", None)
+        if observation_grid is not None:
+            component_values = np.array(
+                observation_grid.display_component(component_name),
+                dtype=float,
+                copy=True,
+            )
+            component_values[
+                ~observation_grid.analysis_valid_mask
+            ] = np.nan
+        else:
+            component_values = getattr(data, f"raw_{component_name}")
         lon, lat, values = apply_plot_stride(
             data.raw_mesh_lon,
             data.raw_mesh_lat,
-            getattr(data, f"raw_{component_name}"),
+            component_values,
             plot_stride,
         )
         vmin, vmax = check_plot_explicit_limits(raw_plot, args, component_index=index)
@@ -2193,7 +2795,20 @@ def plot_optical_quicklook(data, config, selected_faults, out_name, args):
                 lon=lon,
                 lat=lat,
                 values=values,
-                label=optical_decimated_label(component_name, factor4plot=factor4plot),
+                label=(
+                    optical_decimated_label(component_name, factor4plot=factor4plot)
+                    + (
+                        " (reference corrected)"
+                        if (
+                            getattr(
+                                data,
+                                "observation_correction_report",
+                                {},
+                            ) or {}
+                        ).get("enabled")
+                        else ""
+                    )
+                ),
                 vmin=vmin,
                 vmax=vmax,
             )
@@ -2237,8 +2852,9 @@ def resolve_run_steps(args, config):
     do_covar = args.do_covar or config["covar"].get("do_covar", False)
     do_downsample = args.do_downsample or config["downsample"].get("enabled", False)
     show_raw_data = args.show_raw_data
+    edit_trace = bool(getattr(args, "edit_trace", False))
 
-    if show_raw_data:
+    if show_raw_data or edit_trace:
         do_covar = False
         do_downsample = False
 
@@ -2246,6 +2862,7 @@ def resolve_run_steps(args, config):
         "do_covar": bool(do_covar),
         "do_downsample": bool(do_downsample),
         "show_raw_data": bool(show_raw_data),
+        "edit_trace": edit_trace,
     }
 
 
@@ -2310,7 +2927,61 @@ def expected_outputs_for_run(config, out_name, steps):
     ):
         outputs.append(region_report_path)
 
-    return outputs
+    correction = config.get("observation_correction", {})
+    correction_report = observation_correction_report_file(correction, out_name)
+    if (
+        correction.get("enabled", False)
+        and correction.get("report", True)
+        and correction_report
+    ):
+        outputs.append(correction_report)
+
+    phase_cycle = config.get("phase_cycle_correction", {})
+    phase_cycle_report = phase_cycle_correction_report_file(
+        phase_cycle,
+        out_name,
+    )
+    if (
+        phase_cycle.get("enabled", False)
+        and phase_cycle.get("report", True)
+        and phase_cycle_report
+    ):
+        outputs.append(phase_cycle_report)
+
+    grid_export = (config.get("export", {}) or {}).get("observation_grid", {}) or {}
+    runtime_export = (config.get("_runtime", {}) or {}).get("observation_export")
+    if runtime_export:
+        outputs.extend(runtime_export.get("files", []))
+        if runtime_export.get("report_file"):
+            outputs.append(runtime_export["report_file"])
+    elif grid_export.get("enabled", False):
+        grid_file = grid_export.get("file", "auto")
+        outputs.append(
+            f"{out_name}_observation.nc"
+            if grid_file in (None, "auto")
+            else str(grid_file)
+        )
+        grid_report = observation_export_report_file(grid_export, out_name)
+        if grid_export.get("report", True) and grid_report:
+            outputs.append(grid_report)
+
+    google_earth = (config.get("export", {}) or {}).get("google_earth", {}) or {}
+    runtime_google_earth = (
+        (config.get("_runtime", {}) or {}).get("google_earth_export")
+    )
+    if runtime_google_earth:
+        outputs.extend(runtime_google_earth.get("files", []))
+    elif (
+        google_earth.get("enabled", False)
+        and not any(steps.values())
+    ):
+        from eqtools.cli_tools.observation_google_earth import (
+            google_earth_export_file,
+        )
+
+        outputs.append(str(google_earth_export_file(google_earth, out_name)))
+
+    return list(dict.fromkeys(outputs))
 
 
 def write_run_metadata(config, args, out_name, steps, outputs, metadata_file=None):
@@ -2344,6 +3015,9 @@ def write_run_metadata(config, args, out_name, steps, outputs, metadata_file=Non
             "vmin": args.vmin,
             "vmax": args.vmax,
             "workers": getattr(args, "workers", None),
+            "edit_trace": bool(getattr(args, "edit_trace", False)),
+            "trace_component": getattr(args, "trace_component", None),
+            "trace_output": getattr(args, "trace_output", None),
         },
         "expected_outputs": outputs,
         "effective_config": config,
@@ -2374,8 +3048,15 @@ def configure_downsample_compute_backend(config, steps=None):
 
 def prepare_run(args):
     if quick_sar_prefix_requested(args):
-        if not args.show_raw_data or args.do_covar or args.do_downsample:
-            raise ValueError("--sar-prefix is only supported with -s/--show_raw_data; use YAML for -c/-d.")
+        if (
+            not (args.show_raw_data or getattr(args, "edit_trace", False))
+            or args.do_covar
+            or args.do_downsample
+        ):
+            raise ValueError(
+                "--sar-prefix is supported only with -s/--show_raw_data or "
+                "--edit-trace; use YAML for -c/-d."
+            )
         config = normalize_downsample_config(build_quick_sar_prefix_config(args))
         config["_config_dir"] = str(Path.cwd())
         print_quick_sar_prefix_explanation(args)
@@ -2386,13 +3067,22 @@ def prepare_run(args):
         raise ValueError("--workers must be a positive integer.")
     config["_workers"] = getattr(args, "workers", None)
     steps = resolve_run_steps(args, config)
+    if steps["edit_trace"] and (
+        (getattr(args, "vmin", None) is None)
+        != (getattr(args, "vmax", None) is None)
+    ):
+        raise ValueError(
+            "--edit-trace requires both --vmin and --vmax, or neither."
+        )
     configure_downsample_compute_backend(config, steps=steps)
     if steps["do_covar"]:
         require_covariance_mask_for_estimation(config)
 
     print(
         "do_covar: {do_covar}, do_downsample: {do_downsample}, "
-        "show_raw_data: {show_raw_data}".format(**steps)
+        "show_raw_data: {show_raw_data}, edit_trace: {edit_trace}".format(
+            **steps
+        )
     )
 
     return config, steps
@@ -2426,7 +3116,113 @@ def load_input_data(config, args, steps):
     else:
         raise ValueError(f"Unsupported data type: {data_type}")
 
+    prepare_observation_grid_features(
+        data,
+        config,
+        out_name,
+        steps=steps,
+        require_grid=steps.get("edit_trace", False),
+    )
     return data, out_name
+
+
+def prepare_observation_grid_features(
+    data,
+    config,
+    out_name,
+    *,
+    steps=None,
+    require_grid=False,
+):
+    """Apply corrections/export and optionally retain a grid for interaction."""
+
+    phase_cycle_config = config.get("phase_cycle_correction", {}) or {}
+    correction_config = config.get("observation_correction", {}) or {}
+    grid_export_config = (
+        (config.get("export", {}) or {}).get("observation_grid", {}) or {}
+    )
+    google_earth_config = (
+        (config.get("export", {}) or {}).get("google_earth", {}) or {}
+    )
+    google_earth_export_only = (
+        google_earth_config.get("enabled", False)
+        and steps is not None
+        and not any(steps.values())
+    )
+    if not google_earth_export_only:
+        config.setdefault("_runtime", {}).pop(
+            "google_earth_export",
+            None,
+        )
+    if (
+        not phase_cycle_config.get("enabled", False)
+        and not correction_config.get("enabled", False)
+        and not grid_export_config.get("enabled", False)
+        and not google_earth_export_only
+        and not require_grid
+    ):
+        return None
+
+    grid = build_observation_grid(data, config["data_type"])
+    data.observation_grid = grid
+
+    phase_cycle_report = apply_phase_cycle_correction(
+        data,
+        grid,
+        phase_cycle_config,
+        out_name=out_name,
+        base_dir=config.get("_config_dir"),
+    )
+    data.phase_cycle_correction_report = phase_cycle_report
+    phase_cycle_text = format_phase_cycle_correction_report(
+        phase_cycle_report
+    )
+    if phase_cycle_text:
+        print(phase_cycle_text)
+
+    correction_report = apply_observation_correction(
+        data,
+        grid,
+        correction_config,
+        out_name=out_name,
+        base_dir=config.get("_config_dir"),
+    )
+    data.observation_correction_report = correction_report
+    correction_text = format_observation_correction_report(correction_report)
+    if correction_text:
+        print(correction_text)
+
+    export_report = export_observation_grid(
+        grid,
+        grid_export_config,
+        out_name,
+    )
+    data.observation_export_report = export_report
+    export_text = format_observation_export_report(export_report)
+    if export_text:
+        print(export_text)
+    config.setdefault("_runtime", {})["observation_export"] = export_report
+
+    if google_earth_export_only:
+        from eqtools.cli_tools.observation_google_earth import (
+            export_observation_google_earth,
+            format_google_earth_export_report,
+        )
+
+        google_earth_report = export_observation_google_earth(
+            grid,
+            out_name,
+            google_earth_config,
+        )
+        config.setdefault("_runtime", {})[
+            "google_earth_export"
+        ] = google_earth_report
+        report_text = format_google_earth_export_report(
+            google_earth_report
+        )
+        if report_text:
+            print(report_text)
+    return grid
 
 
 def ensure_downsample_data_ready(data, data_type):
@@ -2483,13 +3279,22 @@ def run_downsample_from_data(
             "do_covar": bool(config.get("covar", {}).get("do_covar", False)),
             "do_downsample": bool(config.get("downsample", {}).get("enabled", False)),
             "show_raw_data": False,
+            "edit_trace": False,
         }
+    prepare_observation_grid_features(
+        data,
+        config,
+        out_name,
+        steps=steps,
+    )
     if args is None:
         args = argparse.Namespace(
             config=None,
             vmin=None,
             vmax=None,
             workers=config.get("_workers"),
+            trace_component=None,
+            trace_output=None,
         )
 
     configure_downsample_compute_backend(config, steps=steps)
@@ -2511,6 +3316,8 @@ def run_downsample_from_data(
         if steps["do_downsample"]:
             plot_faults["decim"] = process_plot_fault_overlays(config, lon0, lat0, "decim")
 
+    if steps.get("edit_trace", False):
+        run_trace_editor_handoff(data, config, out_name, args)
     execute_requested_steps(data, config, compute_faults, plot_faults, out_name, args, steps)
 
     metadata_file = None
@@ -2522,6 +3329,105 @@ def run_downsample_from_data(
         "steps": steps,
         "metadata_file": metadata_file,
     }
+
+
+def _trace_editor_references(config):
+    """Load raw-stage fault_traces as immutable editor references."""
+
+    from eqtools.map_viewer.interactive.trace_io import (
+        reference_path_from_arrays,
+    )
+
+    frames = load_fault_traces(
+        config,
+        base_dir=config.get("_config_dir"),
+        stage="raw",
+    )
+    references = []
+    for index, frame in enumerate(frames):
+        reference_id = str(frame.attrs.get("id") or f"reference_{index + 1}")
+        references.append(
+            reference_path_from_arrays(
+                reference_id,
+                reference_id,
+                frame["lon"].to_numpy(),
+                frame["lat"].to_numpy(),
+                source_file=frame.attrs.get("source_file"),
+                metadata={"created_from": "downsample.fault_traces"},
+            )
+        )
+    return tuple(references)
+
+
+def run_trace_editor_handoff(data, config, out_name, args):
+    """Open the optional editor over the already interpreted observation grid."""
+
+    from eqtools.map_viewer.interactive.adapters import (
+        background_from_observation_grid,
+    )
+    from eqtools.map_viewer.interactive.bokeh_trace_editor import (
+        run_trace_editor,
+    )
+    from eqtools.map_viewer.interactive.models import (
+        InteractiveWorkspace,
+        TraceEditorSession,
+    )
+
+    grid = getattr(data, "observation_grid", None)
+    if grid is None:
+        raise ValueError(
+            "Trace-editor handoff requires an ObservationGrid built from the "
+            "loaded data."
+        )
+    data_type = config["data_type"]
+    component = getattr(args, "trace_component", None)
+    if component is None:
+        component = "observation" if data_type == "sar" else "east"
+    raw_plot = materialize_raw_check_plot(config, data_type)
+    factor = float(raw_plot.get("factor4plot", 1.0))
+    components = check_plot_components(raw_plot, data_type)
+    component_index = (
+        components.index(component) if component in components else None
+    )
+    vmin, vmax = check_plot_explicit_limits(
+        raw_plot,
+        args,
+        component_index=component_index,
+    )
+    data_config = config[
+        "sar_config" if data_type == "sar" else "optical_config"
+    ]
+    style = {
+        "display_factor": factor,
+        "display_unit": display_unit(factor),
+        "symmetry": bool(raw_plot.get("symmetry", True)),
+        "cmap": raw_plot.get("cmap", DEFAULT_CMAP),
+        "auto_percentile": check_plot_percentile(data_config, raw_plot),
+        "basemap": "gray",
+        "alpha": 0.82,
+    }
+    if vmin is not None:
+        style["vmin"] = float(vmin)
+    if vmax is not None:
+        style["vmax"] = float(vmax)
+    background = background_from_observation_grid(
+        grid,
+        component,
+        name=f"{out_name}: {component}",
+        style=style,
+    )
+    output_path = Path(
+        getattr(args, "trace_output", None)
+        or f"{out_name}_adjusted_trace.txt"
+    )
+    session = TraceEditorSession(
+        background=background,
+        workspace=InteractiveWorkspace(_trace_editor_references(config)),
+        output_path=output_path,
+        title=f"ECAT trace editor - {out_name}",
+    )
+    run_trace_editor(session)
+    return session
 
 
 def execute_requested_steps(data, config, compute_faults, plot_faults, out_name, args, steps):
@@ -2591,6 +3497,8 @@ def main():
         plot_faults["raw"] = process_plot_fault_overlays(config, lon0, lat0, "raw")
     if steps["do_downsample"]:
         plot_faults["decim"] = process_plot_fault_overlays(config, lon0, lat0, "decim")
+    if steps.get("edit_trace", False):
+        run_trace_editor_handoff(data, config, out_name, args)
     execute_requested_steps(data, config, compute_faults, plot_faults, out_name, args, steps)
     outputs = expected_outputs_for_run(config, out_name, steps)
     write_run_metadata(config, args, out_name, steps, outputs)

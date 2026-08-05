@@ -55,107 +55,13 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
         if buffer_nodes is not None and buffer_radius is not None:
             self._add_buffer_profiles(buffer_nodes, buffer_radius, interpolation_method)
 
-    def _parse_dict_profiles(self, data: dict, is_utm: bool, interp_method: str):
-        """Parse dictionary format profiles."""
-        ref_nodes = np.atleast_2d(data['reference_nodes'])
-        profiles = data['depth_dip_profiles']
-        
-        for node, depth_dip in zip(ref_nodes, profiles):
-            if is_utm:
-                x, y = node[0], node[1]
-                lon, lat = self.xy2ll(x, y)
-            else:
-                lon, lat = node[0], node[1]
-                x, y = self.ll2xy(lon, lat)
-            
-            profile = DepthDipProfile(x, y, lon, lat, np.array(depth_dip), 
-                                      interp_method, input_dip_range='neg90_90')
-            self.dip_interpolator.add_profile(profile)
-    
-    def _parse_dataframe_profiles(self, df: pd.DataFrame, is_utm: bool, interp_method: str):
-        """Parse DataFrame format profiles."""
-        coord_cols = ['x', 'y'] if is_utm else ['lon', 'lat']
-        
-        # Group by location
-        grouped = df.groupby(coord_cols)
-        
-        for coords, group in grouped:
-            if is_utm:
-                x, y = coords
-                lon, lat = self.xy2ll(x, y)
-            else:
-                lon, lat = coords
-                x, y = self.ll2xy(lon, lat)
-            
-            depth_dip = group[['depth', 'dip']].sort_values('depth').values
-            profile = DepthDipProfile(x, y, lon, lat, depth_dip, 
-                                      interp_method, input_dip_range='neg90_90')
-            self.dip_interpolator.add_profile(profile)
-    
-    def _parse_array_profiles(self, arr: np.ndarray, is_utm: bool, interp_method: str):
-        """Parse array format profiles."""
-        if arr.shape[1] != 4:
-            raise ValueError("Array must have 4 columns: [lon/x, lat/y, depth, dip]")
-        
-        # Convert to DataFrame and use DataFrame parser
-        coord_cols = ['x', 'y'] if is_utm else ['lon', 'lat']
-        df = pd.DataFrame(arr, columns=coord_cols + ['depth', 'dip'])
-        self._parse_dataframe_profiles(df, is_utm, interp_method)
-    
-    def _add_buffer_profiles(self, buffer_nodes: np.ndarray, buffer_radius: float,
-                             interpolation_method: str = 'linear'):
-        """
-        Add profiles at buffer node locations by interpolating from existing profiles.
-        """
-        if len(self.dip_interpolator.profiles) == 0:
-            raise ValueError("Must have existing profiles before adding buffer profiles")
-        
-        # Get depths from existing profiles
-        depths = self.dip_interpolator.profiles[0].depth_dip_pairs[:, 0]
-        
-        # Create xydip at each depth for buffer node handling
-        for depth in depths:
-            # Get dips at this depth for existing profiles
-            xydip = self.dip_interpolator.sample_at_depth(depth)
-            
-            # Apply buffer node handling
-            interpolation_axis = self.dip_interpolator.interpolation_axis
-            xydip_expanded = self.handle_buffer_nodes(
-                xydip, buffer_nodes, buffer_radius,
-                interpolation_axis)
-            
-            # Find new nodes (buffer nodes)
-            existing_locs = set(zip(xydip['x'], xydip['y']))
-            for _, row in xydip_expanded.iterrows():
-                if (row['x'], row['y']) not in existing_locs:
-                    # This is a buffer node - need to create profile if not exists
-                    # Check if profile already exists at this location
-                    profile_exists = any(
-                        np.isclose(p.x, row['x']) and np.isclose(p.y, row['y'])
-                        for p in self.dip_interpolator.profiles
-                    )
-                    if not profile_exists:
-                        # Create new profile by sampling at all depths
-                        depth_dip_pairs = []
-                        for d in depths:
-                            dip = self.dip_interpolator.get_dip(row['x'], row['y'], d)
-                            depth_dip_pairs.append([d, dip])
-                        
-                        lon, lat = row.get('lon', None), row.get('lat', None)
-                        if lon is None or lat is None:
-                            lon, lat = self.xy2ll(row['x'], row['y'])
-                        
-                        profile = DepthDipProfile(
-                            row['x'], row['y'], lon, lat,
-                            np.array(depth_dip_pairs),
-                            interpolation_method=interpolation_method,
-                            input_dip_range='neg90_90'
-                        )
-                        self.dip_interpolator.add_profile(profile)
-    
     def _parse_dict_profiles(self, data, is_utm, interp_method):
         ref_nodes = np.atleast_2d(data['reference_nodes'])
         profiles = data['depth_dip_profiles']
+        if len(ref_nodes) != len(profiles):
+            raise ValueError(
+                "reference_nodes and depth_dip_profiles must have the same length"
+            )
         for node, depth_dip in zip(ref_nodes, profiles):
             if is_utm:
                 x, y = node[0], node[1]
@@ -163,8 +69,14 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
             else:
                 lon, lat = node[0], node[1]
                 x, y = self.ll2xy(lon, lat)
-            profile = DepthDipProfile(x, y, lon, lat, np.array(depth_dip), 
-                                    interp_method, input_dip_range='neg90_90')
+            profile = DepthDipProfile.from_oriented_reference(
+                x,
+                y,
+                lon,
+                lat,
+                np.asarray(depth_dip, dtype=float),
+                interpolation_method=interp_method,
+            )
             self.dip_interpolator.add_profile(profile)
 
     def _parse_dataframe_profiles(self, df, is_utm, interp_method):
@@ -177,12 +89,20 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
                 lon, lat = coords
                 x, y = self.ll2xy(lon, lat)
             depth_dip = group[['depth', 'dip']].sort_values('depth').values
-            profile = DepthDipProfile(x, y, lon, lat, depth_dip, 
-                                    interp_method, input_dip_range='neg90_90')
+            profile = DepthDipProfile.from_oriented_reference(
+                x,
+                y,
+                lon,
+                lat,
+                depth_dip,
+                interpolation_method=interp_method,
+            )
             self.dip_interpolator.add_profile(profile)
 
     def _parse_array_profiles(self, arr, is_utm, interp_method):
-        if arr.shape[1] != 4: raise ValueError("Array must be [lon/x, lat/y, depth, dip]")
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] != 4:
+            raise ValueError("Array must be [lon/x, lat/y, depth, dip]")
         coord_cols = ['x', 'y'] if is_utm else ['lon', 'lat']
         df = pd.DataFrame(arr, columns=coord_cols + ['depth', 'dip'])
         self._parse_dataframe_profiles(df, is_utm, interp_method)
@@ -227,10 +147,23 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
     def buildPatches(self, dipdirection=None, every=10, numz=None, width=None,
                      width_bias=None, min_patch_width=None, 
                      minpatchsize=0.00001, verbose=None):
-        """
-        Build patches using the Adaptive Layered Dip Interpolator.
-        
-        Overrides faultwithlistric.buildPatches.
+        """Build rectangular patches from absolute depth--dip profiles.
+
+        Parameters
+        ----------
+        dipdirection : float, optional
+            Geographic azimuth, clockwise from north, used as the reference
+            down-dip direction for positive dip.  If omitted, each trace
+            column uses its local ``strike + 90`` direction.  A negative dip
+            reverses this reference by 180 degrees for that segment only.
+
+        Notes
+        -----
+        Profile dip values are absolute signed orientations at their queried
+        depths, not incremental turns relative to the previous layer.  Node
+        positions recurse from the preceding layer, while the effective dip
+        direction is recomputed from the immutable reference direction for
+        every segment.
         """
         if verbose is None: verbose = self.verbose
         
@@ -257,6 +190,7 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
         self.patchll = []
         self.slip = []
         self.patchdip = []
+        patchdip_from_geometry = []
 
         # 1. Discretize Trace
         self.discretize_trace(every, threshold=every/3.0)
@@ -285,9 +219,9 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
             
             # Dip direction: perpendicular to strike, usually +90 deg (Right Hand Rule)
             if dipdirection is None:
-                dip_dir_rad = strike_rad + np.pi/2
+                base_dip_dir_rad = strike_rad + np.pi/2
             else:
-                dip_dir_rad = np.deg2rad(dipdirection)
+                base_dip_dir_rad = np.deg2rad(dipdirection)
 
             # --- Layer 0 (Top) ---
             nodes[il, 0, 0] = x_curr
@@ -312,14 +246,17 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
                 dip_rad = np.deg2rad(current_dip)
                 dip_at_nodes[il, iw] = current_dip # Store for patch averaging
 
-                # Adjust for negative dips (dipping in opposite direction)
+                # Profile dips are absolute signed orientations.  Derive the
+                # current segment direction from the immutable positive-dip
+                # reference; never carry a previous layer's flip forward.
+                segment_dip_dir_rad = base_dip_dir_rad
                 if dip_rad < 0:
                     dip_rad = -dip_rad
-                    dip_dir_rad += np.pi # Reverse dip direction
+                    segment_dip_dir_rad += np.pi
 
                 # Calculate displacement based on this local dip
-                dx = dw * np.cos(dip_rad) * np.sin(dip_dir_rad)
-                dy = dw * np.cos(dip_rad) * np.cos(dip_dir_rad)
+                dx = dw * np.cos(dip_rad) * np.sin(segment_dip_dir_rad)
+                dy = dw * np.cos(dip_rad) * np.cos(segment_dip_dir_rad)
                 dz = dw * np.sin(dip_rad)
 
                 # Set next node
@@ -352,16 +289,18 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
 
                 # Average dip for this patch
                 # Average of 4 corners
-                patch_dip = np.mean([
+                corner_dips = np.asarray([
                     dip_at_nodes[il, iw], dip_at_nodes[il+1, iw],
                     dip_at_nodes[il+1, iw+1], dip_at_nodes[il, iw+1]
-                ])
+                ], dtype=float)
+                patch_dip = np.mean(corner_dips)
 
                 # Store
                 self.patch.append(np.array([p1, p2, p3, p4]))
                 self.patchll.append(np.array([p1ll, p2ll, p3ll, p4ll]))
                 self.slip.append([0.0, 0.0, 0.0])
                 self.patchdip.append(np.deg2rad(patch_dip))
+                patchdip_from_geometry.append(np.any(corner_dips < 0.0))
 
         # Finalize
         self.z_patches = np.array(D)
@@ -371,6 +310,19 @@ class AdaptiveLayeredDipRectangularPatches(faultwithlistric):
         # Restore trace discretization for consistency
         self.discretize_trace(every, threshold=every/3.0)
         self.computeEquivRectangle()
+
+        # Preserve the established arithmetic corner mean for all-positive
+        # profiles.  When signed-side input is present, a signed mean is not a
+        # canonical CSI patch dip (and is invalid across the vertical), so use
+        # the final equivalent-patch geometry while keeping the signed node
+        # values available in ``dip_at_nodes``.
+        for patch_index, use_geometry in enumerate(patchdip_from_geometry):
+            if use_geometry:
+                self.patchdip[patch_index] = self.getpatchgeometry(
+                    patch_index,
+                    center=False,
+                    checkindex=False,
+                )[-1]
         
         if verbose:
             print(f"Built {len(self.patch)} patches.")

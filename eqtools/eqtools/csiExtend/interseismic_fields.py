@@ -17,6 +17,7 @@ from .config.config_utils import get_observation_unit_info, m_per_year_to_observ
 from .interseismic_parameter_model import (
     calculate_loading_from_terms,
     get_fault_loading_params,
+    _loading_overrides,
     resolve_euler_block_vectors as _resolve_euler_block_vectors,
 )
 from .patch_indices import normalize_patch_indices
@@ -421,12 +422,12 @@ def calculate_tectonic_loading_rate(
 
     if euler_params1 is not None or euler_params2 is not None:
         params = get_fault_loading_params(inversion, fault_name)
-        if params.get("loading_regions"):
+        if _loading_overrides(params):
             raise ValueError(
                 "Explicit euler_params1/euler_params2 cannot be used with "
-                "fault_loading.loading_regions because one pair of vectors "
+                "fault_loading.loading_overrides because one pair of vectors "
                 "cannot represent multiple regional block pairs. Update the "
-                "interseismic_config instead or remove loading_regions."
+                "interseismic_config instead or remove loading_overrides."
             )
         vec1, vec2 = resolve_euler_block_vectors(
             inversion,
@@ -545,6 +546,17 @@ def calculate_interseismic_fields(
                 "block_types": list(params.get("block_types", [])),
                 "blocks": list(params.get("blocks", params.get("blocks_standard", []))),
                 "block_names": list(params.get("block_names", [])),
+                "loading_overrides": [
+                    {
+                        "name": region.get("name"),
+                        "block_types": list(region.get("block_types", [])),
+                        "blocks": list(region.get("blocks", region.get("blocks_standard", []))),
+                        "block_names": list(region.get("block_names", [])),
+                        "reference_strike": region.get("reference_strike"),
+                        "motion_sense": region.get("motion_sense"),
+                    }
+                    for region in _loading_overrides(params)
+                ],
                 "loading_regions": [
                     {
                         "name": region.get("name"),
@@ -554,7 +566,14 @@ def calculate_interseismic_fields(
                         "reference_strike": region.get("reference_strike"),
                         "motion_sense": region.get("motion_sense"),
                     }
-                    for region in params.get("loading_regions", []) or []
+                    for region in _loading_overrides(params)
+                ],
+                "motion_sense_overrides": [
+                    {
+                        "name": override.get("name"),
+                        "motion_sense": override.get("motion_sense"),
+                    }
+                    for override in params.get("motion_sense_overrides", []) or []
                 ],
             },
             "reference_strike": params.get("reference_strike"),

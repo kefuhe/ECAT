@@ -11,7 +11,7 @@ import cmcrameri as cmc
 import string
 
 from csi import insartimeseries as csiinsartimeseries
-from ...plottools import set_degree_formatter, sci_plot_style
+from ...viztools import set_degree_formatter, sci_plot_style
 
 class MintpyInSARTimeseriesReader(csiinsartimeseries):
     def __init__(self, name, utmzone=None, ellps='WGS84', lon0=None, lat0=None, 

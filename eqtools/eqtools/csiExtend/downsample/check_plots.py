@@ -11,7 +11,9 @@ from pathlib import Path
 import numpy as np
 
 from .plotting import (
+    _align_polygon_longitudes,
     _corners_to_polygons,
+    _coordrange_longitude_reference,
     _inside_colorbar_bounds,
     _make_colorbar_axes,
     _mask_from_coordrange,
@@ -21,6 +23,7 @@ from .plotting import (
     _resolve_colorbar_layout,
     _set_colorbar_label_position,
 )
+from .region_utils import align_longitudes
 
 
 @dataclass
@@ -387,6 +390,9 @@ def _draw_component(
     values = np.asarray(component.values, dtype=float) * float(factor4plot)
     cmap = _resolve_cmap(cmap)
     norm = Normalize(vmin=vmin, vmax=vmax)
+    longitude_reference = _coordrange_longitude_reference(coordrange)
+    if longitude_reference is not None:
+        lon = align_longitudes(lon, longitude_reference)
 
     if component.corners is not None and cell_style == "cells":
         flat_lon = lon.ravel()
@@ -396,6 +402,7 @@ def _draw_component(
         if coordrange is not None:
             finite &= _mask_from_coordrange(flat_lon, flat_lat, coordrange)
         polygons = _corners_to_polygons(component.corners)
+        polygons = _align_polygon_longitudes(polygons, longitude_reference)
         if len(polygons) != flat_values.size:
             raise ValueError("corners length must match component value length.")
         selected_polygons = [poly for poly, keep in zip(polygons, finite) if keep]
@@ -1011,7 +1018,13 @@ def plot_component_maps(
                 markersize=markersize,
             )
             mappables.append(mappable)
-            _plot_faults(ax, faults, trace_color=trace_color, trace_linewidth=trace_linewidth)
+            _plot_faults(
+                ax,
+                faults,
+                trace_color=trace_color,
+                trace_linewidth=trace_linewidth,
+                longitude_reference=_coordrange_longitude_reference(coordrange),
+            )
             if coordrange is not None:
                 ax.set_xlim(coordrange[0], coordrange[1])
                 ax.set_ylim(coordrange[2], coordrange[3])

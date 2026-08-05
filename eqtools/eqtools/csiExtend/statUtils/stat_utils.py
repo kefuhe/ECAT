@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from ..BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches as TriangularPatches
 import seaborn as sns
-from ...plottools import sci_plot_style
+from ...viztools import sci_plot_style
 
 
 class DepthStatistics:

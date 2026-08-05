@@ -7,9 +7,59 @@ zero-slip constraints, or post-processing decide how those ids are used.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
+
+from .trace_ops import (
+    point_at_trace_distance,
+    project_points_to_trace,
+    sample_trace_distances,
+    trace_length,
+)
+
+
+@dataclass(frozen=True)
+class TraceMarker:
+    """A resolved point on a fault trace.
+
+    Distances are measured along the fault trace in local ``x/y`` kilometers,
+    not along longitude, latitude, or a single projected axis.
+    """
+
+    x: float
+    y: float
+    trace_distance_km: float
+    segment_index: int
+    segment_fraction: float
+    lon: float | None = None
+    lat: float | None = None
+    distance_to_trace_km: float = 0.0
+    method: str = "unknown"
+
+    @property
+    def xy(self) -> tuple[float, float]:
+        return (self.x, self.y)
+
+    @property
+    def lonlat(self) -> tuple[float, float] | None:
+        if self.lon is None or self.lat is None:
+            return None
+        return (self.lon, self.lat)
+
+    def to_dict(self) -> dict[str, float | int | str | None]:
+        return {
+            "lon": self.lon,
+            "lat": self.lat,
+            "x": self.x,
+            "y": self.y,
+            "trace_distance_km": self.trace_distance_km,
+            "segment_index": self.segment_index,
+            "segment_fraction": self.segment_fraction,
+            "distance_to_trace_km": self.distance_to_trace_km,
+            "method": self.method,
+        }
 
 
 def _patch_count(fault: Any) -> int:
@@ -281,31 +331,395 @@ def _point_to_xy(fault: Any, point: Sequence[float], coord_system: str) -> tuple
     raise ValueError("coord_system must be 'lonlat' or 'xy'")
 
 
-def _project_points_to_polyline(points: np.ndarray, polyline: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    seg_start = polyline[:-1]
-    seg_end = polyline[1:]
-    seg_vec = seg_end - seg_start
-    seg_len = np.linalg.norm(seg_vec, axis=1)
-    valid = seg_len > 0.0
-    if not np.any(valid):
-        raise ValueError("fault trace contains only zero-length segments")
-    seg_start = seg_start[valid]
-    seg_vec = seg_vec[valid]
-    seg_len = seg_len[valid]
-    seg_len2 = seg_len**2
-    seg_cum = np.concatenate(([0.0], np.cumsum(seg_len[:-1])))
+def _xy_to_lonlat(fault: Any, x: float, y: float) -> tuple[float | None, float | None]:
+    if not hasattr(fault, "xy2ll"):
+        return None, None
+    lon, lat = fault.xy2ll(float(x), float(y))
+    return float(np.asarray(lon)), float(np.asarray(lat))
 
-    along = np.empty(points.shape[0], dtype=float)
-    distance = np.empty(points.shape[0], dtype=float)
-    for i, point in enumerate(points):
-        rel = point - seg_start
-        t = np.clip(np.sum(rel * seg_vec, axis=1) / seg_len2, 0.0, 1.0)
-        projected = seg_start + t[:, None] * seg_vec
-        dist = np.linalg.norm(point - projected, axis=1)
-        j = int(np.argmin(dist))
-        along[i] = seg_cum[j] + t[j] * seg_len[j]
-        distance[i] = dist[j]
-    return along, distance
+
+def _make_trace_marker(
+    fault: Any,
+    *,
+    x: float,
+    y: float,
+    trace_distance_km: float,
+    segment_index: int,
+    segment_fraction: float,
+    distance_to_trace_km: float = 0.0,
+    method: str,
+) -> TraceMarker:
+    lon, lat = _xy_to_lonlat(fault, x, y)
+    return TraceMarker(
+        x=float(x),
+        y=float(y),
+        lon=lon,
+        lat=lat,
+        trace_distance_km=float(trace_distance_km),
+        segment_index=int(segment_index),
+        segment_fraction=float(segment_fraction),
+        distance_to_trace_km=float(distance_to_trace_km),
+        method=method,
+    )
+
+
+def _trace_lonlat(fault: Any, trace_xy: np.ndarray) -> np.ndarray:
+    if not hasattr(fault, "xy2ll"):
+        raise AttributeError("fault object has no xy2ll() method for longitude/latitude trace markers")
+    lon, lat = fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
+    return np.column_stack((np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
+
+
+def _coordinate_intersections_on_trace(
+    fault: Any,
+    trace_xy: np.ndarray,
+    *,
+    axis: str,
+    value: float,
+    atol: float = 1e-12,
+) -> list[TraceMarker]:
+    axis_key = axis.lower()
+    if axis_key in ("lon", "longitude"):
+        coord = _trace_lonlat(fault, trace_xy)[:, 0]
+        method = "longitude"
+    elif axis_key in ("lat", "latitude"):
+        coord = _trace_lonlat(fault, trace_xy)[:, 1]
+        method = "latitude"
+    elif axis_key == "x":
+        coord = trace_xy[:, 0]
+        method = "x"
+    elif axis_key == "y":
+        coord = trace_xy[:, 1]
+        method = "y"
+    else:
+        raise ValueError("axis must be longitude/lon, latitude/lat, x, or y")
+
+    s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(trace_xy[:, :2], axis=0), axis=1))]
+    target = float(value)
+    markers: list[TraceMarker] = []
+    seen: set[tuple[int, float]] = set()
+    for idx in range(trace_xy.shape[0] - 1):
+        a = float(coord[idx])
+        b = float(coord[idx + 1])
+        denom = b - a
+        if abs(denom) <= atol:
+            if abs(target - a) > atol:
+                continue
+            fractions = (0.0, 1.0)
+        else:
+            frac = (target - a) / denom
+            if frac < -atol or frac > 1.0 + atol:
+                continue
+            fractions = (float(np.clip(frac, 0.0, 1.0)),)
+
+        seg_len = s[idx + 1] - s[idx]
+        for frac in fractions:
+            key = (idx, round(frac, 12))
+            if key in seen:
+                continue
+            seen.add(key)
+            xy = trace_xy[idx] + frac * (trace_xy[idx + 1] - trace_xy[idx])
+            markers.append(
+                _make_trace_marker(
+                    fault,
+                    x=xy[0],
+                    y=xy[1],
+                    trace_distance_km=s[idx] + frac * seg_len,
+                    segment_index=idx,
+                    segment_fraction=frac,
+                    method=method,
+                )
+            )
+
+    markers.sort(key=lambda marker: marker.trace_distance_km)
+    return markers
+
+
+def _choose_marker(candidates: list[TraceMarker], *, which: Any = "first") -> TraceMarker:
+    if not candidates:
+        raise ValueError("trace marker does not intersect the fault trace")
+    if isinstance(which, (int, np.integer)):
+        idx = int(which)
+        try:
+            return candidates[idx]
+        except IndexError as exc:
+            raise IndexError(f"trace marker intersection index {idx} is out of range") from exc
+
+    key = str(which).lower()
+    if key == "first":
+        return candidates[0]
+    if key == "last":
+        return candidates[-1]
+    raise ValueError("which must be 'first', 'last', or an integer intersection index")
+
+
+def resolve_trace_marker(
+    fault: Any,
+    marker: Any,
+    *,
+    coord_system: str = "lonlat",
+    use_discretized: bool = True,
+) -> TraceMarker:
+    """Resolve a user marker to a true point on the fault trace.
+
+    Supported marker forms include:
+
+    - ``{"longitude": 101.5}`` or ``{"by": "longitude", "value": 101.5}``
+    - ``{"latitude": 24.0}``
+    - ``{"trace_distance_km": 35.0}``
+    - ``{"fraction": 0.5}``
+    - ``{"point": [lon, lat], "coord_system": "lonlat"}``
+    - ``{"nearest": [lon, lat]}``
+    - a bare point sequence, interpreted in ``coord_system``.
+
+    Point-like markers are projected to the nearest point on the trace; they do
+    not snap to the nearest existing trace vertex.
+    """
+    if isinstance(marker, TraceMarker):
+        return marker
+
+    trace = _trace_xy(fault, use_discretized=use_discretized)
+    if isinstance(marker, Mapping):
+        raw = dict(marker)
+        which = raw.get("which", "first")
+        by = raw.get("by")
+
+        if "trace_distance_km" in raw or by == "trace_distance_km":
+            value = raw.get("trace_distance_km", raw.get("value"))
+            point = point_at_trace_distance(trace, float(value))
+            return _make_trace_marker(
+                fault,
+                x=point["xy"][0],
+                y=point["xy"][1],
+                trace_distance_km=point["trace_distance_km"],
+                segment_index=point["segment_index"],
+                segment_fraction=point["segment_fraction"],
+                method="trace_distance_km",
+            )
+
+        if "fraction" in raw or by == "fraction":
+            value = raw.get("fraction", raw.get("value"))
+            fraction = float(value)
+            if fraction < 0.0 or fraction > 1.0:
+                raise ValueError("trace marker fraction must be in [0, 1]")
+            point = point_at_trace_distance(trace, fraction * trace_length(trace))
+            return _make_trace_marker(
+                fault,
+                x=point["xy"][0],
+                y=point["xy"][1],
+                trace_distance_km=point["trace_distance_km"],
+                segment_index=point["segment_index"],
+                segment_fraction=point["segment_fraction"],
+                method="fraction",
+            )
+
+        if "longitude" in raw or "lon" in raw or by in ("longitude", "lon"):
+            value = raw.get("longitude", raw.get("lon", raw.get("value")))
+            candidates = _coordinate_intersections_on_trace(
+                fault,
+                trace,
+                axis="longitude",
+                value=float(value),
+            )
+            return _choose_marker(candidates, which=which)
+
+        if "latitude" in raw or "lat" in raw or by in ("latitude", "lat"):
+            value = raw.get("latitude", raw.get("lat", raw.get("value")))
+            candidates = _coordinate_intersections_on_trace(
+                fault,
+                trace,
+                axis="latitude",
+                value=float(value),
+            )
+            return _choose_marker(candidates, which=which)
+
+        if "x" in raw or by == "x":
+            value = raw.get("x", raw.get("value"))
+            candidates = _coordinate_intersections_on_trace(fault, trace, axis="x", value=float(value))
+            return _choose_marker(candidates, which=which)
+
+        if "y" in raw or by == "y":
+            value = raw.get("y", raw.get("value"))
+            candidates = _coordinate_intersections_on_trace(fault, trace, axis="y", value=float(value))
+            return _choose_marker(candidates, which=which)
+
+        if "xy" in raw:
+            point = raw["xy"]
+            point_coord_system = "xy"
+        elif "lonlat" in raw:
+            point = raw["lonlat"]
+            point_coord_system = "lonlat"
+        elif "point" in raw:
+            point = raw["point"]
+            point_coord_system = raw.get("coord_system", coord_system)
+        elif "nearest" in raw:
+            point = raw["nearest"]
+            point_coord_system = raw.get("coord_system", coord_system)
+        elif by in ("point", "nearest"):
+            point = raw.get("value")
+            point_coord_system = raw.get("coord_system", coord_system)
+        else:
+            allowed = "longitude, latitude, trace_distance_km, fraction, point/nearest"
+            raise ValueError(f"trace marker mapping must define one of: {allowed}")
+    else:
+        point = marker
+        point_coord_system = coord_system
+
+    xy = np.asarray(_point_to_xy(fault, point, point_coord_system), dtype=float)
+    projection = project_points_to_trace(xy, trace)
+    projected_xy = projection["projected_xy"][0]
+    return _make_trace_marker(
+        fault,
+        x=projected_xy[0],
+        y=projected_xy[1],
+        trace_distance_km=projection["trace_distance_km"][0],
+        segment_index=projection["segment_index"][0],
+        segment_fraction=projection["segment_fraction"][0],
+        distance_to_trace_km=projection["distance_to_trace_km"][0],
+        method="nearest",
+    )
+
+
+def sample_trace_markers(
+    fault: Any,
+    start: Any,
+    end: Any,
+    *,
+    step_km: float,
+    include_endpoint: bool = True,
+    coord_system: str = "lonlat",
+    use_discretized: bool = True,
+) -> list[TraceMarker]:
+    """Sample true along-trace markers between two trace markers."""
+    trace = _trace_xy(fault, use_discretized=use_discretized)
+    start_marker = resolve_trace_marker(
+        fault,
+        start,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+    end_marker = resolve_trace_marker(
+        fault,
+        end,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+    distances = sample_trace_distances(
+        trace,
+        start_marker.trace_distance_km,
+        end_marker.trace_distance_km,
+        step_km,
+        include_endpoint=include_endpoint,
+    )
+    return [
+        resolve_trace_marker(
+            fault,
+            {"trace_distance_km": float(distance)},
+            coord_system="xy",
+            use_discretized=use_discretized,
+        )
+        for distance in distances
+    ]
+
+
+def _project_points_to_polyline(points: np.ndarray, polyline: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    projection = project_points_to_trace(points, polyline)
+    return projection["trace_distance_km"], projection["distance_to_trace_km"]
+
+
+def get_patches_in_trace_segment(
+    fault: Any,
+    start: Any,
+    end: Any,
+    *,
+    buffer_distance: float | None = None,
+    depth_range: Sequence[float] | None = None,
+    coord_system: str = "lonlat",
+    use_discretized: bool = True,
+    return_markers: bool = False,
+) -> np.ndarray | tuple[np.ndarray, TraceMarker, TraceMarker]:
+    """Return patch ids between two flexible markers along the fault trace.
+
+    Unlike ``get_patches_in_trace_range()``, ``start`` and ``end`` may be
+    longitude/latitude cuts, along-trace distances, fractions, or points that
+    are projected to the nearest true trace point.
+    """
+    start_marker = resolve_trace_marker(
+        fault,
+        start,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+    end_marker = resolve_trace_marker(
+        fault,
+        end,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+    selected = get_patches_in_trace_range(
+        fault,
+        start_marker.xy,
+        end_marker.xy,
+        buffer_distance=buffer_distance,
+        depth_range=depth_range,
+        coord_system="xy",
+        use_discretized=use_discretized,
+    )
+    if return_markers:
+        return selected, start_marker, end_marker
+    return selected
+
+
+def trace_range_selector_from_markers(
+    fault: Any,
+    start: Any,
+    end: Any,
+    *,
+    buffer_distance: float | None = None,
+    depth_range: Sequence[float] | None = None,
+    coord_system: str = "lonlat",
+    use_discretized: bool = True,
+    output_coord_system: str = "lonlat",
+) -> dict[str, Any]:
+    """Build a standard ``trace_range`` selector from flexible markers."""
+    start_marker = resolve_trace_marker(
+        fault,
+        start,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+    end_marker = resolve_trace_marker(
+        fault,
+        end,
+        coord_system=coord_system,
+        use_discretized=use_discretized,
+    )
+
+    key = output_coord_system.lower().replace("_", "").replace("-", "")
+    if key in ("lonlat", "ll"):
+        if start_marker.lonlat is None or end_marker.lonlat is None:
+            raise AttributeError("fault object has no xy2ll() method for lonlat selector output")
+        point1 = list(start_marker.lonlat)
+        point2 = list(end_marker.lonlat)
+        selector_coord = "lonlat"
+    elif key in ("xy", "utm", "local"):
+        point1 = [start_marker.x, start_marker.y]
+        point2 = [end_marker.x, end_marker.y]
+        selector_coord = "xy"
+    else:
+        raise ValueError("output_coord_system must be 'lonlat' or 'xy'")
+
+    trace_range: dict[str, Any] = {
+        "point1": point1,
+        "point2": point2,
+        "coord_system": selector_coord,
+        "use_discretized": bool(use_discretized),
+    }
+    if buffer_distance is not None:
+        trace_range["buffer_distance"] = float(buffer_distance)
+    if depth_range is not None:
+        trace_range["depth_range"] = [float(depth_range[0]), float(depth_range[1])]
+    return {"trace_range": trace_range}
 
 
 def get_patches_in_trace_range(
@@ -384,10 +798,11 @@ def select_patch_indices(
         - ``{"edge": "top"}`` or ``{"edges": ["top", "bottom"]}``
         - ``{"depth_range": [zmin, zmax]}``
         - ``{"trace_range": {"point1": [...], "point2": [...], ...}}``
+        - ``{"trace_segment": {"start": {"longitude": ...}, "end": {...}, ...}}``
         - ``{"box": {"lon_range": [...], "lat_range": [...]}}``
 
-        ``depth_range`` may be combined with ``edge`` or ``trace_range`` to
-        further restrict the selected patch centers.
+        ``depth_range`` may be combined with ``edge``, ``trace_range``,
+        ``trace_segment`` or ``box`` to further restrict selected patch centers.
     allow_none_all : bool, default True
         Whether ``None`` expands to all patch ids.
     unique : bool, default True
@@ -438,14 +853,40 @@ def select_patch_indices(
         selected = get_edge_patch_indices(fault, selector.get("edge", selector.get("edges")), unique=unique)
     elif "trace_range" in selector:
         trace_range = dict(selector["trace_range"])
-        selected = get_patches_in_trace_range(
+        point1 = trace_range.get("point1", trace_range.get("start"))
+        point2 = trace_range.get("point2", trace_range.get("end"))
+        if point1 is None or point2 is None:
+            raise ValueError(f"{name}.trace_range must define point1/point2 or start/end")
+        if isinstance(point1, Mapping) or isinstance(point2, Mapping):
+            selected = get_patches_in_trace_segment(
+                fault,
+                point1,
+                point2,
+                buffer_distance=trace_range.get("buffer_distance"),
+                depth_range=trace_range.get("depth_range", selector.get("depth_range")),
+                coord_system=trace_range.get("coord_system", selector.get("coord_system", "lonlat")),
+                use_discretized=trace_range.get("use_discretized", True),
+            )
+        else:
+            selected = get_patches_in_trace_range(
+                fault,
+                point1,
+                point2,
+                buffer_distance=trace_range.get("buffer_distance"),
+                depth_range=trace_range.get("depth_range", selector.get("depth_range")),
+                coord_system=trace_range.get("coord_system", selector.get("coord_system", "lonlat")),
+                use_discretized=trace_range.get("use_discretized", True),
+            )
+    elif "trace_segment" in selector:
+        trace_segment = dict(selector["trace_segment"])
+        selected = get_patches_in_trace_segment(
             fault,
-            trace_range["point1"],
-            trace_range["point2"],
-            buffer_distance=trace_range.get("buffer_distance"),
-            depth_range=trace_range.get("depth_range", selector.get("depth_range")),
-            coord_system=trace_range.get("coord_system", selector.get("coord_system", "lonlat")),
-            use_discretized=trace_range.get("use_discretized", True),
+            trace_segment["start"],
+            trace_segment["end"],
+            buffer_distance=trace_segment.get("buffer_distance"),
+            depth_range=trace_segment.get("depth_range", selector.get("depth_range")),
+            coord_system=trace_segment.get("coord_system", selector.get("coord_system", "lonlat")),
+            use_discretized=trace_segment.get("use_discretized", True),
         )
     elif "box" in selector:
         box = dict(selector["box"])
@@ -469,10 +910,15 @@ def select_patch_indices(
     elif "depth_range" in selector:
         selected = get_patches_by_depth(fault, selector["depth_range"])
     else:
-        allowed = "patches, patch_indices, edge/edges, depth_range, trace_range, box"
+        allowed = "patches, patch_indices, edge/edges, depth_range, trace_range/trace_segment, box"
         raise ValueError(f"{name} must define one of: {allowed}")
 
-    if "depth_range" in selector and "trace_range" not in selector and "box" not in selector:
+    if (
+        "depth_range" in selector
+        and "trace_range" not in selector
+        and "trace_segment" not in selector
+        and "box" not in selector
+    ):
         depth_selected = set(get_patches_by_depth(fault, selector["depth_range"]).tolist())
         selected = np.asarray([idx for idx in selected.tolist() if idx in depth_selected], dtype=int)
 

@@ -10,9 +10,9 @@ from .fnnls import fnnls
 from scipy.linalg import block_diag as blkdiag
 # import self-written library
 from . import lsqlin
-from ..plottools import sci_plot_style, DegreeFormatter
+from ..viztools import sci_plot_style, DegreeFormatter
 from .fault_analysis_mixin import FaultAnalysisMixin
-from .constraint_manager_blse import ConstraintManager
+from .constraint_manager_blse import ConstraintManagerBLSE
 from .source_adapters import make_adapter
 
 # Plot
@@ -146,7 +146,10 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         self._beq = None
 
         # Initialize unified constraint manager
-        self.constraint_manager = ConstraintManager(solver=self, verbose=verbose)
+        self.constraint_manager = ConstraintManagerBLSE(
+            solver=self,
+            verbose=verbose,
+        )
         
         # Initialize parameter count
         self.lsq_parameters = self._calculate_total_parameters()
@@ -239,8 +242,17 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         self.lsq_parameters = current_idx
 
-    def set_bounds(self, lb=None, ub=None, strikeslip_limits=None, dipslip_limits=None, 
-                poly_limits=None, pressure_limits=None, source_bounds=None):
+    def update_bounds(
+        self,
+        *,
+        lb=None,
+        ub=None,
+        strikeslip_bounds=None,
+        dipslip_bounds=None,
+        poly_bounds=None,
+        pressure_bounds=None,
+        source_bounds=None,
+    ):
         """
         Set bounds using constraint manager with type-safe handling.
         
@@ -248,16 +260,16 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         ----------
         lb, ub : float or array-like, optional
             Global lower/upper bounds
-        strikeslip_limits : dict, optional
+        strikeslip_bounds : dict, optional
             Strike-slip bounds per fault (only for Fault type)
             Format: {fault_name: (lb, ub)}
-        dipslip_limits : dict, optional
+        dipslip_bounds : dict, optional
             Dip-slip bounds per fault (only for Fault type)
             Format: {fault_name: (lb, ub)}
-        poly_limits : dict, optional
+        poly_bounds : dict, optional
             Polynomial parameter bounds per fault
             Format: {fault_name: (lb, ub)}
-        pressure_limits : dict, optional
+        pressure_bounds : dict, optional
             Pressure parameter bounds (only for Pressure type)
             Format: {fault_name: (lb, ub)}
         source_bounds : dict, optional
@@ -265,120 +277,83 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             Format: {source_name: {component_name: (lb, ub)}}
             Works for any source type (Fault, Pressure, Sbarbot).
         """
-        # Set global bounds
-        if lb is not None or ub is not None:
-            self.constraint_manager.set_global_bounds(lb, ub, source="manual")
-        
-        # Set source-specific bounds based on type (legacy interface)
-        for fault in self.faults:
-            adapter = self.adapters[fault.name]
-            if adapter.source_type == 'Fault':
-                ss_bounds = strikeslip_limits.get(fault.name) if strikeslip_limits else None
-                ds_bounds = dipslip_limits.get(fault.name) if dipslip_limits else None
-                if ss_bounds or ds_bounds:
-                    self.constraint_manager.set_fault_slip_bounds(
-                        fault.name, ss_bounds, ds_bounds, source="manual"
+        with self.constraint_manager.atomic_bounds_update():
+            if lb is not None or ub is not None:
+                self.constraint_manager.set_global_bounds(lb, ub, source="manual")
+
+            for fault in self.faults:
+                adapter = self.adapters[fault.name]
+                if adapter.source_type == 'Fault':
+                    ss_bounds = strikeslip_bounds.get(fault.name) if strikeslip_bounds else None
+                    ds_bounds = dipslip_bounds.get(fault.name) if dipslip_bounds else None
+                    if ss_bounds is not None or ds_bounds is not None:
+                        self.constraint_manager.set_fault_slip_bounds(
+                            fault.name, ss_bounds, ds_bounds, source="manual"
+                        )
+
+                elif adapter.source_type == 'Pressure':
+                    p_bounds = pressure_bounds.get(fault.name) if pressure_bounds else None
+                    if p_bounds is not None:
+                        self.constraint_manager.set_source_component_bounds(
+                            fault.name, {name: p_bounds for name in adapter.get_param_names()}, source="manual"
+                        )
+
+                if poly_bounds and fault.name in poly_bounds:
+                    self.constraint_manager.set_fault_poly_bounds(
+                        fault.name, poly_bounds[fault.name], source="manual"
                     )
-            
-            elif adapter.source_type == 'Pressure':
-                p_bounds = pressure_limits.get(fault.name) if pressure_limits else None
-                if p_bounds:
+
+            if source_bounds:
+                for source_name, comp_bounds in source_bounds.items():
                     self.constraint_manager.set_source_component_bounds(
-                        fault.name, {name: p_bounds for name in adapter.get_param_names()}, source="manual"
+                        source_name, comp_bounds, source="manual"
                     )
-            
-            # Handle polynomial bounds (common to all types)
-            if poly_limits and fault.name in poly_limits:
-                self.constraint_manager.set_fault_poly_bounds(
-                    fault.name, poly_limits[fault.name], source="manual"
-                )
-        
-        # Generic source_bounds interface (works for any source type including Sbarbot)
-        if source_bounds:
-            for source_name, comp_bounds in source_bounds.items():
-                self.constraint_manager.set_source_component_bounds(
-                    source_name, comp_bounds, source="manual"
-                )
         
         # Sync to solver
         self.constraint_manager.sync_to_solver()
 
-    # Legacy properties for backward compatibility
+    # Read-only diagnostic mirrors. The manager is the only writable source.
     @property
     def lb(self):
-        """Lower bounds for backward compatibility."""
+        """Return the latest manager-synchronized lower bounds."""
         return self._lb
-
-    @lb.setter
-    def lb(self, value):
-        """Set lower bounds."""
-        self._lb = value
 
     @property 
     def ub(self):
-        """Upper bounds for backward compatibility."""
+        """Return the latest manager-synchronized upper bounds."""
         return self._ub
-
-    @ub.setter
-    def ub(self, value):
-        """Set upper bounds."""
-        self._ub = value
 
     @property
     def A_ueq(self):
-        """Combined inequality constraint matrix for backward compatibility."""
+        """Return the manager-owned combined inequality matrix."""
         if self._A_ueq is not None:
             return self._A_ueq
-        # Fallback to constraint manager
         A, _ = self.constraint_manager.get_combined_inequality_constraints()
         return A
 
-    @A_ueq.setter
-    def A_ueq(self, value):
-        """Set inequality constraint matrix."""
-        self._A_ueq = value
-
     @property
     def b_ueq(self):
-        """Combined inequality constraint vector for backward compatibility."""
+        """Return the manager-owned combined inequality vector."""
         if self._b_ueq is not None:
             return self._b_ueq
-        # Fallback to constraint manager
         _, b = self.constraint_manager.get_combined_inequality_constraints()
         return b
 
-    @b_ueq.setter
-    def b_ueq(self, value):
-        """Set inequality constraint vector."""
-        self._b_ueq = value
-
     @property
     def Aeq(self):
-        """Combined equality constraint matrix for backward compatibility."""
+        """Return the manager-owned combined equality matrix."""
         if self._Aeq is not None:
             return self._Aeq
-        # Fallback to constraint manager
         A, _ = self.constraint_manager.get_combined_equality_constraints()
         return A
 
-    @Aeq.setter
-    def Aeq(self, value):
-        """Set equality constraint matrix."""
-        self._Aeq = value
-
     @property
     def beq(self):
-        """Combined equality constraint vector for backward compatibility."""
+        """Return the manager-owned combined equality vector."""
         if self._beq is not None:
             return self._beq
-        # Fallback to constraint manager
         _, b = self.constraint_manager.get_combined_equality_constraints()
         return b
-
-    @beq.setter
-    def beq(self, value):
-        """Set equality constraint vector."""
-        self._beq = value
 
     @property
     def inequality_constraints(self):
@@ -390,37 +365,142 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         """Read-only equality-constraint view for diagnostics."""
         return self.constraint_manager.equality_constraints
 
-    def add_inequality_constraint(self, A, b, name=None, source=None):
-        """Add inequality constraint using constraint manager."""
-        if name is None:
-            name = f"ineq_{len(self.constraint_manager._inequality_constraints) + 1}"
-        self.constraint_manager.add_inequality_constraint(A, b, name, source or "external")
-        # Sync back to solver
-        self.constraint_manager.sync_to_solver()
+    def add_linear_inequality_constraint(
+        self, A, b, *, name, source="user"
+    ):
+        """Add one user-owned ``A @ x <= b`` group."""
+        with self.constraint_transaction():
+            self.constraint_manager._register_inequality_group(
+                A, b, name, source, owner='user'
+            )
+            self.constraint_manager.sync_to_solver()
 
-    def add_equality_constraint(self, A, b, name=None, source=None):
-        """Add equality constraint using constraint manager."""
-        if name is None:
-            name = f"eq_{len(self.constraint_manager._equality_constraints) + 1}"
-        self.constraint_manager.add_equality_constraint(A, b, name, source or "external")
-        # Sync back to solver
-        self.constraint_manager.sync_to_solver()
+    def replace_linear_inequality_constraint(
+        self, A, b, *, name, source="user"
+    ):
+        """Replace one existing user-owned inequality group."""
+        with self.constraint_transaction():
+            self.constraint_manager._replace_user_group(
+                'inequality', A, b, name=name, source=source
+            )
+            self.constraint_manager.sync_to_solver()
 
-    def set_bounds_from_config(self, config_file, encoding='utf-8'):
-        """Load and apply bounds from config file using constraint manager."""
-        self.constraint_manager.load_bounds_config(config_file, encoding)
-        self.constraint_manager.apply_bounds_from_config()
-        self.constraint_manager.sync_to_solver()
+    def add_linear_equality_constraint(
+        self, Aeq, beq, *, name, source="user"
+    ):
+        """Add one user-owned ``Aeq @ x = beq`` group."""
+        with self.constraint_transaction():
+            self.constraint_manager._register_equality_group(
+                Aeq, beq, name, source, owner='user'
+            )
+            self.constraint_manager.sync_to_solver()
 
-    def set_inequality_constraints_for_rake_angle(self, rake_limits):
-        """Set rake angle constraints using constraint manager."""
-        self.constraint_manager.set_rake_angle_constraints(rake_limits, source="manual")
+    def replace_linear_equality_constraint(
+        self, Aeq, beq, *, name, source="user"
+    ):
+        """Replace one existing user-owned equality group."""
+        with self.constraint_transaction():
+            self.constraint_manager._replace_user_group(
+                'equality', Aeq, beq, name=name, source=source
+            )
+            self.constraint_manager.sync_to_solver()
+
+    def remove_linear_constraint(self, name):
+        """Remove one user-owned raw linear group."""
+        with self.constraint_transaction():
+            self.constraint_manager._remove_group(name)
+            self.constraint_manager.sync_to_solver()
+
+    def get_linear_parameter_layout(self):
+        """Return the validated BLSE/VCE linear parameter layout."""
+        return self.constraint_manager.get_linear_parameter_layout()
+
+    def constraint_transaction(self):
+        """Return an advanced all-or-nothing constraint-update context."""
+        return self.constraint_manager.constraint_transaction()
+
+    def apply_constraints_from_config(
+        self,
+        bounds_config_file,
+        *,
+        encoding='utf-8',
+    ):
+        """Transactionally replace configuration-owned declarations."""
+        result = self.constraint_manager._apply_constraint_config(
+            bounds_config_file=bounds_config_file,
+            encoding=encoding,
+        )
         self.constraint_manager.sync_to_solver()
+        return result
+
+    def update_fault_rake_limits(self, rake_limits, *, source="manual"):
+        """Merge fault-level runtime rake sectors and rebuild the matrix.
+
+        ``rake_limits`` is a mapping ``{fault_name: [min_rake, max_rake]}``.
+        Patch-level rake overrides already declared in ``patch_constraints``
+        are preserved and resolved after these fault-level defaults.
+        """
+        return self.constraint_manager.update_fault_rake_limits(
+            rake_limits,
+            replace=False,
+            source=source,
+            sync=True,
+        )
+
+    def replace_fault_rake_limits(self, rake_limits, *, source="manual"):
+        """Replace all fault-level runtime rake sectors."""
+        return self.constraint_manager.update_fault_rake_limits(
+            rake_limits,
+            replace=True,
+            source=source,
+            sync=True,
+        )
+
+    def clear_fault_rake_limits(self):
+        """Clear script-side fault rake sectors, preserving config/patch rake."""
+        return self.constraint_manager.clear_fault_rake_limits(sync=True)
+
+    def add_patch_constraints(self, patch_constraints, *, source="manual"):
+        """Add patch-level bounds/rake override specs before solving.
+
+        The specs update the constraint manager declaration layer and then
+        refresh resolved bounds/rake constraints.  Use this helper before
+        ``ConstrainedLeastSquareSoln``/``run``.
+        """
+        return self.constraint_manager.add_patch_constraints(
+            patch_constraints,
+            source=source,
+            sync=True,
+        )
+
+    def replace_patch_constraints(self, patch_constraints, *, source="manual"):
+        """Replace script-side patch overrides while keeping config rules."""
+        return self.constraint_manager.replace_patch_constraints(
+            patch_constraints,
+            source=source,
+            sync=True,
+        )
+
+    def clear_patch_constraints(self, *, source="manual"):
+        """Remove script-side patch overrides while keeping config rules."""
+        return self.constraint_manager.clear_patch_constraints(
+            source=source,
+            sync=True,
+        )
         
-    def set_equality_constraints_for_fixed_rake(self, fixed_rake):
-        """Set fixed rake angle constraints using constraint manager."""
-        self.constraint_manager.set_fixed_rake_constraints(fixed_rake, source="manual")
-        self.constraint_manager.sync_to_solver()
+    def set_fixed_rake_constraints(self, fixed_rake):
+        """Replace the managed fixed-rake equality family."""
+        with self.constraint_transaction():
+            result = self.constraint_manager.set_fixed_rake_constraints(
+                fixed_rake,
+                source="manual",
+            )
+            self.constraint_manager.sync_to_solver()
+            return result
+
+    def clear_fixed_rake_constraints(self):
+        """Remove fixed-rake equalities; repeated calls are safe."""
+        return self.constraint_manager.clear_fixed_rake_constraints(sync=True)
 
     def set_incompressibility_constraints(self, source_names=None):
         """Set incompressibility equality constraints for Sbarbot sources.
@@ -440,59 +520,67 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             source_names = [source_names]
 
         n_total = self.lsq_parameters
-        for sname in source_names:
-            adapter = self.adapters[sname]
-            if adapter.source_type != 'Sbarbot':
-                raise TypeError(f"'{sname}' is not a Sbarbot source")
-            param_start = self.slip_positions[sname][0]
-            cfg = {'incompressible': {'type': 'equality', 'rule': 'incompressible'}}
-            for cname, A, b in adapter.generate_source_equality_constraints(
-                    cfg, param_start, n_total):
-                full_name = f"src_{sname}_{cname}"
-                self.constraint_manager.add_equality_constraint(
-                    A, b, name=full_name,
-                    source=f"incompressibility/{sname}", overwrite=True)
+        with self.constraint_transaction():
+            self.constraint_manager._remove_groups_by_owner(
+                'managed',
+                families={'incompressibility'},
+            )
+            for sname in source_names:
+                adapter = self.adapters[sname]
+                if adapter.source_type != 'Sbarbot':
+                    raise TypeError(f"'{sname}' is not a Sbarbot source")
+                param_start = self.slip_positions[sname][0]
+                cfg = {
+                    'incompressible': {
+                        'type': 'equality',
+                        'rule': 'incompressible',
+                    }
+                }
+                for cname, A, b in adapter.generate_source_equality_constraints(
+                    cfg,
+                    param_start,
+                    n_total,
+                ):
+                    full_name = f"src_{sname}_{cname}"
+                    self.constraint_manager._register_equality_group(
+                        A,
+                        b,
+                        name=full_name,
+                        source=f"incompressibility/{sname}",
+                        replace=True,
+                        owner='managed',
+                        family='incompressibility',
+                    )
+            self.constraint_manager.sync_to_solver()
 
+    def clear_incompressibility_constraints(self):
+        """Remove the complete managed incompressibility family."""
+        removed = self.constraint_manager._remove_groups_by_owner(
+            'managed',
+            families={'incompressibility'},
+        )
         self.constraint_manager.sync_to_solver()
+        return tuple(name for _, name in removed)
 
     def print_constraint_summary(self):
         """Print constraint summary using constraint manager."""
         self.constraint_manager.print_summary()
 
-    def get_constraint_snapshot(self, include_matrices=False):
+    def get_constraint_snapshot(self, include_matrices=False, validate=False):
         """Return a diagnostic snapshot of manager-owned constraints.
 
-        The returned object is for inspection.  Use ``set_bounds``,
-        ``add_inequality_constraint``, ``add_equality_constraint`` and
-        ``constraint_manager.remove_constraint`` to mutate constraints.
+        The returned object is for inspection. Use the inversion facade to
+        mutate constraints.
         """
         return self.constraint_manager.get_constraint_snapshot(
-            include_matrices=include_matrices
+            include_matrices=include_matrices,
+            validate=validate,
         )
 
     @property
     def bounds(self):
         """Read-only bounds view for diagnostics."""
         return self.constraint_manager.bounds
-
-    def add_linear_combination_constraint(self, coefficients, indices, value, constraint_type='equality', name=None):
-        """Convenience method for adding linear combination constraints."""
-        coefficients = np.array(coefficients)
-        indices = np.array(indices)
-        
-        if len(coefficients) != len(indices):
-            raise ValueError("Coefficients and indices arrays must have the same length")
-        
-        A = np.zeros((1, self.lsq_parameters))
-        A[0, indices] = coefficients
-        b = np.array([value])
-        
-        if constraint_type == 'equality':
-            self.add_equality_constraint(A=A, b=b, name=name)
-        elif constraint_type == 'inequality':
-            self.add_inequality_constraint(A, b, name=name)
-        else:
-            raise ValueError("constraint_type must be 'equality' or 'inequality'")
 
     @staticmethod
     def _normalize_fault_slip_component(component):
@@ -505,50 +593,12 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             f"Unknown slip component '{component}'. Please use 'strikeslip' or 'dipslip'."
         )
 
-    def _component_columns_for_patches(self, fault_name, component, patch_indices, source_start=None):
-        """Return global columns for one named Fault slip component."""
-        if fault_name not in self.faults_dict:
-            raise ValueError(
-                f"Fault '{fault_name}' not found. Available: {list(self.faults_dict.keys())}"
-            )
-
-        adapter = self.adapters[fault_name]
-        if adapter.source_type != 'Fault':
-            raise TypeError(
-                f"Slip constraints can only be applied to 'Fault' sources, "
-                f"but '{fault_name}' is '{adapter.source_type}'."
-            )
-
-        if source_start is None:
-            source_start, _ = self.slip_positions[fault_name]
-
-        fault = self.faults_dict[fault_name]
-        component = self._normalize_fault_slip_component(component)
-        component_slices = self.constraint_manager._source_component_slices(
-            fault, int(source_start), adapter=adapter
-        )
-        if component not in component_slices:
-            raise ValueError(
-                f"Fault '{fault_name}' has no {component} component "
-                f"(slipdir='{adapter.slipdir}')."
-            )
-
-        patch_indices = np.asarray(patch_indices, dtype=int)
-        n_component = component_slices[component].stop - component_slices[component].start
-        if np.any(patch_indices >= n_component) or np.any(patch_indices < 0):
-            raise ValueError(
-                f"Invalid patch indices found for fault '{fault_name}'. "
-                f"Indices must be between 0 and {n_component - 1}."
-            )
-
-        return component_slices[component].start + patch_indices
-
     def add_zero_edge_slip_constraint(self, fault_names, edges, slip_modes):
         """
         Add zero-slip equality constraints for triangles on specified fault edges.
 
         Builds a constraint matrix per (fault, edge, slip_mode) combination and
-        calls add_equality_constraint once per combination — instead of looping
+        registers one equality group per combination instead of looping
         triangle by triangle.
 
         Parameters
@@ -581,6 +631,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         slip_modes = list(dict.fromkeys(self._normalize_fault_slip_component(m) for m in slip_modes))
 
+        groups = []
         for fault_name in fault_names:
             if fault_name not in self.faults_dict:
                 raise ValueError(
@@ -594,8 +645,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     "Run edge detection first."
                 )
 
-            slip_st, _ = self.slip_positions[fault_name]
-
             for edge in edges:
                 if edge not in fault.edge_triangles_indices:
                     available = list(fault.edge_triangles_indices.keys())
@@ -606,8 +655,14 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 tri_indices = np.asarray(fault.edge_triangles_indices[edge])
 
                 for slip_mode in slip_modes:
-                    global_indices = self._component_columns_for_patches(
-                        fault_name, slip_mode, tri_indices, source_start=slip_st
+                    global_indices = (
+                        self.constraint_manager
+                        ._get_component_columns_for_patches(
+                            fault_name,
+                            slip_mode,
+                            tri_indices,
+                            space='active_linear',
+                        )
                     )
                     n_constrained = len(global_indices)
 
@@ -616,7 +671,19 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                     b = np.zeros(n_constrained)
 
                     name = f"zero_edge_{fault_name}_{edge}_{slip_mode}"
-                    self.add_equality_constraint(A=A, b=b, name=name)
+                    groups.append((name, A, b))
+
+        with self.constraint_transaction():
+            for name, A, b in groups:
+                self.constraint_manager._register_equality_group(
+                    A,
+                    b,
+                    name=name,
+                    source="zero_edge_slip",
+                    owner="user",
+                )
+            self.constraint_manager.sync_to_solver()
+        return [name for name, _, _ in groups]
 
     def add_patch_slip_constraint(self, fault_patches, slip_component, value=0.0, constraint_type='equality', operator='=='):
         """
@@ -654,11 +721,15 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             if f_name not in self.faults_dict:
                 raise ValueError(f"Fault '{f_name}' not found. Available faults: {list(self.faults_dict.keys())}")
 
-            slip_st, _ = self.slip_positions[f_name]
-
             for s_comp in slip_components:
-                columns = self._component_columns_for_patches(
-                    f_name, s_comp, patch_indices, source_start=slip_st
+                columns = (
+                    self.constraint_manager
+                    ._get_component_columns_for_patches(
+                        f_name,
+                        s_comp,
+                        patch_indices,
+                        space='active_linear',
+                    )
                 )
                 all_global_indices.extend(columns.tolist())
 
@@ -675,7 +746,12 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         name = f"patch_slip_constraint_{f_name_str}_{c_name_str}"
 
         if constraint_type == 'equality':
-            self.add_equality_constraint(A=A, b=b, name=name, source='manual')
+            self.add_linear_equality_constraint(
+                A,
+                b,
+                name=name,
+                source='manual',
+            )
         elif constraint_type == 'inequality':
             if operator in ('<=', '<'):
                 # A*x <= b is the standard form
@@ -686,22 +762,30 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 b = -b
             else:
                 raise ValueError(f"Unsupported inequality operator '{operator}'. Please use '<=' or '>='.")
-            self.add_inequality_constraint(A=A, b=b, name=name, source='manual')
+            self.add_linear_inequality_constraint(
+                A,
+                b,
+                name=name,
+                source='manual',
+            )
         else:
             raise ValueError(f"Invalid constraint type '{constraint_type}'. Please use 'equality' or 'inequality'.")
 
     def ConstrainedLeastSquareSoln(self, penalty_weight=1., smoothing_matrix=None, data_weight=1.,
-                                smoothing_constraints=None, method='mudpy', Aueq=None, bueq=None, 
-                                Aeq=None, beq=None, verbose=False, extra_parameters=None,
+                                smoothing_constraints=None, method='mudpy',
+                                verbose=False, extra_parameters=None,
                                 iterations=1000, tolerance=None, maxfun=100000, des_enabled=None,
                                 validate_constraints=True):
         '''
         Enhanced constrained least squares solution with unified constraint management.
         '''
+        self.constraint_manager._require_activation_flags_reconciled(
+            "BLSE constrained least squares"
+        )
 
         # Validate constraints using constraint manager
         if validate_constraints:
-            validation = self.constraint_manager.validate_constraints()
+            validation = self.constraint_manager.validate()
             if not validation['valid']:
                 print("[X] Constraint validation failed:")
                 for error in validation['errors']:
@@ -816,24 +900,16 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         A_ueq_cm, b_ueq_cm = self.constraint_manager.get_combined_inequality_constraints()
         Aeq_cm, beq_cm = self.constraint_manager.get_combined_equality_constraints()
         
-        # Combine with external constraints if provided
         A_ueq = A_ueq_cm
         b_ueq = b_ueq_cm
-        if Aueq is not None and bueq is not None:
-            A_ueq = np.vstack((A_ueq, Aueq)) if A_ueq is not None else Aueq
-            b_ueq = np.hstack((b_ueq, bueq)) if b_ueq is not None else bueq
-
         Aeq_final = Aeq_cm
         beq_final = beq_cm
-        if Aeq is not None and beq is not None:
-            Aeq_final = np.vstack((Aeq_final, Aeq)) if Aeq_final is not None else Aeq
-            beq_final = np.hstack((beq_final, beq)) if beq_final is not None else beq
 
         # Get bounds from constraint manager
         lb = self.constraint_manager.lb
         ub = self.constraint_manager.ub
         if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
-            raise ValueError("You should set bounds first using set_bounds() or constraint manager methods")
+            raise ValueError("Set bounds first with update_bounds()")
 
         # ----------------------------Apply DES transformation if enabled-----------------------------#
         if use_des:
@@ -893,18 +969,18 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # ----------------------------Inverse using lsqlin-----------------------------#
         # Compute using lsqlin
         opts = {'show_progress': False}
-        try:
-            ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, Aeq_prime, beq_prime, lb_prime, ub_prime, None, opts)
-        except Exception as e:
-            warnings.warn(
-                f"Equality constraints caused solver failure "
-                f"({type(e).__name__}: {e}). "
-                f"Retrying without equality constraints. "
-                f"Check constraint matrix rank with validate_constraints().",
-                RuntimeWarning,
-                stacklevel=2,
+        ret = lsqlin.lsqlin_auto(
+            G2I, d2I, 0,
+            A_ueq_prime, b_ueq_prime,
+            Aeq_prime, beq_prime,
+            lb_prime, ub_prime,
+            None, opts,
+        )
+        if verbose and ret.get('solver') != 'cvxopt_qp':
+            print(
+                "[SOLVER] CVXOPT did not converge; solved the unchanged "
+                "constraint system with the robust Clarabel fallback"
             )
-            ret = lsqlin.lsqlin(G2I, d2I, 0, A_ueq_prime, b_ueq_prime, None, None, lb_prime, ub_prime, None, opts)
         _validate_lsqlin_status(ret, context="BLSE constrained least squares")
         mpost_prime = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
         
@@ -993,9 +1069,13 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             - 'converged': convergence flag
             - 'iterations': number of iterations
         """
+        self.constraint_manager._require_activation_flags_reconciled(
+            "BLSE/VCE"
+        )
+
         # Validate constraints using constraint manager
         if validate_constraints:
-            validation = self.constraint_manager.validate_constraints()
+            validation = self.constraint_manager.validate()
             if not validation['valid']:
                 print("[X] Constraint validation failed:")
                 for error in validation['errors']:
@@ -1033,7 +1113,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         lb = self.constraint_manager.lb
         ub = self.constraint_manager.ub
         if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
-            raise ValueError("You should set bounds first using set_bounds() method")
+            raise ValueError("Set bounds first with update_bounds()")
 
         # Setup data ranges
         data_ranges = {}
@@ -1186,6 +1266,16 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Store results
         self.mpost = vce_result['m']
         self.vce_result = vce_result
+        _validate_linear_solution_constraints(
+            self.mpost,
+            lb,
+            ub,
+            A_ueq,
+            b_ueq,
+            Aeq,
+            beq,
+            context="VCE constrained least squares",
+        )
 
         if verbose:
             print(f"VCE completed in {vce_result['iterations']} iterations")
@@ -1242,7 +1332,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         """
         # Validate constraints
         if validate_constraints:
-            validation = self.constraint_manager.validate_constraints()
+            validation = self.constraint_manager.validate()
             if not validation['valid']:
                 print("[X] Constraint validation failed:")
                 for error in validation['errors']:
@@ -1352,7 +1442,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         lb = self.constraint_manager.lb
         ub = self.constraint_manager.ub
         if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
-            raise ValueError("You should set bounds first using set_bounds() method")
+            raise ValueError("Set bounds first with update_bounds()")
         
         # Ensure lb and ub are numpy arrays
         lb = np.asarray(lb)
@@ -1494,8 +1584,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 if __name__ == "__main__":
     solver = multifaultsolve_boundLSE()
     # 设置边界约束
-    solver.set_bounds(lb=-10, ub=10)
-    solver.set_bounds(strikeslip_limits={'main_fault': (-5, 5)})
+    solver.update_bounds(lb=-10, ub=10)
+    solver.update_bounds(strikeslip_bounds={'main_fault': (-5, 5)})
     
     # 运行VCE - 每个数据集和断层都有独立的方差分量
     result = solver.simple_vce(

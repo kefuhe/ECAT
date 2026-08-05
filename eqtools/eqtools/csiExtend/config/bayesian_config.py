@@ -8,6 +8,54 @@ from .linear_config import LinearInversionConfig
 from ..multifaults_base import MyMultiFaultsInversion
 
 
+_BAYESIAN_SAMPLING_MODE_ALIASES = {
+    'SMC_FJ': 'SMC_FJ',
+    'SMC_F_J': 'SMC_FJ',
+    'FULLSMC': 'FULLSMC',
+}
+
+
+def normalize_bayesian_sampling_mode(value):
+    """Return the canonical Bayesian sampling-mode name.
+
+    ``SMC_FJ`` is the only stored and emitted spelling of the hybrid
+    geometry-sampling/linear-slip mode.  ``SMC_F_J`` remains accepted only as
+    a legacy configuration or API input.
+
+    Parameters
+    ----------
+    value : str
+        Sampling-mode name. Matching is case-insensitive.
+
+    Returns
+    -------
+    str
+        ``"SMC_FJ"`` or ``"FULLSMC"``.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not a string or is not a supported mode.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            "bayesian_sampling_mode must be a string; "
+            f"got {type(value).__name__}"
+        )
+    normalized = value.upper()
+    try:
+        return _BAYESIAN_SAMPLING_MODE_ALIASES[normalized]
+    except KeyError as exc:
+        valid_modes = ['SMC_FJ', 'FULLSMC']
+        msg = (
+            f"Invalid bayesian_sampling_mode: {value}. "
+            f"Valid options are {valid_modes}. "
+            "Legacy input 'SMC_F_J' is also accepted as 'SMC_FJ'."
+        )
+        logger.error(msg)
+        raise ValueError(msg) from exc
+
+
 class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
     """
     Bayesian multi-faults inversion configuration.
@@ -151,21 +199,19 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 smoothing_faultnames=smoothing_faultnames)
 
         # Force set sampling mode
-        if self.bayesian_sampling_mode == 'SMC_F_J':
+        if self.bayesian_sampling_mode == 'SMC_FJ':
             self.slip_sampling_mode = 'ss_ds'
 
     def _translate_bayesian_sampling_mode(self):
-        """Translate bayesian_sampling_mode to internal settings."""
-        valid_modes = ['SMC_FJ', 'FULLSMC', 'SMC_F_J']
-        # Ensure bayesian_sampling_mode is uppercase
-        self.bayesian_sampling_mode = self.bayesian_sampling_mode.upper()
-        if self.bayesian_sampling_mode not in valid_modes:
-            msg = f"Invalid bayesian_sampling_mode: {self.bayesian_sampling_mode}. Valid options are {valid_modes}."
-            logger.error(msg)
-            raise ValueError(msg)
-        # Map 'SMC_FJ' to 'SMC_F_J'
-        if self.bayesian_sampling_mode == 'SMC_FJ':
-            self.bayesian_sampling_mode = 'SMC_F_J'
+        """Canonicalize ``bayesian_sampling_mode`` for all internal consumers.
+
+        After this method returns, the value is always ``SMC_FJ`` or
+        ``FULLSMC``. The legacy ``SMC_F_J`` spelling is accepted only at this
+        boundary and is never stored internally.
+        """
+        self.bayesian_sampling_mode = normalize_bayesian_sampling_mode(
+            self.bayesian_sampling_mode
+        )
     
     def _translate_slip_sampling_mode(self):
         """Translate slip_sampling_mode to internal settings."""

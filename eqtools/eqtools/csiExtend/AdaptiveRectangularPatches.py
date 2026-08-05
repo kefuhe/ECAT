@@ -1,6 +1,8 @@
 import numpy as np
 from csi.planarfault import planarfault
 
+from .fault_angle_conventions import canonicalize_compact_fault_angles
+
 
 class AdaptiveRectangularPatches(planarfault):
     """
@@ -110,21 +112,34 @@ class AdaptiveRectangularPatches(planarfault):
         clon (float): The longitude of the center point of the top line.
         clat (float): The latitude of the center point of the top line.
         cdepth (float): The depth of the center point of the top line.
-        strike (float): The strike angle of the fault patch.
-        dip (float): The dip angle of the fault patch.
+        strike (float): Geographic strike clockwise from North, in degrees.
+        dip (float): Compact nonlinear dip in ``[-90, 180]`` degrees. The
+            historical negative interval is accepted; geometry is converted
+            to the shared canonical CSI strike/dip pair before construction.
         length (float): The length of the fault patch.
         width (float): The width of the fault patch.
         top (float): The top depth of the fault patch.
         depth (float): The bottom depth of the fault patch.
 
         Returns:
-        top_coords: The top coordinates of the fault patch.
-        bottom_coords: The bottom coordinates of the fault patch.
+        tuple: ``(clon, clat, cdepth, strike, dip, length, width)`` for the
+            generated top edge and fault plane. Returned strike/dip are the
+            canonical CSI solver pair.
         """
         from numpy import deg2rad, sin, cos, tan
 
         if any(param is None for param in [clon, clat, cdepth, strike, dip, length]):
             raise ValueError("Please provide all the required parameters.")
+
+        # Match the compact nonlinear SMC forward model exactly.  In
+        # particular, historical negative dip results must not be interpreted
+        # with a different side convention during the linear-slip handoff.
+        strike, dip, _ = canonicalize_compact_fault_angles(strike, dip)
+        if np.isclose(dip, 0.0, rtol=0.0, atol=1e-12):
+            raise ValueError(
+                "compact dip 0 or 180 degrees is horizontal and cannot "
+                "define top/bottom edges at different depths"
+            )
         
         # Convert the strike and dip angles to radians
         str_rad = deg2rad(90 - strike)
@@ -189,8 +204,9 @@ class AdaptiveRectangularPatches(planarfault):
         clon (float): The longitude of the center point of the top line.
         clat (float): The latitude of the center point of the top line.
         cdepth (float): The depth of the center point of the top line.
-        strike (float): The strike angle of the fault patch.
-        dip (float): The dip angle of the fault patch.
+        strike (float): Geographic strike clockwise from North, in degrees.
+        dip (float): Compact nonlinear dip in ``[-90, 180]`` degrees; the
+            shared nonlinear-to-CSI angle convention is applied internally.
         length (float): The length of the fault patch.
         width (float): The width of the fault patch.
         top (float): The top depth of the fault patch.

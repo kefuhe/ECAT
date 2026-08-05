@@ -8,20 +8,22 @@ import pandas as pd
 
 from .multifaults_base import MyMultiFaultsInversion
 from .config.blse_config import BoundLSEInversionConfig
-from .constraint_manager_blse import ConstraintManager
 from .data_correction_constraints import DataCorrectionConstraintMixin
 from .data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
 from .interseismic_mixin import InterseismicKinematicsMixin
+from .plot_product_mixin import FigureProductMixin
 from .patch_indices import normalize_patch_indices
-from ..plottools import sci_plot_style
+from ..viztools import sci_plot_style
 from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
+from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
 
 class BoundLSEMultiFaultsInversion(
     DataCorrectionReportMixin,
     DataCorrectionConstraintMixin,
     DeepSlipLoadingMixin,
     InterseismicKinematicsMixin,
+    FigureProductMixin,
     MyMultiFaultsInversion,
 ):
     def __init__(self, name, faults_list, geodata=None, config='default_config_BLSE.yml', encoding='utf-8',
@@ -42,8 +44,10 @@ class BoundLSEMultiFaultsInversion(
             Configuration file path or config object (default: 'default_config_BLSE.yml')
         encoding : str, optional
             File encoding (default: 'utf-8')
-        gfmethods : dict, optional
-            Green's function methods
+        gfmethods : sequence of str, optional
+            One Green's-function method per entry in ``faults_list``. This is
+            a runtime method override; method-specific options remain in the
+            configuration's ``method_parameters.update_GFs`` block.
         bounds_config : str, optional
             Bounds configuration file (default: 'bounds_config.yml')
         interseismic_config : str or dict, optional
@@ -109,10 +113,19 @@ class BoundLSEMultiFaultsInversion(
                 }
         }
         
-        # Apply all constraints using the constraint manager
-        self.constraint_manager.apply_all_constraints_from_config(
+        # Constructor rake limits are persistent runtime coarse declarations,
+        # not a transient fifth precedence layer.
+        if rake_limits:
+            self.constraint_manager.update_fault_rake_limits(
+                rake_limits,
+                replace=False,
+                source='constructor',
+                sync=False,
+            )
+
+        # Apply all constraints using the constraint manager.
+        self.constraint_manager._apply_constraint_config(
             bounds_config_file=bounds_config,
-            rake_limits=rake_limits,
             encoding=encoding
         )
         
@@ -127,22 +140,23 @@ class BoundLSEMultiFaultsInversion(
 
     def update_interseismic_config(self, interseismic_config, reapply=True):
         """Load a new interseismic config and optionally rebuild its constraints."""
-        parsed = self.config.load_interseismic_config(interseismic_config)
-        if reapply and hasattr(self, 'constraint_manager'):
-            self.constraint_manager.remove_constraint('euler_cap_constraints', 'inequality')
-            for constraint_name in ('interseismic_block_euler_constraints', 'interseismic_block_euler_sharing'):
-                if constraint_name in getattr(self.constraint_manager, '_equality_constraints', {}):
-                    self.constraint_manager.remove_constraint(constraint_name, 'equality')
-            for name in list(getattr(self.constraint_manager, '_equality_constraints', {})):
-                group = self.constraint_manager._equality_constraints[name]
-                if group.get('source') == 'interseismic_config.backslip_constraints':
-                    self.constraint_manager.remove_constraint(name, 'equality')
-            if parsed.get('blocks', {}).get('enabled', False):
-                self.constraint_manager.apply_interseismic_block_constraints()
-            self.constraint_manager.apply_euler_cap_constraints()
-            self.constraint_manager.apply_interseismic_backslip_constraints()
-            self.constraint_manager.sync_to_solver()
-        return parsed
+        with self.constraint_transaction():
+            parsed = self.config.load_interseismic_config(interseismic_config)
+            if reapply:
+                self.constraint_manager._remove_groups_by_owner(
+                    'config',
+                    families={
+                        'interseismic_blocks',
+                        'interseismic_cap',
+                        'interseismic_backslip',
+                    },
+                )
+                if parsed.get('blocks', {}).get('enabled', False):
+                    self.constraint_manager.apply_interseismic_block_constraints()
+                self.constraint_manager.apply_euler_cap_constraints()
+                self.constraint_manager.apply_interseismic_backslip_constraints()
+                self.constraint_manager.sync_to_solver()
+            return parsed
 
     def update_euler_cap_constraint(
         self,
@@ -494,7 +508,10 @@ class BoundLSEMultiFaultsInversion(
         lb = self.constraint_manager.lb
         ub = self.constraint_manager.ub
         if lb is None or ub is None:
-            raise ValueError("Bounds must be set before running VCE. Use set_bounds_from_config() or set_bounds().")
+            raise ValueError(
+                "Bounds must be set before running VCE. Use "
+                "apply_constraints_from_config() or update_bounds()."
+            )
         if np.any(np.isnan(lb)) or np.any(np.isnan(ub)):
             raise ValueError("Some bounds are not set (NaN values found). Please set all bounds first.")
     
@@ -867,12 +884,13 @@ class BoundLSEMultiFaultsInversion(
                                           antisymmetric=True, res_use_data_norm=True, cmap='RdBu_r', azimuth=None, elevation=None,
                                           slip_cmap='cmc.roma_r', depth_range=None, z_ticks=None, 
                                           axis_shape=(1.0, 1.0, 0.6), 
+                                          zratio=None,
                                           gps_title=True, sar_title=True, sar_cbaxis=[0.1, 0.15, 0.35, 0.04], # [0.15, 0.25, 0.25, 0.02],
                                           gps_figsize=None, sar_figsize='double', gps_scale=0.05, gps_legendscale=0.2,
                                           file_type='png',
                                           remove_direction_labels=False,
                                           fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
-                                          data_poly=None,
+                                          data_poly="config",
                                           print_fit_statistics=True,
                                           print_fault_statistics=True
                                           ):
@@ -890,6 +908,7 @@ class BoundLSEMultiFaultsInversion(
         slip_cmap: colormap for slip (default is 'precip3_16lev_change.cpt')
         depth_range: depth range for the plot (default is None)
         z_ticks: z-axis ticks for the plot (default is None)
+        zratio: optional z-axis compression ratio passed to plot_multifaults_slip
         gps_title: whether to show title for GPS data plots (default is True)
         sar_title: whether to show title for SAR data plots (default is True)
         sar_cbaxis: colorbar axis position for SAR data plots (default is [0.1, 0.15, 0.35, 0.04])
@@ -900,7 +919,10 @@ class BoundLSEMultiFaultsInversion(
         file_type: file type to save the figures (default is 'png')
         remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
         fault_cbaxis: colorbar axis position for fault plots (default is [0.15, 0.22, 0.15, 0.02])
-        data_poly: whether to include polynomial constraints in the data (default is None), options are 'include' or None
+        data_poly: prediction correction mode. "config" (default) follows
+            each dataset's parsed geodata.polys value; "include" includes
+            solved corrections; None explicitly plots the source/slip-only
+            prediction.
         print_fit_statistics: whether to print fit statistics (default is True)
         print_fault_statistics: whether to print fault statistics (default is True)
         """
@@ -926,6 +948,7 @@ class BoundLSEMultiFaultsInversion(
                                                 xtickpad=5, ytickpad=5, ztickpad=5,
                                                 xlabelpad=15, ylabelpad=15, zlabelpad=15,
                                                 shape=axis_shape, elevation=elevation, azimuth=azimuth,
+                                                zratio=zratio,
                                                 depth=depth_range, zticks=z_ticks, fault_expand=0.0,
                                                 plot_faultEdges=False, suffix='_slip', outdir='output', ftype=file_type,
                                                 remove_direction_labels=remove_direction_labels,
@@ -937,17 +960,18 @@ class BoundLSEMultiFaultsInversion(
             cosar_list = []
             coleveling_list = []
             cocrossfault_list = []
-            datas = self.config.geodata.get('data', [])
-            verticals = self.config.geodata.get('verticals', [])
-            for data, vertical in zip(datas, verticals):
+            for spec in get_geodata_prediction_specs(self):
+                data = spec.data
+                vertical = spec.vertical
+                resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
                 if data.dtype == 'gps':
-                    cogps_vertical_list.append([data, vertical])
+                    cogps_vertical_list.append([data, vertical, resolved_poly])
                 elif data.dtype == 'insar':
-                    cosar_list.append(data)
+                    cosar_list.append([data, resolved_poly])
                 elif data.dtype == 'leveling':
-                    coleveling_list.append(data)
+                    coleveling_list.append([data, resolved_poly])
                 elif data.dtype == 'crossfaultoffset':
-                    cocrossfault_list.append(data)
+                    cocrossfault_list.append([data, resolved_poly])
 
             # Plot GPS data
             for fault in faults:
@@ -955,8 +979,8 @@ class BoundLSEMultiFaultsInversion(
                     fault.setTrace(0.1)
                 fault.color = 'k' # Set the color to black
                 fault.linewidth = 2.0 # Set the line width to 2.0
-            for cogps, vertical in cogps_vertical_list:
-                cogps.buildsynth(faults, vertical=vertical, poly=data_poly)
+            for cogps, vertical, resolved_poly in cogps_vertical_list:
+                cogps.buildsynth(faults, vertical=vertical, poly=resolved_poly)
                 if plot_data:
                     box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
                     cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], 
@@ -968,8 +992,8 @@ class BoundLSEMultiFaultsInversion(
             # Plot SAR data
             for fault in faults:
                 fault.color = 'k'
-            for cosar in cosar_list:
-                cosar.buildsynth(faults, vertical=True, poly=data_poly)
+            for cosar, resolved_poly in cosar_list:
+                cosar.buildsynth(faults, vertical=True, poly=resolved_poly)
                 if plot_data:
                     datamin, datamax = cosar.vel.min(), cosar.vel.max()
                     absmax = max(abs(datamin), abs(datamax))
@@ -1006,23 +1030,23 @@ class BoundLSEMultiFaultsInversion(
                                             )
 
             # Build synthetics and save/plot leveling data
-            for colev in coleveling_list:
-                colev.buildsynth(faults, vertical=True, poly=data_poly)
+            for colev, resolved_poly in coleveling_list:
+                colev.buildsynth(faults, vertical=True, poly=resolved_poly)
             if plot_data and coleveling_list:
                 out_modeling_dir = pathlib.Path('Modeling')
                 out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for colev in coleveling_list:
+                for colev, _resolved_poly in coleveling_list:
                     for itype in ['data', 'synth']:
                         colev.write2file(f'{colev.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
                     _plot_leveling_fit(colev, save_dir=out_modeling_dir, file_type=file_type)
             
             # Build synthetics and save/plot cross-fault offset data
-            for cocf in cocrossfault_list:
-                cocf.buildsynth(faults, poly=data_poly)
+            for cocf, resolved_poly in cocrossfault_list:
+                cocf.buildsynth(faults, poly=resolved_poly)
             if plot_data and cocrossfault_list:
                 out_modeling_dir = pathlib.Path('Modeling')
                 out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for cocf in cocrossfault_list:
+                for cocf, _resolved_poly in cocrossfault_list:
                     for itype in ['data', 'synth']:
                         cocf.write2file(f'{cocf.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
                     _plot_crossfaultoffset_fit(cocf, save_dir=out_modeling_dir, file_type=file_type)

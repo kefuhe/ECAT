@@ -26,6 +26,7 @@ class RspGridTemplate:
     geometry: str
     blocksll: list
     source_columns: int
+    indices: np.ndarray | None = None
 
     @property
     def cell_count(self):
@@ -153,11 +154,17 @@ def read_rsp_grid_template(path, geometry="auto"):
         else:
             blocksll.append(_triangle_vertices(row))
 
+    raw_indices = np.asarray([[row[0], row[1]] for row in rows], dtype=float)
+    rounded_indices = np.rint(raw_indices)
+    if not np.allclose(raw_indices, rounded_indices, rtol=0.0, atol=1.0e-9):
+        raise ValueError("rsp xind/yind columns must contain integer indices.")
+
     return RspGridTemplate(
         path=rsp_path,
         geometry=inferred,
         blocksll=blocksll,
         source_columns=expected_columns,
+        indices=rounded_indices.astype(int),
     )
 
 

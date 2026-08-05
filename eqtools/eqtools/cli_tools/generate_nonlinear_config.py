@@ -18,8 +18,8 @@ def generate_nonlinear_config(output_path):
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain for BayesianMultiFaultsInversion
 nfaults: 1  # Number of faults to be modeled
-fault_aliasnames: null  # Alias names for faults (e.g., ['RC', 'KL'])
-lon_lat_0: null  # UTM coordinates of the origin (e.g., [lon, lat])
+fault_aliasnames: null  # null or exactly one alias per fault (e.g., ['RC', 'KL'])
+lon_lat_0: null  # [lon, lat] degrees; set here or pass lon0/lat0
 
 # ----------- Slip Sampling Mode ----------- #
 # Set slip sampling mode to 'mag_rake' or 'ss_ds'
@@ -34,62 +34,63 @@ clipping_options:
 
 # ----------- Bounds Settings ----------- #
 # Define parameter bounds for faults
-# Legacy nonlinear configs use [lower bound, range increment].
+# Legacy nonlinear configs use [Uniform, lower, range].
 prior_bounds_format: lower_range
 bounds:
   defaults:  # Default bounds for all faults
-    lon: [Uniform, 87.3, 0.3]  # Longitude bounds
-    lat: [Uniform, 28.6, 0.2]  # Latitude bounds
-    depth: [Uniform, 0.0, 10.0]  # Depth bounds (in kilometers)
-    dip: [Uniform, 10, 70]  # Dip angle bounds (in degrees). Valid range: (0, 180).
+    # lon/lat/depth describe the midpoint of the fault top edge.
+    lon: [Uniform, 87.3, 0.3]  # Longitude in degrees
+    lat: [Uniform, 28.6, 0.2]  # Latitude in degrees
+    depth: [Uniform, 0.0, 10.0]  # Depth in km, positive downward
+    # Compact geometry accepts -90..180; 0..180 is preferred and 0..90 is
+    # simplest for a known side. This legacy file uses lower/range.
+    dip: [Uniform, 10, 70]  # Dip in degrees; actual interval is [10, 80]
     width: [Uniform, 1.0, 39.0]  # Fault width bounds (in kilometers)
     length: [Uniform, 1.0, 199.0]  # Fault length bounds (in kilometers)
-    strike: [Uniform, 270.0, 90.0]  # Strike angle bounds (in degrees). Valid range: [0, 360).
+    strike: [Uniform, 270.0, 90.0]  # Clockwise from North; actual [270, 360]
     slip: [Uniform, 0.0, 10.0]  # Total slip bounds (in meters)
-    rake: [Uniform, -150, 120.0]  # Rake angle bounds (in degrees).
-  fault_1:  # Specific bounds for fault_1 or its alias name
-    rake: [Uniform, -30, 60.0]  # Rake angle bounds for fault_1 (in degrees)
-    strike: [Uniform, 0.0, 270.0]  # Strike angle bounds for fault_1 (in degrees)
+    rake: [Uniform, -150, 120.0]  # Rake is not auto-changed with dip side.
+  # fault_1:  # Optional override for fault_1 or its alias name
+  #   rake: [Uniform, -30, 60.0]
+  #   strike: [Uniform, 0.0, 270.0]
 
 # ----------- Fixed Parameters ----------- #
 # Fixed parameters for specific faults
-fixed_params:
-  # fault_0:  # Uncomment and set fixed parameters for fault_0 if needed
-    # lon: 102.205
-    # depth: 3.1578
-  fault_1:  # Fixed parameters for fault_1 or its alias name
-    lon: -117.541  # Fixed longitude
-    lat: 35.6431  # Fixed latitude
-    depth: 0.0  # Fixed depth (in kilometers)
-    strike: 227.0  # Fixed strike angle (in degrees)
+fixed_params: {}
+# fixed_params:
+#   fault_0:  # Uncomment and set fixed parameters for fault_0 if needed
+#     depth: 3.1578  # km; fixed values are not sampled
 
 # ----------- Geodata Parameters ----------- #
 # Parameters related to geodata
 geodata:
   verticals: true  # Whether to include vertical data (boolean or list of booleans)
-  polys:  # Options for estimating polynomial corrections
+  # Legacy entry: enabled estimates one reference offset for selected
+  # InSAR/leveling datasets. Use the new nonlinear-geometry template for
+  # simplified SAR transforms 1/3/4 or GPS translation.
+  polys:
     enabled: true  # Whether to estimate polynomial corrections
     boundaries:
       defaults: [Uniform, -200.0, 400.0]  # Default polynomial correction bounds
   faults: null  # Fault names for each geodata (e.g., [null, null, null, null])
   sigmas:  # Standard deviations for geodata
-    # 'individual' for per-dataset sigmas, 'single' for a shared sigma, 'grouped' for grouped sigmas (grouping by 'groups' field)
-    mode: 'individual'
-    # Update configuration - multiple formats supported:
-    # 1. Boolean: true (update all) or false (update none)
-    # 2. List of booleans: [true, false, true] (explicit per-dataset)
-    # 3. List of indices: [0, 2] (update datasets at these indices)
-    # 4. List of names: ["sar_a", "sar_c"] (update datasets by name)
-    # 5. Dictionary: {"true_indices": [0, 2]} (legacy format)
-    update: true  # Whether to update sigmas during inversion
+    mode: 'individual'  # single | individual | grouped
+    # Required only for grouped mode. Use actual data.name values and assign
+    # every dataset to exactly one group.
+    # groups:
+    #   sar_group: [dataset_a, dataset_b]
+    #   gps_group: [dataset_c]
+    update: true  # bool, or one bool per dataset/group
     bounds:
       defaults: [Uniform, -3.0, 6.0]  # Default bounds for sigmas
       sigma_0: [Uniform, -3.0, 6.0]  # Bounds for sigma_0
-    values: 0.0  # Initial values for sigmas. Single value or list of values.
-    log_scaled: true  # Whether sigmas are log-scaled
+    # Scalar; individual/grouped also accept an aligned list or name mapping.
+    values: 0.0
+    log_scaled: true  # true: values and bounds represent log10(sigma)
 
 # ----------- Data Sources ----------- #
 # Data sources for GPS and InSAR data
+# Relative paths are resolved from the process working directory.
 data_sources:
   gps:
     directory: '../gps'  # Directory containing GPS data files

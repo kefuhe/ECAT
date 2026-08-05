@@ -1,6 +1,7 @@
 import numpy as np
 import copy
 import pandas as pd
+from collections.abc import Mapping
 from typing import Dict, List, Tuple, Optional, Union, Any
 import warnings
 from datetime import datetime
@@ -11,30 +12,31 @@ from .source_adapters import FaultAdapter
 
 
 class ConstraintManagerBLSE(ConstraintManagerBase):
-    """
-    BLSE constraint and bounds management system.
-    
-    Handles ALL constraint-related operations including:
-    - Configuration loading and parsing
-    - Bounds constraints (lb <= x <= ub) with per-fault customization
-    - Inequality constraints (A_ineq * x <= b_ineq)
-    - Equality constraints (A_eq * x = b_eq)
-    - Rake angle constraints
-    - Euler constraints
+    """Manage bounds and linear constraints in the BLSE parameter space.
+
+    All resolved bound vectors and constraint-matrix columns use the same
+    ordering as ``solver.lsq_parameters``.  Source component locations are
+    obtained from ``solver.slip_positions`` and source adapters; polynomial
+    locations come from ``solver.poly_positions``.
+
+    The manager is the writable source of truth.  :meth:`sync_to_solver`
+    refreshes legacy solver attributes for compatibility, but those mirrored
+    attributes do not define an independent constraint state.
     """
     
     def __init__(self, solver, config=None, verbose: bool = True):
-        """
-        Initialize constraint manager.
-        
-        Parameters:
-        -----------
+        """Initialize a BLSE constraint manager.
+
+        Parameters
+        ----------
         solver : object
-            The solver instance (multifaultsolve_boundLSE or BoundLSEMultiFaultsInversion)
+            BLSE/VCE solver whose linear model layout defines every bound and
+            constraint index.
         config : object, optional
-            Configuration object with constraint settings
+            Configuration object providing activation flags and optional
+            interseismic declarations.
         verbose : bool
-            Enable verbose output
+            Whether to print application and validation summaries.
         """
         self.solver = solver
         self.config = config
@@ -44,128 +46,143 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
         self._init_shared_storage()
         
         if self.verbose:
-            print(f"[OK] Complete ConstraintManager initialized")
+            print("[OK] ConstraintManagerBLSE initialized")
 
     def _on_bounds_config_loaded(self):
-        """Sync bounds config to solver for BLSE compatibility."""
-        self.solver.bounds_config = self._bounds_config
+        """Mirror the loaded bounds declaration onto the legacy solver API.
 
-    def set_rake_angle_constraints(self, rake_limits: Dict[str, Tuple[float, float]], source: str = "manual"):
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        This overrides the base no-op hook.
+        A deep copy prevents later mutation of the manager's declaration
+        through ``solver.bounds_config``.
         """
-        Set rake angle inequality constraints for specified faults.
-        
-        Parameters:
-        -----------
+        self.solver.bounds_config = copy.deepcopy(self._bounds_config)
+
+    def _build_rake_sector_matrix(
+        self,
+        rake_limits: Dict[str, Tuple[float, float]],
+    ):
+        """Build the resolved BLSE rake-sector matrix without registering it.
+
+        Parameters
+        ----------
         rake_limits : dict
-            Dictionary with fault names as keys and (min_rake, max_rake) tuples as values
-        source : str
-            Source description
-        """
-        try:
-            # Get fault names that exist in both rake_limits and self.solver.faults
-            fault_names = [fault.name for fault in self.solver.faults]
-            constrained_fault_names = [name for name in rake_limits.keys() if name in fault_names]
-            
-            if not constrained_fault_names:
-                if self.verbose:
-                    print("[!]  Warning: No faults found that match both rake_limits keys and solver.faults")
-                return
-            
-            # Calculate two rake half-plane rows per constrained patch.
-            n_rake_rows = 0
-            Np = self.solver.lsq_parameters  # Total number of parameters
-            
-            # Get constrained fault objects. Only Fault-type sources support rake constraints.
-            constrained_faults = [fault for fault in self.solver.faults
-                                  if fault.name in constrained_fault_names
-                                  and self._get_source_type(fault.name) == 'Fault']
-            constrained_fault_names = [f.name for f in constrained_faults]
-            
-            if not constrained_faults:
-                if self.verbose:
-                    print("[!]  Warning: No Fault-type sources found for rake angle constraints")
-                return
-            
-            for ifault in constrained_faults:
-                inpatch = len(ifault.patch)
-                n_rake_rows += 2 * inpatch
-            
-            A = np.zeros((n_rake_rows, Np))
-            b = np.zeros((n_rake_rows,))
-            
-            row_offset = 0
-            for ifault in constrained_faults:
-                inpatch = len(ifault.patch)
-                start = self.solver.fault_indexes[ifault.name][0]
-                adapter = getattr(self.solver, 'adapters', {}).get(ifault.name)
-                ss_start, ds_start = self._rake_component_starts(
-                    ifault, start, inpatch, adapter=adapter
-                )
-                
-                # Get the rake angle bounds
-                rake_start, rake_end = self._validate_rake_interval(
-                    ifault.name, rake_limits[ifault.name]
-                )
-                
-                # Generate the linear constraints for each patch
-                for i in range(inpatch):
-                    # Lower bound constraint: ss*sin(rake_start) - ds*cos(rake_start) <= 0
-                    A[row_offset + i, ss_start + i] = np.sin(np.deg2rad(rake_start))
-                    A[row_offset + i, ds_start + i] = -np.cos(np.deg2rad(rake_start))
-                    
-                    # Upper bound constraint: -ss*sin(rake_end) + ds*cos(rake_end) <= 0
-                    A[row_offset + inpatch + i, ss_start + i] = -np.sin(np.deg2rad(rake_end))
-                    A[row_offset + inpatch + i, ds_start + i] = np.cos(np.deg2rad(rake_end))
-                
-                row_offset += 2 * inpatch
-            
-            # Store constraint
-            self._inequality_constraints['rake_angle'] = {
-                'A': A,
-                'b': b,
-                'source': source,
-                'shape': A.shape,
-                'added_time': datetime.now()
-            }
-            
-            # Invalidate cache
-            self._combined_cache['inequality']['valid'] = False
-            
-            if self.verbose:
-                print(f"[INQ] Applied rake angle constraints: {A.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
-                for fault_name, (min_rake, max_rake) in rake_limits.items():
-                    if fault_name in constrained_fault_names:
-                        print(f"   - {fault_name}: {min_rake} deg <= rake <= {max_rake} deg")
-                        
-        except Exception as e:
-            if self.verbose:
-                print(f"[X] Failed to apply rake angle constraints: {e}")
-            raise
+            Fault names mapped to ``(minimum_rake, maximum_rake)`` in degrees.
+            Patch-level rake declarations maintained by the base manager are
+            resolved at the same time.
+        Raises
+        ------
+        TypeError
+            If a rake declaration has an unsupported type.
+        ValueError
+            If a fault, selector, angle, interval, or source component layout
+            is invalid.
 
-    def apply_rake_constraints(self, additional_rake_limits: Dict = None):
-        """Apply rake angle constraints from config and additional limits."""
+        Notes
+        -----
+        The generated rows have the form ``A @ x <= b`` and the matrix columns
+        follow the complete BLSE linear parameter vector.
+        """
+        intervals_by_fault = self._resolve_rake_intervals_by_patch(rake_limits)
+        return self._generate_rake_inequality_constraints_from_intervals(
+            intervals_by_fault
+        )
+
+    def _rebuild_rake_constraints(self, additional_rake_limits: Dict = None):
+        """Resolve configured and runtime rake sectors into one matrix group.
+
+        Parameters
+        ----------
+        additional_rake_limits : dict, optional
+            Call-specific fault rake sectors.  These override file-level
+            fault declarations for matching names.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError
+            If a resolved rake declaration has an unsupported type.
+        ValueError
+            If a resolved fault, selector, interval, or parameter layout is
+            invalid.
+
+        Notes
+        -----
+        Fault-level precedence is bounds config, then this argument, then
+        persistent runtime declarations.  Patch-level declarations are
+        subsequently resolved by the shared base implementation.
+        """
         try:
             # Collect rake limits from multiple sources
             final_rake_limits = {}
             
             # From bounds config
-            if self._bounds_config and 'rake_angle' in self._bounds_config:
+            if (
+                self._config_flag_enabled('use_rake_angle_constraints')
+                and self._bounds_config
+                and 'rake_angle' in self._bounds_config
+            ):
                 final_rake_limits.update(self._bounds_config['rake_angle'])
             
             # From additional parameters
             if additional_rake_limits:
                 final_rake_limits.update(additional_rake_limits)
+
+            # From script/API updates. These are declaration-layer updates
+            # and are resolved together with any patch-level overrides below.
+            if self._runtime_rake_limits:
+                final_rake_limits.update(self._runtime_rake_limits)
             
-            if not final_rake_limits:
+            has_patch_rake = any(
+                'rake_angle' in spec for spec in self._iter_patch_constraint_specs()
+            )
+            if not final_rake_limits and not has_patch_rake:
+                if 'rake_sector' in self._inequality_constraints:
+                    self._remove_group(
+                        'rake_sector',
+                        expected_kind='inequality',
+                        allow_managed=True,
+                    )
                 if self.verbose:
                     print("[i]  No rake angle limits specified")
                 return
             
-            # Apply rake angle constraints
             source = 'bounds_config'
             if additional_rake_limits:
                 source += ' + additional_limits'
-            self.set_rake_angle_constraints(final_rake_limits, source=source)
+            A, b, constrained_fault_names = self._build_rake_sector_matrix(
+                final_rake_limits
+            )
+            if A.size == 0:
+                if 'rake_sector' in self._inequality_constraints:
+                    self._remove_group(
+                        'rake_sector',
+                        expected_kind='inequality',
+                        allow_managed=True,
+                    )
+                return
+            self._register_inequality_group(
+                A,
+                b,
+                name='rake_sector',
+                source=source,
+                replace=True,
+                owner='managed',
+                family='rake_sector',
+            )
+            if self.verbose:
+                print(
+                    f"[INQ] Applied rake angle constraints: {A.shape[0]} "
+                    f"constraints for {len(constrained_fault_names)} fault(s)"
+                )
 
         except Exception as e:
             if self.verbose:
@@ -173,40 +190,80 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             raise
 
     def set_fixed_rake_constraints(self, fixed_rake: Dict[str, float], source: str = "manual"):
-        """
-        Set fixed rake angle equality constraints for specified faults.
-        
-        Parameters:
-        -----------
+        """Replace the fixed-rake equality group for selected faults.
+
+        Parameters
+        ----------
         fixed_rake : dict
-            Dictionary with fault names as keys and rake angle values as values (in degrees)
+            Fault names mapped to finite rake angles in degrees.  An empty
+            mapping is a no-op; use :meth:`clear_fixed_rake_constraints` to
+            remove an existing group.
         source : str
-            Source description
+            Provenance label stored with the generated constraint group.
+
+        Raises
+        ------
+        TypeError
+            If ``fixed_rake`` is not a mapping or an angle is not numeric.
+        ValueError
+            If a source is unknown, is not a Fault, has a non-finite angle, or
+            lacks the strike-slip/dip-slip layout required by fixed rake.
+
+        Notes
+        -----
+        Each patch contributes
+        ``ss * sin(rake) - ds * cos(rake) = 0``.  Matrix columns use the BLSE
+        linear parameter order.
         """
         try:
-            # Get fault names that exist in both fixed_rake and self.solver.faults
-            fault_names = [fault.name for fault in self.solver.faults]
-            constrained_fault_names = [name for name in fixed_rake.keys() if name in fault_names]
-            
-            if not constrained_fault_names:
-                if self.verbose:
-                    print("[!]  Warning: No faults found that match both fixed_rake keys and solver.faults")
+            if not isinstance(fixed_rake, Mapping):
+                raise TypeError(
+                    "fixed_rake must be a mapping of fault name to angle"
+                )
+            # Empty input is an explicit no-op.  Deletion is handled only by
+            # clear_fixed_rake_constraints(), keeping set and clear distinct.
+            if not fixed_rake:
                 return
+
+            fault_names = {fault.name for fault in self.solver.faults}
+            unknown = sorted(set(fixed_rake) - fault_names)
+            if unknown:
+                raise ValueError(
+                    f"fixed_rake references unknown fault(s): {unknown}"
+                )
+            non_fault = sorted(
+                name for name in fixed_rake
+                if self._get_source_type(name) != 'Fault'
+            )
+            if non_fault:
+                raise ValueError(
+                    "fixed_rake only applies to Fault sources; invalid "
+                    f"source(s): {non_fault}"
+                )
+            for fault_name, rake in fixed_rake.items():
+                try:
+                    rake_value = float(rake)
+                except (TypeError, ValueError) as exc:
+                    raise TypeError(
+                        f"fixed_rake for '{fault_name}' must be numeric"
+                    ) from exc
+                if not np.isfinite(rake_value):
+                    raise ValueError(
+                        f"fixed_rake for '{fault_name}' must be finite"
+                    )
+
+            constrained_fault_names = list(fixed_rake)
             
             # Calculate total patches for constrained faults
             npatch = 0
-            Np = self.solver.lsq_parameters
+            Np = self._get_linear_matrix_n_parameters()
             
             # Get constrained fault objects. Only Fault-type sources have rake.
-            constrained_faults = [fault for fault in self.solver.faults
-                                  if fault.name in constrained_fault_names
-                                  and self._get_source_type(fault.name) == 'Fault']
+            constrained_faults = [
+                fault for fault in self.solver.faults
+                if fault.name in constrained_fault_names
+            ]
             constrained_fault_names = [f.name for f in constrained_faults]
-            
-            if not constrained_faults:
-                if self.verbose:
-                    print("[!]  Warning: No Fault-type sources found for fixed rake constraints")
-                return
             
             for ifault in constrained_faults:
                 npatch += len(ifault.patch)
@@ -219,12 +276,12 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             for ifault in constrained_faults:
                 irake = fixed_rake[ifault.name]
                 inpatch = len(ifault.patch)
-                start = self.solver.fault_indexes[ifault.name][0]
+                start = self._get_linear_matrix_source_start(ifault.name)
                 adapter = getattr(self.solver, 'adapters', {}).get(ifault.name)
                 ss_start, ds_start = self._rake_component_starts(
                     ifault, start, inpatch, adapter=adapter
                 )
-                rake_angle = np.deg2rad(irake)
+                rake_angle = np.deg2rad(float(irake))
                 
                 # Generate equality constraints for each patch
                 for i in range(inpatch):
@@ -234,17 +291,15 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
                 
                 patch_count += inpatch
             
-            # Store constraint
-            self._equality_constraints['fixed_rake'] = {
-                'A': Aeq,
-                'b': beq,
-                'source': source,
-                'shape': Aeq.shape,
-                'added_time': datetime.now()
-            }
-            
-            # Invalidate cache
-            self._combined_cache['equality']['valid'] = False
+            self._register_equality_group(
+                Aeq,
+                beq,
+                name='fixed_rake',
+                source=source,
+                replace=True,
+                owner='managed',
+                family='fixed_rake',
+            )
             
             if self.verbose:
                 print(f"[EQ] Applied fixed rake constraints: {Aeq.shape[0]} constraints for {len(constrained_fault_names)} fault(s)")
@@ -257,8 +312,42 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
                 print(f"[X] Failed to apply fixed rake constraints: {e}")
             raise
 
+    def clear_fixed_rake_constraints(self, *, sync=True):
+        """Remove the fixed-rake equality group if it exists.
+
+        Parameters
+        ----------
+        sync : bool
+            Whether to refresh the solver's legacy constraint attributes after
+            removal.
+
+        Returns
+        -------
+        bool
+            ``True`` when a group was removed, otherwise ``False``.
+        """
+        if 'fixed_rake' not in self._equality_constraints:
+            return False
+        self._remove_group(
+            'fixed_rake',
+            expected_kind='equality',
+            allow_managed=True,
+        )
+        if sync:
+            self.sync_to_solver()
+        return True
+
     def apply_euler_cap_constraints(self):
-        """Apply optional interseismic Euler-cap constraints for Fault sources."""
+        """Generate and replace configured Euler-cap inequalities.
+
+        Non-Fault entries are excluded before matrix generation.  The method
+        is a no-op when the feature is disabled or no rows are generated.
+
+        Raises
+        ------
+        Exception
+            Propagates configuration, dataset, and matrix-generation errors.
+        """
         try:
             interseismic_config = getattr(self.config, 'interseismic_config', {})
             if not interseismic_config.get('cap_constraints', {}).get('enabled', False):
@@ -283,14 +372,15 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             A_ineq, b_ineq = generate_euler_cap_constraints(self.solver, active_config, all_datasets)
 
             if A_ineq is not None and A_ineq.size > 0:
-                self._inequality_constraints['euler_cap_constraints'] = {
-                    'A': A_ineq.copy(),
-                    'b': b_ineq.copy(),
-                    'source': 'interseismic_config.cap_constraints',
-                    'shape': A_ineq.shape,
-                    'added_time': datetime.now()
-                }
-                self._combined_cache['inequality']['valid'] = False
+                self._register_inequality_group(
+                    A_ineq,
+                    b_ineq,
+                    name='euler_cap_constraints',
+                    source='interseismic_config.cap_constraints',
+                    replace=True,
+                    owner='config',
+                    family='interseismic_cap',
+                )
 
                 if self.verbose:
                     print(f"[INQ] Applied Euler-cap constraints: {A_ineq.shape[0]} constraints")
@@ -305,14 +395,25 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             raise
 
     def apply_interseismic_backslip_constraints(self):
-        """Apply hard backslip/coupling constraints from interseismic_config."""
+        """Delegate configured hard backslip constraints to the solver.
+
+        Non-Fault sources are skipped. Each remaining declaration is compiled
+        through the inversion's private config-owned backslip path without
+        exposing registry ownership on the public facade.
+
+        Raises
+        ------
+        Exception
+            Propagates malformed declarations and solver-side validation
+            errors.
+        """
         constraints = getattr(self.config, 'interseismic_config', {}).get('backslip_constraints', [])
         for index, spec in enumerate(constraints):
             if self._get_source_type(spec['fault']) != 'Fault':
                 if self.verbose:
                     print(f"[!]  Warning: Interseismic backslip constraint skipping non-Fault source '{spec['fault']}'")
                 continue
-            self.solver.add_interseismic_backslip_constraint(
+            self.solver._apply_interseismic_backslip_constraint(
                 spec['fault'],
                 spec['state'],
                 selector=spec.get('selector'),
@@ -320,31 +421,45 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
                 coupling=spec.get('coupling'),
                 value=spec.get('value'),
                 name=spec.get('name', f"interseismic_backslip_{index}"),
-                overwrite=spec.get('overwrite', True),
                 source='interseismic_config.backslip_constraints',
+                replace=True,
+                owner='config',
+                require_existing=False,
             )
 
     def apply_interseismic_block_constraints(self):
-        """Apply block-level Euler sharing constraints from interseismic_config."""
+        """Generate and replace block-level Euler-sharing equalities.
+
+        The generated matrix spans ``solver.lsq_parameters``.  No group is
+        installed when the generator returns no rows.
+
+        Raises
+        ------
+        Exception
+            Propagates configuration and matrix-generation errors.
+        """
         interseismic_config = getattr(self.config, 'interseismic_config', {})
+
         try:
             from .interseismic_parameter_model import generate_block_euler_equality_constraints
 
             A_eq, b_eq = generate_block_euler_equality_constraints(
                 self.solver,
                 interseismic_config,
-                n_total=int(self.solver.lsq_parameters),
+                n_total=self._get_linear_matrix_n_parameters(),
             )
             if A_eq is None or A_eq.size == 0:
                 if self.verbose:
                     print("[i]  No interseismic block Euler-sharing constraints generated")
                 return
-            self.add_equality_constraint(
+            self._register_equality_group(
                 A_eq,
                 b_eq,
                 name='interseismic_block_euler_constraints',
                 source='interseismic_config.blocks',
-                overwrite=True,
+                replace=True,
+                owner='config',
+                family='interseismic_blocks',
             )
         except Exception as e:
             if self.verbose:
@@ -352,126 +467,138 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             raise
 
     def apply_source_constraints_from_config(self):
-        """Apply source-specific inequality/equality constraints from ``source_constraints`` config.
+        """Apply adapter-defined source constraints from the loaded config.
 
-        The ``source_constraints`` section in the bounds config YAML maps each source
-        name to a list of constraint definitions.  Each definition contains:
-        - ``name``: constraint identifier
-        - ``type``: ``'inequality'`` or ``'equality'``
-        - ``rule``: a recognised pattern (e.g. ``'pressure >= 0'``)
+        Returns
+        -------
+        list of str
+            Names of the inequality or equality groups installed by the base
+            declaration resolver.
 
-        The method delegates to each source's adapter
-        ``generate_source_inequality_constraints`` /
-        ``generate_source_equality_constraints`` to build the actual ``A, b`` matrices.
+        Raises
+        ------
+        TypeError
+            If the ``source_constraints`` declaration has an invalid shape.
+        ValueError
+            If a source, rule, matrix shape, or constraint type is invalid.
+
+        Notes
+        -----
+        Adapters translate source-specific rules into matrices whose columns
+        occupy the complete BLSE parameter space.
         """
-        if not self._bounds_config or 'source_constraints' not in self._bounds_config:
-            return
+        return self._apply_source_constraint_declarations()
 
-        source_constraints_cfg = self._bounds_config['source_constraints']
-        if not source_constraints_cfg:
-            return
+    def _apply_constraint_config(
+        self,
+        bounds_config_file: str = None,
+        rake_limits: Dict = None,
+        encoding: str = 'utf-8',
+    ):
+        """Reconcile all file-owned declarations as one transaction.
 
-        if not hasattr(self.solver, 'adapters'):
-            if self.verbose:
-                print("[!]  Warning: solver has no adapters, skipping source_constraints")
-            return
-
-        n_total = self.solver.lsq_parameters if hasattr(self.solver, 'lsq_parameters') else 0
-        if n_total == 0:
-            return
-
-        for source_name, src_cfg in source_constraints_cfg.items():
-            if not self._fault_exists(source_name):
-                if self.verbose:
-                    print(f"[!]  Warning: Source '{source_name}' not found, skipping source_constraints")
-                continue
-            if source_name not in self.solver.adapters:
-                if self.verbose:
-                    print(f"[!]  Warning: No adapter for '{source_name}', skipping source_constraints")
-                continue
-
-            adapter = self.solver.adapters[source_name]
-            param_start = self.solver.slip_positions[source_name][0] if hasattr(self.solver, 'slip_positions') else 0
-
-            # Normalise list-of-dicts 鈫?dict-of-dicts keyed by constraint name
-            constraints_dict = self._normalise_constraint_list(src_cfg)
-
-            # Inequality constraints
-            for cname, A, b in adapter.generate_source_inequality_constraints(
-                    constraints_dict, param_start, n_total):
-                full_name = f"src_{source_name}_{cname}"
-                self.add_inequality_constraint(A, b, name=full_name,
-                                               source=f"source_constraints/{source_name}",
-                                               overwrite=True)
-
-            # Equality constraints
-            for cname, A, b in adapter.generate_source_equality_constraints(
-                    constraints_dict, param_start, n_total):
-                full_name = f"src_{source_name}_{cname}"
-                self.add_equality_constraint(A, b, name=full_name,
-                                             source=f"source_constraints/{source_name}",
-                                             overwrite=True)
-
-    def apply_all_constraints_from_config(self, bounds_config_file: str = None, 
-                                        rake_limits: Dict = None, 
-                                        encoding: str = 'utf-8'):
-        """
-        Apply all constraints based on configuration settings.
-        
-        Parameters:
-        -----------
+        Parameters
+        ----------
         bounds_config_file : str, optional
-            Path to bounds configuration file
+            Bounds YAML to load before reconciliation.  If omitted, the
+            already loaded declaration is used.
         rake_limits : dict, optional
-            Additional rake angle limits
+            Call-specific fault rake sectors layered over the file values.
         encoding : str
-            File encoding
+            Text encoding used when loading ``bounds_config_file``.
+
+        Raises
+        ------
+        OSError
+            If the requested configuration file cannot be read.
+        TypeError
+            If any declaration has an unsupported structure.
+        ValueError
+            If any bound, selector, source, matrix, or activation state fails
+            validation.
+
+        Notes
+        -----
+        Previous groups owned by configuration sources are replaced, while
+        script-created groups with other provenance are retained.  On failure,
+        mutable manager state is restored to the pre-call snapshot.
         """
         if self.verbose:
             print("\n[RUN] Applying all constraints from configuration...")
-        
-        # Load bounds config if provided
-        if bounds_config_file is not None:
-            self.load_bounds_config(bounds_config_file, encoding)
-        
-        # Apply bounds from config
-        if self._bounds_config is not None and hasattr(self.config, 'use_bounds_constraints') and self.config.use_bounds_constraints:
-            self.apply_bounds_from_config()
-        
-        # Apply rake angle constraints
-        if hasattr(self.config, 'use_rake_angle_constraints') and self.config.use_rake_angle_constraints:
-            self.apply_rake_constraints(rake_limits)
-        
-        # Apply optional interseismic constraints.
-        interseismic_config = getattr(self.config, 'interseismic_config', {})
-        if interseismic_config.get('blocks', {}).get('enabled', False):
-            self.apply_interseismic_block_constraints()
-        if interseismic_config.get('cap_constraints', {}).get('enabled', False):
-            self.apply_euler_cap_constraints()
-        if interseismic_config.get('backslip_constraints'):
-            self.apply_interseismic_backslip_constraints()
-        
-        # Apply source-specific constraints from source_constraints config
-        if self._bounds_config and 'source_constraints' in self._bounds_config:
+
+        snapshot = self._snapshot_mutable_state()
+        try:
+            if bounds_config_file is not None:
+                self.load_bounds_config(bounds_config_file, encoding)
+
+            # Reconcile file-owned groups before rebuilding the current
+            # declaration.  Script-added groups have different provenance and
+            # are intentionally preserved.
+            self._remove_groups_by_owner(
+                'config',
+                families={
+                    'source_constraints',
+                    'interseismic_blocks',
+                    'interseismic_cap',
+                    'interseismic_backslip',
+                },
+            )
+
+            if self._bounds_config is not None:
+                self._rebuild_config_bounds()
+
+            self._rebuild_rake_constraints(rake_limits)
+
+            interseismic_config = getattr(
+                self.config, 'interseismic_config', {}
+            ) or {}
+            if interseismic_config.get('blocks', {}).get('enabled', False):
+                self.apply_interseismic_block_constraints()
+            if interseismic_config.get('cap_constraints', {}).get('enabled', False):
+                self.apply_euler_cap_constraints()
+            if interseismic_config.get('backslip_constraints'):
+                self.apply_interseismic_backslip_constraints()
+
             self.apply_source_constraints_from_config()
-        
+
+            self._validate_or_raise()
+            self._mark_activation_flags_reconciled()
+        except Exception:
+            self._restore_mutable_state(snapshot)
+            raise
+
         if self.verbose:
             print("[OK] All constraints applied successfully")
             self.print_summary()
 
     def set_global_bounds(self, lb: float = None, ub: float = None, source: str = "manual"):
-        """
-        Set global bounds that apply to all parameters by default.
-        
-        Parameters:
-        -----------
+        """Set default bounds for otherwise unassigned BLSE parameters.
+
+        Parameters
+        ----------
         lb : float, optional
-            Global lower bound
+            Finite global lower bound.
         ub : float, optional
-            Global upper bound
+            Finite global upper bound.
         source : str
-            Source description
+            Human-readable provenance used in verbose output.
+
+        Raises
+        ------
+        ValueError
+            If either value is non-finite or ``lb > ub``.
+
+        Notes
+        -----
+        Global bounds have the lowest precedence.  Fault/source, explicit
+        parameter-index, and patch declarations overwrite them during rebuild.
         """
+        if lb is not None:
+            self._require_finite(lb, "global lower bound")
+            lb = float(lb)
+        if ub is not None:
+            self._require_finite(ub, "global upper bound")
+            ub = float(ub)
         if lb is not None and ub is not None and lb > ub:
             raise ValueError("Global lower bound should be less than upper bound")
         
@@ -480,70 +607,106 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
         if ub is not None:
             self._bounds['global']['ub'] = ub
         
-        # Apply to parameter arrays
-        self._apply_global_bounds_to_arrays(lb, ub)
+        self._request_bounds_rebuild()
         
         if self.verbose:
             print(f"[GLB] Set global bounds: lb={lb}, ub={ub} (source: {source})")
 
     def set_fault_slip_bounds(self, fault_name: str, strikeslip: Tuple[float, float] = None, 
                             dipslip: Tuple[float, float] = None, source: str = "manual"):
-        """
-        Set slip bounds for a specific fault.
-        
-        Parameters:
-        -----------
+        """Set fault-level strike-slip and/or dip-slip declarations.
+
+        Parameters
+        ----------
         fault_name : str
-            Name of the fault
+            Existing source name in ``solver.faults``.
         strikeslip : tuple, optional
-            (lower_bound, upper_bound) for strike-slip
+            Finite ``(lower, upper)`` bounds for all strike-slip parameters.
         dipslip : tuple, optional
-            (lower_bound, upper_bound) for dip-slip
+            Finite ``(lower, upper)`` bounds for all dip-slip parameters.
         source : str
-            Source description
+            Human-readable provenance used in verbose output.
+
+        Raises
+        ------
+        ValueError
+            If the source is unknown, either pair is malformed or non-finite,
+            or a lower bound exceeds its upper bound.
+
+        Notes
+        -----
+        Declarations are stored by component and expanded using adapter-aware
+        slices on the next bounds rebuild.
         """
         if not self._fault_exists(fault_name):
             raise ValueError(f"Fault '{fault_name}' not found in solver")
         
         if strikeslip is not None:
-            slb, sub = strikeslip
-            if slb > sub:
-                raise ValueError(f"Strike-slip lower bound ({slb}) > upper bound ({sub})")
-            self._bounds['strikeslip'][fault_name] = strikeslip
-            self._apply_strikeslip_bounds(fault_name, strikeslip)
-            
+            values = self._require_finite(
+                strikeslip, f"{fault_name} strike-slip bounds"
+            )
+            if values.shape != (2,):
+                raise ValueError("Strike-slip bounds must be [lb, ub]")
+            strikeslip = (float(values[0]), float(values[1]))
         if dipslip is not None:
-            dlb, dub = dipslip
-            if dlb > dub:
-                raise ValueError(f"Dip-slip lower bound ({dlb}) > upper bound ({dub})")
+            values = self._require_finite(
+                dipslip, f"{fault_name} dip-slip bounds"
+            )
+            if values.shape != (2,):
+                raise ValueError("Dip-slip bounds must be [lb, ub]")
+            dipslip = (float(values[0]), float(values[1]))
+
+        if strikeslip is not None and strikeslip[0] > strikeslip[1]:
+            raise ValueError(
+                f"Strike-slip lower bound ({strikeslip[0]}) > upper bound ({strikeslip[1]})"
+            )
+        if dipslip is not None and dipslip[0] > dipslip[1]:
+            raise ValueError(
+                f"Dip-slip lower bound ({dipslip[0]}) > upper bound ({dipslip[1]})"
+            )
+        if strikeslip is not None:
+            self._bounds['strikeslip'][fault_name] = strikeslip
+        if dipslip is not None:
             self._bounds['dipslip'][fault_name] = dipslip
-            self._apply_dipslip_bounds(fault_name, dipslip)
+
+        self._request_bounds_rebuild()
         
         if self.verbose:
             print(f"[*] Set slip bounds for '{fault_name}': ss={strikeslip}, ds={dipslip} (source: {source})")
 
     def set_fault_poly_bounds(self, fault_name: str, poly_bounds: Tuple[float, float], source: str = "manual"):
-        """
-        Set polynomial parameter bounds for a specific fault.
-        
-        Parameters:
-        -----------
+        """Set one uniform bound pair for a source's polynomial block.
+
+        Parameters
+        ----------
         fault_name : str
-            Name of the fault
+            Existing source name in ``solver.faults``.
         poly_bounds : tuple
-            (lower_bound, upper_bound) for polynomial parameters
+            Finite ``(lower, upper)`` pair applied to all polynomial
+            coefficients of the source.
         source : str
-            Source description
+            Human-readable provenance used in verbose output.
+
+        Raises
+        ------
+        ValueError
+            If the source is unknown, the pair is malformed or non-finite, or
+            its lower bound exceeds its upper bound.
         """
         if not self._fault_exists(fault_name):
             raise ValueError(f"Fault '{fault_name}' not found in solver")
         
-        plb, pub = poly_bounds
+        values = self._require_finite(
+            poly_bounds, f"{fault_name} polynomial bounds"
+        )
+        if values.shape != (2,):
+            raise ValueError("Polynomial bounds must be [lb, ub]")
+        plb, pub = float(values[0]), float(values[1])
         if plb > pub:
             raise ValueError(f"Polynomial lower bound ({plb}) > upper bound ({pub})")
         
-        self._bounds['poly'][fault_name] = poly_bounds
-        self._apply_poly_bounds(fault_name, poly_bounds)
+        self._bounds['poly'][fault_name] = (plb, pub)
+        self._request_bounds_rebuild()
         
         if self.verbose:
             print(f"[GEO] Set poly bounds for '{fault_name}': {poly_bounds} (source: {source})")
@@ -562,6 +725,17 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             adapter.get_param_names(), e.g. {'eps12': (-1e-4, 1e-4)}.
         source : str
             Source description for audit trail.
+
+        Raises
+        ------
+        ValueError
+            If the source or adapter is missing, a supplied component pair is
+            malformed or non-finite, or a lower bound exceeds its upper bound.
+
+        Notes
+        -----
+        Only component names declared by the adapter are resolved.  Their
+        slices follow adapter order within ``solver.slip_positions``.
         """
         if not self._fault_exists(source_name):
             raise ValueError(f"Source '{source_name}' not found in solver")
@@ -573,72 +747,161 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
         params_per_comp = adapter.get_n_params_per_component()
         slip_st, _ = self.solver.slip_positions[source_name]
         
-        self._initialize_bounds_arrays()
-        
+        resolved = {}
         offset = slip_st
         for comp_name in adapter.get_param_names():
             n = params_per_comp[comp_name]
             if comp_name in comp_bounds:
-                clb, cub = comp_bounds[comp_name]
+                values = self._require_finite(
+                    comp_bounds[comp_name],
+                    f"{source_name}.{comp_name} bounds",
+                )
+                if values.shape != (2,):
+                    raise ValueError(
+                        f"Bounds for {source_name}.{comp_name} must be [lb, ub]"
+                    )
+                clb, cub = float(values[0]), float(values[1])
                 if clb > cub:
                     raise ValueError(f"Lower bound ({clb}) > upper bound ({cub}) for {comp_name}")
-                self._bounds['lb'][offset:offset + n] = clb
-                self._bounds['ub'][offset:offset + n] = cub
+                resolved[comp_name] = (clb, cub)
             offset += n
+
+        self._bounds['source_bounds'][source_name] = resolved
+        self._request_bounds_rebuild()
         
         if self.verbose:
             print(f"[SRC] Set component bounds for '{source_name}': {comp_bounds} (source: {source})")
 
-    def apply_bounds_from_config(self):
-        """Apply all bounds from loaded configuration."""
-        if not self._bounds_config:
+    def _rebuild_config_bounds(self):
+        """Replace file-owned bound declarations and rebuild resolved arrays.
+
+        File-level global, fault component, polynomial, and source-component
+        declarations are reset before applying the current config.  Persistent
+        runtime index and patch declarations remain available and therefore
+        retain their higher precedence.
+
+        Raises
+        ------
+        TypeError
+            If a bound declaration has an unsupported structure.
+        ValueError
+            If a bound, source, component, selector, or resolved state is
+            invalid.
+
+        Notes
+        -----
+        The operation is transactional: a failure restores the prior manager
+        state.  If bounds are disabled by config, only runtime declarations are
+        rebuilt.
+        """
+        if self._bounds_config is None:
             if self.verbose:
                 print("[!]  No bounds config loaded")
             return
         
-        # Initialize parameter arrays if needed
+        snapshot = self._snapshot_mutable_state()
+        try:
+            # Loading a bounds file replaces the previous coarse declarations;
+            # runtime patch declarations remain explicit script-side overrides.
+            self._bounds['global'] = {'lb': None, 'ub': None}
+            for key in ('strikeslip', 'dipslip', 'poly', 'source_bounds', 'patch_constraints'):
+                self._bounds[key] = {}
+
+            if not self._config_flag_enabled('use_bounds_constraints'):
+                self._rebuild_resolved_bounds(source='runtime_bounds_only')
+                self._validate_or_raise()
+                return
+
+            with self.batch_bounds_update():
+                lb = self._bounds_config.get('lb', None)
+                ub = self._bounds_config.get('ub', None)
+                if lb is not None or ub is not None:
+                    self.set_global_bounds(lb, ub, source="config_file")
+
+                strikeslip_config = self._bounds_config.get('strikeslip', {})
+                dipslip_config = self._bounds_config.get('dipslip', {})
+                all_slip_faults = set(strikeslip_config) | set(dipslip_config)
+                for fault_name in all_slip_faults:
+                    if self._fault_exists(fault_name):
+                        if self._get_source_type(fault_name) != 'Fault':
+                            if self.verbose:
+                                print(f"[!]  Warning: '{fault_name}' is not a Fault source, "
+                                      f"skipping strikeslip/dipslip bounds. Use 'source_bounds' instead.")
+                            continue
+                        self.set_fault_slip_bounds(
+                            fault_name,
+                            strikeslip_config.get(fault_name),
+                            dipslip_config.get(fault_name),
+                            source="config_file",
+                        )
+
+                for fault_name, poly_bounds in self._bounds_config.get('poly', {}).items():
+                    if self._fault_exists(fault_name):
+                        self.set_fault_poly_bounds(fault_name, poly_bounds, source="config_file")
+
+                for source_name, comp_bounds in self._bounds_config.get('source_bounds', {}).items():
+                    if self._fault_exists(source_name):
+                        self.set_source_component_bounds(source_name, comp_bounds, source="config_file")
+            self._bounds['source'] = "config_file"
+            self._bounds['applied_time'] = datetime.now()
+            self._validate_or_raise()
+        except Exception:
+            self._restore_mutable_state(snapshot)
+            raise
+
+    def _rebuild_resolved_bounds(self, source="resolved_declarations"):
+        """Resolve every stored declaration into fresh BLSE bound vectors.
+
+        Parameters
+        ----------
+        source : str
+            Provenance label recorded on the resolved state.
+
+        Notes
+        -----
+        Precedence is global, fault slip, polynomial, source component,
+        explicit parameter index, then patch.  Later layers overwrite earlier
+        values only at their selected indices.
+        """
+        self._bounds['lb'] = None
+        self._bounds['ub'] = None
         self._initialize_bounds_arrays()
-        
-        # Apply global bounds
-        lb = self._bounds_config.get('lb', None)
-        ub = self._bounds_config.get('ub', None)
-        if lb is not None or ub is not None:
-            self.set_global_bounds(lb, ub, source="config_file")
-        
-        # Apply fault-specific slip bounds (legacy Fault-only keys)
-        strikeslip_config = self._bounds_config.get('strikeslip', {})
-        dipslip_config = self._bounds_config.get('dipslip', {})
-        
-        all_slip_faults = set(strikeslip_config.keys()) | set(dipslip_config.keys())
-        for fault_name in all_slip_faults:
-            if self._fault_exists(fault_name):
-                # Only Fault-type sources have strikeslip/dipslip semantics
-                if self._get_source_type(fault_name) != 'Fault':
-                    if self.verbose:
-                        print(f"[!]  Warning: '{fault_name}' is not a Fault source, "
-                              f"skipping strikeslip/dipslip bounds. Use 'source_bounds' instead.")
-                    continue
-                ss_bounds = strikeslip_config.get(fault_name, None)
-                ds_bounds = dipslip_config.get(fault_name, None)
-                self.set_fault_slip_bounds(fault_name, ss_bounds, ds_bounds, source="config_file")
-        
-        # Apply polynomial bounds
-        poly_config = self._bounds_config.get('poly', {})
-        for fault_name, poly_bounds in poly_config.items():
-            if self._fault_exists(fault_name):
-                self.set_fault_poly_bounds(fault_name, poly_bounds, source="config_file")
-        
-        # Apply generic source component bounds (works for Pressure, Sbarbot, etc.)
-        source_bounds_config = self._bounds_config.get('source_bounds', {})
-        for source_name, comp_bounds in source_bounds_config.items():
-            if self._fault_exists(source_name):
-                self.set_source_component_bounds(source_name, comp_bounds, source="config_file")
-        
-        self._bounds['source'] = "config_file"
+
+        global_bounds = self._bounds['global']
+        self._apply_global_bounds_to_arrays(global_bounds.get('lb'), global_bounds.get('ub'))
+
+        fault_names = set(self._bounds['strikeslip']) | set(self._bounds['dipslip'])
+        for fault_name in fault_names:
+            if fault_name in self._bounds['strikeslip']:
+                self._apply_strikeslip_bounds(fault_name, self._bounds['strikeslip'][fault_name])
+            if fault_name in self._bounds['dipslip']:
+                self._apply_dipslip_bounds(fault_name, self._bounds['dipslip'][fault_name])
+
+        for fault_name, bounds in self._bounds['poly'].items():
+            self._apply_poly_bounds(fault_name, bounds)
+        for source_name, comp_bounds in self._bounds['source_bounds'].items():
+            self._apply_source_component_bounds(source_name, comp_bounds)
+        for index, (lower, upper, _) in self._bounds['parameter_bounds'].items():
+            self._bounds['lb'][index] = lower
+            self._bounds['ub'][index] = upper
+
+        self._bounds['patch_constraints'] = {}
+        self.apply_patch_bounds(source=source)
+        self._bounds['source'] = source
         self._bounds['applied_time'] = datetime.now()
+        self._mark_bounds_changed()
 
     def _initialize_bounds_arrays(self):
-        """Initialize bounds arrays based on solver parameters."""
+        """Allocate unresolved BLSE bound vectors when needed.
+
+        ``solver.lsq_parameters`` is authoritative.  The adapter/source
+        fallback exists only for compatible solver objects that do not expose
+        that aggregate count.
+
+        Returns
+        -------
+        None
+        """
         if hasattr(self.solver, 'lsq_parameters'):
             n_params = self.solver.lsq_parameters
         else:
@@ -662,7 +925,14 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             self._bounds['ub'] = np.ones(n_params) * np.nan
 
     def _apply_global_bounds_to_arrays(self, lb: float = None, ub: float = None):
-        """Apply global bounds to parameter arrays."""
+        """Fill currently undefined entries with global defaults.
+
+        Parameters
+        ----------
+        lb, ub : float, optional
+            Lower and upper defaults.  Existing finite declarations are not
+            overwritten.
+        """
         self._initialize_bounds_arrays()
         
         if lb is not None:
@@ -671,7 +941,13 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             self._bounds['ub'][np.isnan(self._bounds['ub'])] = ub
 
     def _apply_strikeslip_bounds(self, fault_name: str, bounds: Tuple[float, float]):
-        """Apply strike-slip bounds to specific fault."""
+        """Write a fault's strike-slip pair to its adapter-resolved slice.
+
+        Raises
+        ------
+        ValueError
+            If the source layout has no strike-slip component.
+        """
         if hasattr(self.solver, 'slip_positions'):
             st, _ = self.solver.slip_positions[fault_name]
             fault = next(f for f in self.solver.faults if f.name == fault_name)
@@ -689,7 +965,13 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             self._bounds['ub'][ss_slice] = sub
 
     def _apply_dipslip_bounds(self, fault_name: str, bounds: Tuple[float, float]):
-        """Apply dip-slip bounds to specific fault."""
+        """Write a fault's dip-slip pair to its adapter-resolved slice.
+
+        Raises
+        ------
+        ValueError
+            If the source layout has no dip-slip component.
+        """
         if hasattr(self.solver, 'slip_positions'):
             st, _ = self.solver.slip_positions[fault_name]
             fault = next(f for f in self.solver.faults if f.name == fault_name)
@@ -707,55 +989,168 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             self._bounds['ub'][ds_slice] = dub
 
     def _apply_poly_bounds(self, fault_name: str, bounds: Tuple[float, float]):
-        """Apply polynomial bounds to specific fault."""
+        """Write a uniform pair to the source polynomial slice, if exposed."""
         if hasattr(self.solver, 'poly_positions'):
             st, se = self.solver.poly_positions[fault_name]
             plb, pub = bounds
             self._bounds['lb'][st:se] = plb
             self._bounds['ub'][st:se] = pub
 
+    def _apply_source_component_bounds(self, source_name, comp_bounds):
+        """Write validated component pairs in adapter parameter order.
+
+        Parameters
+        ----------
+        source_name : str
+            Source whose slip/source block receives the values.
+        comp_bounds : mapping
+            Adapter component names mapped to resolved ``(lower, upper)``
+            pairs.
+        """
+        adapter = self.solver.adapters[source_name]
+        params_per_comp = adapter.get_n_params_per_component()
+        offset = self.solver.slip_positions[source_name][0]
+        for comp_name in adapter.get_param_names():
+            n_component = int(params_per_comp[comp_name])
+            if comp_name in comp_bounds:
+                lower, upper = comp_bounds[comp_name]
+                self._bounds['lb'][offset:offset + n_component] = lower
+                self._bounds['ub'][offset:offset + n_component] = upper
+            offset += n_component
+
     def _fault_exists(self, fault_name: str) -> bool:
-        """Check if fault exists in solver."""
+        """Return whether ``fault_name`` is present in ``solver.faults``.
+
+        Parameters
+        ----------
+        fault_name : str
+            Source name to test.
+
+        Returns
+        -------
+        bool
+            ``True`` for a known source name.
+        """
         return any(fault.name == fault_name for fault in self.solver.faults)
 
     def _get_source_type(self, fault_name):
-        """Get source type string for a given source name, using adapter if available."""
+        """Return the adapter/source type used for semantic validation.
+
+        Parameters
+        ----------
+        fault_name : str
+            Existing source name.
+
+        Returns
+        -------
+        str
+            Adapter ``source_type`` when available, otherwise the source
+            object's ``type`` with ``"Fault"`` as the compatibility fallback.
+        """
         if hasattr(self.solver, 'adapters') and fault_name in self.solver.adapters:
             return self.solver.adapters[fault_name].source_type
         fault_obj = next((f for f in self.solver.faults if f.name == fault_name), None)
         return getattr(fault_obj, 'type', 'Fault') if fault_obj else 'Fault'
 
-    def sync_to_solver(self):
+    def get_linear_parameter_layout(self):
+        """Return and validate the complete BLSE/VCE linear-vector layout.
+
+        Returns
+        -------
+        dict
+            Active ``blse_full_linear`` descriptor with zero global offset.
+
+        Raises
+        ------
+        ValueError
+            If source/component/poly ranges or assembled matrix widths are
+            inconsistent.
+
+        Notes
+        -----
+        BLSE/VCE inherits the base active-linear coordinate hooks because its
+        bounds vector and every ``A`` matrix use this same full vector.
+        """
+        width = self._get_linear_matrix_n_parameters()
+        layout = self._build_linear_parameter_layout(
+            space='blse_full_linear',
+            width=width,
+            global_offset=0,
+            source_positions=getattr(
+                self.solver,
+                'slip_positions',
+                getattr(self.solver, 'fault_indexes', {}),
+            ),
+            poly_positions=getattr(self.solver, 'poly_positions', {}),
+        )
+        assembled = getattr(self.solver, 'G', None)
+        if assembled is not None and np.asarray(assembled).ndim == 2:
+            assembled_width = int(np.asarray(assembled).shape[1])
+            if assembled_width != width:
+                raise ValueError(
+                    f"BLSE G has {assembled_width} columns but "
+                    f"lsq_parameters/layout has {width}"
+                )
+        return layout
+
+    def sync_to_solver(self, *, force=False):
         """Refresh legacy solver-side caches from the constraint manager.
 
         BLSE/VCE solve paths read bounds and linear constraints directly from
         ``constraint_manager``.  This method keeps older inspection attributes
         such as ``solver.lb`` and ``solver.A_ueq`` current without creating a
         second writable constraint state on the solver.
+
+        Parameters
+        ----------
+        force : bool, default False
+            Synchronize immediately even inside a transaction.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Arrays are copied where stored as legacy bounds.  Combined constraint
+        matrices are regenerated from the manager's named groups.
         """
+        if self.in_constraint_transaction and not force:
+            self._constraint_transaction_sync_pending = True
+            return
+
         # Sync legacy bounds arrays
-        if self._bounds['lb'] is not None:
-            self.solver.lb = self._bounds['lb'].copy()
-        if self._bounds['ub'] is not None:
-            self.solver.ub = self._bounds['ub'].copy()
+        self.solver._lb = (
+            self._bounds['lb'].copy()
+            if self._bounds['lb'] is not None
+            else None
+        )
+        self.solver._ub = (
+            self._bounds['ub'].copy()
+            if self._bounds['ub'] is not None
+            else None
+        )
 
         # Sync combined constraints for backward-compatible readers.
         A_ineq, b_ineq = self.get_combined_inequality_constraints()
         A_eq, b_eq = self.get_combined_equality_constraints()
 
-        # Use setters to avoid AttributeError.
-        self.solver.A_ueq = A_ineq
-        self.solver.b_ueq = b_ineq
-        self.solver.Aeq = A_eq
-        self.solver.beq = b_eq
+        self.solver._A_ueq = A_ineq
+        self.solver._b_ueq = b_ineq
+        self.solver._Aeq = A_eq
+        self.solver._beq = b_eq
 
         if self.verbose:
             print("[SYNC] Refreshed legacy solver constraint cache")
 
     def validate(self) -> Dict[str, Any]:
-        """Validate all constraints for consistency.
+        """Validate the resolved BLSE bounds and constraint groups.
 
-        Extends base validation with a summary dict.
+        Returns
+        -------
+        dict
+            Base validation report plus a ``summary`` mapping containing bound
+            presence and constraint group/row counts.
         """
         result = super().validate()
         result['summary'] = {
@@ -767,11 +1162,8 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
         }
         return result
 
-    # Backward-compatible alias
-    validate_constraints = validate
-
     def print_summary(self):
-        """Print comprehensive constraint and bounds summary."""
+        """Print bounds, constraint provenance, and validation diagnostics."""
         print("\n" + "="*70)
         print("COMPLETE CONSTRAINT MANAGER SUMMARY")
         print("="*70)
@@ -851,7 +1243,7 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
             print(f"   - {name}: {constraint['A'].shape[0]} constraints (source: {constraint['source']})")
         
         # Validation status
-        validation = self.validate_constraints()
+        validation = self.validate()
         print(f"\n[OK] VALIDATION: {'PASSED' if validation['valid'] else 'FAILED'}")
         
         if validation['errors']:
@@ -869,9 +1261,11 @@ class ConstraintManagerBLSE(ConstraintManagerBase):
     # BLSE-specific property
     @property
     def bounds_config_file(self) -> Optional[str]:
-        """Path to bounds config file."""
+        """Return the loaded bounds-config path, if any.
+
+        Returns
+        -------
+        str or None
+            Path stored by the shared configuration loader.
+        """
         return self._bounds['config_file']
-
-
-# Backward-compatible alias
-ConstraintManager = ConstraintManagerBLSE

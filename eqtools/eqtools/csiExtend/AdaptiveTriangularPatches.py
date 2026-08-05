@@ -27,10 +27,11 @@ from numpy import rad2deg
 from csi import TriangularPatches
 from csi.seismiclocations import seismiclocations
 from .fitting_methods import RegressionFitter
-from ..plottools import DegreeFormatter
+from ..viztools import DegreeFormatter
 from .MeshGenerator import MeshGenerator
-from .geom_ops import discretize_coords
-from ..plottools import sci_plot_style
+from .geom_ops import discretize_coords, validate_top_bottom_cells
+from .fault_angle_conventions import canonicalize_compact_fault_angles
+from ..viztools import sci_plot_style
 
 def str2num(istr: str, dtype=int) -> List[Union[int, float]]:
     return [dtype(ix.strip()) for ix in istr.strip().split()]
@@ -773,7 +774,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Returns:
         None
         """
-        from ..plottools import sci_plot_style, set_degree_formatter
+        from ..viztools import sci_plot_style, set_degree_formatter
     
         if methods is None:
             methods = [result['method'] for result in self.isocurve_fitted_results]
@@ -1546,6 +1547,11 @@ class AdaptiveTriangularPatches(TriangularPatches):
                     'lat': [left_lat, right_lat],
                     'dip': [left_dip, right_dip]
                 })
+                if 'strike' in sorted_xydip.columns:
+                    buffer_df['strike'] = [
+                        sorted_xydip.iloc[left_index]['strike'],
+                        sorted_xydip.iloc[right_index]['strike'],
+                    ]
 
                 buffer_dfs.append(buffer_df)
             # Merge the new DataFrame into xydip and reset the index
@@ -1569,17 +1575,24 @@ class AdaptiveTriangularPatches(TriangularPatches):
             profiles_to_keep=None,
             profiles_to_remove=None
         ):
-        """Interpolate dip angles onto top_coords and compute along-strike azimuth.
+        """Interpolate dip angles and optional strike controls onto top_coords.
 
-        Strike is computed via :meth:`compute_strike` directly from
-        ``self.top_coords`` (geographic azimuth, degrees, clockwise from N).
-        The trace infrastructure (strikei / top_strike cache chain) is no
-        longer used by this method.
+        With three-column dip controls, strike is computed via
+        :meth:`compute_strike` directly from ``self.top_coords``. With an
+        optional ``strike`` column, strike is circularly interpolated from the
+        controls and validated against the positive top-coordinate direction.
+        Angles are geographic azimuths in degrees clockwise from North. The
+        trace infrastructure (strikei / top_strike cache chain) is not used.
 
         Parameters
         ----------
         xydip : str, np.ndarray, or pd.DataFrame
-            Dip control data (file path, array, or DataFrame).
+            Dip controls as ``lon/lat/dip`` or ``x/y/dip``. An optional
+            ``strike`` column enables control-point strike interpolation;
+            four-column arrays use ``lon/lat/strike/dip`` or
+            ``x/y/strike/dip``. Recommended dip values are signed
+            ``[-90, 0) U (0, 90]``; ``(90, 180)`` is accepted as an
+            opposite-side compatibility representation.
         is_utm : bool
             Whether coordinates in *xydip* are UTM (default False → lon/lat).
         discretization_interval : float, optional
@@ -1602,7 +1615,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Returns
         -------
         pd.DataFrame
-            Columns: lon, lat, strike (degrees), dip (degrees).
+            Columns: lon, lat, strike (degrees), dip (degrees). ``strike`` and
+            signed ``dip`` are per-top-node reference values used to generate
+            the bottom edge. They are also cached as ``top_strike/top_dip``;
+            they are not canonical geometry of the later mesh patches.
         """
         import warnings
         if not calculate_strike_along_trace:
@@ -1623,10 +1639,11 @@ class AdaptiveTriangularPatches(TriangularPatches):
         # Read coordinates and dips using the read_coordinates_and_dips function
         xydip = self.read_coordinates_and_dips(xydip, is_utm, method, profiles_to_keep, profiles_to_remove)
         
-        # Automatically select optimal interpolation axis - determine before handle_buffer_nodes
-        if interpolation_axis == 'auto':
-            interpolation_axis = self._determine_optimal_interpolation_axis(self.top_coords[:, 0], self.top_coords[:, 1])
-            print(f"Auto-selected interpolation axis: {interpolation_axis}")
+        # Resolve once from the actual interpolation target. The same axis is
+        # then used by buffer augmentation and by the interpolator.
+        interpolation_axis = self._resolve_interpolation_axis(
+            interpolation_axis, self.top_coords,
+        )
         
         # Handle buffer nodes
         xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis)
@@ -1647,16 +1664,51 @@ class AdaptiveTriangularPatches(TriangularPatches):
         indices = np.argsort(x_values)
         sorted_x_values = x_values[indices]
         sorted_dip_values = xydip.dip.values[indices]
-        start_dip_fill = xydip.loc[indices[0], 'dip']
-        end_dip_fill = xydip.loc[indices[-1], 'dip']
+        start_dip_fill = sorted_dip_values[0]
+        end_dip_fill = sorted_dip_values[-1]
     
         # Create interpolation function
         interpolation_function = interp1d(sorted_x_values, sorted_dip_values, 
                                         fill_value=(start_dip_fill, end_dip_fill), bounds_error=False)
         interpolated_dip = interpolation_function(interpolated_x)
     
-        # Calculate strike directly from top_coords (no trace infrastructure needed)
-        top_strike = self.compute_strike(self.top_coords)
+        # Use the ordered top edge as the authoritative positive direction.
+        trace_strike = self.compute_strike(self.top_coords)
+
+        if 'strike' in xydip.columns:
+            sorted_strike_values = np.asarray(xydip.strike.values[indices], dtype=float)
+            if not np.all(np.isfinite(sorted_strike_values)):
+                raise ValueError("strike control values must all be finite")
+
+            # Unwrap before interpolation so, for example, 350 -> 10 degrees
+            # follows the short path through 0 rather than through 180.
+            sorted_strike_rad = np.unwrap(np.deg2rad(sorted_strike_values))
+            strike_interpolator = interp1d(
+                sorted_x_values,
+                sorted_strike_rad,
+                fill_value=(sorted_strike_rad[0], sorted_strike_rad[-1]),
+                bounds_error=False,
+            )
+            top_strike = np.mod(
+                np.rad2deg(strike_interpolator(interpolated_x)),
+                360.0,
+            )
+
+            # Strike controls are directional, not unoriented axes. Reject a
+            # perpendicular or reversed result relative to the ordered top edge.
+            alignment = np.cos(np.deg2rad(top_strike - trace_strike))
+            invalid = np.flatnonzero(alignment <= np.finfo(float).eps)
+            if invalid.size:
+                preview = invalid[:5].tolist()
+                raise ValueError(
+                    "interpolated strike controls must follow the positive "
+                    "top-coordinate direction; invalid node indices: "
+                    f"{preview}"
+                )
+        else:
+            # No strike controls: derive every node's local strike from the
+            # ordered top edge.
+            top_strike = trace_strike
         lon, lat, strike, dip = self.top_coords_ll[:, 0], self.top_coords_ll[:, 1], top_strike, interpolated_dip
         interpolated_main = pd.DataFrame(np.vstack((lon, lat, strike, dip)).T, columns='lon lat strike dip'.split())
     
@@ -1717,6 +1769,104 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
         return selected_axis
 
+    def _resolve_interpolation_axis(self, interpolation_axis, target_coords):
+        """Resolve a strict x/y interpolation axis for one target.
+
+        Auto applies PCA to the target coordinates exactly once. Unknown
+        values are rejected instead of being interpreted implicitly as y.
+        """
+        valid_axes = {'auto', 'x', 'y'}
+        if interpolation_axis not in valid_axes:
+            raise ValueError(
+                "interpolation_axis must be one of 'auto', 'x', or 'y'; "
+                f"got {interpolation_axis!r}"
+            )
+
+        target_coords = np.asarray(target_coords, dtype=float)
+        if (
+            target_coords.ndim != 2
+            or target_coords.shape[0] < 2
+            or target_coords.shape[1] < 2
+            or not np.all(np.isfinite(target_coords[:, :2]))
+        ):
+            raise ValueError(
+                "target coordinates must contain at least two finite x/y rows"
+            )
+
+        if interpolation_axis == 'auto':
+            interpolation_axis = self._determine_optimal_interpolation_axis(
+                target_coords[:, 0], target_coords[:, 1],
+            )
+            if self.verbose:
+                print(f"Auto-selected interpolation axis: {interpolation_axis}")
+        return interpolation_axis
+
+    def _warn_if_no_interpolation_coverage(
+            self, xydip, target_coords, interpolation_axis):
+        """Warn when all target nodes use nearest-endpoint dip filling.
+
+        The projected axis is the numerical interpolation coordinate. The
+        lon/lat extents only help locate both datasets on a map.
+        """
+        import warnings
+
+        axis_index = 0 if interpolation_axis == 'x' else 1
+        control_axis = np.asarray(
+            xydip[interpolation_axis].to_numpy(), dtype=float,
+        )
+        target_coords = np.asarray(target_coords, dtype=float)
+        target_axis = target_coords[:, axis_index]
+        if not np.all(np.isfinite(control_axis)):
+            raise ValueError("dip-control interpolation coordinates must be finite")
+
+        control_min = float(np.min(control_axis))
+        control_max = float(np.max(control_axis))
+        inside = (target_axis >= control_min) & (target_axis <= control_max)
+        if np.any(inside):
+            return
+
+        target_lon, target_lat = self.xy2ll(
+            target_coords[:, 0], target_coords[:, 1],
+        )
+        control_lon = np.asarray(xydip['lon'], dtype=float)
+        control_lat = np.asarray(xydip['lat'], dtype=float)
+        target_lon = np.asarray(target_lon, dtype=float)
+        target_lat = np.asarray(target_lat, dtype=float)
+        sorted_controls = xydip.sort_values(interpolation_axis)
+        start_dip = float(sorted_controls.iloc[0]['dip'])
+        end_dip = float(sorted_controls.iloc[-1]['dip'])
+        target_min = float(np.min(target_axis))
+        target_max = float(np.max(target_axis))
+        if target_max < control_min:
+            fill_description = f"all target nodes use dip {start_dip:.6g}"
+        elif target_min > control_max:
+            fill_description = f"all target nodes use dip {end_dip:.6g}"
+        else:
+            fill_description = (
+                "target nodes use the lower/upper endpoint dips "
+                f"{start_dip:.6g}/{end_dip:.6g} according to side"
+            )
+
+        warnings.warn(
+            "Dip interpolation has no target points inside the control "
+            f"range on resolved axis {interpolation_axis!r}: control "
+            f"[{control_min:.6g}, {control_max:.6g}] km, target "
+            f"[{float(np.min(target_axis)):.6g}, "
+            f"{float(np.max(target_axis)):.6g}] km, inside 0/"
+            f"{len(target_axis)}. Control lon/lat extent: lon "
+            f"[{float(np.min(control_lon)):.6g}, "
+            f"{float(np.max(control_lon)):.6g}], lat "
+            f"[{float(np.min(control_lat)):.6g}, "
+            f"{float(np.max(control_lat)):.6g}]. Target lon/lat extent: lon "
+            f"[{float(np.min(target_lon)):.6g}, "
+            f"{float(np.max(target_lon)):.6g}], lat "
+            f"[{float(np.min(target_lat)):.6g}, "
+            f"{float(np.max(target_lat)):.6g}]. Nearest-endpoint filling: "
+            f"{fill_description}.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
     def interpolate_isocurve_dip_from_relocated_profile(
             self, 
             xydip,
@@ -1734,15 +1884,21 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Interpolate the dip of the earthquake fault.
     
         Parameters:
-        xydip (str, np.ndarray, pd.DataFrame): str is the path to a file containing x, y coordinates and dip angles. 
-            (np.ndarray, pd.DataFrame) is the array or DataFrame containing the coordinates and dips.
+        xydip (str, np.ndarray, pd.DataFrame): Sparse lon, lat, dip controls.
+            Three-column arrays are preferred. A strike column and other
+            profile-fit metadata are accepted but strike is intentionally
+            ignored: output local strike is derived from the ordered target
+            isocurve.
         isocurve (str, np.ndarray, pd.DataFrame): str is the path to a file containing isocurve coordinates. 
             (np.ndarray, pd.DataFrame) is the array or DataFrame containing the isocurve coordinates.
         * coordinates in xydip and isocurve should be in the same coordinate system, i.e., both in lon/lat coordinates.
         discretization_interval: Interval for discretizing the isocurve. unit is km. if negative integer, it means the number of segments.
-        interpolation_axis: Axis used for interpolation, can be 'x' or 'y'.
+        interpolation_axis: Strict interpolation axis: 'x', 'y', or 'auto'.
+            Auto applies PCA once to the target isocurve.
         save_to_file: If True, save the results to a file.
-        calculate_strike_along_trace: If True, calculate the strike along the fault trace.
+        calculate_strike_along_trace: Deprecated direction switch. False emits
+            DeprecationWarning and is ignored. Reverse isocurve point order to
+            reverse strike.
         method: Method to select dips if multiple methods are available. Default is 'min_mse'.
         buffer_nodes: Coordinates of buffer nodes used to segment the top_coords, then adaptively interpolate the dip for each segment.
         buffer_radius: Radius of the buffer zone, used to maintain a transition radius for linear interpolation.
@@ -1755,13 +1911,23 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Todo: 
             * Remove the dependency on the fault trace (i.e., self.xf, self.yf or self.xi, self.yi).
         """
+        import warnings
+
+        if not calculate_strike_along_trace:
+            warnings.warn(
+                "calculate_strike_along_trace=False is deprecated and ignored. "
+                "Strike follows the isocurve point order; reverse that point "
+                "order to use the opposite direction.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Read coordinates and dips using the read_coordinates_and_dips function
         xydip = self.read_coordinates_and_dips(xydip, False, method, profiles_to_keep, profiles_to_remove)
-
-        # Handle buffer nodes
-        xydip = self.handle_buffer_nodes(xydip, buffer_nodes, buffer_radius, interpolation_axis)
-        # Save to csv file
-        xydip.to_csv(f'{self.name}_used_isocurve.csv', index=False, header=True, float_format='%.6f')
+        # In reinterpolation mode only dip is transferred to the target curve.
+        # A source strike column has no row-wise target meaning and is ignored.
+        if 'strike' in xydip.columns:
+            xydip = xydip.drop(columns='strike')
 
         # Discretize the isocurve for more accurate strike angle interpolation or not
         if isinstance(isocurve, str):
@@ -1779,6 +1945,28 @@ class AdaptiveTriangularPatches(TriangularPatches):
         else:
             xi, yi = self.ll2xy(isocurve.lon.values, isocurve.lat.values)
             xyi = np.vstack((xi, yi)).T
+        interpolation_axis = self._resolve_interpolation_axis(
+            interpolation_axis,
+            xyi[:, :2],
+        )
+        xydip = self.handle_buffer_nodes(
+            xydip,
+            buffer_nodes,
+            buffer_radius,
+            interpolation_axis,
+            top_coords=xyi[:, :2],
+        )
+        xydip.to_csv(
+            f'{self.name}_used_isocurve.csv',
+            index=False,
+            header=True,
+            float_format='%.6f',
+        )
+        self._warn_if_no_interpolation_coverage(
+            xydip,
+            xyi[:, :2],
+            interpolation_axis,
+        )
         
         # Interpolation
         if interpolation_axis == 'x':
@@ -1792,15 +1980,18 @@ class AdaptiveTriangularPatches(TriangularPatches):
         indices = np.argsort(x_values)
         sorted_x_values = x_values[indices]
         sorted_dip_values = xydip.dip.values[indices]
-        start_dip_fill = xydip.loc[indices[0], 'dip']
-        end_dip_fill = xydip.loc[indices[-1], 'dip']
+        start_dip_fill = sorted_dip_values[0]
+        end_dip_fill = sorted_dip_values[-1]
     
         # Create interpolation function
         interpolation_function = interp1d(sorted_x_values, sorted_dip_values, fill_value=(start_dip_fill, end_dip_fill), bounds_error=False)
         interpolated_dip = interpolation_function(interpolated_x)
     
         # Calculate strike
-        iso_strike = self.calculate_isocurve_strike(x_coords=xyi[:, 0], y_coords=xyi[:, 1], calculate_strike_along_trace=calculate_strike_along_trace)
+        iso_strike = self.calculate_isocurve_strike(
+            x_coords=xyi[:, 0], y_coords=xyi[:, 1],
+            calculate_strike_along_trace=True,
+        )
 
         lon, lat = self.xy2ll(xyi[:, 0], xyi[:, 1])
         strike, dip = iso_strike, interpolated_dip
@@ -1819,9 +2010,15 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Read coordinates and dips from provided arrays or a file, and convert between UTM and geographic coordinates if necessary.
     
         Parameters:
-        xydip (str, np.ndarray, pd.DataFrame): str is the path to a file containing x, y coordinates and dip angles. 
-            (np.ndarray, pd.DataFrame) is the array or DataFrame containing the coordinates and dips.
-        is_utm (bool, optional): If True, coordinates are in UTM. Otherwise, they are in geographic coordinates. Default is False.
+        xydip (str, np.ndarray, pd.DataFrame): Dip controls. Arrays use three
+            columns (``lon, lat, dip`` or ``x, y, dip``), or four columns when
+            optional strike controls are supplied (``lon, lat, strike, dip``
+            or ``x, y, strike, dip``). DataFrames/CSV files require the
+            corresponding named columns and may include profile metadata.
+            Dip must be finite and in ``[-90, 0) U (0, 180)`` degrees.
+        is_utm (bool, optional): If True, coordinates are CSI projected
+            ``x/y`` in km (normally produced by this fault's ``ll2xy``).
+            Otherwise they are geographic ``lon/lat`` in degrees.
         method (str or list, optional): Method(s) to select dips if multiple methods are available. Default is 'min_mse'.
         profiles_to_keep (list, optional): List of profile indices to keep. Default is None.
         profiles_to_remove (list, optional): List of profile indices to remove. Default is None.
@@ -1831,8 +2028,19 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         import pandas as pd
         import numpy as np
+        from .DipInterpolation import (
+            normalize_dip_to_0_180,
+            validate_dip_angles_for_depth_projection,
+        )
     
         def convert_coords(df, is_utm):
+            coordinate_columns = {'x', 'y'} if is_utm else {'lon', 'lat'}
+            missing = coordinate_columns.difference(df.columns)
+            if missing:
+                raise ValueError(
+                    "xydip is missing coordinate columns: "
+                    + ", ".join(sorted(missing))
+                )
             if is_utm:
                 lon, lat = self.xy2ll(df.x.values, df.y.values)
                 df['lon'] = lon
@@ -1844,11 +2052,17 @@ class AdaptiveTriangularPatches(TriangularPatches):
             return df
 
         if isinstance(xydip, np.ndarray):
-            columns = ['x', 'y', 'dip'] if is_utm else ['lon', 'lat', 'dip']
-            xydip = pd.DataFrame(xydip, columns=columns)
+            if xydip.ndim != 2 or xydip.shape[1] not in (3, 4):
+                raise ValueError(
+                    "xydip array must have three columns (coord1, coord2, dip) "
+                    "or four columns (coord1, coord2, strike, dip)"
+                )
+            coord_columns = ['x', 'y'] if is_utm else ['lon', 'lat']
+            value_columns = ['dip'] if xydip.shape[1] == 3 else ['strike', 'dip']
+            xydip = pd.DataFrame(xydip, columns=coord_columns + value_columns)
             xydip = convert_coords(xydip, is_utm)
         elif isinstance(xydip, pd.DataFrame):
-            xydip = convert_coords(xydip, is_utm)
+            xydip = convert_coords(xydip.copy(), is_utm)
         elif isinstance(xydip, str):
             xydip = pd.read_csv(xydip, comment='#', header=0)
             xydip['original_order'] = range(len(xydip))
@@ -1906,9 +2120,24 @@ class AdaptiveTriangularPatches(TriangularPatches):
         
                 # Sort by original order and reset index
                 xydip = xydip.sort_values('original_order').reset_index(drop=True)
+        else:
+            raise TypeError("xydip must be a file path, numpy array, or DataFrame")
+
+        required_columns = {'x', 'y', 'dip'} if is_utm else {'lon', 'lat', 'dip'}
+        missing_columns = required_columns.difference(xydip.columns)
+        if missing_columns:
+            raise ValueError(
+                "xydip is missing required columns: "
+                + ", ".join(sorted(missing_columns))
+            )
     
-        # Ensure dip values are within the range 0 to 180 degrees
-        xydip.loc[xydip.dip < 0, 'dip'] += 180
+        validated_dip = validate_dip_angles_for_depth_projection(
+            xydip.dip.to_numpy(),
+            name='xydip.dip',
+        )
+        # Interpolate in (0, 180): a side change crosses vertical at 90
+        # degrees instead of the singular horizontal orientation at 0.
+        xydip.loc[:, 'dip'] = normalize_dip_to_0_180(validated_dip)
     
         return xydip
     
@@ -1922,8 +2151,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         clon (float): The longitude of the center point of the top line.
         clat (float): The latitude of the center point of the top line.
         cdepth (float): The depth of the center point of the top line.
-        strike (float): The strike angle of the fault patch. unit: degree.
-        dip (float): The dip angle of the fault patch. unit: degree.
+        strike (float): Geographic strike clockwise from North, in degrees.
+        dip (float): Compact nonlinear dip in ``[-90, 180]`` degrees. The
+            historical negative interval is accepted; geometry is converted
+            to the shared canonical CSI strike/dip pair before construction.
         length (float): The length of the fault patch.
         width (float): The width of the fault patch.
         top (float): The top depth of the fault patch.
@@ -1940,6 +2171,16 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
         if any(param is None for param in [clon, clat, cdepth, strike, dip]):
             raise ValueError("Please provide all the required parameters.")
+
+        # Keep the nonlinear-result-to-mesh bridge identical to the compact
+        # SMC forward path.  Rake/slip are not part of this geometry-only
+        # conversion.
+        strike, dip, _ = canonicalize_compact_fault_angles(strike, dip)
+        if np.isclose(dip, 0.0, rtol=0.0, atol=1e-12):
+            raise ValueError(
+                "compact dip 0 or 180 degrees is horizontal and cannot "
+                "define top/bottom edges at different depths"
+            )
         
         # Convert the strike and dip angles to radians
         str_rad = deg2rad(90 - strike)
@@ -2034,13 +2275,18 @@ class AdaptiveTriangularPatches(TriangularPatches):
         2. make_bottom_from_reloc_dips: Translate to determine the bottom edge.
     
         Parameters:
-        * xydip (str, np.ndarray, pd.DataFrame): str is the path to a file containing x, y coordinates and dip angles. 
-            (np.ndarray, pd.DataFrame) is the array or DataFrame containing the coordinates and dips.
-            default is None.
+        * xydip (str, np.ndarray, pd.DataFrame): Optional dip-control input.
+            With reinterpolation, use ``lon/lat/dip`` or projected
+            ``x/y/dip`` controls. If omitted, the method uses the existing
+            per-node ``top_strike`` and ``top_dip`` arrays. Those arrays follow
+            the reference top-edge direction and signed-side convention used
+            by the bottom generator; final patch strike/dip must be obtained
+            from mesh vertices or ``getpatchgeometry()``.
         * fault_depth: Depth of the fault. If None, self.depth will be used.
         * update_self: Whether to update the instance variables with the calculated coordinates. Default is True.
         * discretization_interval: Interval for discretizing the trace.
-        * is_utm: If True, the x and y coordinates are in UTM. Otherwise, they are in geographic coordinates.
+        * is_utm: If True, x/y are CSI projected coordinates in km and must
+            match the fault projection. Otherwise coordinates are lon/lat.
         * interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
             'auto' automatically selects the best interpolation direction using PCA.
         * calculate_strike_along_trace: **Deprecated — ignored.** Passed through to
@@ -2051,17 +2297,32 @@ class AdaptiveTriangularPatches(TriangularPatches):
         * profiles_to_keep: List of profile indices to keep. Default is None.
         * profiles_to_remove: List of profile indices to remove. Default is None.
         * reinterpolate: Whether to reinterpolate the dip angles. Default is True.
-        * use_average_strike: Whether to use average strike direction. Default is False.
-        * average_strike_source: Source of average strike direction, can be 'pca' or 'user'. Default is 'pca'.
-        * user_direction_angle: User input direction angle in degrees. Default is None.
+            If False, rows must already match ``top_coords`` one-to-one in the
+            same order.
+        * use_average_strike: If True, use one representative strike for every
+            node. If False (default), preserve the per-node strike already in
+            ``dip_info``: either local top-edge strike or interpolated strike
+            controls.
+        * average_strike_source: Source of the representative strike. ``pca``
+            fits the first principal axis of top x/y and orients it with the
+            first-to-last trace direction; ``user`` uses
+            ``user_direction_angle``. Default is ``pca``.
+        * user_direction_angle: Explicit geographic strike azimuth in degrees
+            clockwise from North. It must follow the positive trace direction
+            and is used only when ``average_strike_source='user'``.
         * verbose: Whether to print verbose output. Default is False.
     
         Returns:
-        None. However, the function updates the following instance variables:
-        * bottom_coords: UTM coordinates of the bottom.
-        * bottom_coords_ll: Latitude and longitude coordinates of the bottom.
+        np.ndarray: Bottom coordinates in CSI projected x/y km and positive
+            depth km. Row i corresponds to ``top_coords[i]``. When
+            ``update_self=True``, ``bottom_coords`` and ``bottom_coords_ll``
+            are also updated.
         """
         from numpy import deg2rad, sin, cos
+        from .DipInterpolation import (
+            normalize_dip_to_neg90_90,
+            validate_dip_angles_for_depth_projection,
+        )
         import os
     
         missing_depth_info = [attr for attr in ['depth', 'top'] if not hasattr(self, attr) or getattr(self, attr) is None]
@@ -2074,9 +2335,6 @@ class AdaptiveTriangularPatches(TriangularPatches):
         if xydip is not None:
             if reinterpolate:
                 # Interpolate dip angles along the top coordinates
-                if isinstance(xydip, np.ndarray):
-                    if xydip.shape[1] == 4:
-                        xydip = pd.DataFrame(xydip, columns='lon lat strike dip'.split())
                 interpolated_dip_info = self.interpolate_top_dip_from_relocated_profile(
                     xydip=xydip,
                     is_utm=is_utm,
@@ -2118,12 +2376,31 @@ class AdaptiveTriangularPatches(TriangularPatches):
             strike, dip = self.top_strike, self.top_dip
             dip_info = pd.DataFrame(np.vstack((lon, lat, strike, dip)).T, columns='lon lat strike dip'.split())
     
-        dip_info['strike_rad'] = deg2rad(dip_info.strike)
-        dip_info['dip_rad'] = deg2rad(dip_info.dip)
-    
         x, y = self.ll2xy(dip_info.lon.values, dip_info.lat.values)
         dip_info['xproj'] = x
         dip_info['yproj'] = y
+
+        # Every per-node dip/strike row must remain paired with the same top
+        # node. This is the authoritative index contract for mesh generation.
+        top_xy = np.asarray(self.top_coords, dtype=float)[:, :2]
+        dip_xy = np.column_stack((x, y))
+        if (
+            dip_xy.shape != top_xy.shape
+            or not np.allclose(dip_xy, top_xy, rtol=1e-8, atol=1e-6)
+        ):
+            raise ValueError(
+                "dip/strike rows must match top_coords one-to-one in the same "
+                "order; reinterpolate controls onto top_coords first"
+            )
+
+        dip_info.loc[:, 'dip'] = normalize_dip_to_neg90_90(
+            validate_dip_angles_for_depth_projection(
+                dip_info.dip.to_numpy(),
+                name='dip_info.dip',
+            )
+        )
+        dip_info['strike_rad'] = deg2rad(dip_info.strike)
+        dip_info['dip_rad'] = deg2rad(dip_info.dip)
     
         # Calculate the average strike direction if required
         strike_direction = np.array([x[-1] - x[0], y[-1] - y[0]])
@@ -2140,8 +2417,23 @@ class AdaptiveTriangularPatches(TriangularPatches):
                     average_strike_rad += np.pi
             elif average_strike_source == 'user' and user_direction_angle is not None:
                 average_strike_rad = deg2rad(user_direction_angle)
-                if np.dot([cos(average_strike_rad), sin(average_strike_rad)], strike_direction) < 0:
-                    raise ValueError("The user direction angle is not consistent with the strike direction.")
+                # Geographic azimuth is measured clockwise from North, so its
+                # projected [east, north] unit vector is [sin(azimuth), cos(azimuth)].
+                user_strike_vector = np.array([
+                    sin(average_strike_rad),
+                    cos(average_strike_rad),
+                ])
+                trace_direction_norm = np.linalg.norm(strike_direction)
+                alignment = np.dot(user_strike_vector, strike_direction)
+                if (
+                    not np.isfinite(average_strike_rad)
+                    or trace_direction_norm <= np.finfo(float).eps
+                    or alignment <= np.finfo(float).eps * trace_direction_norm
+                ):
+                    raise ValueError(
+                        "user_direction_angle must follow the positive trace "
+                        "direction (geographic azimuth clockwise from North)."
+                    )
             else:
                 raise ValueError("Invalid average_strike_source or user_direction_angle not provided.")
             strike_rad = average_strike_rad
@@ -2173,17 +2465,9 @@ class AdaptiveTriangularPatches(TriangularPatches):
         dip_vector = np.vstack((dip_x, dip_y, dip_z)).T 
         bottom_coords = old_coords + dip_vector*width
     
-        # Automatically select optimal interpolation axis for sorting if needed
-        if interpolation_axis == 'auto':
-            # Use x, y coordinates directly
-            interpolation_axis = self._determine_optimal_interpolation_axis(self.top_coords[:, 0], self.top_coords[:, 1])
-            if verbose:
-                print(f"Auto-selected interpolation axis for sorting: {interpolation_axis}")
-    
-        sort_order = np.argsort(bottom_coords[:, 0] if interpolation_axis == 'x' else bottom_coords[:, 1])
-        bottom_coords = bottom_coords[sort_order, :]
-        if np.dot([bottom_coords[-1, 0]-bottom_coords[0, 0], bottom_coords[-1, 1]-bottom_coords[0, 1]], strike_direction) < 0:
-            bottom_coords = bottom_coords[::-1, :]
+        # Preserve one-to-one indexing: bottom_coords[i] is generated from
+        # top_coords[i]. Never sort the bottom independently.
+        validate_top_bottom_cells(old_coords, bottom_coords)
     
         if update_self:
             self.set_bottom_coords(bottom_coords, lonlat=False)
@@ -2240,32 +2524,63 @@ class AdaptiveTriangularPatches(TriangularPatches):
             buffer_radius=None,
             profiles_to_keep=None,
             profiles_to_remove=None,
-            reinterpolate=False
+            reinterpolate=False,
+            isodepth_tolerance=0.1,
         ):
         """
         Generate the top and bottom coordinates based on the isodepth curve and dip angles.
     
         Parameters:
-        - isodepth: Path to the file containing isodepth curve information or a numpy array with lon, lat, depth.
-        - xydip: Path to the file containing dip angle information or a numpy array with lon, lat, strike, dip. angle unit: degree.
+        - isodepth: Path or array with lon, lat, depth values describing one
+          approximately constant-depth curve. At least two finite rows are
+          required and max(depth)-min(depth) must not exceed
+          isodepth_tolerance.
+        - xydip: With reinterpolate=False, row-aligned lon, lat, dip values
+          may omit strike, in which case local strike is derived from ordered
+          isodepth nodes. If strike is supplied, it is used in the projection.
+          With reinterpolate=True, sparse controls are spatially interpolated;
+          any input strike column is ignored and output local strike is derived
+          from the ordered target isodepth curve. Strike is clockwise from
+          North. Dip is an oriented reference angle in
+          [-90, 0) U (0, 180) degrees; -80 and 100 are equivalent.
         - top_depth: Depth of the top. If None, self.top will be used.
         - bottom_depth: Depth of the bottom. If None, self.depth will be used.
         - update_self: Whether to update the instance variables with the calculated coordinates. Default is True.
         - discretization_interval: Interval for discretizing the isocurve. unit is km. if negative integer, it means the number of segments.
-        - interpolation_axis: Axis used for interpolation, can be 'x' or 'y'.
-        - calculate_strike_along_trace: If True, calculate the strike along the fault trace.
+        - interpolation_axis: Strict axis 'x', 'y', or 'auto'. Auto applies
+          PCA once to the target curve. Used only with reinterpolate=True.
+        - calculate_strike_along_trace: Used only when reinterpolate=True.
+          False is deprecated and ignored; reverse the isodepth point order
+          to reverse strike.
         - method: Method to select dips if multiple methods are available. Default is 'min_mse'.
         - buffer_nodes: Coordinates of buffer nodes used to segment the top_coords, then adaptively interpolate the dip for each segment.
         - buffer_radius: Radius of the buffer zone, used to maintain a transition radius for linear interpolation.
         - profiles_to_keep: List of profile indices to keep. Default is None.
         - profiles_to_remove: List of profile indices to remove. Default is None.
-        - reinterpolate: Whether to reinterpolate the dip angles. Default is False.
+        - reinterpolate: Whether to interpolate sparse dip controls onto the
+          isodepth curve. Default is False.
+        - isodepth_tolerance: Maximum allowed max(depth)-min(depth), in km.
+          Default is 0.1 km and the value must be finite and non-negative.
+          Reinterpolation uses the accepted curve's median depth as its
+          representative isodepth.
     
         Returns:
         - top_coords: The top coordinates of the fault.
         - bottom_coords: The bottom coordinates of the fault.
+
+        Notes:
+        - Direct three- and four-column inputs both preserve each accepted
+          reference depth and require pointwise xydip alignment. Four-column
+          strike is operational; three-column strike is derived locally.
+        - Reinterpolated controls may have a different input count. Only dip
+          is transferred to target nodes; input strike has no row-wise target
+          correspondence and is ignored.
+        - A RuntimeWarning reports zero control-range overlap before existing
+          nearest-endpoint filling is applied; numerical behavior is unchanged.
         """
         from numpy import deg2rad, sin, cos
+        from .DipInterpolation import normalize_dip_to_neg90_90
+        from .fault_angle_conventions import normalize_oriented_reference_dip
         import os
     
         # Extract the iso-depth curve information.
@@ -2275,8 +2590,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
             # Load isodepth curve information from file
             isodepth_info = pd.read_csv(isodepth, comment='#', header=0)
         elif isinstance(isodepth, np.ndarray):
-            if isodepth.shape[1] != 3:
-                raise ValueError("isodepth array must have three columns: lon, lat, depth.")
+            if isodepth.ndim != 2 or isodepth.shape[1] != 3:
+                raise ValueError(
+                    "isodepth array must have three columns: lon, lat, depth."
+                )
             isodepth_info = pd.DataFrame(isodepth, columns=['lon', 'lat', 'depth'])
         elif isinstance(isodepth, pd.DataFrame):
             if isodepth.shape[1] != 3:
@@ -2285,12 +2602,41 @@ class AdaptiveTriangularPatches(TriangularPatches):
         else:
             raise ValueError("isodepth must be a file path or a numpy array with lon, lat, depth.")
 
+        required_isodepth = {'lon', 'lat', 'depth'}
+        if not required_isodepth.issubset(isodepth_info.columns):
+            raise ValueError("isodepth must contain lon, lat and depth columns")
+        isodepth_values = isodepth_info[['lon', 'lat', 'depth']].to_numpy(
+            dtype=float
+        )
+        if len(isodepth_values) < 2:
+            raise ValueError("isodepth construction requires at least 2 rows")
+        if not np.all(np.isfinite(isodepth_values)):
+            raise ValueError("isodepth values must be finite")
+        if isinstance(isodepth_tolerance, (bool, np.bool_)):
+            raise ValueError(
+                "isodepth_tolerance must be a finite non-negative number"
+            )
+        try:
+            isodepth_tolerance = float(isodepth_tolerance)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "isodepth_tolerance must be a finite non-negative number"
+            ) from exc
+        if not np.isfinite(isodepth_tolerance) or isodepth_tolerance < 0.0:
+            raise ValueError(
+                "isodepth_tolerance must be a finite non-negative number"
+            )
+        depth_span = float(np.ptp(isodepth_values[:, 2]))
+        if depth_span > isodepth_tolerance + 1e-12:
+            raise ValueError(
+                "isodepth must represent one approximately constant-depth "
+                "curve: depth span "
+                f"{depth_span:.6g} km exceeds isodepth_tolerance "
+                f"{isodepth_tolerance:.6g} km"
+            )
         # Extract the dip angle information.
         if reinterpolate:
             # Interpolate dip angles along the isodepth curve
-            if isinstance(xydip, np.ndarray):
-                if xydip.shape[1] == 4:
-                    xydip = pd.DataFrame(xydip, columns='lon lat strike dip'.split())
             interpolated_dip_info = self.interpolate_isocurve_dip_from_relocated_profile(
                 xydip=xydip,
                 isocurve=isodepth_info,
@@ -2305,7 +2651,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
             )
             dip_info = interpolated_dip_info
             lon, lat = dip_info.lon.values, dip_info.lat.values
-            depth = np.ones_like(lon)*isodepth_info.depth.values[0]
+            reference_depth = float(np.median(isodepth_values[:, 2]))
+            depth = np.full_like(lon, reference_depth, dtype=float)
             isodepth_info = pd.DataFrame(np.vstack((lon, lat, depth)).T, columns='lon lat depth'.split())
         else:
             # Extract the dip angle information.
@@ -2315,21 +2662,106 @@ class AdaptiveTriangularPatches(TriangularPatches):
                 # Load dip angle information from file
                 dip_info = pd.read_csv(xydip, comment='#', header=0)
             elif isinstance(xydip, np.ndarray):
-                if xydip.shape[1] != 4:
-                    raise ValueError("dip array must have four columns: lon, lat, strike, dip.")
-                dip_info = pd.DataFrame(xydip, columns=['lon', 'lat', 'strike', 'dip'])
+                if xydip.ndim != 2 or xydip.shape[1] not in (3, 4):
+                    raise ValueError(
+                        "dip array must have three columns (lon, lat, dip) or "
+                        "four columns (lon, lat, strike, dip)"
+                    )
+                columns = (
+                    ['lon', 'lat', 'dip']
+                    if xydip.shape[1] == 3
+                    else ['lon', 'lat', 'strike', 'dip']
+                )
+                dip_info = pd.DataFrame(xydip, columns=columns)
             elif isinstance(xydip, pd.DataFrame):
-                if xydip.shape[1] != 4:
-                    raise ValueError("dip DataFrame must have four columns: lon, lat, strike, dip.")
-                dip_info = xydip
+                dip_info = xydip.copy()
             else:
-                raise ValueError("dip must be a file path or a numpy array with lon, lat, strike, dip.")
+                raise ValueError(
+                    "dip must be a file path, numpy array, or DataFrame"
+                )
     
-        # Use self.top and self.depth if top_depth or bottom_depth is None
+        required_dip = {'lon', 'lat', 'dip'}
+        if not required_dip.issubset(dip_info.columns):
+            raise ValueError("xydip must contain lon, lat and dip columns")
+        if len(isodepth_info) != len(dip_info):
+            if reinterpolate:
+                raise RuntimeError(
+                    "internal interpolation error: interpolated isodepth and "
+                    "dip rows do not have the same length"
+                )
+            raise ValueError(
+                "with reinterpolate=False, isodepth and xydip must have the "
+                "same number of row-aligned points"
+            )
+
+        isodepth_values = isodepth_info[['lon', 'lat', 'depth']].to_numpy(
+            dtype=float
+        )
+        input_values = dip_info[['lon', 'lat', 'dip']].to_numpy(
+            dtype=float
+        )
+        if not np.all(np.isfinite(input_values)):
+            raise ValueError("xydip values must be finite")
+        if not np.allclose(
+            isodepth_values[:, :2],
+            input_values[:, :2],
+            rtol=0.0,
+            atol=1e-8,
+        ):
+            raise ValueError(
+                "isodepth and xydip lon/lat rows must correspond in the same "
+                "order; use reinterpolate=True for sparse dip controls"
+            )
+        if len(isodepth_values) < 2:
+            raise ValueError("isodepth construction requires at least 2 rows")
+        trace_x, trace_y = self.ll2xy(
+            isodepth_values[:, 0],
+            isodepth_values[:, 1],
+        )
+        trace_strike = self.compute_strike(
+            np.column_stack([trace_x, trace_y])
+        )
+        if 'strike' not in dip_info.columns:
+            dip_info = dip_info.copy()
+            dip_info.loc[:, 'strike'] = trace_strike
+        dip_values = dip_info[['lon', 'lat', 'strike', 'dip']].to_numpy(
+            dtype=float
+        )
+        if not np.all(np.isfinite(dip_values)):
+            raise ValueError("xydip values must be finite")
+        alignment = np.cos(
+            np.deg2rad(dip_values[:, 2] - trace_strike)
+        )
+        invalid_strike = np.flatnonzero(
+            alignment <= np.finfo(float).eps
+        )
+        if invalid_strike.size:
+            raise ValueError(
+                "xydip strike must follow the positive isodepth row order; "
+                f"invalid row indices: {invalid_strike[:5].tolist()}"
+            )
+
         top_depth = top_depth if top_depth is not None else self.top
         bottom_depth = bottom_depth if bottom_depth is not None else self.depth
-    
-        # Convert angles to radians
+        top_depth = float(top_depth)
+        bottom_depth = float(bottom_depth)
+        if (
+            not np.isfinite(top_depth)
+            or not np.isfinite(bottom_depth)
+            or bottom_depth <= top_depth
+        ):
+            raise ValueError(
+                "top_depth and bottom_depth must be finite with "
+                "bottom_depth > top_depth"
+            )
+
+        dip_info = dip_info.copy()
+        dip_info.loc[:, 'dip'] = normalize_dip_to_neg90_90(
+            normalize_oriented_reference_dip(
+                dip_info.dip.to_numpy(dtype=float),
+                name='xydip.dip',
+            )
+        )
         dip_info['strike_rad'] = deg2rad(dip_info.strike)
         dip_info['dip_rad'] = deg2rad(dip_info.dip)
     
@@ -2361,6 +2793,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         # Calculate bottom coordinates
         width = ((bottom_depth - top_depth) / sin(dip_rad)).reshape(-1, 1)
         bottom_coords = top_coords + dip_vector * width
+        validate_top_bottom_cells(top_coords, bottom_coords)
     
         if update_self:
             self.set_top_coords(top_coords, lonlat=False)
@@ -2378,8 +2811,13 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Generate the bottom node coordinates of the fault based on dip angle and dip direction.
     
         Parameters:
-        dip_angle (float): The dip angle of the fault in degrees.
-        dip_direction (float): The dip direction of the fault in degrees.
+        dip_angle (float): Unsigned physical fault-plane dip from horizontal,
+            restricted to ``(0, 90]`` degrees. Dip side is specified only by
+            ``dip_direction`` in this method.
+        dip_direction (float): Down-dip geographic azimuth in degrees,
+            measured clockwise from North (0=N, 90=E). The value is used
+            directly and is not inferred from trace order. Under the
+            right-hand rule it is normally ``(strike + 90) % 360``.
         update_self (bool, optional): If True, update the instance variables with the calculated bottom coordinates. Default is True.
     
         Returns:
@@ -2399,6 +2837,17 @@ class AdaptiveTriangularPatches(TriangularPatches):
         # Check if self.top_coords exists and is not None
         if not hasattr(self, 'top_coords') or self.top_coords is None:
             raise ValueError("The attribute 'top_coords' is not set. Please set 'top_coords' before calling this function.")
+
+        dip_angle = float(dip_angle)
+        if not np.isfinite(dip_angle) or not (0.0 < dip_angle <= 90.0):
+            raise ValueError(
+                "dip_angle must be finite and in (0, 90] degrees when "
+                "dip_direction is specified explicitly"
+            )
+        dip_direction = float(dip_direction)
+        if not np.isfinite(dip_direction):
+            raise ValueError("dip_direction must be a finite geographic azimuth")
+        dip_direction %= 360.0
     
         # Extract x_top, y_top, and z_top from self.top_coords
         x_top, y_top, z_top = self.top_coords[:, 0], self.top_coords[:, 1], self.top_coords[:, 2]
@@ -2418,6 +2867,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         # Save to self.bottom
         bottom_coords = np.vstack((x_bottom, y_bottom, z_bottom)).T
         bottom_coords_ll = np.vstack((lon_bottom, lat_bottom, z_bottom)).T
+        validate_top_bottom_cells(self.top_coords, bottom_coords)
     
         if update_self:
             self.bottom_coords = bottom_coords
@@ -3570,7 +4020,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         from mpl_toolkits.mplot3d import Axes3D
         import matplotlib.pyplot as plt
-        from ..plottools import sci_plot_style
+        from ..viztools import sci_plot_style
 
         if '.pdf' in file_path:
             pdf_fonttype = 42 if pdf_fonttype is None else pdf_fonttype

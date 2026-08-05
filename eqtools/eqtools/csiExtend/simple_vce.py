@@ -1,5 +1,3 @@
-import warnings
-
 import numpy as np
 from . import lsqlin
 
@@ -209,30 +207,14 @@ def simplified_vce(
 
         # Solve using lsqlin solver with constraints
         opts = {'show_progress': False}
-        try:
-            ret = lsqlin.lsqlin(G_aug, d_aug, 0, A_ueq, b_ueq, Aeq, beq, lb, ub, None, opts)
-            m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
-        except Exception as e:
-            warnings.warn(
-                f"Equality constraints caused solver failure "
-                f"({type(e).__name__}: {e}). "
-                f"Retrying without equality constraints.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            try:
-                ret = lsqlin.lsqlin(G_aug, d_aug, 0, A_ueq, b_ueq, None, None, lb, ub, None, opts)
-                m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
-            except Exception as e2:
-                warnings.warn(
-                    f"Inequality constraints also caused solver failure "
-                    f"({type(e2).__name__}: {e2}). "
-                    f"Retrying without any constraints.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                ret = lsqlin.lsqlin(G_aug, d_aug, 0, None, None, None, None, lb, ub, None, opts)
-                m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
+        ret = lsqlin.lsqlin_auto(
+            G_aug, d_aug, 0,
+            A_ueq, b_ueq,
+            Aeq, beq,
+            lb, ub,
+            None, opts,
+        )
+        m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
 
         # ======================================================================
         # Compute total normal matrix (all datasets + all regularization)

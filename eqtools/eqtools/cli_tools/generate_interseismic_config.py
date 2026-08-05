@@ -8,31 +8,40 @@ def generate_interseismic_config(output_path, faultnames=None):
     faultnames = faultnames or ["ExampleFault"]
     fault_blocks = "\n".join(
         f"""    {fault_name}:
-      blocks: [Block_A, Block_B]
-      reference_strike: 0.0
-      motion_sense: dextral
-      # Optional manual regional overrides for simple long-fault cases.
+      blocks: [Block_A, Block_B]  # Ordered pair used to form relative loading
+      reference_strike: 0.0  # degrees clockwise from north
+      motion_sense: dextral  # dextral | sinistral
+      # Optional manual overrides for simple long-fault cases.
       # Keep this commented unless different patch groups require different
-      # block pairs or reference strikes. Selectors use the same syntax as
-      # cap_constraints/backslip_constraints.
-      # loading_regions:
+      # block pairs or reference strikes. Selectors use the same syntax as cap
+      # and backslip constraints.
+      # loading_overrides:
       #   - name: north
       #     selector: {{patches: [0, 1, 2]}}
       #     blocks: [Block_A, Block_B]
-      #     reference_strike: 0.0"""
+      #     reference_strike: 0.0
+      # Optional motion-sense overrides do not change loading b. They are useful
+      # for testing a local left-/right-lateral transition.
+      # motion_sense_overrides:
+      #   - name: trial_sinistral
+      #     selector: {{patches: [10, 11, 12]}}
+      #     motion_sense: sinistral"""
         for fault_name in faultnames
     )
     cap_blocks = "\n".join(
         f"""    {fault_name}:
-      selector: null
+      selector: null  # null selects all patches
       # mode: motion_sense is the default and works with estimated Euler blocks.
       # Use mode: loading_sign only when both loading blocks are fixed.
       mode: motion_sense
-      max_coupling: 1.0"""
+      max_coupling: 1.0  # Dimensionless coupling cap"""
         for fault_name in faultnames
     )
     first_fault = faultnames[0]
     config_text = f"""# Interseismic block loading and optional backslip constraints.
+# Dependency: blocks -> fault_loading -> optional cap/backslip constraints.
+# blocks/fault_loading define physical loading; selectors below only choose
+# where optional inequality/equality constraints act.
 version: 1
 
 blocks:
@@ -58,28 +67,29 @@ blocks:
 fault_loading:
   enabled: false
   defaults:
-    reference_strike: 0.0
-    motion_sense: dextral
+    reference_strike: 0.0  # degrees clockwise from north
+    motion_sense: dextral  # dextral | sinistral
   faults:
 {fault_blocks}
 
 cap_constraints:
   enabled: false
   defaults:
-    selector: null
-    mode: motion_sense
-    hard_overlap: skip
-    max_coupling: 1.0
+    selector: null  # null selects all patches
+    mode: motion_sense  # motion_sense | loading_sign
+    hard_overlap: skip  # skip | keep | error
+    max_coupling: 1.0  # Dimensionless coupling cap
   faults:
 {cap_blocks}
 
 backslip_constraints:
+  # Common hard states: full_coupling, prescribed_coupling,
+  # prescribed_backslip, and zero_backslip. Components: strikeslip | dipslip.
   - fault: {first_fault}
     state: full_coupling
     selector: {{edge: top}}
     component: strikeslip
     name: top_full_coupling
-    overwrite: true
 
   - fault: {first_fault}
     state: prescribed_coupling
@@ -87,7 +97,6 @@ backslip_constraints:
     selector: {{edge: bottom}}
     component: strikeslip
     name: bottom_free_coupling
-    overwrite: true
 
 outputs:
   fields:

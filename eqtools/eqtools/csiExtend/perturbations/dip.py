@@ -24,8 +24,11 @@ class DipPerturbationMixin:
         Parameters:
         x_coords (np.ndarray): x coordinates.
         y_coords (np.ndarray): y coordinates.
-        dips (np.ndarray): Original dips.
-        perturbations (np.ndarray): Direct perturbation values. If provided, the function will use these values directly.
+        dips (np.ndarray): Reference dips. Signed and 0--180 representations
+            are accepted and converted to continuous 0--180 coordinates before
+            perturbation.
+        perturbations (np.ndarray): Additive changes in continuous 0--180 dip
+            coordinates. Scalar values broadcast to movable control points.
         fixed_nodes (list, optional): A list of indices of fixed nodes. If provided, the function will not perturb these nodes.
         angle_unit (str, optional): Unit of dip perturbations, 'radians' or 'degrees'. Default is 'degrees'.
         discretization_interval (float, optional): The interval for discretization of the fault trace. Default is None.
@@ -101,7 +104,11 @@ class DipPerturbationMixin:
         Parameters
         ----------
         perturbations : np.ndarray
-            Perturbation values to add to each control-point dip.
+            Perturbation values added after each reference dip is converted to
+            the continuous 0--180 coordinate. This permits a proposal such as
+            ``77 + [-30, 30] -> [47, 107]`` to cross the vertical orientation
+            continuously and makes equivalent references ``100`` and ``-80``
+            behave identically.
         discretization_interval : float, optional
             Interval for discretizing the fault trace (UTM km).
         interpolation_axis : str, default 'x'
@@ -123,9 +130,10 @@ class DipPerturbationMixin:
         use_average_strike : bool, default False
             Use average strike direction for dip projection.
         average_strike_source : str, default 'pca'
-            Source for strike estimation ('pca' or 'endpoints').
+            Source for the single strike ('pca' or 'user').
         user_direction_angle : float, optional
-            Override direction angle (degrees clockwise from north).
+            Explicit strike azimuth in degrees clockwise from North when
+            ``average_strike_source='user'``.
 
         Returns
         -------

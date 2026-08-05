@@ -1,47 +1,39 @@
-# earthquake_client_factory.py
+"""Earthquake download and plotting clients with lazy public imports.
 
-from .fdsn_client import FDSNClient
-from .usgs_client import USGSClient
-from .gcmt_client import GCMTClient
-from .iris_client import IRISClient
-from .logging_config import logger
+Keeping this package initializer light lets the project-based map viewer use
+packaged background resources without importing Cartopy, Matplotlib, or Plotly.
+"""
 
-class EarthquakeClientFactory:
-    @staticmethod
-    def create_client(client_type, **kwargs):
-        """
-        Factory method to create earthquake client instances.
-
-        Args:
-            client_type (str): The type of the client to create ('fdsn', 'usgs', 'gcmt', 'iris').
-            **kwargs: Additional keyword arguments to pass to the client constructor.
-
-        Returns:
-            An instance of the requested earthquake client.
-        """
-        if client_type == 'fdsn':
-            return FDSNClient(**kwargs)
-        elif client_type == 'usgs':
-            return USGSClient(**kwargs)
-        elif client_type == 'gcmt':
-            return GCMTClient(**kwargs)
-        elif client_type == 'iris':
-            return IRISClient(**kwargs)
-        else:
-            logger.error(f"Unknown client type: {client_type}")
-            raise ValueError(f"Unknown client type: {client_type}")
+from importlib import import_module
 
 
-if __name__ == "__main__":
-    
-    # Create a USGS client
-    usgs_client = EarthquakeClientFactory.create_client('usgs', include_focal_mechanism=True)
-    
-    # Use the client to get events
-    usgs_client.get_events("2023-01-01", "2023-02-28", 5.0, 9.0, "usgs_earthquake_catalog.csv")
-    
-    # Create a GCMT client
-    gcmt_client = EarthquakeClientFactory.create_client('gcmt')
-    
-    # Use the client to get events
-    gcmt_client.get_events("2023-01-01", "2023-02-28", 5.0, 9.0, "gcmt_earthquake_catalog.csv")
+_LAZY_EXPORTS = {
+    "USGSClient": (".clients.usgs_client", "USGSClient"),
+    "GCMTClient": (".clients.gcmt_client", "GCMTClient"),
+    "IRISClient": (".clients.iris_client", "IRISClient"),
+    "EarthquakeClientFactory": (".clients", "EarthquakeClientFactory"),
+    "logger": (".clients.logging_config", "logger"),
+}
+
+
+def __getattr__(name):
+    if name == "read_gmt_lines":
+        return import_module("..gmttools", __name__).read_gmt_lines
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = _LAZY_EXPORTS[name]
+    return getattr(import_module(module_name, __name__), attribute)
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS) | {"read_gmt_lines"})
+
+
+__all__ = [
+    "EarthquakeClientFactory",
+    "GCMTClient",
+    "IRISClient",
+    "USGSClient",
+    "logger",
+    "read_gmt_lines",
+]

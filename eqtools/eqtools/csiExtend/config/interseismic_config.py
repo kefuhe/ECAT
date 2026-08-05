@@ -45,7 +45,9 @@ CAP_CONSTRAINT_MODE_ALIASES = {
     "loading_sign": "loading_sign",
     "projected_loading": "loading_sign",
 }
-CAP_CONSTRAINT_TOP_LEVEL_KEYS = {"enabled", "defaults", "faults"}
+CAP_CONSTRAINT_TOP_LEVEL_KEYS = {
+    "enabled", "defaults", "faults", "configured_faults",
+}
 CAP_CONSTRAINT_DEFAULT_KEYS = {
     "selector",
     "max_coupling",
@@ -59,7 +61,9 @@ FAULT_LOADING_ONLY_KEYS = {
     "blocks",
     "block_types",
     "block_names",
+    "loading_overrides",
     "loading_regions",
+    "motion_sense_overrides",
     "motion_sense",
     "owner_source",
     "reference_strike",
@@ -67,6 +71,22 @@ FAULT_LOADING_ONLY_KEYS = {
     "euler_pole_units",
     "euler_vector_units",
 }
+LOADING_OVERRIDE_KEYS = {
+    "name",
+    "id",
+    "selector",
+    "blocks",
+    "block_types",
+    "block_names",
+    "reference_strike",
+    "motion_sense",
+    "owner_source",
+    "units",
+    # Normalized-output fields accepted for parser idempotence.
+    "blocks_original",
+    "blocks_standard",
+}
+MOTION_SENSE_OVERRIDE_KEYS = {"name", "id", "selector", "motion_sense"}
 VALID_CAP_HARD_OVERLAP_POLICIES = {"skip", "keep", "error"}
 CAP_HARD_OVERLAP_ALIASES = {
     "skip": "skip",
@@ -77,6 +97,55 @@ CAP_HARD_OVERLAP_ALIASES = {
     "error": "error",
     "raise": "error",
 }
+
+INTERSEISMIC_TOP_LEVEL_KEYS = {
+    "version", "blocks", "fault_loading", "cap_constraints",
+    "backslip_constraints", "outputs",
+}
+BLOCKS_CONTROL_KEYS = {"enabled", "defaults", "items", "configured_blocks"}
+BLOCK_DEFAULT_KEYS = {
+    "euler_mode", "euler_source", "euler_pole_units",
+    "euler_vector_units", "owner_source",
+}
+BLOCK_ITEM_KEYS = {"name", "datasets", "owner_source", "euler"}
+BLOCK_EULER_KEYS = {
+    "mode", "source", "type", "value", "pole", "vector", "units",
+    "datasets", "dataset", "anchor_dataset", "owner_source",
+    # Normalized-output fields accepted so parsing is idempotent.
+    "value_standard", "pole_standard", "vector_radians_per_year",
+}
+FAULT_LOADING_TOP_LEVEL_KEYS = {
+    "enabled", "defaults", "faults", "configured_faults",
+}
+FAULT_LOADING_DEFAULT_KEYS = {
+    "block_types", "euler_pole_units", "euler_vector_units",
+    "reference_strike", "motion_sense", "owner_source",
+}
+FAULT_LOADING_FAULT_KEYS = {
+    "blocks", "block_types", "block_names", "reference_strike",
+    "motion_sense", "owner_source", "units", "loading_overrides",
+    "loading_regions", "motion_sense_overrides",
+    # Normalized-output fields accepted so script-side updates can reparse the
+    # current configuration without first serializing it back to raw YAML.
+    "blocks_standard", "blocks_original",
+}
+BACKSLIP_CONSTRAINT_KEYS = {
+    "fault", "state", "selector", "component", "coupling", "value",
+    "name",
+}
+
+
+def _validate_mapping_keys(raw_mapping, allowed_keys, context: str) -> None:
+    """Reject unknown configuration keys with their full YAML context."""
+    unknown = sorted(set(raw_mapping) - set(allowed_keys))
+    if not unknown:
+        return
+    allowed = ", ".join(sorted(allowed_keys))
+    unknown_text = ", ".join(unknown)
+    raise ValueError(
+        f"Unsupported key(s) in {context}: {unknown_text}. "
+        f"Allowed keys: {allowed}"
+    )
 
 
 def empty_interseismic_config() -> Dict[str, Any]:
@@ -162,6 +231,9 @@ def parse_interseismic_config(
             "Rename the section to 'fault_loading'; block-motion loading is now "
             "defined only by interseismic_config.yml:fault_loading."
         )
+    _validate_mapping_keys(
+        config, INTERSEISMIC_TOP_LEVEL_KEYS, "interseismic_config"
+    )
 
     faultnames = list(faultnames)
     dataset_names = set(dataset_names or [])
@@ -183,8 +255,10 @@ def parse_interseismic_config(
 
 def _parse_blocks(raw_blocks: Mapping[str, Any], dataset_names) -> Dict[str, Any]:
     raw_blocks = dict(raw_blocks or {})
-    item_keys = {"enabled", "defaults", "items", "configured_blocks"}
+    item_keys = BLOCKS_CONTROL_KEYS
     raw_items = raw_blocks.get("items")
+    if raw_items is not None:
+        _validate_mapping_keys(raw_blocks, BLOCKS_CONTROL_KEYS, "blocks")
     if raw_items is None:
         raw_items = {key: value for key, value in raw_blocks.items() if key not in item_keys}
     if raw_items is None:
@@ -199,7 +273,9 @@ def _parse_blocks(raw_blocks: Mapping[str, Any], dataset_names) -> Dict[str, Any
         "euler_vector_units": ["radians_per_year", "radians_per_year", "radians_per_year"],
         "owner_source": None,
     }
-    defaults = merge_with_defaults(raw_blocks.get("defaults", {}), default_defaults)
+    raw_defaults = dict(raw_blocks.get("defaults", {}) or {})
+    _validate_mapping_keys(raw_defaults, BLOCK_DEFAULT_KEYS, "blocks.defaults")
+    defaults = merge_with_defaults(raw_defaults, default_defaults)
     _validate_units(defaults["euler_pole_units"], "euler_pole")
     _validate_units(defaults["euler_vector_units"], "euler_vector")
 
@@ -222,6 +298,20 @@ def _parse_one_block(block_name, block_config, defaults, dataset_names) -> Dict[
     block_config = dict(block_config or {})
     euler_raw = dict(block_config.get("euler", block_config))
     _reject_block_share_flag(block_name, block_config, euler_raw)
+    if "euler" in block_config:
+        _validate_mapping_keys(
+            block_config, BLOCK_ITEM_KEYS, f"blocks.{block_name}"
+        )
+        euler_mapping = dict(block_config.get("euler") or {})
+        _validate_mapping_keys(
+            euler_mapping, BLOCK_EULER_KEYS, f"blocks.{block_name}.euler"
+        )
+    else:
+        _validate_mapping_keys(
+            block_config,
+            (BLOCK_ITEM_KEYS - {"euler"}) | BLOCK_EULER_KEYS,
+            f"blocks.{block_name}",
+        )
     raw_mode = euler_raw.get(
         "mode",
         euler_raw.get("source", euler_raw.get("type", defaults.get("euler_mode", defaults["euler_source"]))),
@@ -331,6 +421,9 @@ def _parse_block_datasets(block_name, block_config, euler_raw, mode, dataset_nam
 
 def _parse_fault_loading(raw_fault_loading: Mapping[str, Any], faultnames, blocks_config) -> Dict[str, Any]:
     raw_fault_loading = dict(raw_fault_loading or {})
+    _validate_mapping_keys(
+        raw_fault_loading, FAULT_LOADING_TOP_LEVEL_KEYS, "fault_loading"
+    )
     enabled = bool(raw_fault_loading.get("enabled", False))
     if not enabled:
         return {
@@ -348,7 +441,11 @@ def _parse_fault_loading(raw_fault_loading: Mapping[str, Any], faultnames, block
         "motion_sense": "dextral",
         "owner_source": None,
     }
-    defaults = merge_with_defaults(raw_fault_loading.get("defaults", {}), default_defaults)
+    raw_defaults = dict(raw_fault_loading.get("defaults", {}) or {})
+    _validate_mapping_keys(
+        raw_defaults, FAULT_LOADING_DEFAULT_KEYS, "fault_loading.defaults"
+    )
+    defaults = merge_with_defaults(raw_defaults, default_defaults)
     _validate_units(defaults["euler_pole_units"], "euler_pole")
     _validate_units(defaults["euler_vector_units"], "euler_vector")
     defaults["reference_strike"] = _validate_reference_strike(defaults["reference_strike"], "fault_loading.defaults")
@@ -357,6 +454,12 @@ def _parse_fault_loading(raw_fault_loading: Mapping[str, Any], faultnames, block
     faults_config = raw_fault_loading.get("faults", {})
     if not isinstance(faults_config, Mapping):
         raise ValueError("fault_loading.faults must be a mapping")
+    unknown_faults = sorted(set(faults_config) - set(faultnames))
+    if unknown_faults:
+        raise ValueError(
+            "fault_loading.faults references unknown fault(s): "
+            + ", ".join(unknown_faults)
+        )
 
     parsed_faults = {}
     for fault_name in faultnames:
@@ -378,6 +481,11 @@ def _parse_fault_loading(raw_fault_loading: Mapping[str, Any], faultnames, block
 
 
 def _parse_one_fault_loading_fault(fault_name, fault_config, defaults, blocks_config) -> Dict[str, Any]:
+    _validate_mapping_keys(
+        fault_config,
+        FAULT_LOADING_FAULT_KEYS,
+        f"fault_loading.faults.{fault_name}",
+    )
     if "blocks" not in fault_config:
         raise ValueError(f"fault_loading.faults.{fault_name} is missing required 'blocks'")
     blocks = fault_config["blocks"]
@@ -418,19 +526,48 @@ def _parse_one_fault_loading_fault(fault_name, fault_config, defaults, blocks_co
         raise ValueError(f"fault_loading.faults.{fault_name}.block_names must contain exactly two entries")
     merged["blocks_standard"] = _standardize_fault_loading_blocks(merged["block_types"], blocks, merged["units"])
     merged["blocks_original"] = deepcopy(list(blocks))
-    merged["loading_regions"] = _parse_loading_regions(
+    raw_loading_overrides = _read_override_list(
+        fault_config,
+        primary_key="loading_overrides",
+        legacy_key="loading_regions",
+        context=f"fault_loading.faults.{fault_name}",
+    )
+    loading_overrides = _parse_loading_overrides(
         fault_name,
-        fault_config.get("loading_regions", []),
+        raw_loading_overrides,
         merged,
         blocks_config,
+    )
+    merged["loading_overrides"] = loading_overrides
+    # Compatibility alias for older internal callers and local scripts.
+    merged["loading_regions"] = loading_overrides
+    merged["motion_sense_overrides"] = _parse_motion_sense_overrides(
+        fault_name,
+        fault_config.get("motion_sense_overrides", []),
     )
     return merged
 
 
-def _parse_loading_regions(fault_name, raw_regions, fault_defaults, blocks_config) -> list[Dict[str, Any]]:
-    """Parse optional manual loading regions for one fault.
+def _read_override_list(config, *, primary_key: str, legacy_key: str, context: str):
+    has_primary = primary_key in config
+    has_legacy = legacy_key in config
+    if has_primary and has_legacy:
+        # Parsed output intentionally carries the legacy alias for old internal
+        # callers.  Accept the pair only when both names describe the same
+        # declaration; differing values remain ambiguous and are rejected.
+        if config[primary_key] != config[legacy_key]:
+            raise ValueError(
+                f"{context} cannot define different values for '{primary_key}' "
+                f"and legacy '{legacy_key}'. Use '{primary_key}' only."
+            )
+        return config[primary_key]
+    return config.get(primary_key, config.get(legacy_key, []))
 
-    Loading regions are a deliberately small override layer: each region uses a
+
+def _parse_loading_overrides(fault_name, raw_regions, fault_defaults, blocks_config) -> list[Dict[str, Any]]:
+    """Parse optional local loading-definition overrides for one fault.
+
+    Loading overrides are a deliberately small local layer: each item uses a
     selector to choose patches and may override the fault-level block pair,
     reference strike, and motion sense.  Overlap and coverage depend on fault
     geometry and are checked when loading terms are built.
@@ -438,15 +575,21 @@ def _parse_loading_regions(fault_name, raw_regions, fault_defaults, blocks_confi
     if raw_regions in (None, []):
         return []
     if not isinstance(raw_regions, list):
-        raise ValueError(f"fault_loading.faults.{fault_name}.loading_regions must be a list")
+        raise ValueError(f"fault_loading.faults.{fault_name}.loading_overrides must be a list")
 
     parsed = []
     for index, raw_region in enumerate(raw_regions):
         if not isinstance(raw_region, Mapping):
-            raise ValueError(f"fault_loading.faults.{fault_name}.loading_regions[{index}] must be a mapping")
+            raise ValueError(f"fault_loading.faults.{fault_name}.loading_overrides[{index}] must be a mapping")
+        unknown = sorted(set(raw_region) - LOADING_OVERRIDE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unsupported key(s) in fault_loading.faults.{fault_name}.loading_overrides[{index}]: "
+                f"{', '.join(unknown)}"
+            )
         if "selector" not in raw_region:
             raise ValueError(
-                f"fault_loading.faults.{fault_name}.loading_regions[{index}] is missing required 'selector'"
+                f"fault_loading.faults.{fault_name}.loading_overrides[{index}] is missing required 'selector'"
             )
 
         name = str(raw_region.get("name", f"region_{index}"))
@@ -458,45 +601,45 @@ def _parse_loading_regions(fault_name, raw_regions, fault_defaults, blocks_confi
         )
         if len(block_types) != 2:
             raise ValueError(
-                f"fault_loading.faults.{fault_name}.loading_regions[{index}].block_types "
+                f"fault_loading.faults.{fault_name}.loading_overrides[{index}].block_types "
                 "must contain exactly two entries"
             )
         if len(blocks) != 2:
             raise ValueError(
-                f"fault_loading.faults.{fault_name}.loading_regions[{index}].blocks "
+                f"fault_loading.faults.{fault_name}.loading_overrides[{index}].blocks "
                 "must contain exactly two entries"
             )
         for block_type in block_types:
             if block_type not in VALID_FAULT_LOADING_BLOCK_TYPES:
                 raise ValueError(
                     f"Invalid fault_loading block_type '{block_type}' in "
-                    f"fault_loading.faults.{fault_name}.loading_regions[{index}]"
+                    f"fault_loading.faults.{fault_name}.loading_overrides[{index}]"
                 )
 
         known_blocks = blocks_config.get("items", {})
         for block_idx, (block_type, block) in enumerate(zip(block_types, blocks)):
             if block_type == "block" and block not in known_blocks:
                 raise ValueError(
-                    f"fault_loading.faults.{fault_name}.loading_regions[{index}] "
+                    f"fault_loading.faults.{fault_name}.loading_overrides[{index}] "
                     f"references undefined block '{block}'"
                 )
             if block_type in VALID_BLOCK_TYPES:
-                _validate_block_value(f"{fault_name}.loading_regions[{index}]", block_idx, block_type, block, set())
+                _validate_block_value(f"{fault_name}.loading_overrides[{index}]", block_idx, block_type, block, set())
 
         block_names = raw_region.get("block_names", list(blocks))
         if len(block_names) != 2:
             raise ValueError(
-                f"fault_loading.faults.{fault_name}.loading_regions[{index}].block_names "
+                f"fault_loading.faults.{fault_name}.loading_overrides[{index}].block_names "
                 "must contain exactly two entries"
             )
 
         reference_strike = _validate_reference_strike(
             raw_region.get("reference_strike", fault_defaults["reference_strike"]),
-            f"fault_loading.faults.{fault_name}.loading_regions[{index}]",
+            f"fault_loading.faults.{fault_name}.loading_overrides[{index}]",
         )
         motion_sense = _validate_motion_sense(
             raw_region.get("motion_sense", fault_defaults["motion_sense"]),
-            f"fault_loading.faults.{fault_name}.loading_regions[{index}]",
+            f"fault_loading.faults.{fault_name}.loading_overrides[{index}]",
         )
 
         parsed.append({
@@ -511,6 +654,46 @@ def _parse_loading_regions(fault_name, raw_regions, fault_defaults, blocks_confi
             "motion_sense": motion_sense,
             "owner_source": raw_region.get("owner_source", fault_defaults.get("owner_source")),
             "units": units,
+        })
+    return parsed
+
+
+def _parse_motion_sense_overrides(fault_name, raw_overrides) -> list[Dict[str, Any]]:
+    """Parse local motion-sense overrides that do not redefine loading ``b``."""
+    if raw_overrides in (None, []):
+        return []
+    if not isinstance(raw_overrides, list):
+        raise ValueError(f"fault_loading.faults.{fault_name}.motion_sense_overrides must be a list")
+
+    parsed = []
+    for index, raw_override in enumerate(raw_overrides):
+        if not isinstance(raw_override, Mapping):
+            raise ValueError(
+                f"fault_loading.faults.{fault_name}.motion_sense_overrides[{index}] must be a mapping"
+            )
+        unknown = sorted(set(raw_override) - MOTION_SENSE_OVERRIDE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unsupported key(s) in fault_loading.faults.{fault_name}.motion_sense_overrides[{index}]: "
+                f"{', '.join(unknown)}"
+            )
+        if "selector" not in raw_override:
+            raise ValueError(
+                f"fault_loading.faults.{fault_name}.motion_sense_overrides[{index}] "
+                "is missing required 'selector'"
+            )
+        if "motion_sense" not in raw_override:
+            raise ValueError(
+                f"fault_loading.faults.{fault_name}.motion_sense_overrides[{index}] "
+                "is missing required 'motion_sense'"
+            )
+        parsed.append({
+            "name": str(raw_override.get("name", raw_override.get("id", f"motion_sense_{index}"))),
+            "selector": deepcopy(raw_override["selector"]),
+            "motion_sense": _validate_motion_sense(
+                raw_override["motion_sense"],
+                f"fault_loading.faults.{fault_name}.motion_sense_overrides[{index}]",
+            ),
         })
     return parsed
 
@@ -664,6 +847,9 @@ def _parse_backslip_constraints(raw_constraints, faultnames) -> list[Dict[str, A
         if not isinstance(item, Mapping):
             raise ValueError(f"backslip_constraints[{idx}] must be a mapping")
         spec = dict(item)
+        _validate_mapping_keys(
+            spec, BACKSLIP_CONSTRAINT_KEYS, f"backslip_constraints[{idx}]"
+        )
         fault_name = spec.get("fault")
         if not fault_name:
             raise ValueError(f"backslip_constraints[{idx}] is missing required 'fault'")

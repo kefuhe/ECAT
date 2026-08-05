@@ -8,6 +8,7 @@ plot_slip_distribution : Plot CSI fault slip distribution (3-D + map)
 """
 
 import os
+import warnings
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -216,6 +217,58 @@ def optimize_3d_plot(ax, zratio=None, shape=(1.0, 1.0, 0.25), zaxis_position='bo
     ax.set_facecolor(background_color)
 
 
+_MISSING_SLIP = object()
+
+
+def _snapshot_slip(fault):
+    """Return enough state to restore ``fault.slip`` exactly."""
+    if not hasattr(fault, 'slip'):
+        return _MISSING_SLIP
+    value = fault.slip
+    return None if value is None else value.copy()
+
+
+def _restore_slip(fault, snapshot):
+    """Restore a snapshot made by :func:`_snapshot_slip`."""
+    if snapshot is _MISSING_SLIP:
+        if hasattr(fault, 'slip'):
+            delattr(fault, 'slip')
+    else:
+        fault.slip = snapshot
+
+
+def _install_custom_slip(faults, slips):
+    """Temporarily install custom strike-slip arrays and return snapshots.
+
+    Assignment is transactional: if any later fault fails validation, faults
+    already modified by this call are restored before the error is raised.
+    """
+    snapshots = []
+    try:
+        for current_fault, current_slip in zip(faults, slips):
+            snapshot = _snapshot_slip(current_fault)
+            snapshots.append((current_fault, snapshot))
+            slip_array = np.asarray(current_slip)
+            if slip_array.ndim == 2 and slip_array.shape[0] == 1:
+                slip_array = slip_array.ravel()
+            if slip_array.ndim != 1:
+                raise ValueError("Custom slip must be a one-dimensional array.")
+            if snapshot is _MISSING_SLIP or snapshot is None:
+                current_fault.slip = np.zeros((len(slip_array), 3))
+            if np.asarray(current_fault.slip).ndim != 2 or current_fault.slip.shape[1] < 1:
+                raise ValueError("fault.slip must be a two-dimensional component array.")
+            if current_fault.slip.shape[0] != len(slip_array):
+                raise ValueError(
+                    "Custom slip length must match the number of rows in fault.slip."
+                )
+            current_fault.slip[:, 0] = slip_array
+    except Exception:
+        for current_fault, snapshot in reversed(snapshots):
+            _restore_slip(current_fault, snapshot)
+        raise
+    return snapshots
+
+
 def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_16lev_change.cpt', norm=None,
                            figsize=(None, None), drawCoastlines=False, plot_on_2d=True, method='cdict', N=None,
                            cbaxis=[0.1, 0.2, 0.1, 0.02], cblabel='', show=True, savefig=False,
@@ -339,28 +392,20 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
     from ._compat import sci_plot_style
 
     if isinstance(cmap, str) and cmap.endswith('.cpt'):
-        cmap = get_cpt.get_cmap(cmap, method, N)
+        cmap = get_cpt.get_cmap(cmap, method=method, N=N)
 
     cbfontsize = cbfontsize if cbfontsize is not None else plt.rcParams['axes.labelsize']
     cblinewidth = cblinewidth if cblinewidth is not None else plt.rcParams['axes.linewidth']
 
     # Process slip parameter - check if it's an array or string
     slip_type = 'total'  # default for figname
-    original_slip = None  # Store original slip for restoration
+    slip_snapshots = None
 
     if not isinstance(slip, str):
         # slip is an array or list of arrays
         if not isinstance(fault, list):
             # Single fault case
-            slip_array = np.asarray(slip)
-            if slip_array.ndim == 2 and slip_array.shape[0] == 1:
-                slip_array = slip_array.flatten()
-
-            # Save original slip and set custom slip to strike-slip component
-            original_slip = fault.slip.copy() if hasattr(fault, 'slip') and fault.slip is not None else None
-            if original_slip is None:
-                fault.slip = np.zeros((len(slip_array), 3))
-            fault.slip[:, 0] = slip_array  # Set to strike-slip component
+            slip_snapshots = _install_custom_slip([fault], [slip])
 
             slip = 'strikeslip'  # Use 'strikeslip' for plotting
             slip_type = 'custom'
@@ -371,19 +416,7 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
             if len(slip) != len(fault):
                 raise ValueError(f"Number of slip arrays ({len(slip)}) must match number of faults ({len(fault)})")
 
-            # Save original slip for each fault and set custom slip
-            original_slip = []
-            for ifault, islip in zip(fault, slip):
-                islip_array = np.asarray(islip)
-                if islip_array.ndim == 2 and islip_array.shape[0] == 1:
-                    islip_array = islip_array.flatten()
-
-                # Save original and set custom
-                orig = ifault.slip.copy() if hasattr(ifault, 'slip') and ifault.slip is not None else None
-                original_slip.append(orig)
-                if orig is None:
-                    ifault.slip = np.zeros((len(islip_array), 3))
-                ifault.slip[:, 0] = islip_array  # Set to strike-slip component
+            slip_snapshots = _install_custom_slip(fault, slip)
 
             slip = 'strikeslip'  # Use 'strikeslip' for plotting
             slip_type = 'custom'
@@ -436,14 +469,22 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
                             lon, lat = ifault.xy2ll(x, y)
                             ax.plot(lon, lat, z, color=faultEdges_color, linewidth=faultEdges_linewidth)
                     else:
-                        Warning(f"Fault {ifault.name} is not a triangular fault. Currently, finding edge vertices is not supported.")
+                        warnings.warn(
+                            f"Fault {ifault.name} is not triangular; plotting its edge vertices is unsupported.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             if plotTrace and add_faults is not None:
                 for ifault in add_faults:
                     if ifault.lon is not None and ifault.lat is not None:
                         fig.faulttrace(ifault, color='r', discretized=False, linewidth=1, zorder=1)
                     else:
-                        Warning(f"Fault {fault.name} has no trace data.")
+                        warnings.warn(
+                            f"Fault {ifault.name} has no trace data.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             # Set labels and title with optional labelpad
             ax.set_xlabel('Longitude', labelpad=xlabelpad)
@@ -524,12 +565,7 @@ def plot_slip_distribution(fault, slip='total', add_faults=None, cmap='precip3_1
                 plt.show()
 
     finally:
-        # Restore original slip values
-        if original_slip is not None:
-            if not isinstance(fault, list):
-                if original_slip is not None:
-                    fault.slip = original_slip
-            else:
-                for ifault, orig in zip(fault, original_slip):
-                    if orig is not None:
-                        ifault.slip = orig
+        # A custom plotting array must never become persistent model state.
+        if slip_snapshots is not None:
+            for current_fault, snapshot in reversed(slip_snapshots):
+                _restore_slip(current_fault, snapshot)

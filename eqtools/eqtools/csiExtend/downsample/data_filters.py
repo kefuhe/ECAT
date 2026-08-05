@@ -3,6 +3,7 @@ import yaml
 
 from .region_utils import (
     as_vector,
+    finite_value_range,
     inside_boxes,
     inside_polygons,
     point_count,
@@ -43,11 +44,24 @@ def _as_vector(values, name, expected_size=None):
 
 
 def _inside_boxes(lon, lat, rule):
-    return inside_boxes(lon, lat, rule, label="lonlat_box")
+    return inside_boxes(
+        lon,
+        lat,
+        rule,
+        label="lonlat_box",
+        periodic_first=True,
+    )
 
 
 def _inside_polygons(lon, lat, rule, base_dir=None):
-    return inside_polygons(lon, lat, rule, base_dir=base_dir, label="lonlat_polygon")
+    return inside_polygons(
+        lon,
+        lat,
+        rule,
+        base_dir=base_dir,
+        label="lonlat_polygon",
+        periodic_first=True,
+    )
 
 
 def _projection(data, expected_size):
@@ -223,6 +237,10 @@ def apply_data_filters(data, config, out_name="sar", base_dir=None, write_report
         "input_count": n_points,
         "final_count": n_points,
         "rules": [],
+        "input_coordinate_range": {
+            "longitude": finite_value_range(getattr(data, "lon", [])),
+            "latitude": finite_value_range(getattr(data, "lat", [])),
+        },
     }
     if not enabled:
         return report
@@ -297,6 +315,12 @@ def format_filter_report(report):
         "Data filters:",
         f"  input points : {report['input_count']}",
     ]
+    coordinate_range = report.get("input_coordinate_range", {})
+    if coordinate_range.get("longitude") is not None:
+        lines.append(
+            "  input lon/lat: "
+            f"{coordinate_range['longitude']} / {coordinate_range.get('latitude')}"
+        )
     for rule in report.get("rules", []):
         if rule["kind"] == "finite" and rule["removed_count"] == 0:
             continue

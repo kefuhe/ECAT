@@ -2819,9 +2819,10 @@ class gps(SourceInv):
             lon0 = np.mean(self.lon)
             lat0 = np.mean(self.lat)
 
-            # Compute the baselines
+            # Compute the baselines. The latitude term follows the
+            # block-model colatitude convention: theta - theta0 = lat0 - lat.
             delta_lon = self.lon - lon0
-            delta_lat = self.lat - lat0
+            delta_lat = lat0 - self.lat
 
             # Normalize the baselines
             base_max = 1.0
@@ -2836,9 +2837,10 @@ class gps(SourceInv):
             lon0, lat0 = self.InternalStrainNormalizingFactor['ref']
             base_max = self.InternalStrainNormalizingFactor['base']
 
-            # Compute the baselines
+            # Compute the baselines. The latitude term follows the
+            # block-model colatitude convention: theta - theta0 = lat0 - lat.
             delta_lon = self.lon - lon0
-            delta_lat = self.lat - lat0
+            delta_lat = lat0 - self.lat
 
             # Normalize the baselines
             base_max = 1.0
@@ -2851,12 +2853,14 @@ class gps(SourceInv):
             # Clean the part that changes
             IntMat[:, :] = 0.0
 
-            # Put the rotation parameters
-            lam, phi = lon[i]*np.pi/180., lat[i]*np.pi/180.
+            # Put the internal-strain parameters in block-model order:
+            # [sxx, sxy, syy]. The shear coefficient is tensor shear, not
+            # engineering shear, so no factor 1/2 appears in this basis.
+            phi0 = lat0*np.pi/180.
             delta_lam, delta_phi = delta_lon[i]*np.pi/180., delta_lat[i]*np.pi/180.
             IntMat[:2, :] = np.array([
-                [r*delta_lam*np.cos(phi), 0, r*delta_phi/2.],
-                [0, r*delta_phi, r*delta_lam*np.cos(phi)/2.]
+                [r*delta_lam*np.cos(phi0), r*delta_phi, 0],
+                [0, r*delta_lam*np.cos(phi0), r*delta_phi]
             ])
             
             StrainMat[i, :] = IntMat[0, :]

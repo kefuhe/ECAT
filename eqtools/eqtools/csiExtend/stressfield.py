@@ -368,7 +368,7 @@ class stressfield(stressfield_base):
 
         # Plot if requested
         if plot:
-            from ..plottools import sci_plot_style
+            from ..viztools import sci_plot_style
             import cmcrameri
             import matplotlib.pyplot as plt
 
@@ -1460,7 +1460,7 @@ class stressfield(stressfield_base):
             dpi: Resolution (default: 300)
         """
         import matplotlib.pyplot as plt
-        from ..plottools import sci_plot_style
+        from ..viztools import sci_plot_style
         
         stress_strike = stress_drop_result['stress_drop_strike']
         stress_dip = stress_drop_result['stress_drop_dip']

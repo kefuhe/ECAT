@@ -336,7 +336,7 @@ def _transform_components(transform: Any, n_params: int, data: Any = None) -> li
     if key == "eulerrotation":
         return ["wx", "wy", "wz"]
     if key == "internalstrain":
-        return ["sxx", "syy", "sxy"]
+        return ["sxx", "sxy", "syy"]
     return [f"p{i}" for i in range(n_params)]
 
 
@@ -444,8 +444,6 @@ def _physical_scale(data: Any, transform: Any, component: str) -> float:
         return 1.0
 
     if key == "internalstrain":
-        if component in {"strain_xy", "sxy"}:
-            return 0.5
         return 1.0
 
     if key == "eulerrotation":
@@ -716,14 +714,10 @@ class DataCorrectionConstraintMixin:
         if not refs:
             raise ValueError("No configured data-correction parameters matched the requested selector")
 
-        manager = getattr(self, "constraint_manager", None)
-        if manager is None or not hasattr(manager, "set_parameter_bounds_by_indices"):
-            raise AttributeError(
-                "This inversion object has no constraint manager with "
-                "set_parameter_bounds_by_indices()"
-            )
+        manager = self.constraint_manager
 
         metadata = []
+        prepared_updates = []
         for ref in refs:
             resolved = resolve_data_correction_parameters(self, ref, space=space)
             input_lb, input_ub = _bounds_for_components(bounds, resolved.components)
@@ -733,11 +727,8 @@ class DataCorrectionConstraintMixin:
                 resolved.scales,
                 space=space,
             )
-            manager.set_parameter_bounds_by_indices(
-                resolved.columns,
-                raw_lb,
-                raw_ub,
-                source=source,
+            prepared_updates.append(
+                (resolved.columns.copy(), raw_lb.copy(), raw_ub.copy())
             )
             metadata.append({
                 "owner": resolved.owner,
@@ -751,9 +742,15 @@ class DataCorrectionConstraintMixin:
                 "raw_bounds": np.column_stack([raw_lb, raw_ub]).tolist(),
             })
 
-        sync_to_solver = getattr(manager, "sync_to_solver", None)
-        if callable(sync_to_solver):
-            sync_to_solver()
+        with manager.atomic_bounds_update():
+            for columns, raw_lb, raw_ub in prepared_updates:
+                manager.set_parameter_bounds_by_indices(
+                    columns,
+                    raw_lb,
+                    raw_ub,
+                    source=source,
+                )
+        manager.sync_to_solver()
         return metadata
 
     def build_data_correction_equality(
@@ -786,19 +783,20 @@ class DataCorrectionConstraintMixin:
         can inspect the exact columns that were tied together.
         """
         Aeq, beq, metadata = self.build_data_correction_equality(refs, space=space)
-        add_equality = getattr(self, "add_equality_constraint", None)
-        add_custom_equality = getattr(self, "add_custom_equality_constraint", None)
-        if callable(add_equality):
-            self.add_equality_constraint(Aeq, beq, name=name, source=source)
-        elif callable(add_custom_equality):
-            self.add_custom_equality_constraint(Aeq, beq, name=name, source=source)
-        else:
-            raise AttributeError("This inversion object has no equality-constraint registration method")
+        self.add_linear_equality_constraint(
+            Aeq,
+            beq,
+            name=name,
+            source=source,
+        )
         return Aeq, beq, metadata
 
     def _data_correction_constraint_shape(self) -> tuple[int, int]:
-        """Return target parameter count and global-to-target column offset."""
-        if hasattr(self, "linear_sample_start_position") and callable(getattr(self, "add_custom_equality_constraint", None)):
-            linear_offset = int(getattr(self, "linear_sample_start_position"))
-            return int(getattr(self, "lsq_parameters")), linear_offset
-        return int(getattr(self, "lsq_parameters")), 0
+        """Return the validated active layout width and global offset."""
+        layout = self.get_linear_parameter_layout()
+        if not layout['active']:
+            raise RuntimeError(
+                "Data-correction linear equalities require an active linear "
+                f"parameter space: {layout['inactive_reason']}"
+            )
+        return int(layout['width']), int(layout['global_offset'])

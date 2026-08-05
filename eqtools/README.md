@@ -15,6 +15,7 @@ Start from the public user manual:
 - [ECAT User Manual](docs/index.md)
 - [Installation and environment checks](docs/getting_started/installation.md)
 - [Standard two-step quickstart](docs/getting_started/quickstart_two_step.md)
+- [Scientific workflow map](docs/workflows/index.md)
 - [Task-oriented examples](docs/examples/index.md)
 - [Reference map](docs/reference/index.md)
 

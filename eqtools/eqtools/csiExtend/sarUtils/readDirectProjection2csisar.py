@@ -1,27 +1,24 @@
+"""Base reader for SAR products that provide ENU projection components."""
+
 import os
 
 import numpy as np
 
-from .readBase2csisar import ReadBase2csisar
 from .grid_io import read_lonlat_grid
+from .readBase2csisar import ReadBase2csisar
 from .sar_conventions import (
-    InputProjectionConvention,
-    InputProjectionRole,
-    ObservationType,
+    AcquisitionLookSide,
     DirectProjectionSarConfig,
+    ObservationType,
+    ProjectionAxis,
+    ProjectionDirection,
     coerce_enum,
 )
 from .sar_geometry import rotate_ccw90, rotate_cw90
 
 
 class DirectProjectionSarReader(ReadBase2csisar):
-    """
-    Reader base for products that provide ENU projection vectors directly.
-
-    File-format subclasses should read product-specific value/projection grids
-    and call the common direct-projection CSI path instead of reconstructing
-    azimuth/incidence.
-    """
+    """Read values and explicit ENU projections, then canonicalize both."""
 
     config_cls = DirectProjectionSarConfig
     mode_presets = {}
@@ -38,7 +35,9 @@ class DirectProjectionSarReader(ReadBase2csisar):
     def read_grid(cls, filename, variable=None, lon_name=None, lat_name=None,
                   engine=None, coord_is_lonlat=None):
         if not os.path.exists(filename):
-            raise FileNotFoundError(f"GMTSAR/direct-projection grid file not found: {filename}")
+            raise FileNotFoundError(
+                f"GMTSAR/direct-projection grid file not found: {filename}"
+            )
         return read_lonlat_grid(
             filename,
             variable=variable,
@@ -60,115 +59,52 @@ class DirectProjectionSarReader(ReadBase2csisar):
     def _projection_from_components(east, north, up):
         return np.stack((east, north, up), axis=-1)
 
-    def _target_observation_type(self):
-        return coerce_enum(
-            ObservationType,
-            self.config.observation_type,
-            "observation_type",
-        )
-
     @staticmethod
-    def _axis_for_projection_convention(convention):
-        convention = coerce_enum(
-            InputProjectionConvention,
-            convention,
-            "input_projection_convention",
-        )
-        if convention in (
-            InputProjectionConvention.TOWARD_SATELLITE,
-            InputProjectionConvention.AWAY_FROM_SATELLITE,
+    def _target_projection(observation_spec):
+        if observation_spec.observation_type in (
+            ObservationType.UNWRAPPED_PHASE,
+            ObservationType.LOS_DISPLACEMENT,
         ):
-            return "los"
-        if convention in (
-            InputProjectionConvention.ALONG_HEADING,
-            InputProjectionConvention.OPPOSITE_HEADING,
-        ):
-            return "azimuth"
+            return ProjectionAxis.LOS, ProjectionDirection.GROUND_TO_SENSOR
+        if observation_spec.observation_type == ObservationType.AZIMUTH_OFFSET:
+            return ProjectionAxis.AZIMUTH, ProjectionDirection.ALONG_HEADING
         raise ValueError(
-            "input_projection_convention must resolve to a physical direction "
-            "before axis checks."
+            f"Unsupported observation_type: {observation_spec.observation_type}."
         )
 
     @staticmethod
-    def _projection_convention_from_value(value_convention):
-        value_convention = str(
-            value_convention.value if hasattr(value_convention, "value") else value_convention
-        ).replace("-", "_").lower()
-        if value_convention == "toward_satellite":
-            return InputProjectionConvention.TOWARD_SATELLITE
-        if value_convention == "away_from_satellite":
-            return InputProjectionConvention.AWAY_FROM_SATELLITE
-        if value_convention == "along_heading":
-            return InputProjectionConvention.ALONG_HEADING
-        if value_convention == "opposite_heading":
-            return InputProjectionConvention.OPPOSITE_HEADING
-        raise ValueError(
-            "input_projection_convention='same_as_value' is not defined for "
-            f"input_value_convention={value_convention!r}; use an explicit "
-            "projection convention such as 'toward_satellite'."
-        )
-
-    @staticmethod
-    def _target_projection_convention(spec):
-        observation_type = coerce_enum(
-            ObservationType,
-            spec.observation_type,
-            "observation_type",
-        )
-        if observation_type == ObservationType.PHASE_LOS:
-            return InputProjectionConvention.TOWARD_SATELLITE
-        if observation_type == ObservationType.LOS_DISPLACEMENT:
-            return InputProjectionConvention.TOWARD_SATELLITE
-        if observation_type == ObservationType.AZIMUTH_OFFSET:
-            return InputProjectionConvention.ALONG_HEADING
-        raise ValueError(f"Unsupported observation_type: {observation_type}.")
-
-    def _resolve_input_projection_convention(self, convention, target_convention, spec):
-        convention = coerce_enum(
-            InputProjectionConvention,
-            convention,
-            "input_projection_convention",
-        )
-        if convention == InputProjectionConvention.CANONICAL:
-            return target_convention
-        if convention == InputProjectionConvention.SAME_AS_VALUE:
-            return self._projection_convention_from_value(spec.input_value_convention)
-        return convention
-
-    @staticmethod
-    def _projection_sign_between(input_convention, target_convention):
-        input_convention = coerce_enum(
-            InputProjectionConvention,
-            input_convention,
-            "input_projection_convention",
-        )
-        target_convention = coerce_enum(
-            InputProjectionConvention,
-            target_convention,
-            "target_projection_convention",
-        )
-        if input_convention == target_convention:
-            return 1.0
-        opposite_pairs = {
-            frozenset((
-                InputProjectionConvention.TOWARD_SATELLITE,
-                InputProjectionConvention.AWAY_FROM_SATELLITE,
-            )),
-            frozenset((
-                InputProjectionConvention.ALONG_HEADING,
-                InputProjectionConvention.OPPOSITE_HEADING,
-            )),
+    def _validate_axis_direction(axis, direction):
+        valid = {
+            ProjectionAxis.LOS: {
+                ProjectionDirection.GROUND_TO_SENSOR,
+                ProjectionDirection.SENSOR_TO_GROUND,
+            },
+            ProjectionAxis.AZIMUTH: {
+                ProjectionDirection.ALONG_HEADING,
+                ProjectionDirection.OPPOSITE_HEADING,
+            },
         }
-        if frozenset((input_convention, target_convention)) in opposite_pairs:
-            return -1.0
-        raise ValueError(
-            "Cannot convert supplied projection direction "
-            f"{input_convention.value!r} to {target_convention.value!r}; "
-            "the projection axis does not match the observation axis."
+        if direction not in valid[axis]:
+            allowed = ", ".join(item.value for item in valid[axis])
+            raise ValueError(
+                f"input_projection_axis={axis.value!r} does not accept "
+                f"input_projection_direction={direction.value!r}; "
+                f"expected one of: {allowed}."
+            )
+
+    @staticmethod
+    def _canonicalize_input_direction(projection, axis, direction):
+        DirectProjectionSarReader._validate_axis_direction(axis, direction)
+        canonical = {
+            ProjectionAxis.LOS: ProjectionDirection.GROUND_TO_SENSOR,
+            ProjectionAxis.AZIMUTH: ProjectionDirection.ALONG_HEADING,
+        }[axis]
+        return np.asarray(projection, dtype=float) * (
+            1.0 if direction == canonical else -1.0
         )
 
-    def _derive_azimuth_projection_from_los(self, projection, look_side=None,
-                                            target_convention=None):
+    @staticmethod
+    def _derive_heading_from_ground_to_sensor(projection, acquisition_look_side):
         projection = np.asarray(projection, dtype=float)
         horizontal = projection[..., :2].reshape((-1, 2))
         norms = np.linalg.norm(horizontal, axis=1)
@@ -176,113 +112,69 @@ class DirectProjectionSarReader(ReadBase2csisar):
             raise ValueError("LOS projection contains zero horizontal vectors.")
         horizontal = horizontal / norms[:, np.newaxis]
 
-        look_side = look_side or self.config.look_side
-        look_side = str(look_side.value if hasattr(look_side, "value") else look_side).lower()
-        if look_side == "right":
+        side = coerce_enum(
+            AcquisitionLookSide,
+            acquisition_look_side,
+            "acquisition_look_side",
+        )
+        if side == AcquisitionLookSide.RIGHT:
             heading = rotate_cw90(horizontal)
-        elif look_side == "left":
-            heading = rotate_ccw90(horizontal)
         else:
-            raise ValueError("look_side must be 'right' or 'left'.")
-
-        if target_convention is None:
-            target_convention = InputProjectionConvention.ALONG_HEADING
-        target_convention = coerce_enum(
-            InputProjectionConvention,
-            target_convention,
-            "target_projection_convention",
+            heading = rotate_ccw90(horizontal)
+        return np.column_stack((heading, np.zeros(heading.shape[0]))).reshape(
+            projection.shape
         )
-        if target_convention == InputProjectionConvention.OPPOSITE_HEADING:
-            heading *= -1.0
-        elif target_convention != InputProjectionConvention.ALONG_HEADING:
-            raise ValueError("target azimuth projection must be 'along_heading' or 'opposite_heading'.")
 
-        return np.column_stack((heading, np.zeros(heading.shape[0]))).reshape(projection.shape)
-
-    def _projection_for_observation(self, projection, input_projection_role=None,
-                                    input_projection_convention=None, look_side=None,
-                                    spec=None):
+    def _projection_for_observation(
+            self, projection, input_projection_axis=None,
+            input_projection_direction=None, acquisition_look_side=None,
+            spec=None):
         spec = spec if spec is not None else self.build_observation_spec()
-        target_convention = self._target_projection_convention(spec)
-        role = coerce_enum(
-            InputProjectionRole,
-            input_projection_role,
-            "input_projection_role",
+        axis = coerce_enum(
+            ProjectionAxis,
+            input_projection_axis
+            if input_projection_axis is not None
+            else self.config.input_projection_axis,
+            "input_projection_axis",
         )
-        raw_input_convention = coerce_enum(
-            InputProjectionConvention,
-            input_projection_convention,
-            "input_projection_convention",
+        direction = coerce_enum(
+            ProjectionDirection,
+            input_projection_direction
+            if input_projection_direction is not None
+            else self.config.input_projection_direction,
+            "input_projection_direction",
         )
-        input_convention = self._resolve_input_projection_convention(
-            raw_input_convention,
-            target_convention,
-            spec,
+        canonical_input = self._canonicalize_input_direction(
+            projection, axis, direction
         )
-        target_axis = self._axis_for_projection_convention(target_convention)
-        input_axis = self._axis_for_projection_convention(input_convention)
-
-        if role == InputProjectionRole.SAME_AS_OBSERVATION:
-            if input_axis != target_axis:
-                raise ValueError(
-                    "input_projection_role='same_as_observation' requires the "
-                    "input projection direction to resolve to the same axis as "
-                    f"the target observation; got {input_convention.value!r} "
-                    f"for target {target_convention.value!r}."
-                )
-            return projection * self._projection_sign_between(input_convention, target_convention)
-
-        if role == InputProjectionRole.LOS:
-            if input_axis != "los":
-                extra = ""
-                if raw_input_convention == InputProjectionConvention.SAME_AS_VALUE:
-                    extra = (
-                        " For azimuth observations, 'same_as_value' resolves "
-                        "from the azimuth value convention, not from the LOS "
-                        "projection direction."
-                    )
-                raise ValueError(
-                    "input_projection_role='los' requires "
-                    "input_projection_convention to resolve to "
-                    "'toward_satellite' or 'away_from_satellite'; got "
-                    f"{input_convention.value!r}.{extra}"
-                )
-            projection = projection * self._projection_sign_between(
-                input_convention,
-                InputProjectionConvention.TOWARD_SATELLITE,
+        target_axis, _ = self._target_projection(spec)
+        if axis == target_axis:
+            return canonical_input
+        if axis == ProjectionAxis.LOS and target_axis == ProjectionAxis.AZIMUTH:
+            side = (
+                acquisition_look_side
+                if acquisition_look_side is not None
+                else self.config.acquisition_look_side
             )
-            if target_axis == "los":
-                return projection * self._projection_sign_between(
-                    InputProjectionConvention.TOWARD_SATELLITE,
-                    target_convention,
-                )
-            return self._derive_azimuth_projection_from_los(
-                projection,
-                look_side=look_side,
-                target_convention=target_convention,
+            return self._derive_heading_from_ground_to_sensor(
+                canonical_input, side
             )
+        raise ValueError(
+            "Cannot derive a LOS projection from an azimuth-only projection "
+            "because incidence information is unavailable."
+        )
 
-        if role == InputProjectionRole.AZIMUTH:
-            if input_axis != "azimuth":
-                raise ValueError(
-                    "input_projection_role='azimuth' requires "
-                    "input_projection_convention to resolve to 'along_heading' "
-                    f"or 'opposite_heading'; got {input_convention.value!r}."
-                )
-            if target_axis != "azimuth":
-                raise ValueError("Cannot derive LOS projection from an azimuth-only projection vector.")
-            return projection * self._projection_sign_between(input_convention, target_convention)
+    def extract_raw_grd(
+            self, directory_name=None, prefix=None, phsname=None,
+            valuefile=None, eastfile=None, northfile=None, upfile=None,
+            variable=None, value_variable=None, projection_variable=None,
+            east_variable=None, north_variable=None, up_variable=None,
+            lon_name=None, lat_name=None, grid_engine=None,
+            coord_is_lonlat=None, zero2nan=None, factor_to_m=1.0,
+            input_projection_axis=None, input_projection_direction=None,
+            acquisition_look_side=None, verbose=None):
+        """Read value/projection grids and normalize the projection direction."""
 
-        raise ValueError(f"Unsupported input_projection_role: {role}.")
-
-    def extract_raw_grd(self, directory_name=None, prefix=None, phsname=None,
-                        valuefile=None, eastfile=None, northfile=None, upfile=None,
-                        variable=None, value_variable=None, projection_variable=None,
-                        east_variable=None, north_variable=None, up_variable=None,
-                        lon_name=None, lat_name=None, grid_engine=None, coord_is_lonlat=None,
-                        zero2nan=None, factor_to_m=1.0,
-                        input_projection_role=None, input_projection_convention=None,
-                        look_side=None, verbose=None):
         if directory_name is not None:
             self.directory_name = directory_name
         else:
@@ -293,24 +185,41 @@ class DirectProjectionSarReader(ReadBase2csisar):
         if valuefile is None and prefix is not None:
             valuefile = prefix
         if valuefile is None:
-            raise ValueError("Set valuefile, phsname, or prefix for direct-projection SAR input.")
+            raise ValueError(
+                "Set valuefile, phsname, or prefix for direct-projection SAR input."
+            )
         if eastfile is None or northfile is None:
-            raise ValueError("eastfile and northfile are required for direct-projection SAR input.")
+            raise ValueError(
+                "eastfile and northfile are required for direct-projection SAR input."
+            )
 
         zero2nan = zero2nan if zero2nan is not None else self.config.zero2nan
-        input_projection_role = (
-            input_projection_role
-            if input_projection_role is not None
-            else self.config.input_projection_role
+        axis = coerce_enum(
+            ProjectionAxis,
+            input_projection_axis
+            if input_projection_axis is not None
+            else self.config.input_projection_axis,
+            "input_projection_axis",
         )
-        input_projection_convention = (
-            input_projection_convention
-            if input_projection_convention is not None
-            else self.config.input_projection_convention
+        direction = coerce_enum(
+            ProjectionDirection,
+            input_projection_direction
+            if input_projection_direction is not None
+            else self.config.input_projection_direction,
+            "input_projection_direction",
         )
-        look_side = look_side if look_side is not None else self.config.look_side
+        side = coerce_enum(
+            AcquisitionLookSide,
+            acquisition_look_side
+            if acquisition_look_side is not None
+            else self.config.acquisition_look_side,
+            "acquisition_look_side",
+        )
+        self._validate_axis_direction(axis, direction)
         value_variable = value_variable if value_variable is not None else variable
-        projection_variable = projection_variable if projection_variable is not None else variable
+        projection_variable = (
+            projection_variable if projection_variable is not None else variable
+        )
         east_variable = east_variable if east_variable is not None else projection_variable
         north_variable = north_variable if north_variable is not None else projection_variable
         up_variable = up_variable if up_variable is not None else projection_variable
@@ -359,24 +268,17 @@ class DirectProjectionSarReader(ReadBase2csisar):
 
         for label, grid in (("east", east), ("north", north), ("up", up)):
             self._check_matching_grid(values.shape, grid, label)
-
         if zero2nan:
             values = np.array(values, copy=True)
             values[values == 0] = np.nan
 
         spec = self.build_observation_spec()
-        target_projection_convention = self._target_projection_convention(spec)
-        resolved_input_projection_convention = self._resolve_input_projection_convention(
-            input_projection_convention,
-            target_projection_convention,
-            spec,
-        )
         input_projection = self._projection_from_components(east, north, up)
         projection = self._projection_for_observation(
             input_projection,
-            input_projection_role=input_projection_role,
-            input_projection_convention=input_projection_convention,
-            look_side=look_side,
+            input_projection_axis=axis,
+            input_projection_direction=direction,
+            acquisition_look_side=side,
             spec=spec,
         )
         invalid_projection = ~np.all(np.isfinite(projection), axis=-1)
@@ -396,95 +298,74 @@ class DirectProjectionSarReader(ReadBase2csisar):
         self.raw_input_projection_grid = input_projection
         self.raw_projection_grid = projection
         self.raw_projection_full = projection.reshape((-1, 3))
-        self.raw_input_projection_role = input_projection_role
-        self.raw_input_projection_convention = input_projection_convention
-        self.raw_resolved_input_projection_convention = resolved_input_projection_convention
-        self.raw_projection_look_side = look_side
-        self.raw_projection_convention = target_projection_convention
+        self.raw_input_projection_axis = axis
+        self.raw_input_projection_direction = direction
+        self.raw_projection_look_side = side
+        self.raw_projection_axis, self.raw_projection_direction = (
+            self._target_projection(spec)
+        )
         if self._is_verbose(verbose):
             self.print_input_summary()
 
-    def _observation_spec_summary(self, spec):
-        if spec is None:
-            return None
-        return {
-            "observation_type": self._summary_value(spec.observation_type),
-            "input_value_convention": self._summary_value(spec.input_value_convention),
-            "wavelength": spec.wavelength,
-        }
-
     def _projection_convention_summary(self):
+        target_axis, target_direction = self._target_projection(
+            self.observation_spec
+            if self.observation_spec is not None
+            else self.build_observation_spec()
+        )
+        input_axis = getattr(
+            self,
+            "raw_input_projection_axis",
+            self.config.input_projection_axis,
+        )
+        input_axis = coerce_enum(
+            ProjectionAxis, input_axis, "input_projection_axis"
+        )
         return {
-            "input_projection_role": self._summary_value(
-                getattr(self, "raw_input_projection_role", self.config.input_projection_role)
-            ),
-            "input_projection_convention": self._summary_value(
-                getattr(self, "raw_input_projection_convention", self.config.input_projection_convention)
-            ),
-            "resolved_input_projection_convention": self._summary_value(
-                getattr(self, "raw_resolved_input_projection_convention", None)
-            ),
-            "target_projection_convention": self._summary_value(
+            "input_projection_axis": self._summary_value(input_axis),
+            "input_projection_direction": self._summary_value(
                 getattr(
                     self,
-                    "raw_projection_convention",
-                    self._target_projection_convention(self.build_observation_spec()),
+                    "raw_input_projection_direction",
+                    self.config.input_projection_direction,
                 )
+            ),
+            "target_projection_axis": self._summary_value(target_axis),
+            "target_projection_direction": self._summary_value(target_direction),
+            "acquisition_look_side_used": (
+                input_axis == ProjectionAxis.LOS
+                and target_axis == ProjectionAxis.AZIMUTH
             ),
         }
 
-    def read_observation(self, downsample=1, zero2nan=True, wavelength=None,
-                         observation_type=None, input_azimuth_role=None,
-                         look_side=None, input_value_convention=None, verbose=None):
+    def read_observation(
+            self, downsample=1, zero2nan=True, wavelength=None,
+            observation_type=None, raw_value_convention=None, verbose=None):
         self._require_raw_grid(
             "read_observation()",
-            fields=("raw_vel", "raw_mesh_lon", "raw_mesh_lat", "raw_projection_grid"),
-        )
-        has_semantic_override = any(
-            value is not None
-            for value in (wavelength, observation_type, input_azimuth_role, look_side, input_value_convention)
+            fields=(
+                "raw_vel",
+                "raw_mesh_lon",
+                "raw_mesh_lat",
+                "raw_input_projection_grid",
+            ),
         )
         spec = self.build_observation_spec(
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
             wavelength=wavelength,
         )
-        projection = self.raw_projection_grid
-        if has_semantic_override:
-            input_projection = getattr(self, "raw_input_projection_grid", None)
-            if input_projection is None:
-                raise RuntimeError(
-                    "Direct-projection semantic overrides require raw_input_projection_grid. "
-                    "Call extract_raw_grd() with a current direct-projection reader."
-                )
-            raw_input_projection_convention = getattr(
-                self,
-                "raw_input_projection_convention",
-                self.config.input_projection_convention,
-            )
-            self.raw_resolved_input_projection_convention = self._resolve_input_projection_convention(
-                raw_input_projection_convention,
-                self._target_projection_convention(spec),
-                spec,
-            )
-            projection = self._projection_for_observation(
-                input_projection,
-                input_projection_role=getattr(
-                    self,
-                    "raw_input_projection_role",
-                    self.config.input_projection_role,
-                ),
-                input_projection_convention=raw_input_projection_convention,
-                look_side=look_side or getattr(
-                    self,
-                    "raw_projection_look_side",
-                    self.config.look_side,
-                ),
-                spec=spec,
-            )
-        self.raw_projection_convention = self._target_projection_convention(spec)
+        projection = self._projection_for_observation(
+            self.raw_input_projection_grid,
+            input_projection_axis=self.raw_input_projection_axis,
+            input_projection_direction=self.raw_input_projection_direction,
+            acquisition_look_side=self.raw_projection_look_side,
+            spec=spec,
+        )
+        self.raw_projection_grid = projection
+        self.raw_projection_axis, self.raw_projection_direction = (
+            self._target_projection(spec)
+        )
         return self.read_observation_with_projection_to_csi(
             self.raw_vel,
             lon=self.raw_mesh_lon,

@@ -9,6 +9,11 @@ import numpy as np
 
 from .config.config_utils import get_observation_unit_info
 from .data_correction_parameters import interpret_data_correction_parameters
+from .data_correction_results import (
+    data_correction_entries_to_dataframe,
+    format_data_correction_report,
+    write_data_correction_report_files,
+)
 from .interseismic_parameter_model import get_faults_from_inversion
 
 
@@ -343,35 +348,7 @@ class DataCorrectionReportMixin:
     @staticmethod
     def data_correction_parameters_to_dataframe(entries: Sequence[Mapping[str, Any]]):
         """Return a compact pandas DataFrame for report entries."""
-        import pandas as pd
-
-        rows = []
-        for entry in entries:
-            physical = dict(entry.get("physical", {}) or {})
-            raw_value = entry.get("raw_parameters", {}) or {}
-            raw = dict(raw_value) if isinstance(raw_value, Mapping) else {}
-            pole = physical.get("euler_pole", {}) or {}
-            row = {
-                "source": entry.get("source"),
-                "dataset": entry.get("dataset"),
-                "data_type": entry.get("data_type"),
-                "transform": entry.get("transform"),
-                "transform_group": entry.get("transform_group"),
-                "kind": entry.get("kind"),
-                "columns": entry.get("columns"),
-                "warnings": "; ".join(entry.get("warnings", []) or []),
-            }
-            for key, value in raw.items():
-                if np.isscalar(value):
-                    row[f"raw_{key}"] = value
-            if pole:
-                row["euler_pole"] = pole.get("value")
-                row["euler_pole_units"] = pole.get("units")
-            for key in ("rotation_cw_per_coord", "scale_per_coord"):
-                if key in physical:
-                    row[key] = physical.get(key)
-            rows.append(row)
-        return pd.DataFrame(rows)
+        return data_correction_entries_to_dataframe(entries)
 
     def print_data_correction_report(
         self,
@@ -384,42 +361,50 @@ class DataCorrectionReportMixin:
         if entries is None:
             entries = self.collect_data_correction_parameters(datasets=datasets, sources=sources)
         entries = [dict(entry) for entry in entries]
-        print("Data-correction parameter report")
-        print(f"  entries: {len(entries)}")
-        unit_info = self._get_data_correction_unit_info()
-        if unit_info.get("observation"):
-            assumed = " (assumed)" if unit_info.get("assumed") else ""
-            print(f"  units: observation={unit_info['observation']}{assumed}")
-        for entry in entries:
-            header = f"  - {entry.get('source')} / {entry.get('dataset')}: {entry.get('transform')}"
-            if entry.get("transform_group") is not None:
-                header += f" (from {entry.get('transform_group')})"
-            print(header)
-            physical = entry.get("physical", {}) or {}
-            raw = entry.get("raw_parameters", {}) or {}
-            if raw:
-                if isinstance(raw, Mapping):
-                    raw_text = ", ".join(
-                        f"{key}={value:.6g}" for key, value in raw.items() if isinstance(value, (int, float, np.floating))
-                    )
-                else:
-                    raw_text = ", ".join(
-                        f"{value:.6g}" for value in raw if isinstance(value, (int, float, np.floating))
-                    )
-                if raw_text:
-                    print(f"      raw: {raw_text}")
-            pole = physical.get("euler_pole")
-            if pole:
-                vals = pole.get("value", [])
-                units = pole.get("units", [])
-                print(f"      euler pole: {vals} {units}")
-            if physical.get("rotation_cw_per_coord") is not None:
-                print(f"      rotation_cw_per_coord: {physical['rotation_cw_per_coord']:.6g}")
-            if physical.get("scale_per_coord") is not None:
-                print(f"      scale_per_coord: {physical['scale_per_coord']:.6g}")
-            for warning in entry.get("warnings", []) or []:
-                print(f"      warning: {warning}")
+        print(format_data_correction_report(entries, unit_info=self._get_data_correction_unit_info()), end="")
         return entries
+
+    def write_data_correction_report(
+        self,
+        outdir="output",
+        entries: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        datasets: Sequence[str] | str | None = None,
+        sources: Sequence[str] | str | None = None,
+        basename: str = "data_correction_parameters",
+        formats: Sequence[str] = ("txt", "tsv"),
+    ) -> dict[str, Any]:
+        """Write estimated data-correction parameters to text/table files.
+
+        Parameters
+        ----------
+        outdir : str or path-like, default "output"
+            Directory for report files.
+        entries : sequence of mapping, optional
+            Pre-collected entries.  If omitted, current solved parameters are
+            collected with ``collect_data_correction_parameters``.
+        datasets, sources : str or sequence of str, optional
+            Optional filters used only when ``entries`` is omitted.
+        basename : str, default "data_correction_parameters"
+            Output filename stem.
+        formats : sequence of {"txt", "tsv"}, default ("txt", "tsv")
+            Report formats to write.
+
+        Returns
+        -------
+        dict
+            Paths keyed by format.
+        """
+        if entries is None:
+            entries = self.collect_data_correction_parameters(datasets=datasets, sources=sources)
+        entries = [dict(entry) for entry in entries]
+        return write_data_correction_report_files(
+            entries,
+            outdir,
+            basename=basename,
+            formats=formats,
+            unit_info=self._get_data_correction_unit_info(),
+        )
 
     def calculate_data_correction_prediction_parts(
         self,

@@ -12,8 +12,8 @@ from sklearn.decomposition import PCA
 from csi.SourceInv import SourceInv
 from .AdaptiveLayeredDipTriangularPatches import AdaptiveLayeredDipTriangularPatches
 from .AdaptiveLayeredDipRectangularPatches import AdaptiveLayeredDipRectangularPatches
-from ..plottools import sci_plot_style
-from ..plottools import set_degree_formatter
+from ..viztools import sci_plot_style
+from ..viztools import set_degree_formatter
 
 class FaultGeometryEngine(SourceInv):
     """

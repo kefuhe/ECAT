@@ -71,6 +71,16 @@ def _physical_gradient_matrix(
     return (np.asarray(gradient_per_km, dtype=float) * float(unit_info["to_si"]) / 1000.0).tolist()
 
 
+def _strain_display_units(unit_info: Mapping[str, Any]) -> str:
+    return "nanostrain/year" if unit_info.get("kind") == "rate" else "nanostrain"
+
+
+def _strain_display_tensor(tensor: Any, unit_info: Mapping[str, Any]) -> list[list[float]] | None:
+    if tensor is None:
+        return None
+    return (np.asarray(tensor, dtype=float) * 1.0e9).tolist()
+
+
 def _rotation_axis(vector: np.ndarray) -> dict[str, Any]:
     vec = np.asarray(vector, dtype=float).reshape(-1)
     magnitude = float(np.linalg.norm(vec))
@@ -314,6 +324,9 @@ def interpret_gps_strain_parameters(
     gradient_per_km = None if base is None else np.asarray(a_norm, dtype=float) / base
     strain_per_km = None if base is None else np.asarray(strain_norm, dtype=float) / base
     rotation_per_km = None if base is None else np.asarray(rotation_norm, dtype=float) / base
+    gradient_physical = _physical_gradient_matrix(gradient_per_km, unit_info)
+    strain_physical = _physical_gradient_matrix(strain_per_km, unit_info)
+    rotation_physical = _physical_gradient_matrix(rotation_per_km, unit_info)
     return {
         "kind": key,
         "raw_parameters": {name: float(value) for name, value in comp.items() if np.isfinite(value)},
@@ -323,13 +336,18 @@ def interpret_gps_strain_parameters(
             "translation": {"east": comp["tx"], "north": comp["ty"], **({"up": comp["tz"]} if np.isfinite(comp["tz"]) else {})},
             "gradient_matrix_normalized": a_norm.tolist(),
             "gradient_matrix_per_coord": _matrix_or_none(a_norm, base),
-            "gradient_matrix_physical": _physical_gradient_matrix(gradient_per_km, unit_info),
+            "gradient_matrix_physical": gradient_physical,
+            "gradient_matrix_display": _strain_display_tensor(gradient_physical, unit_info),
+            "gradient_matrix_display_units": _strain_display_units(unit_info),
             "strain_tensor_normalized": strain_norm.tolist(),
             "strain_tensor_per_coord": _matrix_or_none(strain_norm, base),
-            "strain_tensor_physical": _physical_gradient_matrix(strain_per_km, unit_info),
+            "strain_tensor_physical": strain_physical,
+            "strain_tensor_physical_units": "1/year" if unit_info["kind"] == "rate" else "strain",
+            "strain_tensor_display": _strain_display_tensor(strain_physical, unit_info),
+            "strain_tensor_display_units": _strain_display_units(unit_info),
             "rotation_matrix_normalized": rotation_norm.tolist(),
             "rotation_matrix_per_coord": _matrix_or_none(rotation_norm, base),
-            "rotation_matrix_physical": _physical_gradient_matrix(rotation_per_km, unit_info),
+            "rotation_matrix_physical": rotation_physical,
             "rotation_cw_per_coord": None if base is None else float(comp["omega"] / (2.0 * base)),
             "rotation_cw_physical": None if base is None else float(comp["omega"] * unit_info["to_si"] / (2.0 * base * 1000.0)),
         },
@@ -396,31 +414,36 @@ def interpret_internal_strain_parameters(
     """Interpret CSI ``internalstrain`` parameters.
 
     CSI builds this basis from spherical arc-length coordinates around a
-    stored lon/lat center.  The coefficients are already gradients in the
-    velocity unit per arc-length unit used by CSI.
+    stored lon/lat center.  The columns follow the block-model convention
+    ``[sxx, sxy, syy]`` and the shear coefficient is the tensor shear
+    component, not engineering shear.
     """
     vals = _as_array(params)
     warnings: list[str] = []
     if vals.size != 3:
         warnings.append(f"Unexpected internalstrain parameter count {vals.size}; expected 3.")
     sxx = vals[0] if vals.size > 0 else 0.0
-    syy = vals[1] if vals.size > 1 else 0.0
-    sxy = vals[2] if vals.size > 2 else 0.0
-    tensor = np.array([[sxx, 0.5 * sxy], [0.5 * sxy, syy]], dtype=float)
+    sxy = vals[1] if vals.size > 1 else 0.0
+    syy = vals[2] if vals.size > 2 else 0.0
+    tensor = np.array([[sxx, sxy], [sxy, syy]], dtype=float)
     norm = dict(normalization or {})
     unit_info = _observation_unit_info(observation_unit, default_observation_unit)
     tensor_physical = tensor * float(unit_info["to_si"])
+    tensor_display = _strain_display_tensor(tensor_physical, unit_info)
     if "ref" not in norm:
         warnings.append("Missing internal-strain center; center-dependent interpretation should be checked.")
     return {
         "kind": "internalstrain",
-        "raw_parameters": {"sxx": float(sxx), "syy": float(syy), "sxy": float(sxy)},
+        "raw_parameters": {"sxx": float(sxx), "sxy": float(sxy), "syy": float(syy)},
         "normalization": norm,
         "unit_context": unit_info,
         "physical": {
             "strain_tensor_per_arc_length": tensor.tolist(),
             "strain_tensor_physical": tensor_physical.tolist(),
             "strain_tensor_physical_units": "1/year" if unit_info["kind"] == "rate" else "strain",
+            "strain_tensor_display": tensor_display,
+            "strain_tensor_display_units": _strain_display_units(unit_info),
+            "coordinate_order": ["east_arc", "colatitude_arc"],
             "center": norm.get("ref"),
         },
         "warnings": warnings,

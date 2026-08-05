@@ -2,11 +2,17 @@ import numpy as np
 import yaml
 
 from .region_utils import (
+    align_longitude_interval_to_reference,
+    align_longitudes,
     as_vector,
+    finite_value_range,
+    longitude_intervals_for_data,
     point_count,
+    points_in_lonlat_polygon,
     points_in_polygon,
     polygon_points,
     read_polygon_file,
+    unwrap_polygon_longitudes,
 )
 
 
@@ -52,6 +58,8 @@ def _box_values(box, coord_type="lonlat"):
 
 def _inside_box(first, second, box, coord_type="lonlat"):
     first_min, first_max, second_min, second_max = _box_values(box, coord_type=coord_type)
+    if coord_type == "lonlat":
+        first = align_longitudes(first, 0.5 * (first_min + first_max))
     return (
         (first >= first_min)
         & (first <= first_max)
@@ -97,6 +105,8 @@ def processing_region_keep_mask(data, config, base_dir=None):
         if config.get("polygon") is None:
             raise ValueError("processing_region requires polygon when geometry='polygon'.")
         polygon = polygon_points(config["polygon"], label="processing_region.polygon")
+        if coord_type == "lonlat":
+            return points_in_lonlat_polygon(first, second, polygon)
         return points_in_polygon(first, second, polygon)
     if geometry == "polygon_file":
         if config.get("polygon_file") is None:
@@ -108,6 +118,8 @@ def processing_region_keep_mask(data, config, base_dir=None):
             label="Processing-region polygon file",
         )
         config["resolved_polygon_file"] = str(resolved_path)
+        if coord_type == "lonlat":
+            return points_in_lonlat_polygon(first, second, polygon)
         return points_in_polygon(first, second, polygon)
     raise ValueError(f"Unsupported processing_region.geometry: {geometry!r}.")
 
@@ -129,6 +141,87 @@ def keep_processing_indices(data, indices, n_points):
     )
 
 
+def _input_coordinate_range(data, coord_type, n_points):
+    first, second = _coordinate_vectors(data, coord_type, n_points)
+    if coord_type == "xy":
+        return {
+            "x": finite_value_range(first),
+            "y": finite_value_range(second),
+        }
+    return {
+        "longitude": finite_value_range(first),
+        "latitude": finite_value_range(second),
+    }
+
+
+def _resolved_geometry_for_data(data, config, coord_type, n_points, base_dir=None):
+    geometry = _region_geometry(config)
+    if coord_type != "lonlat":
+        return None
+    longitude, _latitude = _coordinate_vectors(data, coord_type, n_points)
+    if geometry == "box" and config.get("box") is not None:
+        minimum, maximum, min_latitude, max_latitude = _box_values(
+            config["box"],
+            coord_type=coord_type,
+        )
+        intervals = longitude_intervals_for_data(
+            minimum,
+            maximum,
+            longitude,
+        )
+        boxes = [
+            [interval[0], interval[1], min_latitude, max_latitude]
+            for interval in intervals
+        ]
+        return {"box": boxes[0]} if len(boxes) == 1 else {"boxes": boxes}
+
+    if geometry == "polygon":
+        polygon = polygon_points(
+            config.get("polygon"),
+            label="processing_region.polygon",
+        )
+    elif geometry == "polygon_file" and config.get("polygon_file") is not None:
+        polygon, _resolved_path = read_polygon_file(
+            config["polygon_file"],
+            base_dir=base_dir,
+            min_points=3,
+            label="Processing-region polygon file",
+        )
+    else:
+        return None
+
+    polygon = unwrap_polygon_longitudes(polygon)
+    data_range = finite_value_range(longitude)
+    if data_range is not None:
+        reference = 0.5 * sum(data_range)
+        polygon_center = float(np.mean(polygon[:, 0]))
+        shift = align_longitude_interval_to_reference(
+            polygon_center,
+            polygon_center,
+            reference,
+        )[0] - polygon_center
+        polygon[:, 0] += shift
+    return {"polygon": polygon.tolist()}
+
+
+def _empty_region_message(report, config):
+    coordinate_range = report.get("input_coordinate_range", {})
+    longitude_range = coordinate_range.get("longitude")
+    latitude_range = coordinate_range.get("latitude")
+    if longitude_range is None:
+        return "processing_region removed all processing points."
+    message = (
+        "processing_region removed all processing points; "
+        f"data longitude range={longitude_range}, latitude range={latitude_range}"
+    )
+    if _region_geometry(config) == "box":
+        message += f", configured box={config.get('box')}"
+        resolved = report.get("resolved_geometry") or {}
+        equivalent = resolved.get("box", resolved.get("boxes"))
+        message += f", equivalent box near data={equivalent}"
+    return message + "."
+
+
 def apply_processing_region(data, config, out_name="sar", base_dir=None, write_report=True):
     config = config or {}
     enabled = bool(config.get("enabled", False))
@@ -144,10 +237,25 @@ def apply_processing_region(data, config, out_name="sar", base_dir=None, write_r
     if not enabled:
         return report
 
+    report["input_coordinate_range"] = _input_coordinate_range(
+        data,
+        report["coord_type"],
+        n_points,
+    )
+    resolved_geometry = _resolved_geometry_for_data(
+        data,
+        config,
+        report["coord_type"],
+        n_points,
+        base_dir=base_dir,
+    )
+    if resolved_geometry is not None:
+        report["resolved_geometry"] = resolved_geometry
+
     keep = processing_region_keep_mask(data, config, base_dir=base_dir)
     final_indices = np.flatnonzero(keep)
     if final_indices.size == 0:
-        raise ValueError("processing_region removed all processing points.")
+        raise ValueError(_empty_region_message(report, config))
 
     report["final_count"] = int(final_indices.size)
     report["removed_count"] = int(n_points - final_indices.size)
@@ -177,6 +285,15 @@ def format_processing_region_report(report):
         f"  removed      : {report['removed_count']}",
         f"  final points : {report['final_count']}",
     ]
+    coordinate_range = report.get("input_coordinate_range", {})
+    if coordinate_range.get("longitude") is not None:
+        lines.append(
+            "  input lon/lat: "
+            f"{coordinate_range['longitude']} / {coordinate_range.get('latitude')}"
+        )
+    resolved_geometry = report.get("resolved_geometry")
+    if resolved_geometry:
+        lines.append(f"  resolved geom: {resolved_geometry}")
     if report.get("report_file"):
         lines.append(f"  report file  : {report['report_file']}")
     return "\n".join(lines)

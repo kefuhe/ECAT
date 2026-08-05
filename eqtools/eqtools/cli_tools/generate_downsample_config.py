@@ -51,10 +51,6 @@ def gamma_file_block(sar_mode):
     geometry:
       azimuth: "off_20250319_20250331.azi"
       incidence: "off_20250319_20250331.inc"
-    projection:
-      east: null
-      north: null
-      up: null
 """
     if sar_mode == "azimuth_offset":
         return """
@@ -64,22 +60,9 @@ def gamma_file_block(sar_mode):
     geometry:
       azimuth: "off_20250319_20250331.azi"
       incidence: "off_20250319_20250331.inc"
-    projection:
-      east: null
-      north: null
-      up: null
 """
     return """
     prefix: "geo_20250319_20250331"
-    value: null
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
-    projection:
-      east: null
-      north: null
-      up: null
 """
 
 
@@ -87,66 +70,35 @@ def tiff_file_block(reader):
     prefix = "gamma_tiff_20250319_20250331" if reader == "gamma_tiff" else "hyp3_20250319_20250331"
     return f"""
     prefix: "{prefix}"
-    value: null
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
-    projection:
-      east: null
-      north: null
-      up: null
 """
 
 
 def gmtsar_file_block(sar_mode):
-    phase_modes = ("unwrapped_phase", "phase_los")
     if sar_mode == "azimuth_offset":
         return """
-    prefix: null
     value: "azimuth_range/T33D_az.grd"
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
     projection:
       east: "enu_az/e.grd"
       north: "enu_az/n.grd"
-      up: null
 """
     if sar_mode == "range_offset":
         return """
-    prefix: null
     value: "azimuth_range/T33D_range.grd"
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
     projection:
       east: "enu_range/e_sample.grd"
       north: "enu_range/n_sample.grd"
       up: "enu_range/u_sample.grd"
 """
-    if sar_mode in phase_modes:
+    if sar_mode == "unwrapped_phase":
         return """
-    prefix: null
-    value: "phase_los/T33D_phasefilt_ll.grd"
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
+    value: "phase/T33D_phasefilt_ll.grd"
     projection:
       east: "enu/e.grd"
       north: "enu/n.grd"
       up: "enu/u.grd"
 """
     return """
-    prefix: null
-    value: "phase_los/T33D_los_m.grd"
-    metadata: null
-    geometry:
-      azimuth: null
-      incidence: null
+    value: "los/T33D_los_m.grd"
     projection:
       east: "enu/e.grd"
       north: "enu/n.grd"
@@ -154,43 +106,56 @@ def gmtsar_file_block(sar_mode):
 """
 
 
-def sar_read_block(sar_reader, factor_to_m):
+def sar_read_block(sar_reader, factor_to_m, byte_order, template):
     if sar_reader == "gmtsar":
+        grid = ""
+        if template == "full":
+            grid = """  grid:
+    engine: null
+    value_variable: null
+    projection_variable: null
+    lon_name: null
+    lat_name: null
+    coord_is_lonlat: null
+"""
         return f"""  read:
     downsample: 1              # used for quick-look and downsample runs
     downsample_for_covar: 1    # used only when estimating covariance
     zero2nan: true
-    wavelength: null           # phase_los uses reader metadata or this value
+    wavelength: null           # required for unwrapped_phase
     factor_to_m: {factor_to_m} # direct displacement unit scale; keep 1.0 for phase radians
-  grid:
-    engine: null               # null = xarray auto/fallback; set netcdf4/scipy/h5netcdf when needed
-    value_variable: null       # GMTSAR/direct-projection grids default to variable "z"
-    projection_variable: null  # null = same default as value_variable
-    east_variable: null        # optional override when east/north/up grids use different variable names
-    north_variable: null
-    up_variable: null
-    lon_name: null             # direct-projection grids accept lon/lat or checked x/y coordinate names
-    lat_name: null
-    coord_is_lonlat: null      # null = check x/y values; true = user confirms geographic lon/lat
-"""
-    return f"""  read:
-    downsample: 1              # used for quick-look and downsample runs
-    downsample_for_covar: 1    # used only when estimating covariance
-    zero2nan: true
-    wavelength: null           # phase_los uses reader metadata or this value
-    factor_to_m: {factor_to_m} # displacement/offset unit scale; keep 1.0 for phase radians
-  grid:
+{grid}"""
+    byte_order_line = (
+        f'    byte_order: "{byte_order}"   # native preserves the historical GAMMA default\n'
+        if sar_reader == "gamma"
+        else ""
+    )
+    grid = ""
+    if template == "full" and sar_reader != "gamma":
+        grid = """  grid:
     phase_band: 1
     azi_band: 1
     inc_band: 1
     coord_is_lonlat: null
 """
+    return f"""  read:
+    downsample: 1              # used for quick-look and downsample runs
+    downsample_for_covar: 1    # used only when estimating covariance
+    zero2nan: true
+    wavelength: null           # GAMMA .rsc metadata is used when available
+    factor_to_m: {factor_to_m} # displacement/offset unit scale; keep 1.0 for phase radians
+{byte_order_line}{grid}"""
 
 
-def build_sar_config_text(sar_reader, sar_mode, template):
-    phase_modes = ("unwrapped_phase", "phase_los")
-    if sar_reader == "hyp3" and sar_mode not in ("los_displacement", *phase_modes):
-        raise ValueError("HyP3 template supports sar_mode='los_displacement' or 'unwrapped_phase'/'phase_los'.")
+def build_sar_config_text(
+    sar_reader, sar_mode, template, acquisition_look_side="right",
+    byte_order="native"
+):
+    if sar_reader == "hyp3" and sar_mode not in ("los_displacement", "unwrapped_phase"):
+        raise ValueError(
+            "HyP3 template supports sar_mode='los_displacement' or "
+            "'unwrapped_phase'."
+        )
 
     if sar_reader == "gamma":
         files = gamma_file_block(sar_mode)
@@ -199,66 +164,59 @@ def build_sar_config_text(sar_reader, sar_mode, template):
     else:
         files = tiff_file_block(sar_reader)
     factor_to_m = 1.0
-    if sar_mode in phase_modes:
+    if sar_mode == "unwrapped_phase":
         plot_vmin, plot_vmax = -30, 30
     elif sar_mode == "azimuth_offset":
         plot_vmin, plot_vmax = -300, 300
     else:
         plot_vmin, plot_vmax = -30, 30
 
-    observation_type = "phase_los" if sar_mode in phase_modes else sar_mode
-    if sar_mode == "range_offset":
-        observation_type = "los_displacement"
-    value_convention = {
-        "unwrapped_phase": "unwrapped_phase",
-        "phase_los": "unwrapped_phase",
-        "los_displacement": "toward_satellite",
-        "range_offset": (
-            "toward_satellite" if sar_reader == "gmtsar" else "away_from_satellite"
-        ),
-        "azimuth_offset": "along_heading",
-    }[sar_mode]
     azimuth_role = {
-        "gamma": "right_look_away",
+        "gamma": "sensor_to_ground",
         "gamma_tiff": "heading",
-        "hyp3": "right_los_toward",
+        "hyp3": "ground_to_sensor",
     }.get(sar_reader)
-    projection_convention = "toward_satellite" if sar_mode in phase_modes else "same_as_value"
 
     advanced = ""
     if template == "full":
         if sar_reader == "gmtsar":
+            projection_axis = "azimuth" if sar_mode == "azimuth_offset" else "los"
+            projection_direction = (
+                "along_heading"
+                if projection_axis == "azimuth"
+                else "ground_to_sensor"
+            )
             advanced = f"""
-  # Advanced: use exactly one of mode, preset, or convention.
-  # preset: null
-  # convention:
-  #   observation_type: "{observation_type}"
-  #   input_value_convention: "{value_convention}"
-  #   input_projection_role: "same_as_observation"
-  #   input_projection_convention: "{projection_convention}"
+  # Advanced: describe the supplied ENU projection only when it differs
+  # from this mode's built-in GMTSAR convention.
+  # projection_convention:
+  #   input_projection_axis: "{projection_axis}"
+  #   input_projection_direction: "{projection_direction}"
 """
         else:
             advanced = f"""
-  # Advanced: use exactly one of mode, preset, or convention.
-  # preset: null
-  # convention:
-  #   observation_type: "{observation_type}"
-  #   input_value_convention: "{value_convention}"
-  #   input_azimuth_role: "{azimuth_role}"
-  #   look_side: "right"
+  # Advanced: describe the angle rasters only when they differ from this
+  # reader's built-in convention.
+  # geometry_convention:
+  #   azimuth_angle_role: "{azimuth_role}"
 """
 
+    side_line = (
+        f'  acquisition_look_side: "{acquisition_look_side}"  # right | left\n'
+        if sar_reader != "gmtsar"
+        else ""
+    )
     return f"""
 sar_config:
   outName: "S1_example"
   reader: "{sar_reader}"       # gamma | gamma_tiff | gmtsar | hyp3
-  mode: "{sar_mode}"           # unwrapped_phase/phase_los | los_displacement | range_offset | azimuth_offset
-  directory: ".."
+  mode: "{sar_mode}"           # unwrapped_phase | los_displacement | range_offset | azimuth_offset
+{side_line}  directory: ".."
   output_check: true
   output_suffix: "auto"        # auto appends _RngOff/_AziOff for range/azimuth offsets if not already present
 {advanced}
   files:{files}
-{sar_read_block(sar_reader, factor_to_m)}
+{sar_read_block(sar_reader, factor_to_m, byte_order, template)}
   data_filters:
     enabled: false
     report: true
@@ -283,9 +241,66 @@ processing_region:
   report_file: "auto"
   coord_type: "lonlat"     # lonlat | xy
   geometry: "box"          # box | polygon | polygon_file
-  box: null                # [minlon, maxlon, minlat, maxlat]; keeps only this region when enabled
+  box: null                # [minlon, maxlon, minlat, maxlat]; longitude matches modulo 360
   polygon: null            # inline [[lon, lat], ...] or [[x, y], ...]
   polygon_file: null       # text file with two columns, relative to the config file
+"""
+
+
+def observation_correction_config_text(template="minimal"):
+    advanced = """
+  # For a box, replace the circle item with:
+  #   - kind: "box"
+  #     bounds: [min_lon, max_lon, min_lat, max_lat]
+  # Polygon regions and fixed plane coefficients are documented in the reference.
+""" if template == "full" else ""
+    return f"""
+# Optional deterministic preprocessing before covariance/downsampling.
+# Start with offset; use plane only after confirming a stable long-wave trend.
+# Formula: corrected = observation - correction_surface.
+observation_correction:
+  enabled: false
+  model: "offset"               # offset | plane
+  coefficient_mode: "estimate" # estimate | fixed
+  report: true
+  report_file: "auto"           # auto = <outName>_observation_correction.yml
+  fit:
+    coord_type: "lonlat"
+    regions:
+      - kind: "circle"
+        center: [0.0, 0.0]      # replace with stable far-field [lon, lat]
+        radius_km: 20.0
+    exclude_regions: []
+  fixed_coefficients: null      # advanced; used only with coefficient_mode: fixed
+{advanced}
+"""
+
+
+def observation_export_config_text():
+    return """
+# Optional reusable data/display exports; scientific values are not resampled.
+export:
+  observation_grid:
+    enabled: false
+    format: "netcdf"            # canonical CF-NetCDF format
+    file: "auto"                # auto = <outName>_observation.nc; explicit .h5/.hdf5 is supported
+    geotiff_sidecar: "auto"     # auto writes exact-affine TIFF sidecars when possible
+    # GAMMA binary normally has no affine/CRS, so auto writes NetCDF only.
+    verify: true                # reopen output and verify values/coordinates
+    report: true
+    report_file: "auto"         # auto = <outName>_observation_grid.yml
+  google_earth:
+    enabled: false              # run: ecat-downsample -f this_file.yml
+    file: "auto"                # auto = <outName>_google_earth.kmz
+    mask: "source_valid"        # full valid source pixels; analysis_valid shows only the analysis subset
+    visible: true               # initial checkbox state in Google Earth; this is not a style field
+    style:
+      cmap: "RdBu_r"
+      display_factor: 100.0     # stored meters remain unchanged; display as cm
+      display_unit: "cm"
+      vmin: null                # display color minimum in display_unit; not a geographic range
+      vmax: null                # set both vmin/vmax or leave both null for auto
+      symmetry: true            # auto limits are centered on zero; explicit vmin/vmax win
 """
 
 
@@ -334,11 +349,12 @@ def std_downsample_config_text():
     use_variance: false     # false = compare std; true = compare variance with split_std_threshold
     amplitude_stat: "mean_abs" # mean_abs | abs_mean | median_abs; used by high/low amplitude controls
     focus_region:
-      enabled: false        # true limits refinement outside the polygon below
-      coord_type: "lonlat"  # lonlat | xy; polygon is converted to CSI xy when lonlat
-      polygon: null         # inline [[lon, lat], ...]; use this or polygon_file, not both
-      polygon_file: null    # text file with two columns: lon lat or x y; relative to config file
-      max_splits_outside: 5 # maximum std split level outside focus polygon
+      enabled: false        # true limits refinement outside the region below
+      coord_type: "lonlat"  # focus box coordinates are lon/lat
+      box: null             # [minlon, maxlon, minlat, maxlat]
+      polygon: null         # inline [[lon, lat], ...]
+      polygon_file: null    # text file with two columns; relative to config file
+      max_splits_outside: 5 # maximum std split level outside the focus region
     high_value_refinement:
       enabled: false        # true forces extra splits where block amplitude is large
       high_value_ratio: 0.25 # amplitude threshold as fraction of reference max value
@@ -349,7 +365,7 @@ def std_downsample_config_text():
       amplitude_ratio: 0.05 # low amplitude threshold as fraction of reference max value
       max_splits: 3         # maximum split level for low-amplitude blocks
       reference_max_value: null # null = share CSI reference max value
-      apply_inside_focus_region: false # false keeps focus polygon free to refine
+      apply_inside_focus_region: false # false keeps the focus region free to refine
     plot: false             # pass plotting flag to CSI during downsampling iterations
     decimorig: 10           # plot decimation used only when plot: true
     itmax: 100              # maximum std-based splitting iterations
@@ -374,7 +390,7 @@ def data_downsample_config_text():
 
 
 def trirb_downsample_config_text():
-    return """  # Used only when method: trirb.
+    return """  # Used only when method: trirb; also enable triangular fault_models below.
   trirb_config:
     minimumsize: 1.25      # smallest triangle/block size in CSI projected units, usually km
     min_valid_fraction: 0.1 # minimum valid-pixel fraction to keep an initial triangle
@@ -402,12 +418,13 @@ def guide_grid_config_text():
     return """  guide_grid:
     enabled: false                # true enables Guided Quadtree Downsampling for std/data
     source: "filtered_observation" # currently filtered_observation
-    component: "auto"             # SAR: observation; optical: magnitude | east | north | both
+    component: "auto"             # auto: SAR observation; optical both components
     filter:
-      kind: "gaussian"            # currently gaussian
-      sigma: null                 # required when enabled; in km by default
-      unit: "km"                  # km | pixel
-      radius_sigma: 3.0           # smoothing search radius = radius_sigma * sigma
+      kind: "gaussian"            # gaussian | median
+      sigma: null                 # gaussian only; required when enabled
+      unit: "km"                  # gaussian only: km | pixel
+      radius_sigma: 3.0           # gaussian only: search radius / sigma
+      # window_size: 3            # median only; odd pixel window >= 3 (default: 3)
 """
 
 
@@ -471,7 +488,7 @@ check_plots:
     show: true
     save_fig: true
     file_path: "auto"             # auto = sar_values.png or <outName>_deformation_map.jpg
-    coordrange: null              # display extent only; does not crop data
+    coordrange: null              # display extent only; longitude matches modulo 360
     plot_stride: 1                # quick-look stride on the raw grid
     figsize: "{raw_figsize}"             # {raw_figsize_note}
     dpi: 300                      # saved-output dpi; screen display is capped internally
@@ -495,7 +512,7 @@ check_plots:
     show: false                   # true displays the figure after downsampling
     save_fig: true
     file_path: "auto"             # auto = <outName>_decim.png
-    coordrange: null              # display extent only; does not crop data
+    coordrange: null              # display extent only; longitude matches modulo 360
     cell_style: "cells"           # cells = draw CSI cells; points = sample centers
     figsize: "double"             # typical decim check; use single for compact SAR, [7, 5] for optical columns
     dpi: 300                      # saved-output dpi; screen display is capped internally
@@ -559,7 +576,7 @@ def processing_config_text(template, downsample_method, data_type="sar"):
     return f"""
 covar:
   do_covar: false          # can also be enabled with ecat-downsample -c
-  mask_out: null           # required for covariance estimation; mask deformation source area
+  mask_out: null           # required for covariance; longitude matches modulo 360
   missing_policy: "existing_or_identity" # when downsampling without covariance: existing_or_identity | identity | error
   function: "exp"          # exp | gauss covariance model
   frac: 0.002              # fraction of remaining background pixels sampled by CSI imagecovariance
@@ -585,12 +602,16 @@ fault_traces:
     id: "example_trace"
     file: "../../../../Faults/example_rupture_trace.dat"
     stages: ["raw", "decim"]   # raw | decim | all; display only
+    marker: null                 # null = line only; set "x" to show input trace vertices
+    markersize: 3.0              # used only when marker is not null
 
+# Repeat or mix entries as needed. Every enabled triangular model with
+# use_for: ["trirb"] participates jointly; plot.stages controls display only.
 fault_models:
   - enabled: false
     id: "example_generated_triangular_fault"
-    type: "generated_from_trace"   # generated_from_trace | csi_gmt
-    geometry: "triangular"         # triangular | rectangular; trirb requires triangular
+    type: "generated_from_trace"   # model input: build from trace | read CSI GMT
+    geometry: "triangular"         # patch shape: triangular | rectangular; trirb requires triangular
     trace_file: "../../../../Faults/example_rupture_trace.dat"
     dip_angle: 86                  # degrees from horizontal
     dip_direction: 258             # degrees clockwise from north
@@ -601,16 +622,16 @@ fault_models:
     use_for: []                    # set to ["trirb"] for resolution-based downsampling
     plot:
       stages: []                   # e.g. ["decim"] to draw patch edges
-      mode: "edges"                # edges | outline | both
+      mode: "edges"                # edges | trace | both
 
   - enabled: false
     id: "example_csi_gmt_fault"
     type: "csi_gmt"
     geometry: "triangular"
     file: "fault_mesh.gmt"
-    readpatchindex: true
-    donotreadslip: true
-    gmtslip: true
+    readpatchindex: true           # true when each GMT segment header stores 3 topology indices
+    donotreadslip: true            # geometry-only use: ignore any slip columns
+    gmtslip: true                  # triangular only: true when the segment header contains -Z...
     use_for: []                    # triangular GMT can use ["trirb"]
     plot:
       stages: []
@@ -618,15 +639,28 @@ fault_models:
 """
 
 
-def build_config(mode, sar_reader, sar_mode, template, downsample_method="std"):
+def build_config(
+    mode, sar_reader, sar_mode, template, downsample_method="std",
+    acquisition_look_side="right", byte_order="native"
+):
     data_type = mode if mode in ("sar", "optical") else "sar"
     blocks = [f'config_version: 1\ndata_type: "{data_type}"\n']
     blocks.append(general_config_text())
 
     if mode in (None, "full", "sar"):
-        blocks.append(build_sar_config_text(sar_reader, sar_mode, template))
+        blocks.append(
+            build_sar_config_text(
+                sar_reader,
+                sar_mode,
+                template,
+                acquisition_look_side=acquisition_look_side,
+                byte_order=byte_order,
+            )
+        )
     if mode in (None, "full", "optical"):
         blocks.append(optical_config_text())
+    blocks.append(observation_correction_config_text(template))
+    blocks.append(observation_export_config_text())
     blocks.append(processing_region_config_text())
     blocks.append(processing_config_text(template, downsample_method, data_type))
     return "\n".join(blocks)
@@ -640,6 +674,8 @@ def generate_downsample_config(
     sar_mode="unwrapped_phase",
     template="minimal",
     downsample_method="std",
+    acquisition_look_side="right",
+    byte_order="native",
 ):
     """
     Generate a downsampling configuration file.
@@ -655,13 +691,17 @@ def generate_downsample_config(
         Copy the adapter_downsampling template files into the output directory.
     sar_reader : {"gamma", "gamma_tiff", "gmtsar", "hyp3"}
         SAR reader family for SAR templates.
-    sar_mode : {"unwrapped_phase", "phase_los", "los_displacement", "range_offset", "azimuth_offset"}
+    sar_mode : {"unwrapped_phase", "los_displacement", "range_offset", "azimuth_offset"}
         SAR observation mode for SAR templates.
     template : {"minimal", "full"}
         "full" includes all downsampling method configs, advanced check-plot
         layout fields, and advanced SAR convention hints.
     downsample_method : {"std", "data", "trirb", "from_rsp"}
         Method written as downsample.method. Minimal templates include only this method's config.
+    acquisition_look_side : {"right", "left"}
+        Side of platform heading containing the imaged swath.
+    byte_order : {"native", "little", "big"}
+        GAMMA raw-float32 byte order. Native preserves historical behavior.
     """
     if mode == "full":
         mode = None
@@ -675,10 +715,24 @@ def generate_downsample_config(
         raise ValueError("template must be 'minimal' or 'full'.")
     if downsample_method not in DOWNSAMPLE_METHOD_CHOICES:
         raise ValueError(f"downsample_method must be one of: {', '.join(DOWNSAMPLE_METHOD_CHOICES)}.")
+    if acquisition_look_side not in ("right", "left"):
+        raise ValueError("acquisition_look_side must be 'right' or 'left'.")
+    if byte_order not in ("native", "little", "big"):
+        raise ValueError("byte_order must be native, little, or big.")
 
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
-    config = yaml.load(build_config(mode, sar_reader, sar_mode, template, downsample_method))
+    config = yaml.load(
+        build_config(
+            mode,
+            sar_reader,
+            sar_mode,
+            template,
+            downsample_method,
+            acquisition_look_side=acquisition_look_side,
+            byte_order=byte_order,
+        )
+    )
     if copy_adapter_template:
         config["input_adapter"] = {"enabled": True}
 
@@ -727,6 +781,21 @@ def main():
         help="SAR observation mode for SAR templates.",
     )
     parser.add_argument(
+        "--sar-look-side",
+        choices=["right", "left"],
+        default="right",
+        help=(
+            "Acquisition look side written for angle-raster readers. "
+            "Default: right."
+        ),
+    )
+    parser.add_argument(
+        "--sar-byte-order",
+        choices=["native", "little", "big"],
+        default="native",
+        help="GAMMA float32 byte order. Default: native.",
+    )
+    parser.add_argument(
         "--template",
         choices=["minimal", "full"],
         default="minimal",
@@ -754,6 +823,8 @@ def main():
         sar_mode=args.sar_mode,
         template=args.template,
         downsample_method=args.downsample_method,
+        acquisition_look_side=args.sar_look_side,
+        byte_order=args.sar_byte_order,
     )
 
 

@@ -69,7 +69,7 @@ import h5py
 
 # Import existing profile tools for data structures
 from .profile_analyzer import ProfileData
-from ...plottools import sci_plot_style
+from ...viztools import sci_plot_style
 
 
 class SwathProfileData:

@@ -1,4 +1,3 @@
-import xarray
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,21 +8,22 @@ from abc import abstractmethod
 from csi.insar import insar
 from eqtools.viztools import set_degree_formatter, sci_plot_style
 from .sar_conventions import (
+    AcquisitionLookSide,
+    AngleGeometrySpec,
     AngleProjectionSarConfig,
+    AzimuthAngleRole,
     GammaTiffConfig,
     GammasarConfig,
     Hyp3TiffConfig,
-    InputAzimuthRole,
-    InputValueConvention,
-    LookSide,
     ObservationType,
+    RawValueConvention,
     SarObservationSpec,
     SarReaderConfig,
     coerce_enum,
     config_from_preset,
 )
 from .sar_geometry import (
-    infer_look_side,
+    acquisition_look_side_is_used,
     normalize_azimuth as _normalize_azimuth,
     normalize_incidence as _normalize_incidence,
 )
@@ -38,14 +38,9 @@ from .sar_observation import (
 class ReadBase2csisar(insar):
     config_cls = AngleProjectionSarConfig
     mode_presets = {
-        "unwrapped_phase": "generic_phase_los",
-        "phase_los": "generic_phase_los",
-        "los": "generic_los_displacement",
+        "unwrapped_phase": "generic_unwrapped_phase",
         "los_displacement": "generic_los_displacement",
-        "range": "generic_range_offset",
         "range_offset": "generic_range_offset",
-        "az": "generic_azimuth_offset",
-        "azimuth": "generic_azimuth_offset",
         "azimuth_offset": "generic_azimuth_offset",
     }
 
@@ -63,7 +58,7 @@ class ReadBase2csisar(insar):
         self.raw_azimuth_input = None
         self.raw_incidence_input = None
         self.raw_azimuth_enu = None
-        self.raw_azimuth_role = None
+        self.raw_azimuth_angle_role = None
         self.raw_incidence = None
         self.raw_lon = None
         self.raw_lat = None
@@ -73,6 +68,7 @@ class ReadBase2csisar(insar):
         self.projection_valid = None
         self.projection_downsampled_valid_index = None
         self.observation_spec = None
+        self.geometry_spec = None
         self.raw_angle_convention = None
 
     @classmethod
@@ -259,11 +255,22 @@ class ReadBase2csisar(insar):
             return None
         return {
             "observation_type": self._summary_value(spec.observation_type),
-            "input_azimuth_role": self._summary_value(spec.input_azimuth_role),
-            "look_side": self._summary_value(spec.look_side),
-            "input_value_convention": self._summary_value(spec.input_value_convention),
+            "raw_value_convention": self._summary_value(spec.raw_value_convention),
             "wavelength": spec.wavelength,
         }
+
+    def _geometry_spec_summary(self, spec, observation_spec=None):
+        if spec is None:
+            return None
+        summary = {
+            "azimuth_angle_role": self._summary_value(spec.azimuth_angle_role),
+            "acquisition_look_side": self._summary_value(spec.acquisition_look_side),
+        }
+        if observation_spec is not None:
+            summary["acquisition_look_side_used"] = (
+                acquisition_look_side_is_used(observation_spec, spec)
+            )
+        return summary
 
     def _array_stats(self, values):
         if values is None:
@@ -397,8 +404,19 @@ class ReadBase2csisar(insar):
         if spec is None:
             spec = self.build_observation_spec()
 
+        geometry_spec = (
+            self.geometry_spec
+            if self.geometry_spec is not None
+            else self.build_geometry_spec()
+            if isinstance(self.config, AngleProjectionSarConfig)
+            else None
+        )
         summary = {
             "observation_spec": self._observation_spec_summary(spec),
+            "angle_geometry": self._geometry_spec_summary(
+                geometry_spec,
+                observation_spec=spec,
+            ),
             "projection_convention": self._projection_convention_summary(),
             "raw_angle_nanmean": self._raw_angle_nanmeans(),
             "projection_nanmean": self._projection_nanmeans(),
@@ -436,10 +454,11 @@ class ReadBase2csisar(insar):
             return []
         preferred_order = (
             "observation_type",
-            "input_value_convention",
-            "input_azimuth_role",
-            "look_side",
+            "raw_value_convention",
             "wavelength",
+            "azimuth_angle_role",
+            "acquisition_look_side",
+            "acquisition_look_side_used",
         )
         return [
             (key, self._format_stat_value(spec_summary[key]))
@@ -451,10 +470,11 @@ class ReadBase2csisar(insar):
         if not projection_summary:
             return []
         preferred_order = (
-            "input_projection_role",
-            "input_projection_convention",
-            "resolved_input_projection_convention",
-            "target_projection_convention",
+            "input_projection_axis",
+            "input_projection_direction",
+            "target_projection_axis",
+            "target_projection_direction",
+            "acquisition_look_side_used",
         )
         return [
             (key, self._format_stat_value(projection_summary[key]))
@@ -525,6 +545,11 @@ class ReadBase2csisar(insar):
         print(f"SAR observation summary{name_suffix}:", file=file)
         self._print_rows("Final observation spec", self._spec_rows(summary["observation_spec"]), file=file)
         self._print_rows(
+            "Angle geometry",
+            self._spec_rows(summary["angle_geometry"]),
+            file=file,
+        )
+        self._print_rows(
             "Direct projection convention",
             self._projection_convention_rows(summary["projection_convention"]),
             file=file,
@@ -581,8 +606,7 @@ class ReadBase2csisar(insar):
         return unwrapped_phase_to_los(vel, wavelength)
 
     def build_observation_spec(self, spec=None, observation_type=None,
-                               input_azimuth_role=None, look_side=None,
-                               input_value_convention=None, wavelength=None):
+                               raw_value_convention=None, wavelength=None):
         if spec is not None:
             if not isinstance(spec, SarObservationSpec):
                 raise TypeError("spec must be a SarObservationSpec.")
@@ -593,33 +617,45 @@ class ReadBase2csisar(insar):
             observation_type if observation_type is not None else self.config.observation_type,
             "observation_type",
         )
-        role = coerce_enum(
-            InputAzimuthRole,
-            input_azimuth_role
-            if input_azimuth_role is not None
-            else getattr(self.config, "input_azimuth_role", InputAzimuthRole.RIGHT_LOOK_AWAY),
-            "input_azimuth_role",
-        )
-        if look_side is None:
-            look_side = infer_look_side(role, getattr(self.config, "look_side", LookSide.RIGHT))
+        if raw_value_convention is None:
+            raw_value_convention = self.config.raw_value_convention
         else:
-            look_side = coerce_enum(LookSide, look_side, "look_side")
-        if input_value_convention is None:
-            input_value_convention = self.config.input_value_convention
-        else:
-            input_value_convention = coerce_enum(
-                InputValueConvention,
-                input_value_convention,
-                "input_value_convention",
+            raw_value_convention = coerce_enum(
+                RawValueConvention,
+                raw_value_convention,
+                "raw_value_convention",
             )
         if wavelength is None:
             wavelength = self.wavelength if self.wavelength is not None else self.config.wavelength
         return SarObservationSpec(
             observation_type=observation_type,
-            input_azimuth_role=role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
             wavelength=wavelength,
+        )
+
+    def build_geometry_spec(self, spec=None, azimuth_angle_role=None,
+                            acquisition_look_side=None):
+        """Resolve angle-raster geometry independently of scalar semantics."""
+
+        if spec is not None:
+            if not isinstance(spec, AngleGeometrySpec):
+                raise TypeError("spec must be an AngleGeometrySpec.")
+            return spec
+        if not isinstance(self.config, AngleProjectionSarConfig):
+            raise TypeError(
+                "AngleGeometrySpec is only available for angle-raster readers."
+            )
+        return AngleGeometrySpec(
+            azimuth_angle_role=(
+                azimuth_angle_role
+                if azimuth_angle_role is not None
+                else self.config.azimuth_angle_role
+            ),
+            acquisition_look_side=(
+                acquisition_look_side
+                if acquisition_look_side is not None
+                else self.config.acquisition_look_side
+            ),
         )
 
     def convert_observation_values(self, values, spec):
@@ -679,11 +715,26 @@ class ReadBase2csisar(insar):
             self.print_input_summary()
         return data, projection
 
-    def read_observation_to_csi(self, values, lon, lat, azimuth, incidence,
-                                spec=None, downsample=1, zero2nan=True,
-                                verbose=None, **spec_kwargs):
-        spec = self.build_observation_spec(spec=spec, **spec_kwargs)
-        data, projection = prepare_observation_for_csi(values, azimuth, incidence, spec)
+    def read_observation_to_csi(
+            self, values, lon, lat, azimuth, incidence, spec=None,
+            geometry_spec=None, downsample=1, zero2nan=True, verbose=None,
+            observation_type=None, raw_value_convention=None, wavelength=None,
+            azimuth_angle_role=None, acquisition_look_side=None):
+        spec = self.build_observation_spec(
+            spec=spec,
+            observation_type=observation_type,
+            raw_value_convention=raw_value_convention,
+            wavelength=wavelength,
+        )
+        geometry_spec = self.build_geometry_spec(
+            spec=geometry_spec,
+            azimuth_angle_role=azimuth_angle_role,
+            acquisition_look_side=acquisition_look_side,
+        )
+        data, projection = prepare_observation_for_csi(
+            values, azimuth, incidence, spec, geometry_spec
+        )
+        self.geometry_spec = geometry_spec
         return self._read_converted_observation_with_projection_to_csi(
             data,
             lon=lon,
@@ -704,13 +755,13 @@ class ReadBase2csisar(insar):
         This is the extension path for products that already provide ENU
         projection vectors. `projection` must be a 3-component ENU vector in
         the target positive-observation direction used after
-        `SarObservationSpec` value conversion: toward satellite for LOS/range
+        `SarObservationSpec` value conversion: ground-to-sensor for LOS/range
         observations and along heading for azimuth observations. It may be a single `(3,)` vector, a flat
         `(N, 3)` array, or `values.shape + (3,)`.
 
         Value conversion follows `SarObservationSpec`: raw LOS/range values
-        declared as `away_from_satellite` are sign-flipped into the
-        toward-satellite target convention before loading into CSI.
+        declared as `away_from_sensor` are sign-flipped into the
+        toward-sensor target convention before loading into CSI.
         """
         spec = self.build_observation_spec(spec=spec, **spec_kwargs)
         data = self.convert_observation_values(values, spec)
@@ -725,16 +776,26 @@ class ReadBase2csisar(insar):
             verbose=verbose,
         )
     
-    def to_xarray_dataarray(self):
-        '''
-        Also for GMT plot
-        '''
-        import xarray
+    def to_xarray_dataarray(self, state="processing"):
+        """Return a coordinate-safe full-grid xarray DataArray.
 
-        # Convert velocity data to an xarray DataArray with proper coordinates
-        data_array = xarray.DataArray(self.vel, coords=[('lat', self.lat), ('lon', self.lon)], dims=['lat', 'lon'])
-    
-        return data_array
+        ``state='processing'`` returns the reference-corrected observation when
+        available. ``state='observation'`` always returns the pre-correction
+        analysis observation.
+        """
+
+        from ..downsample.observation_grid import build_observation_grid
+
+        state = str(state).replace("-", "_").lower()
+        if state not in ("processing", "observation"):
+            raise ValueError("state must be 'processing' or 'observation'.")
+        grid = getattr(self, "observation_grid", None)
+        if grid is None:
+            grid = build_observation_grid(self, "sar")
+        dataset = grid.to_xarray_dataset()
+        if state == "processing" and "corrected_observation" in dataset:
+            return dataset["corrected_observation"]
+        return dataset["observation"]
     
     def cut_raw_sar(self, lon_range, lat_range, inplace=False):
         """
@@ -800,16 +861,13 @@ class ReadBase2csisar(insar):
             )
         return aliases[key]
 
-    def _plot_observation_spec(self, observation_type=None, input_azimuth_role=None,
-                               look_side=None, input_value_convention=None,
-                               wavelength=None):
+    def _plot_observation_spec(self, observation_type=None,
+                               raw_value_convention=None, wavelength=None):
         has_override = any(
             value is not None
             for value in (
                 observation_type,
-                input_azimuth_role,
-                look_side,
-                input_value_convention,
+                raw_value_convention,
                 wavelength,
             )
         )
@@ -817,15 +875,13 @@ class ReadBase2csisar(insar):
             return self.observation_spec
         return self.build_observation_spec(
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
             wavelength=wavelength,
         )
 
     def _raw_sar_values_for_plot(self, values, value_space="observation",
-                                 observation_type=None, input_azimuth_role=None,
-                                 look_side=None, input_value_convention=None,
+                                 observation_type=None,
+                                 raw_value_convention=None,
                                  wavelength=None):
         value_space = self._coerce_plot_value_space(value_space)
         if value_space == "raw":
@@ -833,9 +889,7 @@ class ReadBase2csisar(insar):
 
         spec = self._plot_observation_spec(
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
             wavelength=wavelength,
         )
         return self.convert_observation_values(values, spec), spec
@@ -1076,8 +1130,7 @@ class ReadBase2csisar(insar):
                         cb_label=None,
                         text=None, text_position=(0.05, 0.95), text_fontsize=12, text_color='black',
                         value_space='observation', observation_type=None,
-                        input_azimuth_role=None, look_side=None,
-                        input_value_convention=None, wavelength=None):
+                        raw_value_convention=None, wavelength=None):
         """
         Plot SAR grid values for quick visual QC.
 
@@ -1115,9 +1168,8 @@ class ReadBase2csisar(insar):
                 "observation" applies phase conversion and the reader's
                 target-direction convention. "raw" plots product values
                 before semantic conversion.
-            observation_type, input_azimuth_role, look_side,
-            input_value_convention, wavelength : optional
-                One-call semantic overrides. Prefer mode/preset/config for
+            observation_type, raw_value_convention, wavelength : optional
+                One-call scalar overrides. Prefer the reader mode/config for
                 repeated use; use these only when a single plot differs from
                 the reader's configured convention.
 
@@ -1183,9 +1235,7 @@ class ReadBase2csisar(insar):
             rawsar,
             value_space=value_space,
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
             wavelength=wavelength,
         )
         if coordrange is None and str(value_space).replace("-", "_").lower() != "raw":

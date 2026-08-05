@@ -37,9 +37,12 @@ from .config import explorefaultConfig
 from .logging_utils.mpi_logging import ensure_default_logging
 from numba import njit
 from collections import namedtuple
+from collections.abc import Mapping, Sequence
 import yaml
 import glob
 import os
+
+from .fault_angle_conventions import canonicalize_compact_fault_angles
 
 @njit
 def logpdf_multivariate_normal(x, mean, inv_cov, logdet):
@@ -217,6 +220,7 @@ class explorefault(SourceInv):
         self.ndatas = self.config.ndatas
         self.nfaults = self.config.nfaults
         self.slip_sampling_mode = self.config.slip_sampling_mode
+        self._validate_fault_angle_config()
 
         # Initialize sigma values
         self._sigma_update_mask = self.config.sigmas['update'][self.config.sigmas['dataset_param_indices']] # mask for which sigmas to update
@@ -225,6 +229,68 @@ class explorefault(SourceInv):
         self._sigma_update_positions = self.config.sigmas['updatable_param_indices'][self.config.sigmas['dataset_param_indices']] # positions of sigma to be updated in the full parameter vector
         self._sigma_update_positions = self._sigma_update_positions[self._sigma_update_indices]
         self._sigma_update_flag = np.any(self.config.sigmas['update']) # whether any sigma is to be updated
+
+    def _validate_fault_angle_config(self):
+        """Validate legacy compact-fault fixed values and Uniform dip support.
+
+        Uniform bounds use the existing [distribution, lower, range] format.
+        Other distribution families keep their established parser behavior;
+        every realized sample is still checked by the shared canonicalizer
+        immediately before geometry construction.
+        """
+        bounds = self.bounds if isinstance(self.bounds, Mapping) else {}
+        fixed_all = (
+            self.fixed_params
+            if isinstance(self.fixed_params, Mapping)
+            else {}
+        )
+        defaults = bounds.get('defaults', {})
+        defaults = defaults if isinstance(defaults, Mapping) else {}
+
+        for fault_index in range(int(self.nfaults)):
+            fault_name = f'fault_{fault_index}'
+            fault_bounds = bounds.get(fault_name, {})
+            fault_bounds = (
+                fault_bounds if isinstance(fault_bounds, Mapping) else {}
+            )
+            merged_bounds = {**defaults, **fault_bounds}
+            fixed = fixed_all.get(fault_name, {})
+            fixed = fixed if isinstance(fixed, Mapping) else {}
+
+            canonicalize_compact_fault_angles(
+                fixed.get('strike', 0.0),
+                fixed.get('dip', 90.0),
+            )
+
+            for local_name in ('strike', 'dip'):
+                if local_name in fixed or local_name not in merged_bounds:
+                    continue
+                bound = merged_bounds[local_name]
+                if (
+                    not isinstance(bound, Sequence)
+                    or isinstance(bound, str)
+                    or len(bound) < 3
+                    or bound[0] != 'Uniform'
+                ):
+                    continue
+                lower = float(bound[1])
+                upper = lower + float(bound[2])
+                if not np.isfinite(lower) or not np.isfinite(upper):
+                    raise ValueError(
+                        f"{fault_name}.{local_name} prior bounds must be finite"
+                    )
+                if local_name == 'dip' and (
+                    lower < -90.0 or upper > 180.0
+                ):
+                    raise ValueError(
+                        f"{fault_name}.dip prior must stay within [-90, 180] "
+                        f"degrees; got [{lower}, {upper}]"
+                    )
+
+    @staticmethod
+    def _canonicalize_fault_angles(strike, dip):
+        """Return the shared canonical CSI strike/dip pair."""
+        return canonicalize_compact_fault_angles(strike, dip)
 
     def build_fault_params(self, samples, fault_name):
         '''
@@ -523,13 +589,10 @@ class explorefault(SourceInv):
             params = self.build_fault_params(theta, fault_name)
             lon, lat, depth, strike, dip, length, width = params['lon'], params['lat'], params['depth'], params['strike'], params['dip'], params['length'], params['width']
     
-            # Handle dip > 90 or < 0
-            if dip > 90:
-                dip = 180 - dip
-                strike = (strike + 180) % 360
-            elif dip < 0:
-                dip = -dip
-                strike = (strike + 180) % 360
+            strike, dip, _ = self._canonicalize_fault_angles(
+                strike,
+                dip,
+            )
 
             # Build a planar fault
             if updatepatch:
@@ -721,15 +784,10 @@ class explorefault(SourceInv):
 
             fault = self.faults[fault_name]
             
-            # Handle dip > 90 or < 0 for geometry building
-            build_dip = ispecs['dip']
-            build_strike = ispecs['strike']
-            if build_dip > 90:
-                build_dip = 180 - build_dip
-                build_strike = (build_strike + 180) % 360
-            elif build_dip < 0:
-                build_dip = -build_dip
-                build_strike = (build_strike + 180) % 360
+            build_strike, build_dip, _ = self._canonicalize_fault_angles(
+                ispecs['strike'],
+                ispecs['dip'],
+            )
 
             if model not in ['STD', 'std', 'Std']:
                 # Build the fault patches

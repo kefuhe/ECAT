@@ -303,31 +303,84 @@ def read_tiff(unwfile, band_index=1, factor=1.0):
     return im_data, im_geotrans, im_proj, im_width, im_height
 
 
-def read_tiff_info(unwfile, im_width, im_height, meshout=True):
-    '''
-    Objective:
-        * Get the coordinate system and range of the x and y axes from a TIFF file
-    Input:
-        * unwfile     : TIFF file name
-    Output:
-        * x_lon, y_step, x_lat, y_step
-    '''
+def affine_pixel_centers(geotransform, width, height):
+    """Return exact projected/geographic coordinates of raster pixel centers.
 
-    metadata = gdal.Info(unwfile, format='json', deserialize=True)
-    upperLeft = metadata['cornerCoordinates']['upperLeft']
-    lowerRight = metadata['cornerCoordinates']['lowerRight']
-    x_upperleft, y_upperleft = upperLeft
-    x_lowerright, y_lowerright = lowerRight
-    x_step = (x_upperleft - x_lowerright) / im_width
-    y_step = -(y_upperleft - y_lowerright) / im_height
-    x_lon = np.linspace(x_upperleft, x_lowerright, im_width)
-    y_lat = np.linspace(y_upperleft, y_lowerright, im_height)
+    GDAL geotransforms describe the upper-left *corner* of the upper-left
+    pixel.  Pixel centers therefore use ``column + 0.5`` and ``row + 0.5``.
+    The rotation/skew coefficients are retained instead of assuming a
+    north-up raster.
+    """
+
+    if geotransform is None or len(geotransform) != 6:
+        raise ValueError("geotransform must contain six GDAL affine coefficients.")
+    width = int(width)
+    height = int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("Raster width and height must be positive.")
+    gt = tuple(float(value) for value in geotransform)
+    columns, rows = np.meshgrid(
+        np.arange(width, dtype=float) + 0.5,
+        np.arange(height, dtype=float) + 0.5,
+    )
+    mesh_x = gt[0] + columns * gt[1] + rows * gt[2]
+    mesh_y = gt[3] + columns * gt[4] + rows * gt[5]
+    return mesh_x, mesh_y
+
+
+def strided_geotransform(geotransform, stride):
+    """Return an affine transform whose centers match a strided raster view."""
+
+    stride = int(stride)
+    if stride <= 0:
+        raise ValueError("stride must be a positive integer.")
+    gt = tuple(float(value) for value in geotransform)
+    if stride == 1:
+        return gt
+    # Preserve the first retained source-pixel center while increasing both
+    # column and row vectors by ``stride``.
+    column_x = stride * gt[1]
+    column_y = stride * gt[4]
+    row_x = stride * gt[2]
+    row_y = stride * gt[5]
+    center_x = gt[0] + 0.5 * gt[1] + 0.5 * gt[2]
+    center_y = gt[3] + 0.5 * gt[4] + 0.5 * gt[5]
+    return (
+        center_x - 0.5 * column_x - 0.5 * row_x,
+        column_x,
+        row_x,
+        center_y - 0.5 * column_y - 0.5 * row_y,
+        column_y,
+        row_y,
+    )
+
+
+def read_tiff_info(unwfile, im_width, im_height, meshout=True):
+    """Read exact pixel-center coordinates from a GDAL raster.
+
+    The returned one-dimensional arrays are convenience summaries for
+    north-up rasters.  ``mesh_lon_x`` and ``mesh_lat_y`` are authoritative and
+    preserve the full affine transform, including rotation/skew.
+    """
+
+    dataset = gdal.Open(str(unwfile), gdal.GA_ReadOnly)
+    if dataset is None:
+        raise FileNotFoundError(f"Unable to open file: {unwfile}")
+    geotransform = dataset.GetGeoTransform()
+    dataset = None
+    mesh_lon_x, mesh_lat_y = affine_pixel_centers(
+        geotransform,
+        im_width,
+        im_height,
+    )
+    x_lon = mesh_lon_x[0, :].copy()
+    y_lat = mesh_lat_y[:, 0].copy()
+    x_step = float(geotransform[1])
+    y_step = float(geotransform[5])
 
     if meshout:
-        mesh_lon_x, mesh_lat_y = np.meshgrid(x_lon, y_lat)
         return x_lon, x_step, y_lat, y_step, mesh_lon_x, mesh_lat_y
-    else:
-        return x_lon, x_step, y_lat, y_step
+    return x_lon, x_step, y_lat, y_step
 
 
 def write_tiff(filename, im_proj, im_geotrans, im_data=None):
@@ -377,21 +430,32 @@ def utm_to_latlon(easting, northing, proj_info):
     wgs84_srs = osr.SpatialReference()
     wgs84_srs.ImportFromEPSG(4326)  # EPSG code for WGS84
 
+    # Use traditional GIS axis order explicitly.  This keeps TransformPoints
+    # output as (longitude, latitude) under GDAL 3+, independent of authority
+    # axis metadata in EPSG:4326.
+    if hasattr(utm_srs, "SetAxisMappingStrategy"):
+        utm_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
     # Create a coordinate transformation object
     transform = osr.CoordinateTransformation(utm_srs, wgs84_srs)
 
-    # Initialize arrays for latitudes and longitudes
-    latitudes = np.zeros_like(easting)
-    longitudes = np.zeros_like(northing)
+    original_shape = easting.shape
+    flat_easting = np.asarray(easting, dtype=float).reshape(-1)
+    flat_northing = np.asarray(northing, dtype=float).reshape(-1)
+    longitudes = np.empty(flat_easting.size, dtype=float)
+    latitudes = np.empty(flat_easting.size, dtype=float)
+    chunk_size = 250_000
+    for start in range(0, flat_easting.size, chunk_size):
+        stop = min(start + chunk_size, flat_easting.size)
+        points = np.column_stack(
+            (flat_easting[start:stop], flat_northing[start:stop])
+        )
+        transformed = np.asarray(transform.TransformPoints(points.tolist()), dtype=float)
+        longitudes[start:stop] = transformed[:, 0]
+        latitudes[start:stop] = transformed[:, 1]
 
-    # Perform the transformation for each point
-    for i in range(len(easting)):
-        # TODO: Check Use of TransformPoint() method
-        lat, lon, _ = transform.TransformPoint(easting[i], northing[i])
-        latitudes[i] = lat
-        longitudes[i] = lon
-
-    return latitudes, longitudes
+    return latitudes.reshape(original_shape), longitudes.reshape(original_shape)
 
 
 def save_to_tiff(data, lon, lat, output_file, dtype=gdal.GDT_Float32):
@@ -413,17 +477,39 @@ def save_to_tiff(data, lon, lat, output_file, dtype=gdal.GDT_Float32):
     if np.any(np.isnan(lon)) or np.any(np.isnan(lat)):
         raise ValueError("Longitude or latitude contains NaN values. Please check the input data.")
 
-    # Ensure lon and lat are 1D arrays
-    if lon.ndim > 1:
-        lon = lon[0, :]  # Take the first row if it's a 2D array
-    if lat.ndim > 1:
-        lat = lat[:, 0]  # Take the first column if it's a 2D array
-
     # Ensure data is a 2D array
     if data.ndim != 2:
         raise ValueError("Data must be a 2D array.")
 
     nrows, ncols = data.shape
+    if lon.ndim == 2 or lat.ndim == 2:
+        if lon.shape != data.shape or lat.shape != data.shape:
+            raise ValueError(
+                "Two-dimensional longitude/latitude arrays must match data."
+            )
+        lon_axis = lon[0, :]
+        lat_axis = lat[:, 0]
+        if not np.allclose(
+            lon,
+            np.broadcast_to(lon_axis, data.shape),
+            rtol=0.0,
+            atol=1.0e-10,
+            equal_nan=True,
+        ) or not np.allclose(
+            lat,
+            np.broadcast_to(lat_axis[:, None], data.shape),
+            rtol=0.0,
+            atol=1.0e-10,
+            equal_nan=True,
+        ):
+            raise ValueError(
+                "save_to_tiff cannot represent a curvilinear lon/lat mesh "
+                "without resampling. Use the observation-grid NetCDF exporter."
+            )
+        lon = lon_axis
+        lat = lat_axis
+    if lon.ndim != 1 or lat.ndim != 1:
+        raise ValueError("Longitude and latitude must be one-dimensional axes.")
     if len(lon) != ncols or len(lat) != nrows:
         raise ValueError("Longitude and latitude dimensions do not match the data dimensions.")
 
@@ -431,10 +517,18 @@ def save_to_tiff(data, lon, lat, output_file, dtype=gdal.GDT_Float32):
     driver = gdal.GetDriverByName('GTiff')
     dataset = driver.Create(output_file, ncols, nrows, 1, dtype)
 
-    # Set geotransform (top-left corner and pixel size)
+    # The coordinate arrays represent pixel centers; GDAL geotransforms start
+    # at the upper-left pixel corner.
     lon_step = lon[1] - lon[0] if len(lon) > 1 else 0
     lat_step = lat[1] - lat[0] if len(lat) > 1 else 0
-    geotransform = (lon.min(), lon_step, 0, lat.max(), 0, -lat_step)
+    geotransform = (
+        float(lon[0] - 0.5 * lon_step),
+        float(lon_step),
+        0.0,
+        float(lat[0] - 0.5 * lat_step),
+        0.0,
+        float(lat_step),
+    )
     dataset.SetGeoTransform(geotransform)
 
     # Set projection (WGS84)

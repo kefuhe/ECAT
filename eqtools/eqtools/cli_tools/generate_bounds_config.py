@@ -24,7 +24,7 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
 # This configuration file defines the parameter bounds for Bayesian inversion.
 # Different sampling modes and their corresponding boundary constraints are as follows:
 #
-# 1. SMC-FJ Mode:
+# 1. SMC_FJ Mode:
 #    - Only supports 'ss_ds' slip sampling mode.
 #    - Slip is constrained by the following boundaries:
 #      - rake_angle
@@ -60,14 +60,16 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
 # ---------------------------------------------------- #
 """
 
-    geometry_bounds = "\n".join([f"    {fault}: [-10, 10]  # Geometry parameter bounds for {fault}" for fault in faultnames])
+    geometry_bounds = "\n".join([f"    {fault}: [-10, 10]  # Mixed geometry units; see sampled parameter definitions" for fault in faultnames])
     slip_magnitude_bounds = "\n".join([f"    {fault}: [0, 15]  # Slip magnitude bounds for {fault} (unit: meters)" for fault in faultnames])
-    rake_angle_bounds = "\n".join([f"    {fault}: [-120, -60]  # Rake angle bounds for {fault} (unit: degrees; counterclockwise rotation)" for fault in faultnames])
+    rake_angle_bounds = "\n".join([f"    {fault}: [-120, -60]  # Rake sector for {fault} (degrees; CSI rake convention)" for fault in faultnames])
     strikeslip_bounds = "\n".join([f"    {fault}: [-10, 10]  # Strike-slip bounds for {fault} (unit: meters)" for fault in faultnames])
     dipslip_bounds = "\n".join([f"    {fault}: [-10, 0]  # Dip-slip bounds for {fault} (unit: meters)" for fault in faultnames])
-    poly_bounds = "\n".join([f"    {fault}: [-1000, 1000]  # Polynomial parameter bounds for {fault}" for fault in faultnames])
+    poly_bounds = "\n".join([f"    {fault}: [-1000, 1000]  # Data-correction bounds in observation units" for fault in faultnames])
 
-    # Build source_bounds section for non-Fault sources
+    # Build source_bounds section for non-Fault sources.  A comments-only YAML
+    # mapping parses as None, so keep an explicit empty mapping when no source
+    # was requested while retaining the short editable examples below it.
     source_bounds_lines = []
     if pressure_sources:
         for src in pressure_sources:
@@ -81,7 +83,8 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
             source_bounds_lines.append(f"    {src}:")
             source_bounds_lines.append(f"        eps12: [-1e-4, 1e-4]  # Strain component bounds")
             source_bounds_lines.append(f"        eps13: [-1e-4, 1e-4]")
-    if not source_bounds_lines:
+    has_source_bounds = bool(source_bounds_lines)
+    if not has_source_bounds:
         # Add commented-out example
         source_bounds_lines = [
             "    # --- Uncomment and edit for Pressure sources ---",
@@ -96,6 +99,14 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
             "    #     eps12: [-1e-4, 1e-4]",
             "    #     eps13: [-1e-4, 1e-4]",
         ]
+    source_bounds_header = (
+        "source_bounds:"
+        if has_source_bounds
+        else (
+            "source_bounds: {}  # Empty by default; remove {} before "
+            "uncommenting an example below"
+        )
+    )
     source_bounds_yaml = "\n".join(source_bounds_lines)
 
     # Build source_constraints section for inequality/equality constraints
@@ -115,6 +126,7 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
         source_constraints_lines.append(f"    # Fault source: {fault}")
         source_constraints_lines.append(f"    # {fault}:")
         source_constraints_lines.append(f"    #   - {{name: ss_positive, type: inequality, rule: 'strikeslip >= 0'}}")
+        source_constraints_lines.append(f"    #   - {{name: ss_negative, type: inequality, rule: 'strikeslip <= 0'}}")
         source_constraints_lines.append(f"    #   - {{name: ds_negative, type: inequality, rule: 'dipslip <= 0'}}")
         source_constraints_lines.append(f"    #   - {{name: zero_top_ss, type: equality, rule: 'zero_edge_slip(top, strikeslip)'}}")
         source_constraints_lines.append(f"    #   - {{name: zero_top_ds, type: equality, rule: 'zero_edge_slip(top, dipslip)'}}")
@@ -131,6 +143,10 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
             "    # MySbarbotSource:",
             "    #   - {name: incompressible, type: equality, rule: 'incompressible'}",
         ]
+    source_constraints_header = (
+        "source_constraints: {}  # Empty by default; remove {} before "
+        "uncommenting an example below"
+    )
     source_constraints_yaml = "\n".join(source_constraints_lines)
 
     config = yaml.load(f"""
@@ -162,7 +178,7 @@ alpha: [-3, 3]   # Bounds for alpha parameters; if log_scaled=true, values are l
 # For Pressure and Sbarbot sources, define component bounds here.
 # Each source name maps to its component bounds.
 # Values can be [min, max] (applied to all elements) or a list of [min, max] per element.
-source_bounds:
+{source_bounds_header}
 {source_bounds_yaml}
 
 # ----------- Source-Specific Constraints (inequality / equality) ----------- #
@@ -177,12 +193,12 @@ source_bounds:
 #             zero_edge_slip(edge, mode) — e.g. zero_edge_slip(top, ss+ds)
 #   Pressure: pressure>=0, pressure<=0, pressureDVx>=0, volume>=0, etc.
 #   Sbarbot:  incompressible (eps11+eps22+eps33=0), eps12>=0, eps12<=0, eps12==0, etc.
-source_constraints:
+{source_constraints_header}
 {source_constraints_yaml}
 """)
 
     # Write the configuration to the output file
-    with open(output_path, "w") as file:
+    with open(output_path, "w", encoding="utf-8") as file:
         yaml.dump(config, file)
 
     print(f"Bounds configuration file generated at: {output_path}")

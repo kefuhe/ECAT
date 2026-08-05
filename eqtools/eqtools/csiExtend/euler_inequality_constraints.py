@@ -7,6 +7,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .interseismic_parameter_model import build_loading_linear_terms, get_fault_loading_config
+from .interseismic_overrides import (
+    motion_sense_to_sign,
+    resolve_motion_sense_rows_for_patches,
+)
 from .patch_indices import select_patch_indices
 
 
@@ -134,12 +138,7 @@ def project_euler_to_strike(
 
 def determine_motion_sign(motion_sense: str) -> float:
     """Return ``+1`` for dextral/right-lateral and ``-1`` for sinistral/left-lateral."""
-    key = str(motion_sense).lower()
-    if key in {"dextral", "right_lateral", "right"}:
-        return 1.0
-    if key in {"sinistral", "left_lateral", "left"}:
-        return -1.0
-    raise ValueError(f"Invalid motion_sense: {motion_sense}")
+    return motion_sense_to_sign(motion_sense)
 
 
 def normalize_interseismic_backslip_state(state: Any) -> str:
@@ -494,31 +493,14 @@ def _normalize_cap_component(component: Any) -> str:
 
 
 def _motion_signs_for_patch_indices(fault: object, params: Mapping[str, Any], patch_indices: np.ndarray) -> np.ndarray:
-    """Return cap signs for selected patches, honoring loading-region overrides."""
-    patch_indices = np.asarray(patch_indices, dtype=int)
-    signs = np.full(
-        patch_indices.size,
-        determine_motion_sign(params.get("motion_sense", "dextral")),
-        dtype=float,
+    """Return cap signs for selected patches, honoring configured overrides."""
+    rows = resolve_motion_sense_rows_for_patches(
+        fault,
+        getattr(fault, "name", "fault"),
+        params,
+        np.asarray(patch_indices, dtype=int),
     )
-    if not params.get("loading_regions"):
-        return signs
-
-    position_by_patch = {int(patch): pos for pos, patch in enumerate(patch_indices.tolist())}
-    for region in params.get("loading_regions", []) or []:
-        region_patches = select_patch_indices(
-            fault,
-            region.get("selector"),
-            allow_none_all=False,
-            unique=True,
-            name=f"loading region '{region.get('name', 'region')}' selector",
-        )
-        region_sign = determine_motion_sign(region.get("motion_sense", params.get("motion_sense", "dextral")))
-        for patch_idx in np.asarray(region_patches, dtype=int):
-            pos = position_by_patch.get(int(patch_idx))
-            if pos is not None:
-                signs[pos] = region_sign
-    return signs
+    return np.asarray([float(row["motion_sign"]) for row in rows], dtype=float)
 
 
 def _require_fixed_loading_for_loading_sign(
@@ -546,16 +528,22 @@ def _require_fixed_loading_for_loading_sign(
 
 
 def _get_solver_bounds(multifault_solver: Any) -> tuple[np.ndarray | None, np.ndarray | None]:
-    for holder in (multifault_solver, getattr(multifault_solver, "constraint_manager", None)):
-        if holder is None:
-            continue
-        lb = getattr(holder, "lb", getattr(holder, "_lb", None))
-        ub = getattr(holder, "ub", getattr(holder, "_ub", None))
-        if lb is not None or ub is not None:
-            lb_array = None if lb is None else np.asarray(lb, dtype=float)
-            ub_array = None if ub is None else np.asarray(ub, dtype=float)
-            return lb_array, ub_array
-    return None, None
+    """Return the authoritative bounds used by ``loading_sign`` validation.
+
+    A configured constraint manager owns the current declaration/resolution
+    state.  Solver-side ``_lb``/``_ub`` arrays are compatibility mirrors and
+    can still contain the preceding configuration while a new config is being
+    compiled.  Therefore their values must never override, or fill gaps in,
+    manager-owned state.  Legacy solvers without a manager continue to use
+    their own arrays.
+    """
+    manager = getattr(multifault_solver, "constraint_manager", None)
+    holder = manager if manager is not None else multifault_solver
+    lb = getattr(holder, "lb", getattr(holder, "_lb", None))
+    ub = getattr(holder, "ub", getattr(holder, "_ub", None))
+    lb_array = None if lb is None else np.asarray(lb, dtype=float)
+    ub_array = None if ub is None else np.asarray(ub, dtype=float)
+    return lb_array, ub_array
 
 
 def _validate_loading_sign_bounds(

@@ -36,13 +36,17 @@ the template resolves the projection origin before calling `input_adapter.py`.
 ## Single scene
 
 ```powershell
+python run_adapter_downsampling.py -f downsample.yml
 python run_adapter_downsampling.py -f downsample.yml -s
 python run_adapter_downsampling.py -f downsample.yml -c
 python run_adapter_downsampling.py -f downsample.yml -d
 ```
 
-The flags have the same meaning as `ecat-downsample`: `-s` quick-look, `-c`
-covariance estimation, and `-d` final downsampling.
+With no stage flag, the YAML `covar.do_covar` and `downsample.enabled` values
+select the steps. The flags have the same meaning as `ecat-downsample`: `-s`
+quick-look (and disables both processing steps for that run), `-c` enables
+covariance estimation, and `-d` enables final downsampling. The `-c/-d` flags
+add to YAML settings and may be combined.
 
 ## Time series
 

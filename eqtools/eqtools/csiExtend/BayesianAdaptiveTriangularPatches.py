@@ -173,7 +173,11 @@ class BayesianAdaptiveTriangularPatches(
             Control point coordinates. Longitude/latitude by default;
             set ``is_utm=True`` to pass UTM-x/y in km.
         dip : array-like
-            Dip angles in degrees at each control point.
+            Oriented reference dip in degrees. Values in
+            ``[-90, 0) U (0, 180)`` are accepted; for example, ``-80`` and
+            ``100`` are equivalent. The immutable control-point container
+            stores only continuous ``(0, 180)`` values, so later Bayesian
+            proposal increments never need to infer the caller's convention.
         is_utm : bool, default False
             If True, ``x``/``y`` are interpreted as UTM (km) and converted
             via ``xy2ll`` before storage. Stored form is always lon/lat.

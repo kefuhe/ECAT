@@ -1,11 +1,9 @@
-from osgeo import gdal, osr
-import xarray
 import numpy as np
 import os
 import pandas as pd
 import warnings
-from csi.insar import insar
 from .readBase2csisar import ReadBase2csisar, GammasarConfig
+from .sar_conventions import ByteOrder, ObservationType, coerce_enum
 from .readTiffUtils import save_to_tiff
 
 
@@ -14,22 +12,16 @@ class GammasarReader(ReadBase2csisar):
     Reader for GAMMA binary SAR products with `.phs`, `.azi`, `.inc`, and
     `.rsc` files.
 
-    Use short modes such as `unwrapped_phase`, `los_displacement`,
-    `range_offset`, or `azimuth_offset` for normal use. Full presets such as
-    `gamma_unwrapped_phase` remain available for explicit configuration files.
-    Presets from other reader families are rejected; use `config=...` for
-    custom conventions.
+    Use one of four explicit modes: `unwrapped_phase`, `los_displacement`,
+    `range_offset`, or `azimuth_offset`. GAMMA rasters default to native-endian
+    float32, preserving the historical reader behavior; set ``byte_order`` for
+    products whose binary encoding differs from the host.
     """
     config_cls = GammasarConfig
     mode_presets = {
         "unwrapped_phase": "gamma_unwrapped_phase",
-        "phase_los": "gamma_unwrapped_phase",
-        "los": "gamma_los_displacement",
         "los_displacement": "gamma_los_displacement",
-        "range": "gamma_range_offset",
         "range_offset": "gamma_range_offset",
-        "az": "gamma_azimuth_offset",
-        "azimuth": "gamma_azimuth_offset",
         "azimuth_offset": "gamma_azimuth_offset",
     }
 
@@ -50,14 +42,15 @@ class GammasarReader(ReadBase2csisar):
     
     def extract_raw_grd(self, directory_name=None, prefix=None, phsname=None, rscname=None,
                         azifile=None, incfile=None, zero2nan=None, wavelength=None,
+                        factor_to_m=1.0, byte_order=None,
                         azimuth_reference=None, azimuth_unit=None,
                         azimuth_direction=None, incidence_reference=None,
                         incidence_unit=None, verbose=None):
         """
         Extract GAMMA value, azimuth, incidence, and coordinate grids.
 
-        Presets or config values should be set before calling this method
-        because angle conventions are applied here. Raw value conversion to the
+        Mode/config values must be set before calling this method because angle
+        conventions are applied here. Raw value conversion to the
         CSI scalar-observation convention happens later in `read_observation()`.
 
         Parameters:
@@ -71,6 +64,11 @@ class GammasarReader(ReadBase2csisar):
         wavelength (float, optional): Expected wavelength of the SAR signal. GAMMA
             `.rsc` WAVELENGTH is used for the loaded data; a supplied value is
             checked against it and warned on mismatch.
+        byte_order (str or ByteOrder, optional): ``native`` (default),
+            ``little``, or ``big`` for all float32 rasters.
+        factor_to_m (float, optional): Multiplier applied to the raw value
+            raster. Keep 1.0 for phase radians; use it to convert displacement
+            or offset units to metres.
         azimuth_reference (str, optional): The reference direction for azimuth. Defaults to config value.
         azimuth_unit (str, optional): The unit of the azimuth angle. Defaults to config value.
         azimuth_direction (str, optional): The rotation direction for azimuth. Defaults to config value.
@@ -79,7 +77,7 @@ class GammasarReader(ReadBase2csisar):
         Returns:
         None
         """
-        # Use config values if parameters are not provided
+        # Resolve technical read settings without changing scalar semantics.
         zero2nan = zero2nan if zero2nan is not None else self.config.zero2nan
         requested_wavelength = wavelength
         wavelength = wavelength if wavelength is not None else self.config.wavelength
@@ -88,6 +86,30 @@ class GammasarReader(ReadBase2csisar):
         azimuth_direction = azimuth_direction if azimuth_direction is not None else self.config.azimuth_direction
         incidence_reference = incidence_reference if incidence_reference is not None else self.config.incidence_reference
         incidence_unit = incidence_unit if incidence_unit is not None else self.config.incidence_unit
+        byte_order = coerce_enum(
+            ByteOrder,
+            byte_order if byte_order is not None else self.config.byte_order,
+            "byte_order",
+        )
+        try:
+            factor_to_m = float(factor_to_m)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("factor_to_m must be a finite positive number.") from exc
+        if not np.isfinite(factor_to_m) or factor_to_m <= 0.0:
+            raise ValueError("factor_to_m must be a finite positive number.")
+        if (
+            coerce_enum(
+                ObservationType, self.config.observation_type, "observation_type"
+            )
+            == ObservationType.UNWRAPPED_PHASE
+            and not np.isclose(factor_to_m, 1.0)
+        ):
+            warnings.warn(
+                "factor_to_m is applied before unwrapped-phase conversion. "
+                "Keep factor_to_m=1.0 when the GAMMA value raster is in radians.",
+                UserWarning,
+                stacklevel=2,
+            )
         self._set_raw_angle_convention(
             azimuth_reference=azimuth_reference,
             azimuth_unit=azimuth_unit,
@@ -128,14 +150,25 @@ class GammasarReader(ReadBase2csisar):
                 stacklevel=2,
             )
         wavelength = rsc_wavelength
-        dtype = np.float32
-        # Raw value raster. Its physical meaning is defined by the preset/config.
-        phs = np.fromfile(phase_file, dtype=dtype).reshape(ncol, nrow)
+        dtype = {
+            ByteOrder.NATIVE: np.dtype("=f4"),
+            ByteOrder.LITTLE: np.dtype("<f4"),
+            ByteOrder.BIG: np.dtype(">f4"),
+        }[byte_order]
+        expected_values = nrow * ncol
+        # Raw value raster. Its physical meaning is defined by the mode/config.
+        phs = self._read_float32_grid(
+            phase_file, dtype, expected_values, ncol, nrow, "value"
+        ) * factor_to_m
         los = phs
 
         # Raw azimuth and incidence rasters.
-        azi = np.fromfile(azi_file, dtype=dtype).reshape(ncol, nrow)
-        inc = np.fromfile(inc_file, dtype=dtype).reshape(ncol, nrow)
+        azi = self._read_float32_grid(
+            azi_file, dtype, expected_values, ncol, nrow, "azimuth"
+        )
+        inc = self._read_float32_grid(
+            inc_file, dtype, expected_values, ncol, nrow, "incidence"
+        )
 
         # Geographic coordinates from GAMMA resource metadata.
         x_first = np.float32(rsc.loc['X_FIRST', 'value'])
@@ -151,6 +184,19 @@ class GammasarReader(ReadBase2csisar):
         # Process azimuth and incidence angles
         azi = self.normalize_azimuth(azi, azimuth_reference, azimuth_unit, azimuth_direction)
         inc = self.normalize_incidence(inc, incidence_reference, incidence_unit)
+        finite_incidence = inc[np.isfinite(inc)]
+        if finite_incidence.size == 0:
+            raise ValueError(
+                "The GAMMA incidence raster contains no finite values. "
+                "Check byte_order and angle conventions."
+            )
+        if np.nanmin(finite_incidence) < -1.0 or np.nanmax(finite_incidence) > 91.0:
+            warnings.warn(
+                "Normalized GAMMA incidence angles extend outside [0, 90] degrees; "
+                "check byte_order and incidence conventions.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         if zero2nan:
             los[los == 0] = np.nan
@@ -161,9 +207,10 @@ class GammasarReader(ReadBase2csisar):
         self.azi_file = azi_file
         self.inc_file = inc_file
         self.wavelength = wavelength
+        self.byte_order = byte_order
         self.raw_vel = los
         self.raw_azimuth_enu = azi
-        self.raw_azimuth_role = self.config.input_azimuth_role
+        self.raw_azimuth_angle_role = self.config.azimuth_angle_role
         self.raw_incidence = inc
         self.raw_lon = lon
         self.raw_lat = lat
@@ -172,6 +219,19 @@ class GammasarReader(ReadBase2csisar):
         self.raw_mesh_lat = mesh_lat
         if self._is_verbose(verbose):
             self.print_input_summary()
+
+    @staticmethod
+    def _read_float32_grid(path, dtype, expected_values, rows, columns, label):
+        """Read one GAMMA float32 grid and fail clearly on size mismatch."""
+
+        actual_bytes = os.path.getsize(path)
+        expected_bytes = expected_values * np.dtype(dtype).itemsize
+        if actual_bytes != expected_bytes:
+            raise ValueError(
+                f"GAMMA {label} raster {path!r} has {actual_bytes} bytes; "
+                f"expected {expected_bytes} bytes for a {rows}x{columns} float32 grid."
+            )
+        return np.fromfile(path, dtype=dtype).reshape(rows, columns)
     
     def _construct_file_paths(self, directory_name, prefix):
         phase_file = self._single_file_match(
@@ -193,15 +253,16 @@ class GammasarReader(ReadBase2csisar):
         return phase_file, rsc_file, azi_file, inc_file
 
     def read_observation(self, downsample=1, zero2nan=True, wavelength=None,
-                         observation_type=None, input_azimuth_role=None,
-                         look_side=None, input_value_convention=None, verbose=None):
+                         observation_type=None, raw_value_convention=None,
+                         azimuth_angle_role=None, acquisition_look_side=None,
+                         verbose=None):
         """
         Convert extracted GAMMA grids into CSI observation arrays.
 
-        The selected preset/config determines whether `raw_vel` is interpreted
+        The selected mode/config determines whether `raw_vel` is interpreted
         as unwrapped phase, LOS/range displacement, or azimuth offset. Override
         the semantic fields only when the product documentation differs from
-        the selected preset.
+        the selected mode.
         
         Parameters:
         -----------
@@ -212,18 +273,14 @@ class GammasarReader(ReadBase2csisar):
         wavelength : float, optional
             The wavelength to use for conversion. Default is None (use self.wavelength).
         observation_type : str or ObservationType, optional
-            Explicit observation type: "phase_los", "los_displacement", or
+            Explicit observation type: "unwrapped_phase", "los_displacement", or
             "azimuth_offset". If omitted, config.observation_type is used.
-        input_azimuth_role : str or InputAzimuthRole, optional
-            Meaning of the input azimuth raster after angle normalization.
-        look_side : str or LookSide, optional
-            Right/left looking geometry for phase_los and los_displacement
-            when the azimuth role does not already imply it.
-        input_value_convention : str or InputValueConvention, optional
-            Raw value sign convention. phase_los accepts only
-            "unwrapped_phase"; los_displacement accepts "toward_satellite" or
-            "away_from_satellite"; azimuth_offset accepts "along_heading" or
-            "opposite_heading".
+        raw_value_convention : str or RawValueConvention, optional
+            Raw scalar encoding or positive direction.
+        azimuth_angle_role : str or AzimuthAngleRole, optional
+            Physical direction encoded by the normalized azimuth raster.
+        acquisition_look_side : str or AcquisitionLookSide, optional
+            Side of the platform heading containing the imaged ground swath.
         """
         self._require_raw_grid(
             "read_observation()",
@@ -241,16 +298,16 @@ class GammasarReader(ReadBase2csisar):
             downsample=downsample,
             zero2nan=zero2nan,
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
+            azimuth_angle_role=azimuth_angle_role,
+            acquisition_look_side=acquisition_look_side,
             wavelength=wavelength,
             verbose=verbose,
         )
 
     def save_outputs_as_tiff(self, directory_name, save_azi=False, save_inc=False,
                              save_vel=True, observation_type=None,
-                             input_value_convention=None, wavelength=None,
+                             raw_value_convention=None, wavelength=None,
                              extent=None, grid_resolution=None):
         """
         Save azi, inc, and vel as GeoTIFF files, with optional resampling to a regular grid and user-defined extent.
@@ -261,7 +318,7 @@ class GammasarReader(ReadBase2csisar):
         - save_inc: bool, whether to save incidence data as TIFF.
         - save_vel: bool, whether to save velocity data as TIFF.
         - observation_type: SAR observation type used for value conversion.
-        - input_value_convention: Sign convention of the raw input values.
+        - raw_value_convention: Sign convention of the raw input values.
         - wavelength: Wavelength used for phase conversion.
         - extent: tuple, optional, geographic extent to define the regular grid (min_lon, max_lon, min_lat, max_lat).
         - grid_resolution: float, optional, resolution of the grid in degrees (e.g., 0.01 for ~1 km grid spacing).
@@ -328,7 +385,7 @@ class GammasarReader(ReadBase2csisar):
             vel_lon, vel_lat = self.raw_lon, self.raw_lat
             spec = self.build_observation_spec(
                 observation_type=observation_type,
-                input_value_convention=input_value_convention,
+                raw_value_convention=raw_value_convention,
                 wavelength=wavelength,
             )
             vel_data = self.convert_observation_values(vel_data, spec)

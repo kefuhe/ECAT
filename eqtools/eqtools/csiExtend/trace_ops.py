@@ -16,10 +16,14 @@ __all__ = (
     "cumulative_distance",
     "extend_trace",
     "orient_trace",
+    "point_at_trace_distance",
+    "project_points_to_trace",
     "resample_trace",
     "reverse_trace",
+    "sample_trace_distances",
     "simplify_trace",
     "smooth_trace",
+    "trace_coordinate_intersections",
     "trace_length",
     "trim_trace",
 )
@@ -64,6 +68,208 @@ def cumulative_distance(coords) -> np.ndarray:
 def trace_length(coords) -> float:
     """Return total trace length in the x/y plane."""
     return float(cumulative_distance(coords)[-1])
+
+
+def project_points_to_trace(points, coords) -> dict[str, np.ndarray]:
+    """Project one or more points to the nearest point on a trace.
+
+    Parameters
+    ----------
+    points : array-like
+        Point coordinates.  A single ``(x, y)`` pair or an ``(n, 2)`` array is
+        accepted.  Extra columns are ignored.
+    coords : array-like
+        Trace coordinates in a metric coordinate system, normally local
+        CSI/eqtools ``x/y`` kilometers.
+
+    Returns
+    -------
+    dict
+        Arrays with keys ``trace_distance_km``, ``distance_to_trace_km``,
+        ``segment_index``, ``segment_fraction`` and ``projected_xy``.  Segment
+        indices refer to the cleaned trace used internally.
+    """
+    arr = clean_trace(coords)
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if pts.ndim != 2 or pts.shape[1] < 2:
+        raise ValueError("points must be a 1-D x/y pair or a 2-D array with x/y columns.")
+    if not np.all(np.isfinite(pts[:, :2])):
+        raise ValueError("points contains NaN or infinite x/y values.")
+
+    seg_start = arr[:-1, :2]
+    seg_end = arr[1:, :2]
+    seg_vec = seg_end - seg_start
+    seg_len = np.linalg.norm(seg_vec, axis=1)
+    valid = seg_len > 0.0
+    if not np.any(valid):
+        raise ValueError("trace contains only zero-length segments.")
+    if not np.all(valid):
+        seg_start = seg_start[valid]
+        seg_vec = seg_vec[valid]
+        seg_len = seg_len[valid]
+        original_indices = np.nonzero(valid)[0]
+    else:
+        original_indices = np.arange(seg_len.size, dtype=int)
+
+    seg_len2 = seg_len**2
+    seg_cum = np.r_[0.0, np.cumsum(seg_len[:-1])]
+
+    trace_distance = np.empty(pts.shape[0], dtype=float)
+    distance = np.empty(pts.shape[0], dtype=float)
+    segment_index = np.empty(pts.shape[0], dtype=int)
+    segment_fraction = np.empty(pts.shape[0], dtype=float)
+    projected_xy = np.empty((pts.shape[0], 2), dtype=float)
+
+    for i, point in enumerate(pts[:, :2]):
+        rel = point - seg_start
+        frac = np.clip(np.sum(rel * seg_vec, axis=1) / seg_len2, 0.0, 1.0)
+        projected = seg_start + frac[:, None] * seg_vec
+        dist = np.linalg.norm(point - projected, axis=1)
+        j = int(np.argmin(dist))
+        trace_distance[i] = seg_cum[j] + frac[j] * seg_len[j]
+        distance[i] = dist[j]
+        segment_index[i] = int(original_indices[j])
+        segment_fraction[i] = float(frac[j])
+        projected_xy[i] = projected[j]
+
+    return {
+        "trace_distance_km": trace_distance,
+        "distance_to_trace_km": distance,
+        "segment_index": segment_index,
+        "segment_fraction": segment_fraction,
+        "projected_xy": projected_xy,
+    }
+
+
+def point_at_trace_distance(coords, trace_distance_km: float) -> dict[str, object]:
+    """Return the interpolated trace point at an along-trace distance.
+
+    ``trace_distance_km`` is clipped only at floating-point tolerance; values
+    outside the trace length raise ``ValueError``.
+    """
+    arr = clean_trace(coords)
+    s = cumulative_distance(arr)
+    distance = float(trace_distance_km)
+    if distance < -1e-10 or distance > s[-1] + 1e-10:
+        raise ValueError("trace_distance_km must lie within the trace length.")
+    distance = float(np.clip(distance, 0.0, s[-1]))
+
+    if np.isclose(distance, s[-1], rtol=0.0, atol=1e-10):
+        idx = arr.shape[0] - 2
+        frac = 1.0
+    else:
+        idx = int(np.searchsorted(s, distance, side="right") - 1)
+        idx = max(0, min(idx, arr.shape[0] - 2))
+        denom = s[idx + 1] - s[idx]
+        frac = 0.0 if denom <= 0.0 else (distance - s[idx]) / denom
+
+    point = _interp_at_distances(arr, np.asarray([distance], dtype=float))[0]
+    return {
+        "xy": point[:2].copy(),
+        "coords": point.copy(),
+        "trace_distance_km": distance,
+        "segment_index": idx,
+        "segment_fraction": float(frac),
+    }
+
+
+def sample_trace_distances(
+    coords,
+    start_trace_distance_km: float,
+    end_trace_distance_km: float,
+    step_km: float,
+    *,
+    include_endpoint: bool = True,
+) -> np.ndarray:
+    """Sample along-trace distances between two distances using true arc length."""
+    length = trace_length(coords)
+    start = float(start_trace_distance_km)
+    end = float(end_trace_distance_km)
+    step = float(step_km)
+    if step <= 0:
+        raise ValueError("step_km must be positive.")
+    if start < -1e-10 or start > length + 1e-10 or end < -1e-10 or end > length + 1e-10:
+        raise ValueError("start/end trace distances must lie within the trace length.")
+    start = float(np.clip(start, 0.0, length))
+    end = float(np.clip(end, 0.0, length))
+
+    direction = 1.0 if end >= start else -1.0
+    span = abs(end - start)
+    if np.isclose(span, 0.0, rtol=0.0, atol=1e-12):
+        return np.asarray([start], dtype=float)
+
+    offsets = np.arange(0.0, span + step * 1e-10, step)
+    distances = start + direction * offsets
+    if include_endpoint and not np.isclose(distances[-1], end, rtol=0.0, atol=1e-8):
+        distances = np.r_[distances, end]
+    distances = np.clip(distances, min(start, end), max(start, end))
+    return distances.astype(float)
+
+
+def trace_coordinate_intersections(coords, *, axis: int | str, value: float, atol: float = 1e-12) -> list[dict[str, object]]:
+    """Return trace intersections with a constant x/y coordinate.
+
+    Parameters
+    ----------
+    coords : array-like
+        Trace coordinates in metric x/y.
+    axis : {0, 1, "x", "y"}
+        Coordinate axis used for the constant-coordinate cut.
+    value : float
+        Target coordinate value.
+    atol : float, default 1e-12
+        Tolerance for detecting endpoint and constant-segment intersections.
+    """
+    arr = clean_trace(coords)
+    if isinstance(axis, str):
+        key = axis.lower()
+        if key not in ("x", "y"):
+            raise ValueError("axis must be 0, 1, 'x', or 'y'.")
+        axis_idx = 0 if key == "x" else 1
+    else:
+        axis_idx = int(axis)
+        if axis_idx not in (0, 1):
+            raise ValueError("axis must be 0, 1, 'x', or 'y'.")
+
+    target = float(value)
+    s = cumulative_distance(arr)
+    out: list[dict[str, object]] = []
+    seen: set[tuple[int, float]] = set()
+    for idx in range(arr.shape[0] - 1):
+        a = float(arr[idx, axis_idx])
+        b = float(arr[idx + 1, axis_idx])
+        denom = b - a
+        if abs(denom) <= atol:
+            if abs(target - a) > atol:
+                continue
+            fractions = (0.0, 1.0)
+        else:
+            frac = (target - a) / denom
+            if frac < -atol or frac > 1.0 + atol:
+                continue
+            fractions = (float(np.clip(frac, 0.0, 1.0)),)
+
+        seg_len = s[idx + 1] - s[idx]
+        for frac in fractions:
+            key = (idx, round(frac, 12))
+            if key in seen:
+                continue
+            seen.add(key)
+            point = arr[idx] + frac * (arr[idx + 1] - arr[idx])
+            out.append(
+                {
+                    "xy": point[:2].copy(),
+                    "coords": point.copy(),
+                    "trace_distance_km": float(s[idx] + frac * seg_len),
+                    "segment_index": idx,
+                    "segment_fraction": float(frac),
+                }
+            )
+
+    out.sort(key=lambda item: float(item["trace_distance_km"]))
+    return out
 
 
 def _interp_at_distances(coords: np.ndarray, distances: np.ndarray) -> np.ndarray:

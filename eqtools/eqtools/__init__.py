@@ -1,9 +1,12 @@
 from importlib import import_module
 
-from .gmttools import ReadGMTLines
-
 
 def __getattr__(name):
-    if name == "csiExtend":
-        return import_module(".csiExtend", __name__)
+    if name in {"csiExtend", "geoexport", "map_viewer"}:
+        return import_module(f".{name}", __name__)
+    if name == "ReadGMTLines":
+        return import_module(".gmttools", __name__).ReadGMTLines
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["ReadGMTLines", "csiExtend", "geoexport", "map_viewer"]

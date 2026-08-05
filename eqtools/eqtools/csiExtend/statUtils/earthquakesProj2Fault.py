@@ -368,7 +368,7 @@ class EqseqProj2Fault(SourceInv):
         Returns:
             None
         """
-        from ...plottools import plot_slip_distribution
+        from ...viztools import plot_slip_distribution
         self.calculate_seismic_projection_statistics()
     
         # Plot the statistics

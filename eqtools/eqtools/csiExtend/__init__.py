@@ -48,6 +48,30 @@ _LAZY_EXPORTS = {
         ".interseismic_fields",
         "calculate_tectonic_loading_rate",
     ),
+    "export_interseismic_loading_pair_table": (
+        ".interseismic_loading_pairs",
+        "export_interseismic_loading_pair_table",
+    ),
+    "resolve_interseismic_loading_pairs": (
+        ".interseismic_loading_pairs",
+        "resolve_interseismic_loading_pairs",
+    ),
+    "summarize_interseismic_pair_diagnostics": (
+        ".interseismic_loading_pairs",
+        "summarize_interseismic_pair_diagnostics",
+    ),
+    "export_interseismic_motion_sense_table": (
+        ".interseismic_overrides",
+        "export_interseismic_motion_sense_table",
+    ),
+    "resolve_interseismic_motion_sense": (
+        ".interseismic_overrides",
+        "resolve_interseismic_motion_sense",
+    ),
+    "summarize_interseismic_motion_sense_diagnostics": (
+        ".interseismic_overrides",
+        "summarize_interseismic_motion_sense_diagnostics",
+    ),
     "DeepSlipLoadingMixin": (
         ".deep_slip_loading_mixin",
         "DeepSlipLoadingMixin",
@@ -67,6 +91,46 @@ _LAZY_EXPORTS = {
     "DataCorrectionReportMixin": (
         ".data_correction_report_mixin",
         "DataCorrectionReportMixin",
+    ),
+    "FigureProductMixin": (
+        ".plot_product_mixin",
+        "FigureProductMixin",
+    ),
+    "plot_data_fits_product": (
+        ".figure_products",
+        "plot_data_fits_product",
+    ),
+    "plot_fault_fields_product": (
+        ".figure_products",
+        "plot_fault_fields_product",
+    ),
+    "plot_interseismic_summary_product": (
+        ".figure_products",
+        "plot_interseismic_summary_product",
+    ),
+    "plot_deep_slip_loading_summary_product": (
+        ".figure_products",
+        "plot_deep_slip_loading_summary_product",
+    ),
+    "data_fit_vectors": (
+        ".fit_statistics",
+        "data_fit_vectors",
+    ),
+    "fit_metrics_from_vectors": (
+        ".fit_statistics",
+        "fit_metrics_from_vectors",
+    ),
+    "solver_fit_metrics": (
+        ".fit_statistics",
+        "solver_fit_metrics",
+    ),
+    "format_fit_statistics_report": (
+        ".fit_statistics",
+        "format_fit_statistics_report",
+    ),
+    "write_fit_statistics_report_files": (
+        ".fit_statistics",
+        "write_fit_statistics_report_files",
     ),
     "DataCorrectionConstraintMixin": (
         ".data_correction_constraints",
@@ -109,21 +173,62 @@ _LAZY_EXPORTS = {
     "get_patch_centers": (".patch_indices", "get_patch_centers"),
     "get_patches_by_depth": (".patch_indices", "get_patches_by_depth"),
     "get_patches_in_box": (".patch_indices", "get_patches_in_box"),
+    "get_patches_in_trace_segment": (
+        ".patch_indices",
+        "get_patches_in_trace_segment",
+    ),
     "get_patches_in_trace_range": (
         ".patch_indices",
         "get_patches_in_trace_range",
     ),
     "normalize_patch_indices": (".patch_indices", "normalize_patch_indices"),
+    "resolve_trace_marker": (".patch_indices", "resolve_trace_marker"),
+    "sample_trace_markers": (".patch_indices", "sample_trace_markers"),
     "select_patch_indices": (".patch_indices", "select_patch_indices"),
+    "trace_range_selector_from_markers": (
+        ".patch_indices",
+        "trace_range_selector_from_markers",
+    ),
+    "set_fault_loading_override_selector": (
+        ".interseismic_config_tools",
+        "set_fault_loading_override_selector",
+    ),
+    "set_fault_motion_sense_override_selector": (
+        ".interseismic_config_tools",
+        "set_fault_motion_sense_override_selector",
+    ),
+    "update_fault_loading_override_from_trace_segment": (
+        ".interseismic_config_tools",
+        "update_fault_loading_override_from_trace_segment",
+    ),
+    "update_fault_motion_sense_override_from_trace_segment": (
+        ".interseismic_config_tools",
+        "update_fault_motion_sense_override_from_trace_segment",
+    ),
+    "set_fault_loading_region_selector": (
+        ".interseismic_config_tools",
+        "set_fault_loading_region_selector",
+    ),
+    "update_fault_loading_region_from_trace_segment": (
+        ".interseismic_config_tools",
+        "update_fault_loading_region_from_trace_segment",
+    ),
     "buffer_trace": (".trace_ops", "buffer_trace"),
     "clean_trace": (".trace_ops", "clean_trace"),
     "cumulative_distance": (".trace_ops", "cumulative_distance"),
     "extend_trace": (".trace_ops", "extend_trace"),
     "orient_trace": (".trace_ops", "orient_trace"),
+    "point_at_trace_distance": (".trace_ops", "point_at_trace_distance"),
+    "project_points_to_trace": (".trace_ops", "project_points_to_trace"),
     "resample_trace": (".trace_ops", "resample_trace"),
     "reverse_trace": (".trace_ops", "reverse_trace"),
+    "sample_trace_distances": (".trace_ops", "sample_trace_distances"),
     "simplify_trace": (".trace_ops", "simplify_trace"),
     "smooth_trace": (".trace_ops", "smooth_trace"),
+    "trace_coordinate_intersections": (
+        ".trace_ops",
+        "trace_coordinate_intersections",
+    ),
     "trace_length": (".trace_ops", "trace_length"),
     "trim_trace": (".trace_ops", "trim_trace"),
 }

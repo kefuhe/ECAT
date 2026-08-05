@@ -246,8 +246,7 @@ if __name__ == '__main__':
     # from eqtools.csiExtend.multifaultsolve_boundLSE import multifaultsolve_boundLSE as multifaultsolve
     # inversion = multifaultsolve('inv', trifaults_list, verbose=verbose)
     # inversion.assembleGFs()
-    # inversion.set_bounds_from_config('bounds_config.yml')
-    # inversion.set_inequality_constraints_for_rake_angle(rake_limits=inversion.bounds_config['rake_angle'])
+    # inversion.apply_constraints_from_config('bounds_config.yml')
     # inversion.ConstrainedLeastSquareSoln(penalty_weight=8.0, smoothing_constraints=('free', 'free', 'free', 'free'), verbose=True)
     # inversion.distributem()
 

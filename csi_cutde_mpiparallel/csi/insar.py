@@ -1884,9 +1884,10 @@ class insar(SourceInv):
             lon0 = np.mean(self.lon)
             lat0 = np.mean(self.lat)
 
-            # Compute the baselines
+            # Compute the baselines. The latitude term follows the
+            # block-model colatitude convention: theta - theta0 = lat0 - lat.
             delta_lon = self.lon - lon0
-            delta_lat = self.lat - lat0
+            delta_lat = lat0 - self.lat
 
             # Normalize the baselines
             base_max = 1.0
@@ -1901,9 +1902,10 @@ class insar(SourceInv):
             lon0, lat0 = self.InternalStrainNormalizingFactor['ref']
             base_max = self.InternalStrainNormalizingFactor['base']
 
-            # Compute the baselines
+            # Compute the baselines. The latitude term follows the
+            # block-model colatitude convention: theta - theta0 = lat0 - lat.
             delta_lon = self.lon - lon0
-            delta_lat = self.lat - lat0
+            delta_lat = lat0 - self.lat
 
             # Normalize the baselines
             base_max = 1.0
@@ -1915,13 +1917,14 @@ class insar(SourceInv):
         Hse = np.zeros((ns, nc))
         Hsn = np.zeros((ns, nc))
 
-        # Fill in
-        lam, phi = lon*np.pi/180., lat*np.pi/180.
+        # Fill in block-model order [sxx, sxy, syy]. The shear coefficient
+        # is tensor shear, not engineering shear, so no factor 1/2 appears.
+        phi0 = lat0*np.pi/180.
         delta_lam, delta_phi = delta_lon*np.pi/180., delta_lat*np.pi/180.
-        Hse[:, 0] = r*delta_lam*np.cos(phi)
-        Hse[:, 2] = r*delta_phi/2.
-        Hsn[:, 1] = r*delta_phi
-        Hsn[:, 2] = r*delta_lam*np.cos(phi)/2.
+        Hse[:, 0] = r*delta_lam*np.cos(phi0)
+        Hse[:, 1] = r*delta_phi
+        Hsn[:, 1] = r*delta_lam*np.cos(phi0)
+        Hsn[:, 2] = r*delta_phi
 
         # Multiply by the los
         StrainMat = self.los[:, 0][:, np.newaxis]*Hse + self.los[:, 1][:, np.newaxis]*Hsn

@@ -60,6 +60,11 @@ def read_trace_file(entry, base_dir=None):
     data = data[["lon", "lat"]].astype(float)
     data.attrs["id"] = entry.get("id", file_path.stem)
     data.attrs["source_file"] = str(file_path)
+    marker = entry.get("marker")
+    if marker is not None:
+        markersize = entry.get("markersize")
+        data.attrs["plot_marker"] = marker
+        data.attrs["plot_markersize"] = 3.0 if markersize is None else float(markersize)
     return data
 
 

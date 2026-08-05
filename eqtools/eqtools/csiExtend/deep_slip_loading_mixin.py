@@ -192,10 +192,149 @@ class DeepSlipLoadingMixin:
         max_distance=None,
         name=None,
         source="deep_slip_loading_proxy",
-        overwrite=True,
         sync=True,
     ):
-        """Add deep-slip proxy equality and/or inequality constraints.
+        """Add new deep-slip proxy equality and/or inequality constraints.
+
+        Parameters
+        ----------
+        shallow_fault, deep_faults : source name/object or sequence, optional
+            Used to build a mapping when ``mapping`` is not supplied.
+        mapping : dict, optional
+            Precomputed shallow-to-deep mapping.
+        shallow_selector, deep_selectors : selector, optional
+            Patch selection used while building a mapping.
+        state : str
+            Deep-slip proxy state such as ``bottom_continuity`` or ``cap``.
+        component : {"strikeslip", "dipslip"}
+            Signed slip component.
+        creep_ratio, locking, value, cap_ratio : float, optional
+            State-specific numerical values.
+        motion_sense, motion_sign : str or number, optional
+            Required by sign-sensitive cap constraints.
+        coord_frame, top_edge_policy, top_edge_tolerance, max_distance
+            Mapping controls.
+        name : str, optional
+            Globally unique base family name.
+        source : str
+            Diagnostic provenance.
+        sync : bool
+            Synchronize the BLSE/VCE compatibility mirror after commit.
+
+        Returns
+        -------
+        dict
+            Added group names, mapping, matrices, and metadata.
+
+        Raises
+        ------
+        ValueError
+            If the declaration is invalid or the generated name exists.
+        """
+        return self._apply_deep_slip_loading_constraint(
+            shallow_fault,
+            deep_faults,
+            mapping=mapping,
+            shallow_selector=shallow_selector,
+            deep_selectors=deep_selectors,
+            state=state,
+            component=component,
+            creep_ratio=creep_ratio,
+            locking=locking,
+            value=value,
+            cap_ratio=cap_ratio,
+            motion_sense=motion_sense,
+            motion_sign=motion_sign,
+            coord_frame=coord_frame,
+            top_edge_policy=top_edge_policy,
+            top_edge_tolerance=top_edge_tolerance,
+            max_distance=max_distance,
+            name=name,
+            source=source,
+            replace=False,
+            sync=sync,
+        )
+
+    def replace_deep_slip_loading_constraint(
+        self,
+        shallow_fault=None,
+        deep_faults=None,
+        *,
+        mapping=None,
+        shallow_selector=None,
+        deep_selectors=None,
+        state="bottom_continuity",
+        component="strikeslip",
+        creep_ratio=None,
+        locking=None,
+        value=None,
+        cap_ratio=None,
+        motion_sense=None,
+        motion_sign=None,
+        coord_frame="same_xy",
+        top_edge_policy="infer",
+        top_edge_tolerance=1.0e-8,
+        max_distance=None,
+        name=None,
+        source="deep_slip_loading_proxy",
+        sync=True,
+    ):
+        """Replace one existing user-owned deep-slip constraint family.
+
+        Parameters are identical to :meth:`add_deep_slip_loading_constraint`.
+        ``name`` must identify an existing user-owned deep-slip family. All
+        equality/inequality siblings are replaced in one transaction.
+        """
+        return self._apply_deep_slip_loading_constraint(
+            shallow_fault,
+            deep_faults,
+            mapping=mapping,
+            shallow_selector=shallow_selector,
+            deep_selectors=deep_selectors,
+            state=state,
+            component=component,
+            creep_ratio=creep_ratio,
+            locking=locking,
+            value=value,
+            cap_ratio=cap_ratio,
+            motion_sense=motion_sense,
+            motion_sign=motion_sign,
+            coord_frame=coord_frame,
+            top_edge_policy=top_edge_policy,
+            top_edge_tolerance=top_edge_tolerance,
+            max_distance=max_distance,
+            name=name,
+            source=source,
+            replace=True,
+            sync=sync,
+        )
+
+    def _apply_deep_slip_loading_constraint(
+        self,
+        shallow_fault=None,
+        deep_faults=None,
+        *,
+        mapping=None,
+        shallow_selector=None,
+        deep_selectors=None,
+        state="bottom_continuity",
+        component="strikeslip",
+        creep_ratio=None,
+        locking=None,
+        value=None,
+        cap_ratio=None,
+        motion_sense=None,
+        motion_sign=None,
+        coord_frame="same_xy",
+        top_edge_policy="infer",
+        top_edge_tolerance=1.0e-8,
+        max_distance=None,
+        name=None,
+        source="deep_slip_loading_proxy",
+        replace,
+        sync=True,
+    ):
+        """Build and atomically add or replace one deep-slip family.
 
         Parameters
         ----------
@@ -217,8 +356,8 @@ class DeepSlipLoadingMixin:
         name : str, optional
             Base constraint name.  Suffixes ``_equality`` and ``_inequality``
             are added when both row types exist.
-        overwrite : bool, default True
-            Replace an existing constraint group with the same name.
+        replace : bool
+            Replace the complete existing user-owned family when true.
 
         Returns
         -------
@@ -263,35 +402,67 @@ class DeepSlipLoadingMixin:
         added: dict[str, str] = {}
         equality = constraints.get("equality")
         inequality = constraints.get("inequality")
-        if equality is not None:
-            eq_name = base_name if inequality is None else f"{base_name}_equality"
-            manager.add_equality_constraint(
-                equality["A"],
-                equality["b"],
-                name=eq_name,
-                source=source,
-                overwrite=overwrite,
-            )
-            added["equality"] = eq_name
-        if inequality is not None:
-            ineq_name = base_name if equality is None else f"{base_name}_inequality"
-            manager.add_inequality_constraint(
-                inequality["A"],
-                inequality["b"],
-                name=ineq_name,
-                source=source,
-                overwrite=overwrite,
-            )
-            added["inequality"] = ineq_name
+        with manager.constraint_transaction():
+            candidate_names = {
+                base_name,
+                f"{base_name}_equality",
+                f"{base_name}_inequality",
+            }
+            existing_names = [
+                candidate
+                for candidate in candidate_names
+                if (
+                    candidate in manager._equality_constraints
+                    or candidate in manager._inequality_constraints
+                )
+            ]
+            if replace:
+                if not existing_names:
+                    raise ValueError(
+                        f"Deep-slip constraint family '{base_name}' does not "
+                        "exist; use add_deep_slip_loading_constraint()."
+                    )
+                for existing_name in existing_names:
+                    group = (
+                        manager._equality_constraints.get(existing_name)
+                        or manager._inequality_constraints.get(existing_name)
+                    )
+                    if (
+                        group.get('owner', 'user') != 'user'
+                        or group.get('family') != 'deep_slip_loading'
+                    ):
+                        raise ValueError(
+                            f"Constraint '{existing_name}' is not a "
+                            "user-owned deep-slip loading group"
+                        )
+                    manager._remove_group(existing_name)
+            if equality is not None:
+                eq_name = base_name if inequality is None else f"{base_name}_equality"
+                manager._register_equality_group(
+                    equality["A"],
+                    equality["b"],
+                    name=eq_name,
+                    source=source,
+                    replace=False,
+                    owner='user',
+                    family='deep_slip_loading',
+                )
+                added["equality"] = eq_name
+            if inequality is not None:
+                ineq_name = base_name if equality is None else f"{base_name}_inequality"
+                manager._register_inequality_group(
+                    inequality["A"],
+                    inequality["b"],
+                    name=ineq_name,
+                    source=source,
+                    replace=False,
+                    owner='user',
+                    family='deep_slip_loading',
+                )
+                added["inequality"] = ineq_name
 
-        if sync:
-            if hasattr(manager, "sync_to_solver"):
+            if sync:
                 manager.sync_to_solver()
-            else:
-                if hasattr(manager, "get_combined_equality_constraints"):
-                    manager.get_combined_equality_constraints()
-                if hasattr(manager, "get_combined_inequality_constraints"):
-                    manager.get_combined_inequality_constraints()
 
         return {
             "added": bool(added),

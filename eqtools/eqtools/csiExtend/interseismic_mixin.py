@@ -34,6 +34,17 @@ from .interseismic_parameter_model import (
     get_fault_loading_config,
     resolve_transform_columns,
 )
+from .interseismic_loading_pairs import (
+    export_interseismic_loading_pair_table as _export_interseismic_loading_pair_table,
+    resolve_interseismic_loading_pairs as _resolve_interseismic_loading_pairs,
+    summarize_interseismic_pair_diagnostics,
+)
+from .interseismic_overrides import (
+    export_interseismic_motion_sense_table as _export_interseismic_motion_sense_table,
+    get_loading_overrides,
+    resolve_interseismic_motion_sense as _resolve_interseismic_motion_sense,
+    summarize_interseismic_motion_sense_diagnostics,
+)
 from .euler_inequality_constraints import (
     calculate_euler_matrix_for_points,
     convert_euler_pole_to_vector,
@@ -213,6 +224,321 @@ class InterseismicKinematicsMixin:
         if store:
             get_fault_by_name(self, fault_name).tectonic_loading_rate = values
         return values
+
+    def resolve_interseismic_loading_pairs(
+        self,
+        fault_name,
+        patch_indices=None,
+        solution=None,
+        model=None,
+        include_centers=True,
+    ):
+        """Resolve block-pair assignments used by interseismic loading.
+
+        This is a read-only inspection helper.  It mirrors
+        ``interseismic_config.yml:fault_loading`` and optional
+        ``loading_overrides`` so users can check which ordered block pair is used
+        by each patch before interpreting loading or coupling fields.
+
+        Parameters
+        ----------
+        fault_name : str
+            Target fault name.
+        patch_indices : iterable of int, optional
+            Patches to inspect.  ``None`` inspects all patches.
+        solution : array-like, optional
+            Linear solution vector used to evaluate loading values.  Defaults to
+            ``self.mpost`` when available.
+        model : str or array-like, optional
+            Bayesian representative model passed to ``returnModel()`` before
+            resolving loading values.
+        include_centers : bool, default True
+            Include patch-center coordinates in records when available.
+
+        Returns
+        -------
+        dict
+            Per-patch records, numeric fields for plotting, pair metadata, and
+            warnings.  The method does not modify ``fault.slip`` or constraints.
+        """
+        if model is not None:
+            if not hasattr(self, "returnModel"):
+                raise ValueError("model=... is only supported on objects with returnModel()")
+            self.returnModel(model=model, print_stat=False)
+
+        return _resolve_interseismic_loading_pairs(
+            self,
+            fault_name,
+            patch_indices=patch_indices,
+            solution=solution,
+            include_centers=include_centers,
+        )
+
+    def export_interseismic_loading_pair_table(
+        self,
+        fault_name,
+        filename,
+        result=None,
+        patch_indices=None,
+        solution=None,
+        model=None,
+        include_centers=True,
+        include_header=True,
+    ):
+        """Export the effective loading block pair for each selected patch.
+
+        The written CSV is meant for visual audit and provenance.  It does not
+        change loading, cap constraints, hard equalities, or fault slip arrays.
+        """
+        if result is None:
+            result = self.resolve_interseismic_loading_pairs(
+                fault_name,
+                patch_indices=patch_indices,
+                solution=solution,
+                model=model,
+                include_centers=include_centers,
+            )
+        return _export_interseismic_loading_pair_table(
+            result,
+            filename,
+            include_header=include_header,
+        )
+
+    def print_interseismic_pair_diagnostics(
+        self,
+        fault_name=None,
+        result=None,
+        patch_indices=None,
+        solution=None,
+        model=None,
+        zero_tolerance=1.0e-12,
+    ):
+        """Print compact diagnostics for interseismic loading pair assignments.
+
+        The report lists pair counts, ordered block pairs, and loading sign
+        statistics.  It is intentionally separate from preflight constraint
+        checks so users can inspect manual ``loading_overrides`` without changing
+        solver behavior.
+        """
+        if result is not None:
+            diagnostics = summarize_interseismic_pair_diagnostics(
+                result,
+                zero_tolerance=zero_tolerance,
+            )
+            self._print_one_interseismic_pair_diagnostic(diagnostics)
+            return diagnostics
+
+        fault_names = [fault_name] if fault_name is not None else self._get_interseismic_loading_fault_names()
+        diagnostics = []
+        print("Interseismic loading-pair diagnostics")
+        for name in fault_names:
+            resolved = self.resolve_interseismic_loading_pairs(
+                name,
+                patch_indices=patch_indices,
+                solution=solution,
+                model=model,
+            )
+            diag = summarize_interseismic_pair_diagnostics(
+                resolved,
+                zero_tolerance=zero_tolerance,
+            )
+            diagnostics.append(diag)
+            self._print_one_interseismic_pair_diagnostic(diag, indent="  ")
+        return {"faults": diagnostics}
+
+    def plot_interseismic_loading_pairs(
+        self,
+        fault_name,
+        field="pair_id",
+        result=None,
+        patch_indices=None,
+        solution=None,
+        model=None,
+        cblabel=None,
+        show=True,
+        savefig=False,
+        **plot_kwargs,
+    ):
+        """Plot loading-pair ids or loading values without mutating slip.
+
+        Parameters
+        ----------
+        field : {"pair_id", "loading"}, default "pair_id"
+            ``pair_id`` plots the effective default/region assignment; loading
+            aliases plot evaluated tectonic loading values.
+        **plot_kwargs
+            Forwarded to CSI ``fault.plot``.
+        """
+        if result is None:
+            result = self.resolve_interseismic_loading_pairs(
+                fault_name,
+                patch_indices=patch_indices,
+                solution=solution,
+                model=model,
+            )
+        key = str(field).lower().replace("-", "_")
+        if key in {"pair", "pair_id", "pair_index", "region", "region_id"}:
+            values = result["fields"]["pair_id"]
+            default_label = "loading pair id"
+        elif key in {"loading", "loading_rate", "tectonic_loading", "tectonic_loading_rate"}:
+            values = result["fields"]["loading"]
+            default_label = "tectonic loading rate"
+        else:
+            raise ValueError("field must be 'pair_id' or 'loading'")
+
+        fault = get_fault_by_name(self, fault_name)
+        if cblabel is None:
+            cblabel = default_label
+        return fault.plot(
+            slip=values,
+            cblabel=cblabel,
+            show=show,
+            savefig=savefig,
+            **plot_kwargs,
+        )
+
+    def resolve_interseismic_motion_sense(
+        self,
+        fault_name,
+        patch_indices=None,
+        include_centers=True,
+    ):
+        """Resolve effective dextral/sinistral expectations for each patch.
+
+        This read-only helper applies the same priority used by Euler-cap
+        constraints: fault default, then ``loading_overrides``, then
+        ``motion_sense_overrides``.  It does not modify loading, constraints,
+        or ``fault.slip``.
+        """
+        return _resolve_interseismic_motion_sense(
+            self,
+            fault_name,
+            patch_indices=patch_indices,
+            include_centers=include_centers,
+        )
+
+    def export_interseismic_motion_sense_table(
+        self,
+        fault_name,
+        filename,
+        result=None,
+        patch_indices=None,
+        include_centers=True,
+        include_header=True,
+    ):
+        """Export resolved motion-sense expectations as a CSV table."""
+        if result is None:
+            result = self.resolve_interseismic_motion_sense(
+                fault_name,
+                patch_indices=patch_indices,
+                include_centers=include_centers,
+            )
+        return _export_interseismic_motion_sense_table(
+            result,
+            filename,
+            include_header=include_header,
+        )
+
+    def print_interseismic_motion_sense_diagnostics(self, fault_name, result=None, patch_indices=None):
+        """Print compact counts for effective dextral/sinistral assignments."""
+        if result is None:
+            result = self.resolve_interseismic_motion_sense(fault_name, patch_indices=patch_indices)
+        diagnostics = summarize_interseismic_motion_sense_diagnostics(result)
+        print(
+            f"- {diagnostics.get('fault_name', fault_name)}: "
+            f"patches={diagnostics.get('patch_count', 0)}, "
+            f"dextral={diagnostics.get('dextral_count', 0)}, "
+            f"sinistral={diagnostics.get('sinistral_count', 0)}"
+        )
+        for source in diagnostics.get("sources", []):
+            label = source.get("override_name") or source.get("source")
+            print(
+                f"  {label}: patches={source.get('patch_count', 0)}, "
+                f"dextral={source.get('dextral_count', 0)}, "
+                f"sinistral={source.get('sinistral_count', 0)}"
+            )
+        return diagnostics
+
+    def plot_interseismic_motion_sense(
+        self,
+        fault_name,
+        field="motion_sign",
+        result=None,
+        patch_indices=None,
+        cblabel=None,
+        show=True,
+        savefig=False,
+        **plot_kwargs,
+    ):
+        """Plot effective motion-sense signs or override-source ids.
+
+        ``motion_sign`` uses +1 for dextral/right-lateral and -1 for
+        sinistral/left-lateral.  ``source_id`` uses 0 for fault defaults,
+        positive ids for ``loading_overrides`` and negative ids for
+        ``motion_sense_overrides``.
+        """
+        if result is None:
+            result = self.resolve_interseismic_motion_sense(
+                fault_name,
+                patch_indices=patch_indices,
+            )
+        key = str(field).lower().replace("-", "_")
+        if key in {"motion", "motion_sign", "sense", "motion_sense"}:
+            values = result["fields"]["motion_sign"]
+            default_label = "motion sign (+dextral, -sinistral)"
+        elif key in {"source", "source_id", "override", "override_id"}:
+            values = result["fields"]["source_id"]
+            default_label = "motion-sense source id"
+        else:
+            raise ValueError("field must be 'motion_sign' or 'source_id'")
+
+        fault = get_fault_by_name(self, fault_name)
+        if cblabel is None:
+            cblabel = default_label
+        return fault.plot(
+            slip=values,
+            cblabel=cblabel,
+            show=show,
+            savefig=savefig,
+            **plot_kwargs,
+        )
+
+    def _get_interseismic_loading_fault_names(self):
+        interseismic_config = getattr(getattr(self, "config", None), "interseismic_config", {}) or {}
+        loading = get_fault_loading_config(interseismic_config)
+        names = list(loading.get("configured_faults", []))
+        if names:
+            return names
+        return list(loading.get("faults", {}).keys())
+
+    def _print_one_interseismic_pair_diagnostic(self, diagnostics, indent=""):
+        fault_name = diagnostics.get("fault_name", "<unknown>")
+        print(
+            f"{indent}- {fault_name}: patches={diagnostics.get('patch_count', 0)}, "
+            f"pairs={diagnostics.get('pair_count', 0)}"
+        )
+        for pair in diagnostics.get("pairs", []):
+            stats = pair.get("loading", {})
+            block_text = " - ".join(str(item) for item in pair.get("blocks", []))
+            region = pair.get("region_name") or pair.get("source") or "default"
+            if stats.get("count", 0):
+                load_text = (
+                    f"loading min/median/max="
+                    f"{stats.get('min'):.4g}/{stats.get('median'):.4g}/{stats.get('max'):.4g}"
+                )
+            else:
+                load_text = "loading unavailable"
+            print(
+                f"{indent}  pair {pair.get('pair_id')}: {region}, "
+                f"patches={pair.get('patch_count')}, blocks={block_text}, "
+                f"motion={pair.get('motion_sense')}, {load_text}, "
+                f"signs(+/-/0)="
+                f"{pair.get('positive_loading_count', 0)}/"
+                f"{pair.get('negative_loading_count', 0)}/"
+                f"{pair.get('near_zero_loading_count', 0)}"
+            )
+        for warning in diagnostics.get("warnings", []):
+            print(f"{indent}  warning: {warning}")
 
     def calculate_locking_degree(
         self,
@@ -480,12 +806,22 @@ class InterseismicKinematicsMixin:
                 solution=solution,
                 zero_tolerance=zero_tolerance,
             )
-            loading_regions_report = self._summarize_interseismic_loading_regions(
+            loading_overrides_report = self._summarize_interseismic_loading_overrides(
                 fault_name,
                 fault,
                 params,
                 solution=solution,
             )
+            try:
+                motion_sense_report = summarize_interseismic_motion_sense_diagnostics(
+                    self.resolve_interseismic_motion_sense(fault_name)
+                )
+            except Exception as exc:
+                motion_sense_report = {
+                    "available": False,
+                    "reason": str(exc),
+                    "sources": [],
+                }
             backslip_report = self._summarize_interseismic_backslip_selectors(
                 fault_name,
                 fault,
@@ -510,7 +846,11 @@ class InterseismicKinematicsMixin:
                 loading_report,
             )
             fault_warnings.extend(loading_warnings)
-            fault_warnings.extend(loading_regions_report.get("warnings", []))
+            fault_warnings.extend(loading_overrides_report.get("warnings", []))
+            if motion_sense_report.get("available") is False:
+                fault_warnings.append(
+                    f"motion_sense_overrides unavailable: {motion_sense_report.get('reason')}"
+                )
             if cap_report.get("selector_error"):
                 fault_warnings.append(cap_report["selector_error"])
             elif (
@@ -540,7 +880,9 @@ class InterseismicKinematicsMixin:
                 "reference_strike": params.get("reference_strike"),
                 "motion_sense": params.get("motion_sense", "dextral"),
                 "loading": loading_report,
-                "loading_regions": loading_regions_report,
+                "loading_overrides": loading_overrides_report,
+                "loading_regions": loading_overrides_report,
+                "motion_sense_overrides": motion_sense_report,
                 "cap_constraints": cap_report,
                 "backslip_constraints": backslip_report,
                 "overlap": overlap_report,
@@ -682,12 +1024,13 @@ class InterseismicKinematicsMixin:
             },
         }
 
-    def _summarize_interseismic_loading_regions(self, fault_name, fault, params, solution=None):
-        """Summarize optional manual loading-region overrides for one fault."""
-        regions = list(params.get("loading_regions", []) or [])
-        if not regions:
+    def _summarize_interseismic_loading_overrides(self, fault_name, fault, params, solution=None):
+        """Summarize optional manual loading-definition overrides for one fault."""
+        overrides = get_loading_overrides(params)
+        if not overrides:
             return {
                 "enabled": False,
+                "overrides": [],
                 "regions": [],
                 "default": {
                     "patch_count": int(len(fault.patch)),
@@ -718,9 +1061,9 @@ class InterseismicKinematicsMixin:
 
         assigned = {}
         overlap_patches = set()
-        region_rows = []
+        override_rows = []
         warnings = []
-        for index, region in enumerate(regions):
+        for index, region in enumerate(overrides):
             name = str(region.get("name", f"region_{index}"))
             try:
                 patch_indices = select_patch_indices(
@@ -728,11 +1071,11 @@ class InterseismicKinematicsMixin:
                     region.get("selector"),
                     allow_none_all=False,
                     unique=True,
-                    name=f"loading region '{name}' selector for fault '{fault_name}'",
+                    name=f"loading override '{name}' selector for fault '{fault_name}'",
                 )
                 patches = [int(i) for i in patch_indices.tolist()]
             except Exception as exc:
-                region_rows.append({
+                override_rows.append({
                     "name": name,
                     "available": False,
                     "reason": str(exc),
@@ -742,7 +1085,7 @@ class InterseismicKinematicsMixin:
                     "reference_strike": region.get("reference_strike"),
                     "motion_sense": region.get("motion_sense"),
                 })
-                warnings.append(f"loading region '{name}' selector failed: {exc}")
+                warnings.append(f"loading override '{name}' selector failed: {exc}")
                 continue
 
             overlaps = [patch for patch in patches if patch in assigned]
@@ -750,7 +1093,7 @@ class InterseismicKinematicsMixin:
                 overlap_patches.update(overlaps)
                 previous = sorted({assigned[patch] for patch in overlaps})
                 warnings.append(
-                    f"loading region '{name}' overlaps previous region(s) {previous} on patches {overlaps}"
+                    f"loading override '{name}' overlaps previous override(s) {previous} on patches {overlaps}"
                 )
             for patch in patches:
                 assigned.setdefault(patch, name)
@@ -777,7 +1120,7 @@ class InterseismicKinematicsMixin:
                     "available": False,
                     "reason": loading_reason,
                 }
-            region_rows.append(row)
+            override_rows.append(row)
 
         all_patches = set(range(len(fault.patch)))
         default_patches = sorted(all_patches - set(assigned.keys()))
@@ -799,11 +1142,12 @@ class InterseismicKinematicsMixin:
                 "reason": loading_reason,
             }
         if overlap_patches:
-            warnings.append("loading_regions overlap; build_loading_linear_terms will reject overlapping patches")
+            warnings.append("loading_overrides overlap; build_loading_linear_terms will reject overlapping patches")
 
         return {
             "enabled": True,
-            "regions": region_rows,
+            "overrides": override_rows,
+            "regions": override_rows,
             "default": default,
             "overlap_patches": sorted(overlap_patches),
             "warnings": warnings,
@@ -1078,16 +1422,17 @@ class InterseismicKinematicsMixin:
         else:
             lines.append(f"    loading b: unavailable ({loading.get('reason', 'unknown reason')})")
 
-        loading_regions = fault_report.get("loading_regions", {})
-        if loading_regions.get("enabled"):
-            default = loading_regions.get("default", {})
+        loading_overrides = fault_report.get("loading_overrides", fault_report.get("loading_regions", {}))
+        if loading_overrides.get("enabled"):
+            default = loading_overrides.get("default", {})
+            override_rows = loading_overrides.get("overrides", loading_overrides.get("regions", []))
             lines.append(
-                "    loading regions: {count}, default patches={default_count}".format(
-                    count=len(loading_regions.get("regions", [])),
+                "    loading overrides: {count}, default patches={default_count}".format(
+                    count=len(override_rows),
                     default_count=default.get("patch_count", 0),
                 )
             )
-            for region in loading_regions.get("regions", []):
+            for region in override_rows:
                 if not region.get("available", True):
                     lines.append(f"      - {region.get('name')}: unavailable ({region.get('reason')})")
                     continue
@@ -1104,6 +1449,31 @@ class InterseismicKinematicsMixin:
                         f"median={median_text}"
                     )
                 )
+
+        motion_report = fault_report.get("motion_sense_overrides", {})
+        if motion_report.get("available") is False:
+            lines.append(f"    motion sense: unavailable ({motion_report.get('reason')})")
+        elif motion_report:
+            sources = [
+                item
+                for item in motion_report.get("sources", [])
+                if item.get("source") != "default"
+            ]
+            if sources:
+                lines.append(
+                    "    motion sense: dextral={dextral}, sinistral={sinistral}, overrides={count}".format(
+                        dextral=motion_report.get("dextral_count", 0),
+                        sinistral=motion_report.get("sinistral_count", 0),
+                        count=len(sources),
+                    )
+                )
+                for item in sources:
+                    label = item.get("override_name") or item.get("source")
+                    lines.append(
+                        f"      - {label}: patches={item.get('patch_count', 0)}, "
+                        f"dextral={item.get('dextral_count', 0)}, "
+                        f"sinistral={item.get('sinistral_count', 0)}"
+                    )
 
         cap = fault_report["cap_constraints"]
         backslip = fault_report["backslip_constraints"]
@@ -1262,10 +1632,98 @@ class InterseismicKinematicsMixin:
         coupling=None,
         value=None,
         name=None,
-        overwrite=True,
         source=None,
     ):
-        """Add a hard equality constraint on direct backslip ``q``.
+        """Add a new hard equality constraint on direct backslip ``q``.
+
+        The generated name must not already exist. Use
+        :meth:`replace_interseismic_backslip_constraint` for an intentional
+        replacement.
+
+        Parameters
+        ----------
+        fault_name : str
+            Target Fault source.
+        state : str
+            ``free``, ``zero_backslip``, ``full_coupling``,
+            ``prescribed_coupling``, or ``prescribed_backslip``.
+        selector : mapping or iterable of int, optional
+            Fault-local patch selector; ``None`` selects all patches.
+        component : {"strikeslip", "dipslip"}
+            Signed slip component. Coupling states require ``strikeslip``.
+        coupling, value : float, optional
+            State-specific prescribed value.
+        name : str, optional
+            Globally unique user group name.
+        source : str, optional
+            Diagnostic provenance label.
+
+        Returns
+        -------
+        dict
+            Generated name, selector result, formula, and matrix.
+        """
+        return self._apply_interseismic_backslip_constraint(
+            fault_name,
+            state,
+            selector=selector,
+            component=component,
+            coupling=coupling,
+            value=value,
+            name=name,
+            source=source,
+            replace=False,
+            owner="user",
+            require_existing=False,
+        )
+
+    def replace_interseismic_backslip_constraint(
+        self,
+        fault_name,
+        state,
+        selector=None,
+        component="strikeslip",
+        coupling=None,
+        value=None,
+        name=None,
+        source=None,
+    ):
+        """Replace an existing user-owned hard backslip equality group.
+
+        Parameters are identical to
+        :meth:`add_interseismic_backslip_constraint`; ``name`` must resolve to
+        an existing user-owned equality group.
+        """
+        return self._apply_interseismic_backslip_constraint(
+            fault_name,
+            state,
+            selector=selector,
+            component=component,
+            coupling=coupling,
+            value=value,
+            name=name,
+            source=source,
+            replace=True,
+            owner="user",
+            require_existing=True,
+        )
+
+    def _apply_interseismic_backslip_constraint(
+        self,
+        fault_name,
+        state,
+        *,
+        selector=None,
+        component="strikeslip",
+        coupling=None,
+        value=None,
+        name=None,
+        source=None,
+        replace,
+        owner,
+        require_existing,
+    ):
+        """Build and register one backslip equality for a known owner.
 
         Parameters
         ----------
@@ -1289,10 +1747,15 @@ class InterseismicKinematicsMixin:
             Backslip value for ``state="prescribed_backslip"``.
         name : str, optional
             Constraint group name.  A stable name is generated when omitted.
-        overwrite : bool, default True
-            Replace an existing equality constraint with the same name.
         source : str, optional
             Provenance label stored in the constraint manager.
+        replace : bool
+            Whether the caller explicitly requested replacement.
+        owner : {"user", "config"}
+            Registry owner. Public callers never set this value directly.
+        require_existing : bool
+            Enforce public replace semantics. Config compilation sets this
+            false because config-owned groups were removed before rebuilding.
 
         Returns
         -------
@@ -1347,7 +1810,30 @@ class InterseismicKinematicsMixin:
         if source is None:
             source = f"interseismic_backslip/{fault_name}"
 
-        self._add_interseismic_equality_constraint(Aeq, beq, name, source=source, overwrite=overwrite)
+        if require_existing:
+            existing = self.constraint_manager._equality_constraints.get(name)
+            if existing is None:
+                raise ValueError(
+                    f"Interseismic backslip constraint '{name}' does not "
+                    "exist; use add_interseismic_backslip_constraint()."
+                )
+            if (
+                existing.get('owner', 'user') != owner
+                or existing.get('family') != 'interseismic_backslip'
+            ):
+                raise ValueError(
+                    f"Constraint '{name}' is not a {owner}-owned "
+                    "interseismic backslip group"
+                )
+
+        self._add_interseismic_equality_constraint(
+            Aeq,
+            beq,
+            name,
+            source=source,
+            replace=replace,
+            owner=owner,
+        )
         return {
             "added": True,
             "name": name,
@@ -1428,30 +1914,28 @@ class InterseismicKinematicsMixin:
         """Return A/fixed terms for ``b = block1 - block2`` loading."""
         return build_loading_linear_terms(self, fault_name, patch_indices, n_total=n_total)
 
-    def _add_interseismic_equality_constraint(self, A, b, name, source, overwrite):
+    def _add_interseismic_equality_constraint(
+        self,
+        A,
+        b,
+        name,
+        source,
+        replace,
+        *,
+        owner="user",
+    ):
         """Store an interseismic equality row group through the active manager."""
-        manager = getattr(self, "constraint_manager", None)
-        if manager is not None and hasattr(manager, "add_equality_constraint"):
-            manager.add_equality_constraint(A, b, name=name, source=source, overwrite=overwrite)
-            if hasattr(manager, "_equality_constraints") and name not in manager._equality_constraints:
-                raise RuntimeError(
-                    f"Equality constraint '{name}' was not added. "
-                    "Check that the current inversion mode supports linear equality constraints."
-                )
-            if hasattr(manager, "sync_to_solver"):
-                manager.sync_to_solver()
-            elif hasattr(manager, "get_combined_equality_constraints"):
-                manager.get_combined_equality_constraints()
-            return
-        if hasattr(self, "add_custom_equality_constraint"):
-            if overwrite and manager is not None and hasattr(manager, "remove_constraint"):
-                manager.remove_constraint(name, "equality")
-            self.add_custom_equality_constraint(A, b, name=name, source=source)
-            return
-        if hasattr(self, "add_equality_constraint"):
-            self.add_equality_constraint(A=A, b=b, name=name, source=source)
-            return
-        raise AttributeError("No equality-constraint API found on this inversion object")
+        manager = self.constraint_manager
+        manager._register_equality_group(
+            A,
+            b,
+            name=name,
+            source=source,
+            replace=replace,
+            owner=owner,
+            family='interseismic_backslip',
+        )
+        manager.sync_to_solver()
 
     def analyze_fault_kinematics(
         self,

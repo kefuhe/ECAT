@@ -13,10 +13,6 @@ Quick start
 ...     ax.plot(x, y)
 ...     finish_fig(fig, 'figure.pdf', show=True, dpi=600)
 
-One-step figure creation::
-
-    fig, ax = PlotStyle('science', figsize='single', fontsize=8).subplots()
-
 For the full API reference, see the eqtools.viztools documentation.
 """
 

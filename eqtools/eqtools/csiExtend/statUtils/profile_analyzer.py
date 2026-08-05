@@ -82,8 +82,8 @@ import pickle
 from csi.SourceInv import SourceInv
 
 # Local imports
-from ...plottools import sci_plot_style
-from ...plottools import set_degree_formatter
+from ...viztools import sci_plot_style
+from ...viztools import set_degree_formatter
 from .regional_ramp_removal import RegionalRampRemover, RampConfiguration, RampResult
 
 
@@ -4511,7 +4511,7 @@ def compare_trend_removal_methods(data,
 def _plot_trend_comparison(original_data, x_coords, y_coords, results, coord_type):
     """绘制趋势去除方法比较图。"""
     import matplotlib.pyplot as plt
-    from ...plottools import sci_plot_style
+    from ...viztools import sci_plot_style
     
     with sci_plot_style():
         # 统计有效结果

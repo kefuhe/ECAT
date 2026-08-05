@@ -12,14 +12,12 @@ class TiffsarReader(ReadBase2csisar):
 
     Users normally instantiate `GammaTiffReader` or `Hyp3TiffReader` with a
     short mode such as `unwrapped_phase`, `los_displacement`, or
-    `range_offset`. Full preset names supported by the concrete reader remain
-    available for reproducible configs; use `config=...` for custom products.
+    `range_offset`. Use `config=...` only for products outside the built-in
+    mode conventions.
     """
     config_cls = Hyp3TiffConfig
     mode_presets = {
         "unwrapped_phase": "hyp3_unwrapped_phase",
-        "phase_los": "hyp3_unwrapped_phase",
-        "los": "hyp3_los_displacement",
         "los_displacement": "hyp3_los_displacement",
     }
 
@@ -46,7 +44,7 @@ class TiffsarReader(ReadBase2csisar):
         """
         Extract SAR value, azimuth, incidence, and coordinate grids.
 
-        Presets or config values should be set before calling this method
+        Mode/config values should be set before calling this method
         because angle conventions are applied here. The value raster itself is
         only scaled by `factor_to_m`; semantic conversion to CSI observation
         values happens later in `read_observation()`.
@@ -104,9 +102,9 @@ class TiffsarReader(ReadBase2csisar):
             self.config.observation_type,
             "observation_type",
         )
-        if observation_type == ObservationType.PHASE_LOS and not np.isclose(float(factor_to_m), 1.0):
+        if observation_type == ObservationType.UNWRAPPED_PHASE and not np.isclose(float(factor_to_m), 1.0):
             warnings.warn(
-                "factor_to_m is applied before phase_los conversion. Keep "
+                "factor_to_m is applied before unwrapped-phase conversion. Keep "
                 "factor_to_m=1.0 for unwrapped phase rasters unless the file "
                 "values are intentionally pre-scaled phase units.",
                 UserWarning,
@@ -154,14 +152,20 @@ class TiffsarReader(ReadBase2csisar):
         self.wavelength = wavelength
         self.raw_vel = vel
         self.raw_azimuth_enu = azi
-        self.raw_azimuth_role = self.config.input_azimuth_role
+        self.raw_azimuth_angle_role = self.config.azimuth_angle_role
         self.raw_incidence = inc
         self.raw_lon = mesh_lon.mean(axis=0)
         self.raw_lat = mesh_lat.mean(axis=1)
         self.raw_mesh_lon = mesh_lon
         self.raw_mesh_lat = mesh_lat
+        self.raw_x = x_lon
+        self.raw_y = x_lat
+        self.raw_mesh_x = mesh_lon_x
+        self.raw_mesh_y = mesh_lat_y
         self.im_geotrans = im_geotrans
+        self.raw_geotransform = tuple(im_geotrans)
         self.im_proj = im_proj
+        self.source_value_file = phase_file
         if self._is_verbose(verbose):
             self.print_input_summary()
 
@@ -188,7 +192,7 @@ class TiffsarReader(ReadBase2csisar):
         Parameters:
             phase_file (str): Path to the value raster. It may contain
                 unwrapped phase, LOS/range displacement, or azimuth offset
-                depending on the reader preset/config.
+                depending on the reader mode/config.
             azi_file (str): Path to the azimuth file (TIFF format).
             inc_file (str): Path to the incidence file (TIFF format).
             phase_band (int, optional): Band index to read from the phase file. Defaults to 1.
@@ -224,16 +228,16 @@ class TiffsarReader(ReadBase2csisar):
 
     def read_observation(self, downsample=1,
                          zero2nan=True, wavelength=None, observation_type=None,
-                         input_azimuth_role=None, look_side=None,
-                         input_value_convention=None, verbose=None):
+                         raw_value_convention=None, azimuth_angle_role=None,
+                         acquisition_look_side=None, verbose=None):
         """
         Convert the extracted raw TIFF grids into CSI observation arrays.
 
-        If no overrides are supplied, the reader config or preset determines
+        If no overrides are supplied, the reader mode/config determines
         whether `raw_vel` is treated as unwrapped phase, LOS/range
         displacement, or azimuth offset. Use `wavelength` for
-        `phase_los`; use `input_value_convention` only when a product's sign
-        convention differs from the selected preset.
+        `unwrapped_phase`; use `raw_value_convention` only when a product's sign
+        convention differs from the selected mode.
         """
         self._require_raw_grid("read_observation()")
         vel = self.raw_vel
@@ -249,9 +253,9 @@ class TiffsarReader(ReadBase2csisar):
             downsample=downsample,
             zero2nan=zero2nan,
             observation_type=observation_type,
-            input_azimuth_role=input_azimuth_role,
-            look_side=look_side,
-            input_value_convention=input_value_convention,
+            raw_value_convention=raw_value_convention,
+            azimuth_angle_role=azimuth_angle_role,
+            acquisition_look_side=acquisition_look_side,
             wavelength=wavelength,
             verbose=verbose,
         )
@@ -262,7 +266,7 @@ class Hyp3TiffReader(TiffsarReader):
     Reader for HyP3 GeoTIFF products.
 
     The default config matches `hyp3_los_displacement`. Use
-    `mode="unwrapped_phase"` or preset `hyp3_unwrapped_phase` when the HyP3
+    `mode="unwrapped_phase"` when the HyP3
     geometry rasters are paired with an unwrapped phase value raster. Use an
     explicit config if a HyP3-derived product changes angle units or value sign
     convention.
@@ -275,21 +279,14 @@ class GammaTiffReader(TiffsarReader):
 
     Use `mode="unwrapped_phase"` for unwrapped phase rasters,
     `mode="los_displacement"` for LOS disp. rasters, and
-    `mode="range_offset"` for range-offset rasters. Full Gamma TIFF preset
-    names remain available when exact reproducibility in config files is
-    preferred. Angle convention changes must be configured before
-    `extract_raw_grd()`.
+    `mode="range_offset"` for range-offset rasters. Angle convention changes
+    must be configured before `extract_raw_grd()`.
     """
     config_cls = GammaTiffConfig
     mode_presets = {
         "unwrapped_phase": "gamma_tiff_unwrapped_phase",
-        "phase_los": "gamma_tiff_unwrapped_phase",
-        "los": "gamma_tiff_los_displacement",
         "los_displacement": "gamma_tiff_los_displacement",
-        "range": "gamma_tiff_range_offset",
         "range_offset": "gamma_tiff_range_offset",
-        "az": "gamma_tiff_azimuth_offset",
-        "azimuth": "gamma_tiff_azimuth_offset",
         "azimuth_offset": "gamma_tiff_azimuth_offset",
     }
 

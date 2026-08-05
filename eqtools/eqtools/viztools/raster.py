@@ -82,8 +82,9 @@ def plot_raster(
     symmetric : bool, optional
         Use a symmetric color range around ``center``.
     percentile : float or None, optional
-        Robust percentile used when ``vmin``/``vmax`` are not fully specified.
-        Set to ``None`` to use the full finite range.
+        Central percentage of finite values used when ``vmin``/``vmax`` are
+        not fully specified.  For a symmetric range, this is the percentile
+        of ``abs(data - center)``.  Set to ``None`` to use the full range.
     save : str or path-like, optional
         Output figure path.  Passing a path saves the figure through
         :func:`eqtools.viztools.finish_fig`.
@@ -100,21 +101,35 @@ def plot_raster(
     Notes
     -----
     This helper does not interpret SAR, fault, or LOS conventions.  Convert and
-    label values before plotting.
+    label values before plotting.  A Matplotlib ``norm`` may be passed through
+    ``artist_kwargs``.  In that case the norm owns color scaling and the
+    automatic percentile range is not applied; combining ``norm`` with
+    ``vmin``, ``vmax``, ``symmetric=True``, or a non-zero ``center`` is rejected
+    as ambiguous.
     """
 
     values, x, y, inferred_xlabel, inferred_ylabel = _coerce_raster_input(data, x=x, y=y)
     if (x is None) != (y is None):
         raise ValueError("x and y coordinates must be supplied together.")
     values = _masked_values(values, nodata=nodata)
-    vmin, vmax = raster_limits(
-        values,
-        vmin=vmin,
-        vmax=vmax,
-        percentile=percentile,
-        symmetric=symmetric,
-        center=center,
-    )
+    norm = artist_kwargs.get("norm")
+    if norm is not None:
+        if vmin is not None or vmax is not None or symmetric or center != 0.0:
+            raise ValueError(
+                "norm owns raster color scaling and cannot be combined with "
+                "vmin, vmax, symmetric=True, or a non-zero center."
+            )
+        # Matplotlib rejects a Normalize instance together with vmin/vmax.
+        draw_vmin = draw_vmax = None
+    else:
+        draw_vmin, draw_vmax = raster_limits(
+            values,
+            vmin=vmin,
+            vmax=vmax,
+            percentile=percentile,
+            symmetric=symmetric,
+            center=center,
+        )
 
     if isinstance(save, bool):
         raise ValueError("save must be a file path or None, not a boolean.")
@@ -141,8 +156,8 @@ def plot_raster(
             y=y,
             extent=extent,
             cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
+            vmin=draw_vmin,
+            vmax=draw_vmax,
             origin=origin,
             interpolation=interpolation,
             **artist_kwargs,
@@ -542,8 +557,14 @@ def _warn_if_geo_axis_has_limited_georeferencing(src, *, axis):
     reasons = []
     if getattr(src, "crs", None) is None:
         reasons.append("missing CRS")
+    elif not bool(getattr(src.crs, "is_geographic", False)):
+        reasons.append(f"projected CRS {src.crs}")
     if _transform_is_identity_like(src.transform):
         reasons.append("identity-like transform")
+    if not np.isclose(float(src.transform.b), 0.0) or not np.isclose(
+        float(src.transform.d), 0.0
+    ):
+        reasons.append("rotated or sheared transform")
     if _bounds_are_index_like(src):
         reasons.append("index-like bounds")
     if not reasons:
@@ -552,7 +573,8 @@ def _warn_if_geo_axis_has_limited_georeferencing(src, *, axis):
     warnings.warn(
         "plot_geotiff(axis='geo') is using a GeoTIFF with limited "
         f"georeferencing ({', '.join(reasons)}). Axis values come from the "
-        "file bounds and may be pixel indices rather than longitude/latitude.",
+        "file bounds and are not guaranteed to be longitude/latitude. "
+        "Reproject the raster before requesting geographic labels.",
         UserWarning,
         stacklevel=3,
     )

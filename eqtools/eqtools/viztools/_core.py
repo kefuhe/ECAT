@@ -931,6 +931,14 @@ class PlotStyle:
         The style stays active for the lifetime of the returned figure and is
         automatically restored when the figure is closed.
 
+        Notes
+        -----
+        This compatibility helper relies on a Matplotlib ``close_event``.
+        Headless backends do not always emit that event, so new library code
+        should use ``with PlotStyle(...): plt.subplots(...)`` instead.  The
+        method remains unchanged for callers that rely on its lifetime-wide
+        style behavior.
+
         Parameters
         ----------
         *args, **kwargs

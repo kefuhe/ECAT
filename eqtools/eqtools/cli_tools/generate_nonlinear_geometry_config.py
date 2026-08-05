@@ -14,51 +14,59 @@ def generate_nonlinear_geometry_config(output_path):
 
     config = yaml.load("""
 # ----------- Nonlinear Geometry SMC ----------- #
-nchains: 100
-chain_length: 50
-nfaults: 1
-fault_aliasnames: null
-lon_lat_0: null
+nchains: 100       # Number of SMC chains/particles
+chain_length: 50   # Mutation steps per SMC stage
+nfaults: 1         # Number of compact fault sources
+fault_aliasnames: null  # null or exactly one alias per fault, e.g. [MainFault]
+lon_lat_0: null         # [lon, lat] degrees; set here or pass lon0/lat0
 
 # New nonlinear geometry configs use [Uniform, lower, upper].
 prior_bounds_format: lower_upper
 
-slip_sampling_mode: 'mag_rake'
+slip_sampling_mode: 'mag_rake'  # mag_rake: slip+rake; ss_ds: strikeslip+dipslip
 
 clipping_options:
-  enabled: false
-  method: 'lon_lat_range'
-  lon_lat_range: [-119.0, -117.0, 34.0, 36.0]
+  enabled: false  # Set true to clip all input datasets before inversion
+  method: 'lon_lat_range'  # Currently supported template method
+  lon_lat_range: [-119.0, -117.0, 34.0, 36.0]  # [lon_min, lon_max, lat_min, lat_max], degrees
 
 bounds:
   defaults:
-    lon: [Uniform, 87.3, 87.6]
-    lat: [Uniform, 28.6, 28.8]
-    depth: [Uniform, 0.0, 10.0]
-    dip: [Uniform, 10.0, 80.0]
-    width: [Uniform, 1.0, 40.0]
-    length: [Uniform, 1.0, 200.0]
-    strike: [Uniform, 270.0, 360.0]
-    slip: [Uniform, 0.0, 10.0]
-    rake: [Uniform, -150.0, -30.0]
+    # lon/lat/depth describe the midpoint of the fault top edge.
+    lon: [Uniform, 87.3, 87.6]       # degrees
+    lat: [Uniform, 28.6, 28.8]       # degrees
+    depth: [Uniform, 0.0, 10.0]      # km, positive downward
+    # Preferred dip coordinate is 0..180; use a 0..90 range for one known side.
+    dip: [Uniform, 10.0, 80.0]       # degrees; strike changes with side at 90
+    width: [Uniform, 1.0, 40.0]      # km
+    length: [Uniform, 1.0, 200.0]    # km
+    strike: [Uniform, 270.0, 360.0]  # degrees clockwise from North
+    slip: [Uniform, 0.0, 10.0]       # m; mag_rake only
+    rake: [Uniform, -150.0, -30.0]   # degrees; not auto-changed with dip side
+    # For ss_ds, replace slip/rake above with:
+    # strikeslip: [Uniform, -10.0, 10.0]  # m
+    # dipslip: [Uniform, -10.0, 10.0]     # m
 
-fixed_params: {}
+fixed_params: {}  # Keys are fault_0/fault alias; fixed values are not sampled
+# fixed_params:
+#   fault_0:
+#     depth: 2.0  # km
 
 geodata:
-  verticals: true
+  verticals: true  # bool or one bool per dataset, in geodata order
 
-  # Same mental model as BLSE/Bayesian linear inversion:
-  # one correction transform per dataset in geodata.data order.
-  # SAR/InSAR currently supports null, 1, 3, and 4.
-  # GPS currently supports explicit 'translation' only in this nonlinear entry.
-  polys: null
+  # Simple correction setup. A list must follow the Python geodata order.
+  # SAR/InSAR: null=none, 1=offset, 3=offset+x/y ramps,
+  # 4=offset+x/y ramps+xy cross term.
+  # GPS: null=none or 'translation' (east/north[/up] offsets).
+  # polys: 3                       # one or more SAR-only datasets
+  # polys: [3, null, translation]  # per-dataset mixed example
+  polys: null  # Default: no data-correction parameters
   # Default bounds for all enabled data-correction coefficients.  With
-  # prior_bounds_format=lower_upper this means [-1000, 1000].
+  # prior_bounds_format=lower_upper this means lower=-1000, upper=1000.
   poly_bounds: [Uniform, -1000.0, 1000.0]
 
-  # Advanced optional overrides. Keep this block commented until needed.
-  # Use these only when one dataset or one correction parameter needs a
-  # different transform, bounds, or display label.
+  # Advanced overrides: use only for per-dataset/per-parameter customization.
   # data_corrections:
   #   enabled: true
   #   datasets:
@@ -71,15 +79,22 @@ geodata:
   #         y_ramp: [Uniform, -0.5, 0.5]
   #       display_names: ["$b_A$", "$r^x_A$", "$r^y_A$"]
 
-  faults: null
+  faults: null  # null=all faults; otherwise one fault-name list per dataset
   sigmas:
-    mode: 'individual'
-    update: true
+    mode: 'individual'  # single | individual | grouped
+    # Required only for grouped mode. Use actual data.name values and assign
+    # every dataset to exactly one group.
+    # groups:
+    #   sar_group: [dataset_a, dataset_b]
+    #   gps_group: [dataset_c]
+    update: true  # bool, or one bool per dataset/group
     bounds:
-      defaults: [Uniform, -3.0, 3.0]
+      defaults: [Uniform, -3.0, 3.0]  # Uses prior_bounds_format above
+    # Scalar; individual/grouped also accept an aligned list or name mapping.
     values: 0.0
-    log_scaled: true
+    log_scaled: true  # true: values and bounds represent log10(sigma)
 
+# Relative paths below are resolved from the process working directory.
 data_sources:
   gps:
     directory: '../gps'

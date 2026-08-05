@@ -1,11 +1,15 @@
-from ..sarUtils.readTiffUtils import read_tiff, read_tiff_info, utm_to_latlon
-from ...plottools import sci_plot_style, set_degree_formatter
+from ..sarUtils.readTiffUtils import (
+    read_tiff,
+    read_tiff_info,
+    strided_geotransform,
+    utm_to_latlon,
+)
+from ...viztools import sci_plot_style, set_degree_formatter
 from ..sarUtils.readTiffUtils import save_to_tiff
 from csi.opticorr import opticorr as csiopticorr
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import xarray
 import os
 
 
@@ -53,16 +57,17 @@ class TiffoptiReader(csiopticorr):
         raw_north, _, _, _, _ = read_tiff(
             file_path, band_index=sn_band, factor=factor_to_m
         )
-        x_coord, _, y_coord, _ = read_tiff_info(
-            file_path, im_width, im_height, meshout=False
+        x_coord, _, y_coord, _, mesh_x, mesh_y = read_tiff_info(
+            file_path, im_width, im_height, meshout=True
         )
         if downsample > 1:
             raw_east = raw_east[::downsample, ::downsample]
             raw_north = raw_north[::downsample, ::downsample]
-            x_coord = x_coord[::downsample]
-            y_coord = y_coord[::downsample]
+            mesh_x = mesh_x[::downsample, ::downsample]
+            mesh_y = mesh_y[::downsample, ::downsample]
+            x_coord = mesh_x[0, :]
+            y_coord = mesh_y[:, 0]
 
-        mesh_x, mesh_y = np.meshgrid(x_coord, y_coord)
         im_height, im_width = mesh_x.shape
         mesh_lat, mesh_lon = utm_to_latlon(mesh_x.flatten(), mesh_y.flatten(), im_proj)
         mesh_lat = mesh_lat.reshape(im_height, im_width)
@@ -82,8 +87,14 @@ class TiffoptiReader(csiopticorr):
         self.raw_lat = mesh_lat.mean(axis=1)
         self.raw_mesh_lon = mesh_lon
         self.raw_mesh_lat = mesh_lat
+        self.raw_x = x_coord
+        self.raw_y = y_coord
+        self.raw_mesh_x = mesh_x
+        self.raw_mesh_y = mesh_y
         self.im_geotrans = im_geotrans
+        self.raw_geotransform = strided_geotransform(im_geotrans, downsample)
         self.im_proj = im_proj
+        self.source_value_file = file_path
     
     def read_from_tiff(self, remove_nan=True):
         east = self.raw_east
@@ -93,6 +104,17 @@ class TiffoptiReader(csiopticorr):
         # Read optical offset data using the inherited CSI binary reader.
         self.read_from_binary(east, north, lon=mesh_lon, lat=mesh_lat, 
                              remove_nan=remove_nan)
+        raw_size = east.size
+        if remove_nan:
+            valid = (
+                np.isfinite(east)
+                & np.isfinite(north)
+                & np.isfinite(mesh_lon)
+                & np.isfinite(mesh_lat)
+            )
+            self.projection_raw_valid_index = np.flatnonzero(valid.reshape(-1))
+        else:
+            self.projection_raw_valid_index = np.arange(raw_size, dtype=int)
 
     @staticmethod
     def _finite_value_diagnostics(values, central_percentile=99.0):
@@ -184,22 +206,29 @@ class TiffoptiReader(csiopticorr):
         print(text, file=file)
         return self.input_summary(central_percentile=central_percentile)
 
-    def to_xarray_dataarray(self, data='east'):
-        '''
-        Also for GMT plot
+    def to_xarray_dataarray(self, data='east', state="processing"):
+        """Return a coordinate-safe full-grid optical component.
 
-        Convert the velocity data to an xarray DataArray for easier manipulation and plotting.
+        ``state='processing'`` returns the corrected component when available.
+        ``state='observation'`` returns the pre-correction component.
+        """
 
-        Parameters:
-            * data (str): The type of data to convert ('east', 'north', or 'vertical').
+        from ..downsample.observation_grid import build_observation_grid
 
-        Returns:
-            * xarray.DataArray: The converted data array.
-        '''
-        # Convert velocity data to an xarray DataArray with proper coordinates
-        data_array = xarray.DataArray(self.vel, coords=[('lat', self.lat), ('lon', self.lon)], dims=['lat', 'lon'])
-    
-        return data_array
+        component = str(data).replace("-", "_").lower()
+        if component not in ("east", "north"):
+            raise ValueError("data must be 'east' or 'north'.")
+        state = str(state).replace("-", "_").lower()
+        if state not in ("processing", "observation"):
+            raise ValueError("state must be 'processing' or 'observation'.")
+        grid = getattr(self, "observation_grid", None)
+        if grid is None:
+            grid = build_observation_grid(self, "optical")
+        dataset = grid.to_xarray_dataset()
+        corrected_name = f"corrected_{component}"
+        if state == "processing" and corrected_name in dataset:
+            return dataset[corrected_name]
+        return dataset[component]
     
     def cut_raw_sar(self, lon_range, lat_range, inplace=False):
         """

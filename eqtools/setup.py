@@ -28,18 +28,57 @@ class CustomInstallCommand(install):
 
 setup(
     name='eqtools',
-    version='1.1.5',
+    version='2.0.0',
     author='Kefeng He',
     author_email='kefenghe@whu.edu.cn',
     url='https://github.com/kefuhe/eqtools',
     description='Earthquake Cycle Analysis Toolkit (ECAT)',
+    install_requires=[
+        'clarabel>=0.11.1,<0.12',
+    ],
+    extras_require={
+        "geoexport": [
+            "h5netcdf>=1.2",
+            "matplotlib>=3.6",
+            "numpy>=1.23",
+            "pandas>=2.0",
+            "PyYAML>=6",
+            "xarray>=2023.1",
+        ],
+        "viewer": [
+            "dash>=2.17,<4",
+            "h5netcdf>=1.2",
+            "numpy>=1.23",
+            "pandas>=2.0",
+            "plotly>=5.24,<7",
+            "PyYAML>=6",
+            "rasterio>=1.3",
+            "xarray>=2023.1",
+        ],
+        "interaction": [
+            "bokeh>=3.6,<4",
+            "cmcrameri>=1.8",
+            "datashader>=0.19,<0.20",
+            "h5netcdf>=1.2",
+            "matplotlib>=3.6",
+            "numpy>=1.23",
+            "pandas>=2.0",
+            "rasterio>=1.3",
+            "xarray>=2023.1",
+        ],
+    },
     packages=find_packages(),
     include_package_data=True,
     package_data={
         'eqtools': ['cpt/*'],  # , 'examples/*'
         'eqtools.cli_tools': ['templates/adapter_downsampling/*'],
         'eqtools.Tectonic_Utils': ['README.md', 'cover_picture.png'],
-        'eqtools.earthquake_clients': ['data/*', 'data/Faults/*', 'data/Blocks/*'],
+        'eqtools.earthquake_clients': [
+            'data/*',
+            'data/Faults/*',
+            'data/Blocks/*',
+            'data/GNSS/*',
+        ],
         'eqtools.viztools': ['styles/*.mplstyle'],
     },
     classifiers=[
@@ -68,6 +107,9 @@ setup(
             "ecat-generate-edcmp-template=eqtools.cli_tools.edcmp_template_cli:main",
             "ecat-list-fault-perturb-methods=eqtools.cli_tools.list_fault_perturb_methods:main",
             "ecat-fault-trace-tool=eqtools.cli_tools.fault_trace_tool:main",
+            "ecat-export-google-earth=eqtools.cli_tools.export_google_earth:main",
+            "ecat-map=eqtools.map_viewer.cli:main",
+            "ecat-trace-edit=eqtools.map_viewer.interactive.cli:main",
         ],
     },
     cmdclass={

@@ -9,7 +9,7 @@ from pathlib import Path
 
 # CSI / EqTools Imports
 from ..blse_multifaults_inversion import BoundLSEMultiFaultsInversion
-from ...plottools import sci_plot_style, publication_figsize, set_degree_formatter
+from ...viztools import sci_plot_style, publication_figsize, set_degree_formatter
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +395,7 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
         """
         try:
             logger.info("    Plotting True Slip Model...")
-            from eqtools.plottools import plot_slip_distribution
+            from eqtools.viztools import plot_slip_distribution
             
             figname = str(save_dir / "input_true_model") if save_dir else None
             plot_slip_distribution(

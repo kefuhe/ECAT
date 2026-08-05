@@ -34,13 +34,16 @@ general:
 ## 单景数据
 
 ```powershell
+python run_adapter_downsampling.py -f downsample.yml
 python run_adapter_downsampling.py -f downsample.yml -s
 python run_adapter_downsampling.py -f downsample.yml -c
 python run_adapter_downsampling.py -f downsample.yml -d
 ```
 
-这些开关与 `ecat-downsample` 一致：`-s` 检查读入和 quick-look，`-c` 估计协方差，
-`-d` 正式降采样。
+不带阶段参数时，由 YAML 中的 `covar.do_covar` 和 `downsample.enabled`
+决定运行步骤。这些开关与 `ecat-downsample` 一致：`-s` 检查读入和
+quick-look，并在本次运行中关闭协方差和降采样；`-c` 启用协方差估计，`-d`
+启用正式降采样。`-c/-d` 与 YAML 设置是相加关系，也可组合使用。
 
 ## 时序数据
 

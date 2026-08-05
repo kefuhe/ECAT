@@ -60,6 +60,13 @@ def get_fault_loading_params(inversion: Any, fault_name: str) -> Mapping[str, An
     return loading["faults"][fault_name]
 
 
+def _loading_overrides(params: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    overrides = params.get("loading_overrides")
+    if overrides is None:
+        overrides = params.get("loading_regions", [])
+    return list(overrides or [])
+
+
 def get_blocks_config(interseismic_config: Mapping[str, Any]) -> Mapping[str, Any]:
     """Return the optional named-block registry."""
     return interseismic_config.get("blocks", {}) or {}
@@ -367,7 +374,7 @@ def build_loading_linear_terms(
     A_loading = np.zeros((len(patch_indices), int(n_total)), dtype=float)
     fixed_loading = np.zeros(len(patch_indices), dtype=float)
 
-    regions = list(params.get("loading_regions", []) or [])
+    regions = _loading_overrides(params)
     if regions:
         _add_regioned_loading_terms(
             inversion,
@@ -420,7 +427,7 @@ def _add_regioned_loading_terms(
             region.get("selector"),
             allow_none_all=False,
             unique=True,
-            name=f"loading region '{region_name}' selector for fault '{fault_name}'",
+            name=f"loading override '{region_name}' selector for fault '{fault_name}'",
         )
         selected_set = {int(idx) for idx in selected.tolist()}
         row_mask = np.asarray([int(idx) in selected_set for idx in patch_indices], dtype=bool)
@@ -432,7 +439,7 @@ def _add_regioned_loading_terms(
             overlap_patches = [int(patch_indices[row]) for row in overlapping_rows.tolist()]
             previous = sorted({assigned_by_patch.get(idx, "unknown") for idx in overlap_patches})
             raise ValueError(
-                f"fault_loading.faults.{fault_name}.loading_regions overlap on patches "
+                f"fault_loading.faults.{fault_name}.loading_overrides overlap on patches "
                 f"{overlap_patches}; region '{region_name}' overlaps with {previous}."
             )
 

@@ -10,11 +10,22 @@ Date: 2025-08-01
 Version: 1.0.0
 """
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 from tabulate import tabulate
 
 from .config.config_utils import get_observation_unit_info
+from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
 from .fault_summary import print_faults_summary, summarize_faults
+from .fit_statistics import (
+    data_fit_vectors,
+    fit_metrics_from_vectors,
+    fit_statistics_rows_to_dataframe,
+    format_fit_statistics_report,
+    solver_fit_metrics,
+    write_fit_statistics_report_files,
+)
 
 
 class FaultAnalysisMixin:
@@ -546,40 +557,156 @@ class FaultAnalysisMixin:
         tuple : (rms, vr)
             Root Mean Square error and Variance Reduction percentage
         """
-        import numpy as np
-        
-        if data.dtype == 'insar':
-            observed = data.vel
-            synthetic = data.synth
-        elif data.dtype == 'gps':
-            if vertical:
-                observed = data.vel_enu.flatten()  # Flatten all components
-                synthetic = data.synth.flatten()
-            else:
-                observed = data.vel_enu[:, :-1].flatten()  # Only E-N components
-                synthetic = data.synth[:, :-1].flatten()
-        elif data.dtype in ('opticorr', 'optical'):
-            observed = np.hstack((data.east, data.north))
-            synthetic = np.hstack((data.east_synth, data.north_synth))
-        elif data.dtype == 'leveling':
-            observed = data.vel
-            synthetic = data.synth
-        elif data.dtype == 'crossfaultoffset':
-            observed = data.data_vector
-            synthetic = data.synth_vector
-        else:
-            raise ValueError(f"Unsupported data type: {data.dtype}")
-        
-        # Calculate RMS
-        residuals = synthetic - observed
-        rms = np.sqrt(np.mean(residuals**2))
-        
-        # Calculate Variance Reduction
-        ss_res = np.sum(residuals**2)  # Sum of squares of residuals
-        ss_tot = np.sum(observed**2)   # Total sum of squares
-        vr = (1 - ss_res / ss_tot) * 100 if ss_tot != 0 else 0.0
-        
-        return rms, vr
+        observed, synthetic = data_fit_vectors(data, vertical=vertical)
+        metrics = fit_metrics_from_vectors(observed, synthetic)
+        return metrics["rms"], metrics["vr"]
+
+    def _get_fit_geodata_config(self):
+        """Return configured data, vertical flags and poly settings."""
+        specs = get_geodata_prediction_specs(self)
+        return (
+            [spec.data for spec in specs],
+            [spec.vertical for spec in specs],
+            [spec.configured_poly for spec in specs],
+        )
+
+    def collect_fit_statistics(
+        self,
+        *,
+        model="median",
+        data_poly="config",
+        include_dataset=True,
+        include_global=True,
+        include_dataset_average=False,
+        rebuild_synth=True,
+        faults=None,
+    ):
+        """Collect RMS/VR diagnostics without changing the numerical formula.
+
+        Dataset rows reuse the legacy ``calculate_data_fit_metrics`` vector
+        definitions.  The global solver row, when available, is computed from
+        the assembled solver vector, e.g. ``G @ mpost - d`` for BLSE.
+        """
+        rows = []
+        data_objects, verticals, polys = self._get_fit_geodata_config()
+        target_faults = self._select_faults(faults)
+
+        if include_dataset:
+            for data, vertical, config_poly in zip(data_objects, verticals, polys):
+                resolved_poly = resolve_data_poly(config_poly, requested=data_poly)
+                if rebuild_synth:
+                    data.buildsynth(target_faults, direction="sd", poly=resolved_poly, vertical=vertical)
+                observed, synthetic = data_fit_vectors(data, vertical=vertical)
+                metrics = fit_metrics_from_vectors(observed, synthetic)
+                rows.append(
+                    {
+                        "scope": "dataset",
+                        "model": model,
+                        "dataset": getattr(data, "name", None),
+                        "data_type": getattr(data, "dtype", None),
+                        "vertical": bool(vertical),
+                        "poly": resolved_poly,
+                        **metrics,
+                    }
+                )
+
+        if include_dataset_average and rows:
+            dataset_rows = [row for row in rows if row.get("scope") == "dataset"]
+            if dataset_rows:
+                rows.append(
+                    {
+                        "scope": "dataset_average",
+                        "model": model,
+                        "dataset": None,
+                        "data_type": None,
+                        "vertical": None,
+                        "poly": None,
+                        "rms": float(np.mean([row["rms"] for row in dataset_rows])),
+                        "vr": float(np.mean([row["vr"] for row in dataset_rows])),
+                        "ss_res": float(np.sum([row["ss_res"] for row in dataset_rows])),
+                        "ss_obs": float(np.sum([row["ss_obs"] for row in dataset_rows])),
+                        "n_observations": int(np.sum([row["n_observations"] for row in dataset_rows])),
+                    }
+                )
+
+        if include_global:
+            global_row = self._collect_global_solver_fit_statistics(model=model)
+            if global_row is not None:
+                rows.append(global_row)
+
+        return rows
+
+    def _collect_global_solver_fit_statistics(self, *, model="median"):
+        """Return the assembled solver-vector fit row when dimensions match."""
+        candidates = []
+        if all(hasattr(self, name) for name in ("G", "mpost", "d")):
+            candidates.append(("global_solver_vector", getattr(self, "G"), getattr(self, "mpost"), getattr(self, "d")))
+        if all(hasattr(self, name) for name in ("G_combined", "mpost", "observations")):
+            candidates.append(
+                (
+                    "global_solver_vector",
+                    getattr(self, "G_combined"),
+                    getattr(self, "mpost"),
+                    getattr(self, "observations"),
+                )
+            )
+        for scope, G, mpost, data_vector in candidates:
+            if G is None or mpost is None or data_vector is None:
+                continue
+            m_array = np.asarray(mpost, dtype=float).reshape(-1)
+            d_array = np.asarray(data_vector, dtype=float).reshape(-1)
+            G_shape = getattr(G, "shape", None)
+            if G_shape is None or len(G_shape) != 2:
+                continue
+            if int(G_shape[1]) != m_array.size or int(G_shape[0]) != d_array.size:
+                continue
+            metrics = solver_fit_metrics(G, m_array, d_array)
+            return {
+                "scope": scope,
+                "model": model,
+                "dataset": None,
+                "data_type": "assembled",
+                "vertical": None,
+                "poly": None,
+                **metrics,
+            }
+        return None
+
+    @staticmethod
+    def fit_statistics_to_dataframe(rows: Sequence[Mapping]):
+        """Return a compact pandas DataFrame for fit-statistics rows."""
+        return fit_statistics_rows_to_dataframe(rows)
+
+    @staticmethod
+    def format_fit_statistics_report(rows: Sequence[Mapping], *, model=None):
+        """Return a compact text report for fit-statistics rows."""
+        return format_fit_statistics_report(rows, model=model)
+
+    def write_fit_statistics_report(
+        self,
+        outdir="output",
+        rows: Sequence[Mapping] | None = None,
+        *,
+        model="median",
+        data_poly="config",
+        include_dataset=True,
+        include_global=True,
+        include_dataset_average=False,
+        rebuild_synth=True,
+        basename="fit_statistics",
+        formats=("txt", "tsv"),
+    ):
+        """Write RMS/VR diagnostics to text/table files."""
+        if rows is None:
+            rows = self.collect_fit_statistics(
+                model=model,
+                data_poly=data_poly,
+                include_dataset=include_dataset,
+                include_global=include_global,
+                include_dataset_average=include_dataset_average,
+                rebuild_synth=rebuild_synth,
+            )
+        return write_fit_statistics_report_files(rows, outdir, basename=basename, formats=formats, model=model)
     
     def calculate_and_print_fit_statistics(self, model='median'):
         """
@@ -593,22 +720,16 @@ class FaultAnalysisMixin:
         print("\n" + "="*70)
         print(f"Data Fit Statistics ({model.upper()} model)")
         print("="*70)
-        
-        # Get the faults - different access patterns for different classes
-        target_faults = self._get_faults()
-        
-        # Get geodata and verticals from configuration
-        geodata = self.config.geodata['data']
-        verticals = self.config.geodata['verticals']  
-        polys = self.config.geodata['polys']
-        
-        # Build synthetics and calculate statistics for each dataset
-        for idata, ivert, ipoly in zip(geodata, verticals, polys):
-            ipoly = ipoly if ipoly is None else 'include'
-            idata.buildsynth(target_faults, direction='sd', poly=ipoly, vertical=ivert)
-            # Calculate RMS and VR using the helper method
-            rms, vr = self.calculate_data_fit_metrics(idata, ivert)
-            print(f"{idata.name:<15} | RMS: {rms:8.4f} | VR: {vr:6.2f}%")
+
+        rows = self.collect_fit_statistics(
+            model=model,
+            data_poly="config",
+            include_dataset=True,
+            include_global=False,
+            rebuild_synth=True,
+        )
+        for row in rows:
+            print(f"{row['dataset']:<15} | RMS: {row['rms']:8.4f} | VR: {row['vr']:6.2f}%")
     
         print("="*70)
 
@@ -692,7 +813,7 @@ class FaultAnalysisMixin:
         Returns:
             None
         """
-        from ..plottools import plot_slip_distribution
+        from ..viztools import plot_slip_distribution
         
         # Handle faults parameter
         if faults is None:

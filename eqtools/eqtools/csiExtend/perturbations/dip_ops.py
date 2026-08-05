@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import interp1d
 
+from ..geom_ops import validate_top_bottom_cells
 from .angle_utils import angles_to_degrees
 
 
@@ -25,12 +26,20 @@ def perturb_dip_values(
     fixed_nodes: list | None = None,
     angle_unit: str = 'degrees',
 ) -> np.ndarray:
-    """Apply additive perturbations to dip control-point values.
+    """Apply additive perturbations in continuous 0--180 dip space.
+
+    Reference dips may use either the recommended continuous ``(0, 180)``
+    representation or the historical signed representation
+    ``[-90, 0) U (0, 90]``.  They are validated and converted to ``(0, 180)``
+    *before* perturbations are added.  Consequently equivalent references such
+    as ``100`` and ``-80`` produce the same proposal geometry.
 
     Parameters
     ----------
     dips : (n,) array
-        Original dip values in **degrees**.
+        Reference dip values in degrees. Accepted representations are
+        ``[-90, 0) U (0, 180)``; zero and 180 degrees are invalid for a
+        depth-projected fault surface.
     perturbations : array-like
         Perturbation increments (scalar broadcasts to all movable nodes).
         Units determined by *angle_unit*.
@@ -42,9 +51,24 @@ def perturb_dip_values(
     Returns
     -------
     (n,) ndarray
-        Perturbed dips in degrees.
+        Perturbed dips in the continuous ``(0, 180)`` proposal coordinate.
+
+    Raises
+    ------
+    ValueError
+        If a reference dip is invalid, the perturbation count is inconsistent,
+        or a resulting proposal leaves the open interval ``(0, 180)``.
     """
-    result = dips.copy()
+    from ..DipInterpolation import (
+        normalize_dip_to_0_180,
+        validate_dip_angles_for_depth_projection,
+    )
+
+    reference = validate_dip_angles_for_depth_projection(
+        np.asarray(dips, dtype=float),
+        name='reference dip',
+    )
+    result = np.asarray(normalize_dip_to_0_180(reference), dtype=float).copy()
     if fixed_nodes is None:
         fixed_nodes = []
 
@@ -62,6 +86,19 @@ def perturb_dip_values(
         )
 
     result[movable] += perts
+
+    invalid = (
+        ~np.isfinite(result)
+        | (result <= 0.0)
+        | (result >= 180.0)
+    )
+    if np.any(invalid):
+        indices = np.argwhere(invalid).reshape(-1)[:5].tolist()
+        raise ValueError(
+            "perturbed dip must remain finite and in (0, 180) degrees "
+            "after converting reference dips to the continuous proposal "
+            f"coordinate; invalid value indices: {indices}"
+        )
     return result
 
 
@@ -125,7 +162,9 @@ def interpolate_dip_onto_coords(
     Parameters
     ----------
     control_xy_dip : (n_ctrl, 3) array
-        Columns ``[x_utm, y_utm, dip_degrees]``.
+        Columns ``[x_utm, y_utm, dip_degrees]``. Recommended dip form is
+        signed ``[-90, 0) U (0, 90]``; ``(90, 180)`` is accepted as the
+        equivalent opposite-side compatibility form.
     target_coords : (n_target, 2+) array
         Target coordinates in UTM (at least columns 0=x, 1=y).
     interpolation_axis : str
@@ -143,10 +182,31 @@ def interpolate_dip_onto_coords(
     Returns
     -------
     interpolated_dip : (n_target,) ndarray
-        Dip in degrees at each target node.
+        Signed dip in ``[-90, 0) U (0, 90]`` at each target node.
     strike : (n_target,) ndarray
         Along-strike azimuth in degrees at each target node.
     """
+    from ..DipInterpolation import (
+        normalize_dip_to_0_180,
+        normalize_dip_to_neg90_90,
+        validate_dip_angles_for_depth_projection,
+    )
+
+    control_xy_dip = np.asarray(control_xy_dip, dtype=float).copy()
+    valid_axes = {'auto', 'x', 'y', 'arc_length'}
+    if interpolation_axis not in valid_axes:
+        raise ValueError(
+            "interpolation_axis must be one of 'auto', 'x', 'y', or "
+            f"'arc_length'; got {interpolation_axis!r}"
+        )
+    validated_dip = validate_dip_angles_for_depth_projection(
+        control_xy_dip[:, 2],
+        name='control dip',
+    )
+    # Interpolate through the vertical orientation (90 deg), not through the
+    # singular horizontal orientation (0 deg), when dip side changes.
+    control_xy_dip[:, 2] = normalize_dip_to_0_180(validated_dip)
+
     if interpolation_axis == 'arc_length':
         interpolated_dip = _interpolate_dip_arc_length(
             control_xy_dip, target_coords, verbose=verbose)
@@ -175,9 +235,7 @@ def interpolate_dip_onto_coords(
 
     strike = compute_strike(target_coords)
 
-    interpolated_dip = interpolated_dip.copy()
-    mask_gt90 = interpolated_dip > 90
-    interpolated_dip[mask_gt90] -= 180
+    interpolated_dip = normalize_dip_to_neg90_90(interpolated_dip)
 
     return interpolated_dip, strike
 
@@ -299,7 +357,9 @@ def generate_bottom_from_dips(
     top_coords : (n, 2+) array
         Top coordinates in UTM (x, y[, z]).
     dip_deg : (n,) array
-        Per-node dip in degrees.
+        Per-node dip in degrees. Positive values dip right of positive strike;
+        negative values dip left. Values in ``(90, 180)`` are canonicalized to
+        ``dip - 180``. Zero and 180 degrees are invalid for depth projection.
     strike_deg : (n,) array
         Per-node strike (geographic azimuth) in degrees.
     fault_depth : float
@@ -309,27 +369,38 @@ def generate_bottom_from_dips(
     use_average_strike : bool
         Use a single average strike for all nodes.
     average_strike_source : str
-        ``'pca'`` or ``'user'``.
+        ``'pca'`` fits and orients the first principal axis of top x/y;
+        ``'user'`` uses ``user_direction_angle``.
     user_direction_angle : float or None
-        User-specified direction angle in degrees (when source='user').
+        Explicit geographic strike azimuth in degrees clockwise from North
+        (when source='user'). It must follow the positive trace direction.
     interpolation_axis : str
-        Axis for sorting the output (``'auto'``, ``'x'``, or ``'y'``).
+        Retained for API compatibility. Bottom rows preserve top-node order;
+        this function never sorts them independently.
     verbose : bool
         Print diagnostics.
 
     Returns
     -------
     bottom_coords : (n, 3) ndarray
-        Bottom coordinates in UTM.
+        Bottom coordinates in UTM. Row ``i`` corresponds to
+        ``top_coords[i]``.
     """
     from numpy import deg2rad, sin, cos
+    from ..DipInterpolation import (
+        normalize_dip_to_neg90_90,
+        validate_dip_angles_for_depth_projection,
+    )
 
     x = top_coords[:, 0]
     y = top_coords[:, 1]
     n = len(x)
 
     strike_rad = deg2rad(strike_deg.copy())
-    dip_rad = deg2rad(dip_deg.copy())
+    dip_signed = normalize_dip_to_neg90_90(
+        validate_dip_angles_for_depth_projection(dip_deg, name='dip')
+    )
+    dip_rad = deg2rad(dip_signed)
 
     strike_direction = np.array([x[-1] - x[0], y[-1] - y[0]])
 
@@ -345,9 +416,18 @@ def generate_bottom_from_dips(
             strike_rad = np.full(n, avg_rad)
         elif average_strike_source == 'user' and user_direction_angle is not None:
             avg_rad = deg2rad(user_direction_angle)
-            if np.dot([cos(avg_rad), sin(avg_rad)], strike_direction) < 0:
+            # Geographic azimuth maps to [east, north] as [sin, cos].
+            user_strike_vector = np.array([sin(avg_rad), cos(avg_rad)])
+            trace_direction_norm = np.linalg.norm(strike_direction)
+            alignment = np.dot(user_strike_vector, strike_direction)
+            if (
+                not np.isfinite(avg_rad)
+                or trace_direction_norm <= np.finfo(float).eps
+                or alignment <= np.finfo(float).eps * trace_direction_norm
+            ):
                 raise ValueError(
-                    "User direction angle is not consistent with the strike direction.")
+                    "user_direction_angle must follow the positive trace "
+                    "direction (geographic azimuth clockwise from North).")
             strike_rad = np.full(n, avg_rad)
         else:
             raise ValueError(
@@ -371,20 +451,10 @@ def generate_bottom_from_dips(
 
     bottom_coords = old_coords + dip_vector * width
 
-    if interpolation_axis == 'auto':
-        interpolation_axis = determine_interpolation_axis(x, y, verbose=verbose)
-
-    axis_idx = 0 if interpolation_axis == 'x' else 1
-    sort_order = np.argsort(bottom_coords[:, axis_idx])
-    bottom_coords = bottom_coords[sort_order, :]
-
-    end_to_start = np.array([
-        bottom_coords[-1, 0] - bottom_coords[0, 0],
-        bottom_coords[-1, 1] - bottom_coords[0, 1],
-    ])
-    if np.dot(end_to_start, strike_direction) < 0:
-        bottom_coords = bottom_coords[::-1, :]
-
+    # Node i on the bottom is derived from node i on the top. Never sort the
+    # bottom independently: doing so silently breaks top/bottom correspondence
+    # for curved or non-monotonic traces.
+    validate_top_bottom_cells(old_coords, bottom_coords)
     return bottom_coords
 
 
@@ -431,6 +501,11 @@ def augment_control_points_with_buffers(
     """
     from scipy.spatial import cKDTree as KDTree
 
+    if interpolation_axis not in {'x', 'y'}:
+        raise ValueError(
+            "buffer augmentation requires interpolation_axis 'x' or 'y'; "
+            f"got {interpolation_axis!r}"
+        )
     buf_ll = np.asarray(buffer_nodes_lonlat)
     buf_x, buf_y = ll2xy(buf_ll[:, 0], buf_ll[:, 1])
     buf_xy = np.column_stack([buf_x, buf_y])

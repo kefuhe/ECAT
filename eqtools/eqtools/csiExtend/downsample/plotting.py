@@ -10,6 +10,8 @@ from contextlib import nullcontext
 
 import numpy as np
 
+from .region_utils import align_longitudes
+
 
 def _resolve_cmap(cmap):
     if isinstance(cmap, str) and cmap.startswith("cmc."):
@@ -36,7 +38,31 @@ def _mask_from_coordrange(lon, lat, coordrange):
     if coordrange is None:
         return np.ones(lon.shape, dtype=bool)
     minlon, maxlon, minlat, maxlat = coordrange
-    return (lon >= minlon) & (lon <= maxlon) & (lat >= minlat) & (lat <= maxlat)
+    comparison_lon = align_longitudes(lon, 0.5 * (minlon + maxlon))
+    return (
+        (comparison_lon >= minlon)
+        & (comparison_lon <= maxlon)
+        & (lat >= minlat)
+        & (lat <= maxlat)
+    )
+
+
+def _coordrange_longitude_reference(coordrange):
+    if coordrange is None:
+        return None
+    return 0.5 * (float(coordrange[0]) + float(coordrange[1]))
+
+
+def _align_polygon_longitudes(polygons, reference):
+    if polygons is None or reference is None:
+        return polygons
+    aligned = []
+    for polygon in polygons:
+        vertices = np.asarray(polygon, dtype=float)
+        vertices = np.array(vertices, copy=True)
+        vertices[:, 0] = align_longitudes(vertices[:, 0], reference)
+        aligned.append(vertices)
+    return aligned
 
 
 def _corner_to_vertices(corner):
@@ -268,14 +294,46 @@ def _set_colorbar_label_position(cb, orientation, layout, cb_label_loc=None):
     cb.ax.xaxis.set_ticks_position(cb_label_loc)
 
 
-def _plot_faults(ax, faults, trace_color="black", trace_linewidth=0.5):
+def _plot_faults(
+    ax,
+    faults,
+    trace_color="black",
+    trace_linewidth=0.5,
+    longitude_reference=None,
+):
     if not faults:
         return
     for fault in faults:
+        attrs = getattr(fault, "attrs", {})
+        marker = attrs.get("plot_marker")
+        marker_kwargs = {}
+        if marker is not None:
+            marker_kwargs = {
+                "marker": marker,
+                "markersize": attrs.get("plot_markersize", 3.0),
+            }
         if hasattr(fault, "lon") and hasattr(fault, "lat"):
-            ax.plot(fault.lon, fault.lat, color=trace_color, lw=trace_linewidth)
+            longitude = np.asarray(fault.lon, dtype=float)
+            if longitude_reference is not None:
+                longitude = align_longitudes(longitude, longitude_reference)
+            ax.plot(
+                longitude,
+                fault.lat,
+                color=trace_color,
+                lw=trace_linewidth,
+                **marker_kwargs,
+            )
         elif hasattr(fault, "__getitem__") and "lon" in fault and "lat" in fault:
-            ax.plot(fault["lon"], fault["lat"], color=trace_color, lw=trace_linewidth)
+            longitude = np.asarray(fault["lon"], dtype=float)
+            if longitude_reference is not None:
+                longitude = align_longitudes(longitude, longitude_reference)
+            ax.plot(
+                longitude,
+                fault["lat"],
+                color=trace_color,
+                lw=trace_linewidth,
+                **marker_kwargs,
+            )
 
 
 def plot_decimated_geodata(lon, lat, values, corners=None, *,
@@ -339,6 +397,9 @@ def plot_decimated_geodata(lon, lat, values, corners=None, *,
     values = np.asarray(values, dtype=float).ravel()
     if lon.size != lat.size or lon.size != values.size:
         raise ValueError("lon, lat, and values must have the same length.")
+    longitude_reference = _coordrange_longitude_reference(coordrange)
+    if longitude_reference is not None:
+        lon = align_longitudes(lon, longitude_reference)
 
     display_values = values * float(factor4plot)
     finite_mask = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(display_values)
@@ -362,6 +423,7 @@ def plot_decimated_geodata(lon, lat, values, corners=None, *,
         mappable = None
 
         polygons = _corners_to_polygons(corners) if style_key == "cells" else None
+        polygons = _align_polygon_longitudes(polygons, longitude_reference)
         if style_key == "cells" and polygons:
             if len(polygons) != values.size:
                 raise ValueError("corners length must match values length.")
@@ -396,7 +458,13 @@ def plot_decimated_geodata(lon, lat, values, corners=None, *,
                 alpha=alpha,
             )
 
-        _plot_faults(ax, faults, trace_color=trace_color, trace_linewidth=trace_linewidth)
+        _plot_faults(
+            ax,
+            faults,
+            trace_color=trace_color,
+            trace_linewidth=trace_linewidth,
+            longitude_reference=longitude_reference,
+        )
         if coordrange is not None:
             ax.set_xlim(coordrange[0], coordrange[1])
             ax.set_ylim(coordrange[2], coordrange[3])

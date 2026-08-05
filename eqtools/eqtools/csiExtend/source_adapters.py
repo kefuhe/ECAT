@@ -128,10 +128,11 @@ class SourceAdapter(ABC):
     # ── Constraint capability ──────────────────────────────────────────
 
     def get_supported_constraints(self):
-        """Return list of constraint type names this source supports.
+        """Return source-specific constraint capability categories.
 
-        Each name corresponds to a ``generate_<name>_constraints`` method that
-        the constraint manager can invoke.
+        These labels are for discovery and documentation.  Rule parsing stays
+        in ``generate_source_inequality_constraints`` and
+        ``generate_source_equality_constraints``; labels are not method names.
 
         Returns
         -------
@@ -412,6 +413,11 @@ class FaultAdapter(SourceAdapter):
             canonical = _ALIASES[norm]
             if canonical not in modes:
                 modes.append(canonical)
+        if not modes:
+            raise ValueError(
+                "zero_edge_slip requires at least one slip mode, for example "
+                "zero_edge_slip(top, strikeslip)"
+            )
         return edges, modes
 
     def _component_columns(self, component_name, param_start):
@@ -448,6 +454,14 @@ class FaultAdapter(SourceAdapter):
                 b = np.zeros(n_patches)
                 columns = self._component_columns('strikeslip', param_start)
                 A[np.arange(n_patches), columns] = -1.0
+                results.append((cname, A, b))
+
+            # Negative strikeslip: strikeslip <= 0
+            elif rule_lower == 'strikeslip<=0':
+                A = np.zeros((n_patches, n_total_params))
+                b = np.zeros(n_patches)
+                columns = self._component_columns('strikeslip', param_start)
+                A[np.arange(n_patches), columns] = 1.0
                 results.append((cname, A, b))
 
             # Positive dipslip: dipslip >= 0  →  -dipslip <= 0

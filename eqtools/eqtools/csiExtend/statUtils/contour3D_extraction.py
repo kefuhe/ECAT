@@ -16,7 +16,7 @@ from csi import SourceInv
 from csi import TriangularPatches
 from scipy.interpolate import griddata
 from ...gmttools import ReadGMTLines
-from ...plottools import set_degree_formatter, sci_plot_style
+from ...viztools import set_degree_formatter, sci_plot_style
 
 
 class Contour3DExtraction(SourceInv):
@@ -222,7 +222,7 @@ class Contour3DExtraction(SourceInv):
         Returns:
         - fig (matplotlib.figure.Figure): The figure object containing the plot.
         """
-        from ...plottools import optimize_3d_plot
+        from ...viztools import optimize_3d_plot
         from eqtools.getcpt import get_cpt
         import cmcrameri # cmc.devon_r cmc.lajolla_r cmc.batlow
         from matplotlib.colors import Normalize

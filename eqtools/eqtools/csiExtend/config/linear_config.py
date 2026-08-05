@@ -3,6 +3,7 @@ import yaml
 import os
 import numpy as np
 import logging
+from collections.abc import Mapping, MutableMapping
 
 # Setup module-level logger
 logger = logging.getLogger(__name__)
@@ -36,6 +37,34 @@ def _validate_gf_options(method, options):
     if not options:
         return
     resolve_gf_options(method, options)
+
+
+def _normalize_gf_options(options):
+    """Return the stable internal representation of GF backend options.
+
+    YAML permits both a missing value and an explicit ``null``.  For GF
+    backends without method-specific settings, both forms mean "no options"
+    and are normalized to an empty mapping.  Mapping inputs are copied so
+    per-source runtime updates such as ``force_recompute`` cannot leak through
+    a defaults dictionary shared by multiple sources.  Typed CSI option
+    objects remain supported for programmatic configuration.
+
+    Parameters
+    ----------
+    options : mapping, object, or None
+        Raw ``update_GFs.options`` value.
+
+    Returns
+    -------
+    dict or object
+        Empty/copy-isolated mapping for YAML-style input, otherwise the
+        original typed options object.
+    """
+    if options is None:
+        return {}
+    if isinstance(options, Mapping):
+        return dict(options)
+    return options
 
 
 class LinearInversionConfig(CommonConfigBase):
@@ -561,18 +590,20 @@ class LinearInversionConfig(CommonConfigBase):
             adapter = make_adapter(ifault, **self._get_adapter_kwargs(faultname))
             gfconf = self.faults[faultname]['method_parameters']['update_GFs']
             gfmethod = gfconf.get('method', 'homogeneous')  # Default method is 'homogeneous'
-            gfopts = gfconf.get('options', {})
+            gfopts = _normalize_gf_options(gfconf.get('options'))
+            gfconf['options'] = gfopts
             for obsdata, vertical in zip(geodata, verticals):
                 adapter.build_gfs(obsdata, vertical, method=gfmethod,
                                   options=gfopts, verbose=self.verbose)
             adapter.initialize_solution()
 
-            # After the first dataset's GF computation, disable force_recompute
-            # so subsequent datasets reuse cached results for the same fault.
-            # gfopts is a reference to the per-fault options dict that persists
-            # across datasets within this loop.
-            if 'force_recompute' in gfopts:
+            # Disable forced recomputation after this initialization pass so
+            # later GF refreshes can reuse the backend cache. YAML options use
+            # a mapping; typed CSI options remain valid for programmatic use.
+            if isinstance(gfopts, MutableMapping) and 'force_recompute' in gfopts:
                 gfopts['force_recompute'] = False
+            elif hasattr(gfopts, 'force_recompute'):
+                gfopts.force_recompute = False
 
         # Assemble data and Green's functions for inversion
         poly_assembled = False  # Flag to check if the polynomial is assembled
@@ -634,17 +665,17 @@ class LinearInversionConfig(CommonConfigBase):
                 logger.error(msg)
                 raise ValueError(msg)
 
+            gf_options = _normalize_gf_options(
+                fault_parameters['method_parameters']['update_GFs'].get('options')
+            )
             fault_parameters['method_parameters']['update_GFs'] = {
                 'geodata': geodata,
                 'verticals': verticals,
                 'dataFaults': dataFaults,
                 'method': method,
-                'options': fault_parameters['method_parameters']['update_GFs'].get('options', {})
+                'options': gf_options,
             }
-            _validate_gf_options(
-                method,
-                fault_parameters['method_parameters']['update_GFs'].get('options', {})
-            )
+            _validate_gf_options(method, gf_options)
 
     def _get_smoothing_faultnames(self):
         """Return names of sources that support Laplacian smoothing.
@@ -871,10 +902,7 @@ class LinearInversionConfig(CommonConfigBase):
 
         # Add optional fields if they exist
         if is_bayesian:
-            # Force 'SMC_F_J' to 'SMC_FJ' for export
             bay_export_value = getattr(self, 'bayesian_sampling_mode', None)
-            if bay_export_value == 'SMC_F_J':
-                bay_export_value = 'SMC_FJ'
             add_optional('bayesian_sampling_mode', export_value=bay_export_value)
             add_optional('nonlinear_inversion')
             # Force 'magnitude_rake' to 'mag_rake' for export

@@ -15,7 +15,13 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from typing import Union, List, Dict, Callable, Optional, Tuple
 from .AdaptiveTriangularPatches import AdaptiveTriangularPatches
-from .DipInterpolation import LayeredDipInterpolator, DepthDipProfile
+from .DipInterpolation import (
+    LayeredDipInterpolator,
+    DepthDipProfile,
+    normalize_dip_to_neg90_90,
+)
+from .fault_angle_conventions import normalize_oriented_reference_dip
+from .geom_ops import validate_top_bottom_cells
 
 
 class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
@@ -68,10 +74,13 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         -----------
         reference_nodes : np.ndarray
             Reference nodes with shape (n, 3): [lon/x, lat/y, base_dip].
-            base_dip should be in [-90, 90] range.
+            base_dip accepts oriented reference values in
+            [-90, 0) U (0, 180) degrees.
         depth_function : callable
-            Function: depth_function(base_dip, depth) -> dip.
-            Both input and output dip should be in [-90, 90] range.
+            depth_function(base_dip, depth) -> dip. The callback receives
+            base_dip in signed [-90, 0) U (0, 90] form and is evaluated
+            exactly once at each stored depth. Its output accepts either
+            equivalent oriented-reference representation.
             Example: lambda dip, depth: dip + 0.5 * depth
         depth_range : tuple, optional
             (min_depth, max_depth). If None, uses (self.top, self.depth).
@@ -91,31 +100,75 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         ...     depth_function=lambda dip, depth: dip + 1.0 * depth
         ... )
         """
+        if not callable(depth_function):
+            raise ValueError("depth_function must be callable")
         if depth_range is None:
             depth_range = (self.top, self.depth)
-        
-        depths = np.linspace(depth_range[0], depth_range[1], num_depth_samples)
+        depth_range = np.asarray(depth_range, dtype=float)
+        if (
+            depth_range.shape != (2,)
+            or not np.all(np.isfinite(depth_range))
+            or depth_range[0] >= depth_range[1]
+        ):
+            raise ValueError(
+                "depth_range must contain two finite increasing depths"
+            )
+        try:
+            sample_count = float(num_depth_samples)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("num_depth_samples must be an integer >= 2") from exc
+        if (
+            not np.isfinite(sample_count)
+            or not sample_count.is_integer()
+            or sample_count < 2
+        ):
+            raise ValueError("num_depth_samples must be an integer >= 2")
+        num_depth_samples = int(sample_count)
+
+        depths = np.linspace(
+            depth_range[0],
+            depth_range[1],
+            num_depth_samples,
+        )
+        reference_nodes = np.asarray(reference_nodes, dtype=float)
         reference_nodes = np.atleast_2d(reference_nodes)
-        
-        # Reset interpolator
+        if reference_nodes.ndim != 2 or reference_nodes.shape[1] != 3:
+            raise ValueError(
+                "reference_nodes must have shape (n, 3): "
+                "[lon/x, lat/y, base_dip]"
+            )
+        if not np.all(np.isfinite(reference_nodes)):
+            raise ValueError("reference_nodes must contain only finite values")
+
+        # Materialized profiles are authoritative. The callback is deliberately
+        # not retained in LayeredDipInterpolator, otherwise it would be applied
+        # again when the stored profile is queried.
         self.dip_interpolator.clear_profiles()
-        self.dip_interpolator.set_depth_function(depth_function)
-        
-        # Process reference nodes
         processed_nodes = self._process_reference_nodes(
             reference_nodes, is_utm, buffer_nodes, buffer_radius)
-        
+
         for node in processed_nodes:
-            x, y, lon, lat, base_dip = node['x'], node['y'], node['lon'], node['lat'], node['dip']
-            
-            # Generate depth-dip pairs using the function
+            x = node['x']
+            y = node['y']
+            lon = node['lon']
+            lat = node['lat']
+            base_dip = normalize_dip_to_neg90_90(
+                normalize_oriented_reference_dip(
+                    node['dip'],
+                    name='reference_nodes base_dip',
+                )
+            )
             depth_dip_pairs = np.column_stack([
                 depths,
-                [depth_function(base_dip, d) for d in depths]
+                [depth_function(base_dip, depth) for depth in depths],
             ])
-            
-            profile = DepthDipProfile(x, y, lon, lat, depth_dip_pairs, 
-                                      input_dip_range='neg90_90')
+            profile = DepthDipProfile.from_oriented_reference(
+                x,
+                y,
+                lon,
+                lat,
+                depth_dip_pairs,
+            )
             self.dip_interpolator.add_profile(profile)
     
     def set_depth_dip_from_profiles(
@@ -142,16 +195,17 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                        np.array([[depth1, dip1], [depth2, dip2], ...]),  # Node 2
                    ]
                }
-               Note: dip values should be in [-90, 90] range.
+               Dip accepts oriented reference values in
+               [-90, 0) U (0, 180) degrees.
             
             2. DataFrame format:
                Columns: [lon, lat, depth, dip] or [x, y, depth, dip]
                Multiple rows per location with different depths.
-               Note: dip values should be in [-90, 90] range.
+               Dip follows the same oriented-reference protocol.
             
             3. Array format:
                Shape (n, 4) with columns [lon/x, lat/y, depth, dip]
-               Note: dip values should be in [-90, 90] range.
+               Dip follows the same oriented-reference protocol.
                
         is_utm : bool
             If True, coordinates are in UTM.
@@ -159,6 +213,7 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             Interpolation method for depth-dip relationship:
             - 'linear': Linear interpolation between depth points
             - 'cubic': Cubic spline interpolation
+            - 'nearest': Nearest-neighbor interpolation
             - 'step' or 'previous': Step function (hard transitions at depth boundaries)
         buffer_nodes : np.ndarray, optional
             Buffer nodes for additional reference points.
@@ -230,7 +285,11 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         """Parse dictionary format profiles."""
         ref_nodes = np.atleast_2d(data['reference_nodes'])
         profiles = data['depth_dip_profiles']
-        
+        if len(ref_nodes) != len(profiles):
+            raise ValueError(
+                "reference_nodes and depth_dip_profiles must have the same length"
+            )
+
         for node, depth_dip in zip(ref_nodes, profiles):
             if is_utm:
                 x, y = node[0], node[1]
@@ -239,8 +298,14 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                 lon, lat = node[0], node[1]
                 x, y = self.ll2xy(lon, lat)
             
-            profile = DepthDipProfile(x, y, lon, lat, np.array(depth_dip), 
-                                      interp_method, input_dip_range='neg90_90')
+            profile = DepthDipProfile.from_oriented_reference(
+                x,
+                y,
+                lon,
+                lat,
+                np.asarray(depth_dip, dtype=float),
+                interpolation_method=interp_method,
+            )
             self.dip_interpolator.add_profile(profile)
     
     def _parse_dataframe_profiles(self, df: pd.DataFrame, is_utm: bool, interp_method: str):
@@ -259,14 +324,23 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                 x, y = self.ll2xy(lon, lat)
             
             depth_dip = group[['depth', 'dip']].sort_values('depth').values
-            profile = DepthDipProfile(x, y, lon, lat, depth_dip, 
-                                      interp_method, input_dip_range='neg90_90')
+            profile = DepthDipProfile.from_oriented_reference(
+                x,
+                y,
+                lon,
+                lat,
+                depth_dip,
+                interpolation_method=interp_method,
+            )
             self.dip_interpolator.add_profile(profile)
     
     def _parse_array_profiles(self, arr: np.ndarray, is_utm: bool, interp_method: str):
         """Parse array format profiles."""
-        if arr.shape[1] != 4:
-            raise ValueError("Array must have 4 columns: [lon/x, lat/y, depth, dip]")
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] != 4:
+            raise ValueError(
+                "Array must have 4 columns: [lon/x, lat/y, depth, dip]"
+            )
         
         # Convert to DataFrame and use DataFrame parser
         coord_cols = ['x', 'y'] if is_utm else ['lon', 'lat']
@@ -316,11 +390,13 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                         if lon is None or lat is None:
                             lon, lat = self.xy2ll(row['x'], row['y'])
                         
-                        profile = DepthDipProfile(
-                            row['x'], row['y'], lon, lat,
-                            np.array(depth_dip_pairs),
+                        profile = DepthDipProfile.from_oriented_reference(
+                            row['x'],
+                            row['y'],
+                            lon,
+                            lat,
+                            np.asarray(depth_dip_pairs, dtype=float),
                             interpolation_method=interpolation_method,
-                            input_dip_range='neg90_90'
                         )
                         self.dip_interpolator.add_profile(profile)
     
@@ -515,9 +591,11 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         use_average_strike : bool
             If True, use average strike direction.
         average_strike_source : str
-            Source for average strike ('pca' or 'user').
+            ``'pca'`` fits and orients the first principal axis of top x/y;
+            ``'user'`` uses ``user_direction_angle``.
         user_direction_angle : float, optional
-            User-specified direction angle.
+            Explicit geographic strike azimuth in degrees clockwise from
+            North. It must follow the positive trace direction.
         integration_steps : int
             Number of steps for integrating along dip direction.
         verbose : bool
@@ -588,7 +666,7 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
             verbose: bool
         ) -> np.ndarray:
         """Compute strike angles in radians."""
-        from numpy import deg2rad
+        from numpy import deg2rad, sin, cos
         
         x, y = self.top_coords[:, 0], self.top_coords[:, 1]
         strike_direction = np.array([x[-1] - x[0], y[-1] - y[0]])
@@ -605,6 +683,22 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
                     average_strike_rad += np.pi
             elif average_strike_source == 'user' and user_direction_angle is not None:
                 average_strike_rad = deg2rad(user_direction_angle)
+                # Geographic azimuth maps to [east, north] as [sin, cos].
+                user_strike_vector = np.array([
+                    sin(average_strike_rad),
+                    cos(average_strike_rad),
+                ])
+                trace_direction_norm = np.linalg.norm(strike_direction)
+                alignment = np.dot(user_strike_vector, strike_direction)
+                if (
+                    not np.isfinite(average_strike_rad)
+                    or trace_direction_norm <= np.finfo(float).eps
+                    or alignment <= np.finfo(float).eps * trace_direction_norm
+                ):
+                    raise ValueError(
+                        "user_direction_angle must follow the positive trace "
+                        "direction (geographic azimuth clockwise from North)."
+                    )
             else:
                 raise ValueError("Invalid average_strike_source or user_direction_angle not provided.")
             
@@ -686,9 +780,11 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         use_average_strike : bool
             If True, use average strike direction.
         average_strike_source : str
-            Source for average strike ('pca' or 'user').
+            ``'pca'`` fits and orients the first principal axis of top x/y;
+            ``'user'`` uses ``user_direction_angle``.
         user_direction_angle : float, optional
-            User-specified direction angle.
+            Explicit geographic strike azimuth in degrees clockwise from
+            North. It must follow the positive trace direction.
         integration_steps : int
             Number of steps for integrating along dip direction.
         update_self : bool
@@ -699,7 +795,8 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         Returns:
         --------
         np.ndarray
-            Bottom coordinates.
+            Bottom coordinates. Row ``i`` remains paired with
+            ``top_coords[i]``; the bottom is never sorted independently.
         """
         # Get strike direction
         strike_rad = self._compute_strike_rad(
@@ -711,23 +808,12 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         
         bottom_xyz = self._propagate_to_depth(
             x, y, z, self.depth, strike_rad, integration_steps)
-        
-        # Sort by interpolation axis
-        axis_idx = 0 if self.dip_interpolator.interpolation_axis == 'x' else 1
-        sort_order = np.argsort(bottom_xyz[:, axis_idx])
-        bottom_xyz = bottom_xyz[sort_order]
-        
-        # Ensure consistent direction with top
-        strike_direction = np.array([
-            self.top_coords[-1, 0] - self.top_coords[0, 0],
-            self.top_coords[-1, 1] - self.top_coords[0, 1]
-        ])
-        bottom_direction = np.array([
-            bottom_xyz[-1, 0] - bottom_xyz[0, 0],
-            bottom_xyz[-1, 1] - bottom_xyz[0, 1]
-        ])
-        if np.dot(strike_direction, bottom_direction) < 0:
-            bottom_xyz = bottom_xyz[::-1]
+
+        # Preserve the propagation index contract. Independent bottom sorting
+        # can reconnect a curved trace to the wrong down-dip node. Detect an
+        # invalid local strip instead of silently changing its topology.
+        top_xyz = np.column_stack([x, y, z])
+        validate_top_bottom_cells(top_xyz, bottom_xyz)
         
         if update_self:
             self.set_bottom_coords(bottom_xyz, lonlat=False)

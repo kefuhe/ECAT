@@ -18,7 +18,7 @@ def generate_default_config(output_path, gf_method=None, interseismic_config_fil
     # Define the basic configuration with comments
     config_text = """
 # ----------- General Parameters ----------- #
-# General settings for the Bayesian inversion process
+# Shared settings for BLSE/VCE and Bayesian slip inversion
 GLs: null  # Custom Green's functions
 moment_magnitude_threshold: 7.0  # Threshold for the moment magnitude
 magnitude_tolerance: 0.2  # Range of the moment magnitude can be updated
@@ -28,9 +28,9 @@ shear_modulus: 3.0e10  # Shear modulus in Pa
 # ----------- Bayesian Inversion Parameters ----------- #
 # Parameters related to Bayesian inversion
 nonlinear_inversion: false  # Whether to use nonlinear inversion
-slip_sampling_mode: mag_rake  # Slip sampling mode: 'ss_ds', 'rake_fixed', 'magnitude_rake' or its alias 'mag_rake'
-rake_angle: 0  # Rake angle to be used when slip_sampling_mode is 'rake_fixed'
-bayesian_sampling_mode: 'SMC_FJ'  # Sampling mode: 'FULLSMC' or 'SMC_F_J' or its alias 'SMC_FJ'
+slip_sampling_mode: ss_ds  # Default SMC_FJ parameterization
+# rake_angle: 0  # Only for FULLSMC with slip_sampling_mode: rake_fixed
+bayesian_sampling_mode: 'SMC_FJ'  # Use FULLSMC for fully sampled slip modes
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain
 use_bounds_constraints: true  # Whether to use bounds constraints
@@ -63,44 +63,46 @@ geodata:
   # 2. List of booleans: [true, true, false] (per-dataset)
   verticals: true  # Whether to include vertical data, default true for InSAR data
   
-  # Polynomial correction configuration - multiple formats supported:
+  # Data-correction transform (historical key: polys):
   # 1. null: No polynomial correction for any dataset
-  # 2. Integer: Same polynomial order for all datasets
-  # 3. List of values: [3, null, 1] (per-dataset polynomial orders)
-  # 4. String: polynomial order as string (for compatibility)
+  # 2. Scalar: Same compatible transform for every dataset
+  # 3. List: One transform per dataset, in geodata.data order
   #
-  # Recommended values by data type:
-  # - InSAR (SAR): 3 (removes orbital ramps and atmospheric effects)
-  # - GPS: null (high precision, no polynomial needed)
-  # - Optical/Offset (POT/FT): 1 (removes linear trends)
-  # - Other displacement data: 1-2 or 'eulerrotation' (depending on quality)
+  # Common values:
+  # - InSAR/leveling/optical: 1=offset, 3=offset+x/y ramps,
+  #   4=offset+x/y ramps+xy cross term
+  # - GPS: null or 'translation'; use advanced frame transforms deliberately
   # 
   # Common usage examples:
   # polys: null                    # No correction for all datasets
-  # polys: 3                       # Order-3 polynomial for all datasets
-  # polys: [3, null, 1]           # Mixed: SAR=3, GPS=null, Optical=1
+  # polys: 3                       # One or more scalar SAR-like datasets
+  # polys: [3, null, translation] # Per-dataset mixed example
   polys: null  # Default: no polynomial correction
   
-  faults: null  # List of fault names, optional: (null, list of fault name list)
+  faults: null  # null=all faults; otherwise one fault-name list per dataset
   sigmas:  # Standard deviation of the geodata
-    # Update configuration - multiple formats supported:
-    # 1. Boolean: true (update all) or false (update none)
-    # 2. List of booleans: [true, false, true] (explicit per-dataset)
-    # 3. List of indices: [0, 2] (update datasets at these indices)
-    # 4. List of names: ["sar_a", "sar_c"] (update datasets by name)
-    # 5. Dictionary: {"true_indices": [0, 2]} (legacy format)
-    update: true
-    initial_value: 0  # Initial value for sigmas, optional: (float, list of floats)
-    log_scaled: true  # Whether sigmas are log-scaled
+    mode: individual  # single | individual | grouped
+    # Required only for grouped mode. Use actual data.name values and assign
+    # every dataset to exactly one group.
+    # groups:
+    #   sar_group: [dataset_a, dataset_b]
+    #   gps_group: [dataset_c]
+    update: true  # bool, or one bool per dataset/group
+    # Scalar; individual/grouped also accept an aligned list or name mapping.
+    initial_value: 0
+    log_scaled: true  # true: sample log10(sigma)
 
 # ----------- Smoothing Parameters ----------- #
 # Parameters for smoothing
 alpha:
   enabled: true  # Whether to enable smoothing
-  update: true  # Whether to update alpha during inversion
-  initial_value: -2.0  # Initial value for alpha. Optional: (float, list of floats with same length as alpha['faults'], or a single float list)
-  log_scaled: true  # Whether alpha is log-scaled
-  faults: null  # List of fault names for smoothing"""
+  mode: single  # single | individual | grouped
+  # For grouped mode, replace faults: null below with one fault-name list per
+  # group, for example: [[FaultA, FaultB], [FaultC]].
+  update: true  # bool, or one bool per fault/group
+  initial_value: -2.0  # Scalar or fault/group-aligned list; log10(alpha)
+  log_scaled: true  # true: sample log10(alpha)
+  faults: null  # null=all smoothing faults; grouped mode requires list-of-lists"""
 
     # Add DES configuration if requested
     if include_des_config:
@@ -148,8 +150,7 @@ faults:
       update_GFs:
         method: null
         # slipdir: sd  # Slip direction chars: s=strikeslip, d=dipslip, t=tensile, c=coupling (default: sd)
-        geodata: null
-        verticals: null
+        options: {}  # Empty for cutde/okada; method-specific settings for pscmp/edcmp
       update_Laplacian:
         method: 'Mudpy'  # Method for Laplacian calculation
         bounds: ['free', 'locked', 'free', 'free']  # Top Bottom Left Right
@@ -281,7 +282,7 @@ sbarbot_sources:
             config['faults']['defaults']['method_parameters']['update_GFs']['options'] = \
                 EdcmpOptions.to_commented_map(defaults)
         else:
-            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = None
+            config['faults']['defaults']['method_parameters']['update_GFs']['options'] = {}
 
     # Write the configuration to the output file
     with open(output_path, "w") as file:

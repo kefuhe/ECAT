@@ -14,6 +14,15 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 from typing import Union, List, Dict, Callable, Optional, Tuple
+from .fault_angle_conventions import (
+    normalize_oriented_reference_dip,
+    validate_oriented_reference_dip,
+)
+
+_DIP_RANGES = frozenset({'neg90_90', '0_180'})
+_INTERPOLATION_METHODS = frozenset({
+    'linear', 'cubic', 'nearest', 'step', 'previous',
+})
 
 
 def normalize_dip_to_0_180(dip: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
@@ -39,7 +48,7 @@ def normalize_dip_to_0_180(dip: Union[float, np.ndarray]) -> Union[float, np.nda
     >>> normalize_dip_to_0_180(30)   # -> 30
     >>> normalize_dip_to_0_180(-30)  # -> 150
     >>> normalize_dip_to_0_180(90)   # -> 90
-    >>> normalize_dip_to_0_180(-90)  # -> 180 (or 0, depending on convention)
+    >>> normalize_dip_to_0_180(-90)  # -> 90 (vertical; side is immaterial)
     """
     dip = np.asarray(dip)
     normalized = np.where(dip < 0, 180 + dip, dip)
@@ -65,12 +74,54 @@ def normalize_dip_to_neg90_90(dip: Union[float, np.ndarray]) -> Union[float, np.
     return float(normalized) if normalized.ndim == 0 else normalized
 
 
+def validate_dip_angles_for_depth_projection(
+        dip: Union[float, np.ndarray],
+        name: str = 'dip'
+    ) -> np.ndarray:
+    """Validate dip values used to project a top edge to a deeper edge.
+
+    Accepted external representations are ``[-90, 0) U (0, 180)`` degrees.
+    The recommended representation is signed ``[-90, 0) U (0, 90]``:
+    positive values dip to the right of positive strike, while negative values
+    dip to the left. Values in ``(90, 180)`` are a compatibility form and are
+    equivalent to ``dip - 180``. Zero and 180 degrees are horizontal and
+    cannot reach a different target depth, so they are rejected.
+
+    Parameters
+    ----------
+    dip : float or array-like
+        Dip angle(s) in degrees.
+    name : str
+        Input label used in error messages.
+
+    Returns
+    -------
+    ndarray
+        Finite validated values as ``float`` without changing representation.
+    """
+    return validate_oriented_reference_dip(dip, name=name)
+
+
+def _validate_internal_dip_0_180(dip, name='dip') -> np.ndarray:
+    """Return finite internal dip values strictly inside ``(0, 180)``."""
+    values = np.asarray(dip, dtype=float)
+    invalid = ~np.isfinite(values) | (values <= 0.0) | (values >= 180.0)
+    if np.any(invalid):
+        indices = np.argwhere(invalid).reshape(-1)[:5].tolist()
+        raise ValueError(
+            f"{name} must be finite and strictly inside (0, 180) degrees; "
+            f"invalid value indices: {indices}"
+        )
+    return values
+
+
 class DepthDipProfile:
     """
     A class to represent depth-dip relationship at a reference node.
     
-    Note: Internally stores dip in [0, 180] range for smooth interpolation.
-    Returns dip in [-90, 90] range when queried.
+    Internally stores dip strictly in ``(0, 180)`` for continuous
+    interpolation. Query methods return either the signed reference form or
+    the continuous internal form according to ``output_range``.
     
     Attributes:
     -----------
@@ -113,28 +164,108 @@ class DepthDipProfile:
               the previous (shallower) depth point. Creates hard transitions
               at depth boundaries. Extrapolation uses linear method.
         input_dip_range : str
-            Range of input dip values:
-            - 'neg90_90': Input is in [-90, 90] range (default, will be converted)
-            - '0_180': Input is already in [0, 180] range
+            Strict low-level input convention. ``'neg90_90'`` accepts
+            ``[-90, 0) U (0, 90]``; ``'0_180'`` accepts ``(0, 180)``.
+            High-level geometry APIs accept either equivalent reference form
+            and call :meth:`from_oriented_reference`.
         """
-        self.x = x
-        self.y = y
-        self.lon = lon
-        self.lat = lat
+        if input_dip_range not in _DIP_RANGES:
+            raise ValueError(
+                "input_dip_range must be 'neg90_90' or '0_180'; "
+                f"got {input_dip_range!r}"
+            )
+        if interpolation_method not in _INTERPOLATION_METHODS:
+            raise ValueError(
+                "interpolation_method must be one of "
+                f"{sorted(_INTERPOLATION_METHODS)}; got {interpolation_method!r}"
+            )
+
+        coordinates = np.asarray([x, y, lon, lat], dtype=float)
+        if not np.all(np.isfinite(coordinates)):
+            raise ValueError("profile x, y, lon and lat must be finite")
+
+        pairs = np.asarray(depth_dip_pairs, dtype=float)
+        pairs = np.atleast_2d(pairs)
+        if pairs.ndim != 2 or pairs.shape[1] != 2:
+            raise ValueError(
+                "depth_dip_pairs must have shape (n, 2) with columns "
+                "[depth, dip]"
+            )
+        minimum_points = 4 if interpolation_method == 'cubic' else 2
+        if pairs.shape[0] < minimum_points:
+            raise ValueError(
+                f"interpolation_method={interpolation_method!r} requires at "
+                f"least {minimum_points} depth-dip points; got {pairs.shape[0]}"
+            )
+        if not np.all(np.isfinite(pairs)):
+            raise ValueError("depth_dip_pairs must contain only finite values")
+
+        self.x = float(x)
+        self.y = float(y)
+        self.lon = float(lon)
+        self.lat = float(lat)
         self.interpolation_method = interpolation_method
-        self.depth_dip_pairs = np.atleast_2d(depth_dip_pairs).copy()
-        
-        # Normalize dip to [0, 180] for internal storage
+        self.depth_dip_pairs = pairs.copy()
+
         if input_dip_range == 'neg90_90':
-            self.depth_dip_pairs[:, 1] = normalize_dip_to_0_180(self.depth_dip_pairs[:, 1])
-        
-        # Sort by depth
+            signed = self.depth_dip_pairs[:, 1]
+            invalid = (
+                (signed < -90.0)
+                | (signed > 90.0)
+                | np.isclose(signed, 0.0, rtol=0.0, atol=1e-12)
+            )
+            if np.any(invalid):
+                raise ValueError(
+                    "depth_dip_pairs dip values with "
+                    "input_dip_range='neg90_90' must be in "
+                    "[-90, 0) U (0, 90] degrees"
+                )
+            self.depth_dip_pairs[:, 1] = normalize_dip_to_0_180(signed)
+        else:
+            self.depth_dip_pairs[:, 1] = _validate_internal_dip_0_180(
+                self.depth_dip_pairs[:, 1],
+                name='depth_dip_pairs dip',
+            )
+
         sort_idx = np.argsort(self.depth_dip_pairs[:, 0])
         self.depth_dip_pairs = self.depth_dip_pairs[sort_idx]
-        
-        # Create interpolator based on method
+        if np.any(np.diff(self.depth_dip_pairs[:, 0]) <= 0.0):
+            raise ValueError(
+                "depth_dip_pairs depths must be unique; duplicate depths "
+                "cannot define an unambiguous profile"
+            )
+
         self._create_interpolator(interpolation_method)
-    
+
+    @classmethod
+    def from_oriented_reference(
+            cls, x, y, lon, lat, depth_dip_pairs,
+            interpolation_method='linear'):
+        """Build a profile from the public oriented-reference dip protocol.
+
+        The public input may use signed or continuous equivalent values. This
+        constructor validates and normalizes once at the API boundary, then
+        delegates to the strict 0-180 internal constructor.
+        """
+        pairs = np.asarray(depth_dip_pairs, dtype=float)
+        pairs = np.atleast_2d(pairs)
+        if pairs.ndim != 2 or pairs.shape[1] != 2:
+            raise ValueError(
+                "depth_dip_pairs must have shape (n, 2) with columns "
+                "[depth, dip]"
+            )
+        pairs = pairs.copy()
+        pairs[:, 1] = normalize_oriented_reference_dip(
+            pairs[:, 1],
+            name='depth_dip_pairs dip',
+        )
+        return cls(
+            x, y, lon, lat, pairs,
+            interpolation_method=interpolation_method,
+            input_dip_range='0_180',
+        )
+
+
     def _create_interpolator(self, method: str):
         """Create the appropriate interpolator based on method."""
         depths = self.depth_dip_pairs[:, 0]
@@ -204,15 +335,23 @@ class DepthDipProfile:
         float
             Dip angle in specified range.
         """
+        if output_range not in _DIP_RANGES:
+            raise ValueError(
+                "output_range must be 'neg90_90' or '0_180'; "
+                f"got {output_range!r}"
+            )
         dip_0_180 = float(self.interpolator(depth))
-        
+        _validate_internal_dip_0_180(dip_0_180, name='interpolated dip')
+
         if output_range == 'neg90_90':
             return normalize_dip_to_neg90_90(dip_0_180)
         return dip_0_180
     
     def get_dip_0_180(self, depth: float) -> float:
         """Get dip angle in [0, 180] range (for internal calculations)."""
-        return float(self.interpolator(depth))
+        dip = float(self.interpolator(depth))
+        _validate_internal_dip_0_180(dip, name='interpolated dip')
+        return dip
     
     def get_depth_points(self) -> np.ndarray:
         """Get the depth points defined in this profile."""
@@ -238,17 +377,16 @@ class DepthDipProfile:
     
     @classmethod
     def from_dict(cls, data: dict, interpolation_method: str = None) -> 'DepthDipProfile':
-        """Create from dictionary (assumes dip in [-90, 90] range)."""
+        """Create from serialized public reference-dip values."""
         # Use stored method if available, otherwise use provided or default
         method = interpolation_method or data.get('interpolation_method', 'linear')
-        return cls(
+        return cls.from_oriented_reference(
             x=data['x'],
             y=data['y'],
             lon=data['lon'],
             lat=data['lat'],
             depth_dip_pairs=np.array(data['depth_dip_pairs']),
             interpolation_method=method,
-            input_dip_range='neg90_90'
         )
 
 
@@ -403,9 +541,18 @@ class LayeredDipInterpolator:
         float
             Dip angle in specified range.
         """
+        if output_range not in _DIP_RANGES:
+            raise ValueError(
+                "output_range must be 'neg90_90' or '0_180'; "
+                f"got {output_range!r}"
+            )
         spatial_interp = self._get_spatial_interpolator_0_180(depth)
-        dip_0_180 = spatial_interp(x, y)
-        
+        dip_0_180 = float(spatial_interp(x, y))
+        _validate_internal_dip_0_180(
+            dip_0_180,
+            name='spatially interpolated dip',
+        )
+
         if output_range == 'neg90_90':
             return normalize_dip_to_neg90_90(dip_0_180)
         return dip_0_180

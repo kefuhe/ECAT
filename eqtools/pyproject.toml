@@ -1,3 +1,24 @@
 [build-system]
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+    "eqtools/csiExtend/tests",
+]
+python_files = ["test_*.py"]
+norecursedirs = [
+    ".git",
+    ".venv",
+    "build",
+    "dist",
+    "scripts",
+]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+]
+markers = [
+    "realdata: requires external case data that is not part of the repository",
+]

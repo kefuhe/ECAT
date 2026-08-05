@@ -5,6 +5,133 @@ from scipy.integrate import cumulative_trapezoid as cumtrapz
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+
+class InvalidFaultGeometryError(ValueError):
+    """Raised when paired top/bottom edges form an invalid local cell."""
+
+
+def validate_top_bottom_cells(
+        top_coords,
+        bottom_coords,
+        *,
+        raise_on_invalid=True):
+    """Validate adjacent quadrilaterals formed by paired fault-edge nodes.
+
+    Each cell [top[i], top[i+1], bottom[i+1], bottom[i]] is split along
+    the same diagonal used by the simple triangular mesh. A cell is invalid
+    when either triangle is degenerate or the two triangle normals point into
+    opposite hemispheres. The calculation is fully three-dimensional, so a
+    vertical fault surface is not mistaken for a zero-area XY polygon.
+
+    Parameters
+    ----------
+    top_coords, bottom_coords : (n, 3+) array-like
+        Paired boundary coordinates. Row i on the bottom must be derived
+        from row i on the top.
+    raise_on_invalid : bool, default True
+        Raise InvalidFaultGeometryError when an invalid cell is found.
+        Set to False for lightweight diagnostics.
+
+    Returns
+    -------
+    ndarray of bool
+        One value per adjacent cell; True means the local cell is valid.
+
+    Notes
+    -----
+    This is an O(n) local check. It does not search for intersections between
+    non-adjacent cells and it never reorders or repairs the input coordinates.
+    One paired duplicate segment is treated as a redundant trace row and
+    reported as valid without changing either array. A wholly collapsed strip
+    remains invalid.
+    """
+    top = np.asarray(top_coords, dtype=float)
+    bottom = np.asarray(bottom_coords, dtype=float)
+    if (
+        top.ndim != 2
+        or bottom.ndim != 2
+        or top.shape[1] < 3
+        or bottom.shape[1] < 3
+    ):
+        raise ValueError("top_coords and bottom_coords must have shape (n, 3+)")
+    if top.shape[0] != bottom.shape[0]:
+        raise ValueError(
+            "top_coords and bottom_coords must contain the same number of "
+            "paired nodes"
+        )
+    if top.shape[0] < 2:
+        raise ValueError("top/bottom geometry requires at least two paired nodes")
+
+    top = top[:, :3]
+    bottom = bottom[:, :3]
+    if not np.all(np.isfinite(top)) or not np.all(np.isfinite(bottom)):
+        raise ValueError("top_coords and bottom_coords must contain finite values")
+
+    top_left = top[:-1]
+    top_right = top[1:]
+    bottom_left = bottom[:-1]
+    bottom_right = bottom[1:]
+
+    normal_1 = np.cross(
+        top_right - top_left,
+        bottom_right - top_left,
+    )
+    normal_2 = np.cross(
+        bottom_right - top_left,
+        bottom_left - top_left,
+    )
+    norm_1 = np.linalg.norm(normal_1, axis=1)
+    norm_2 = np.linalg.norm(normal_2, axis=1)
+
+    # A scale-relative area tolerance avoids depending on whether the caller
+    # uses metres or kilometres while only classifying numerical degeneracy.
+    edge_lengths = np.column_stack([
+        np.linalg.norm(top_right - top_left, axis=1),
+        np.linalg.norm(bottom_right - bottom_left, axis=1),
+        np.linalg.norm(bottom_left - top_left, axis=1),
+        np.linalg.norm(bottom_right - top_right, axis=1),
+        np.linalg.norm(bottom_right - top_left, axis=1),
+    ])
+    cell_scale = np.max(edge_lengths, axis=1)
+    area_tolerance = (
+        64.0 * np.finfo(float).eps * np.square(cell_scale)
+    )
+    raw_degenerate = (norm_1 <= area_tolerance) | (norm_2 <= area_tolerance)
+
+    # Real-world traces occasionally contain an adjacent duplicate node. When
+    # both paired edges collapse at the same cell, that row pair is redundant
+    # rather than a folded surface; later meshing may safely ignore it. Keep
+    # the original arrays untouched and skip only that local diagnostic. An
+    # entirely collapsed strip remains invalid.
+    length_tolerance = np.sqrt(area_tolerance)
+    redundant_pair = (
+        (edge_lengths[:, 0] <= length_tolerance)
+        & (edge_lengths[:, 1] <= length_tolerance)
+    )
+    if np.all(redundant_pair):
+        redundant_pair[:] = False
+    degenerate = raw_degenerate & ~redundant_pair
+    opposite_normals = (
+        np.einsum('ij,ij->i', normal_1, normal_2) <= 0.0
+    ) & ~raw_degenerate
+    valid = ~(degenerate | opposite_normals)
+
+    if raise_on_invalid and not np.all(valid):
+        invalid = np.flatnonzero(~valid)
+        degenerate_indices = np.flatnonzero(degenerate)
+        folded_indices = np.flatnonzero(opposite_normals)
+        raise InvalidFaultGeometryError(
+            "invalid adjacent top/bottom fault cell(s): "
+            f"indices={invalid[:10].tolist()}, "
+            f"degenerate={degenerate_indices[:10].tolist()}, "
+            f"opposite_normals={folded_indices[:10].tolist()}. "
+            "Preserve top[i] <-> bottom[i] correspondence and revise the "
+            "trace/strike/dip controls; automatic reordering is not applied."
+        )
+
+    return valid
+
+
 class PolygonIntersector:
     def __init__(self, top_coords, bottom_coords, depth=18.0, extension_length=1000):
         """
@@ -108,7 +235,7 @@ class PolygonIntersector:
         """
         绘制顶边、底边和交点。
         """
-        from ..plottools import sci_plot_style
+        from ..viztools import sci_plot_style
         with sci_plot_style(style=style):
             fig = plt.figure()
             if plot_on_2d:

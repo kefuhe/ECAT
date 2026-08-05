@@ -63,7 +63,7 @@ import geopandas as gpd
 from csi.SourceInv import SourceInv
 
 # Local imports
-from ...plottools import sci_plot_style, set_degree_formatter
+from ...viztools import sci_plot_style, set_degree_formatter
 
 
 @dataclass

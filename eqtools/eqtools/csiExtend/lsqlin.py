@@ -83,6 +83,269 @@ def cvxopt_to_numpy_matrix(A):
         return np.array(A).squeeze()
 
 
+def _as_vector(value, size=None, default=None):
+    if value is None:
+        if size is None or default is None:
+            return None
+        return np.full(size, default, dtype=float)
+    out = np.asarray(cvxopt_to_numpy_matrix(value), dtype=float).reshape(-1)
+    if size is not None and out.size == 1:
+        out = np.full(size, out.item(), dtype=float)
+    return out
+
+
+def _as_sparse_rows(value, rhs, nvars):
+    if value is None:
+        return sparse.csr_matrix((0, nvars)), np.empty(0, dtype=float)
+    if isinstance(value, spmatrix):
+        value = spmatrix_sparse_to_scipy(value)
+    rows = sparse.csr_matrix(value, dtype=float)
+    return rows, _as_vector(rhs)
+
+
+def _normalize_rows(rows, rhs, include_rhs=False):
+    """Scale each linear constraint by a positive factor."""
+    if rows.shape[0] == 0:
+        return rows, rhs
+    norms = np.sqrt(np.asarray(rows.multiply(rows).sum(axis=1)).reshape(-1))
+    magnitudes = np.maximum(norms, np.abs(rhs)) if include_rhs else norms
+    factors = np.ones_like(magnitudes)
+    active = magnitudes > 0.0
+    factors[active] = 1.0 / magnitudes[active]
+    return sparse.diags(factors) @ rows, rhs * factors
+
+
+def _eliminate_separable_equalities(C, d, A, b, Aeq, beq, lb, ub):
+    """Eliminate equalities having one private pivot column per row.
+
+    This is exact algebraic substitution.  If the equality structure is not
+    separable, the original problem is returned unchanged.
+    """
+    nvars = C.shape[1]
+    if Aeq.shape[0] == 0:
+        return C, d, A, b, Aeq, beq, lb, ub, None
+
+    Aeq = Aeq.tocsr()
+    column_counts = np.asarray(Aeq.getnnz(axis=0)).reshape(-1)
+    pivot_columns = []
+    pivot_values = []
+    for row in range(Aeq.shape[0]):
+        start, stop = Aeq.indptr[row:row + 2]
+        columns = Aeq.indices[start:stop]
+        values = Aeq.data[start:stop]
+        candidates = np.flatnonzero(column_counts[columns] == 1)
+        if candidates.size == 0:
+            return C, d, A, b, Aeq, beq, lb, ub, None
+        choice = candidates[np.argmax(np.abs(values[candidates]))]
+        pivot_columns.append(int(columns[choice]))
+        pivot_values.append(float(values[choice]))
+
+    pivot_columns = np.asarray(pivot_columns, dtype=int)
+    pivot_values = np.asarray(pivot_values, dtype=float)
+    if np.any(pivot_values == 0.0):
+        return C, d, A, b, Aeq, beq, lb, ub, None
+
+    free_mask = np.ones(nvars, dtype=bool)
+    free_mask[pivot_columns] = False
+    free_columns = np.flatnonzero(free_mask)
+    transform = sparse.lil_matrix((nvars, free_columns.size), dtype=float)
+    transform[free_columns, np.arange(free_columns.size)] = 1.0
+    transform[pivot_columns, :] = (
+        -sparse.diags(1.0 / pivot_values) @ Aeq[:, free_columns]
+    )
+    transform = transform.tocsr()
+    offset = np.zeros(nvars, dtype=float)
+    offset[pivot_columns] = beq / pivot_values
+
+    C_original = C
+    A_original = A
+    C = C_original @ transform
+    d = d - np.asarray(C_original @ offset).reshape(-1)
+    A = A_original @ transform
+    b = b - np.asarray(A_original @ offset).reshape(-1)
+
+    lower = _as_vector(lb, nvars, -np.inf)
+    upper = _as_vector(ub, nvars, np.inf)
+    blocks = [A]
+    right_sides = [b]
+    finite = np.isfinite(upper)
+    if np.any(finite):
+        blocks.append(transform[finite])
+        right_sides.append(upper[finite] - offset[finite])
+    finite = np.isfinite(lower)
+    if np.any(finite):
+        blocks.append(-transform[finite])
+        right_sides.append(-lower[finite] + offset[finite])
+
+    A = sparse.vstack(blocks, format='csr')
+    b = np.concatenate(right_sides)
+    empty_eq = sparse.csr_matrix((0, free_columns.size))
+    recovery = {'offset': offset, 'transform': transform}
+    return C, d, A, b, empty_eq, np.empty(0), None, None, recovery
+
+
+def lsqlin_clarabel(C, d, reg=0, A=None, b=None, Aeq=None, beq=None,
+                    lb=None, ub=None, x0=None, opts=None):
+    """Solve constrained least squares without forming ``C.T @ C``.
+
+    The least-squares norm is represented by a second-order cone.  Separable
+    hard equalities are eliminated exactly before solving and restored before
+    return.  This path is intended as a robust fallback for ill-scaled linear
+    inversions, not as the normal fast path.
+    """
+    try:
+        import clarabel
+    except ImportError as exc:
+        raise ImportError(
+            "Clarabel is required for the robust constrained least-squares "
+            "fallback. Install ECAT dependencies or run 'pip install clarabel'."
+        ) from exc
+
+    C = sparse.csr_matrix(C, dtype=float)
+    d = _as_vector(d)
+    original_nvars = C.shape[1]
+    if reg > 0:
+        C = sparse.vstack(
+            (C, np.sqrt(reg) * sparse.eye(original_nvars)), format='csr'
+        )
+        d = np.concatenate((d, np.zeros(original_nvars)))
+
+    A, b = _as_sparse_rows(A, b, original_nvars)
+    Aeq, beq = _as_sparse_rows(Aeq, beq, original_nvars)
+    C, d, A, b, Aeq, beq, lb, ub, recovery = (
+        _eliminate_separable_equalities(C, d, A, b, Aeq, beq, lb, ub)
+    )
+
+    nvars = C.shape[1]
+    column_norms = np.sqrt(np.asarray(C.multiply(C).sum(axis=0)).reshape(-1))
+    scales = np.ones(nvars, dtype=float)
+    active = column_norms > 1.0
+    scales[active] = 1.0 / column_norms[active]
+    scale_matrix = sparse.diags(scales)
+    C_scaled = C @ scale_matrix
+    A, b = _normalize_rows(A @ scale_matrix, b)
+    Aeq, beq = _normalize_rows(Aeq @ scale_matrix, beq)
+
+    lower = _as_vector(lb, nvars, -np.inf) / scales
+    upper = _as_vector(ub, nvars, np.inf) / scales
+    linear_blocks = [
+        sparse.hstack((A, sparse.csr_matrix((A.shape[0], 1))))
+    ]
+    linear_rhs = [b]
+    finite = np.isfinite(lower)
+    if np.any(finite):
+        linear_blocks.append(sparse.hstack((
+            -sparse.eye(nvars, format='csr')[finite],
+            sparse.csr_matrix((np.count_nonzero(finite), 1)),
+        )))
+        linear_rhs.append(-lower[finite])
+    finite = np.isfinite(upper)
+    if np.any(finite):
+        linear_blocks.append(sparse.hstack((
+            sparse.eye(nvars, format='csr')[finite],
+            sparse.csr_matrix((np.count_nonzero(finite), 1)),
+        )))
+        linear_rhs.append(upper[finite])
+    linear_matrix = sparse.vstack(linear_blocks, format='csr')
+    linear_rhs = np.concatenate(linear_rhs)
+    linear_matrix, linear_rhs = _normalize_rows(
+        linear_matrix, linear_rhs, include_rhs=True
+    )
+
+    soc_matrix = sparse.vstack((
+        sparse.csr_matrix(([-1.0], ([0], [nvars])), shape=(1, nvars + 1)),
+        sparse.hstack((C_scaled, sparse.csr_matrix((C_scaled.shape[0], 1)))),
+    ), format='csr')
+    soc_rhs = np.concatenate(([0.0], d))
+
+    cone_blocks = []
+    cone_rhs = []
+    cones = []
+    if Aeq.shape[0]:
+        cone_blocks.append(sparse.hstack((
+            Aeq, sparse.csr_matrix((Aeq.shape[0], 1))
+        )))
+        cone_rhs.append(beq)
+        cones.append(clarabel.ZeroConeT(Aeq.shape[0]))
+    cone_blocks.append(linear_matrix)
+    cone_rhs.append(linear_rhs)
+    cones.append(clarabel.NonnegativeConeT(linear_matrix.shape[0]))
+    cone_blocks.append(soc_matrix)
+    cone_rhs.append(soc_rhs)
+    cones.append(clarabel.SecondOrderConeT(soc_matrix.shape[0]))
+
+    constraint_matrix = sparse.vstack(cone_blocks, format='csc')
+    constraint_rhs = np.concatenate(cone_rhs)
+    objective = np.zeros(nvars + 1, dtype=float)
+    objective[-1] = 1.0
+    settings = clarabel.DefaultSettings()
+    settings.verbose = bool((opts or {}).get('show_progress', False))
+    settings.max_iter = int((opts or {}).get('maxiters', 200))
+    settings.direct_solve_method = 'qdldl'
+    settings.max_threads = 1
+    settings.max_step_fraction = 0.95
+
+    result = clarabel.DefaultSolver(
+        sparse.csc_matrix((nvars + 1, nvars + 1)),
+        objective,
+        constraint_matrix,
+        constraint_rhs,
+        cones,
+        settings,
+    ).solve()
+    clarabel_status = str(result.status)
+    status_map = {'Solved': 'optimal', 'AlmostSolved': 'optimal_inaccurate'}
+    status = status_map.get(clarabel_status, clarabel_status.lower())
+    solution = None
+    if result.x is not None:
+        solution = np.asarray(result.x, dtype=float).reshape(-1)[:nvars] * scales
+        if recovery is not None:
+            solution = recovery['offset'] + np.asarray(
+                recovery['transform'] @ solution
+            ).reshape(-1)
+        solution = matrix(solution)
+    return {
+        'status': status,
+        'x': solution,
+        'solver': 'clarabel_socp',
+        'clarabel_status': clarabel_status,
+        'iterations': getattr(result, 'iterations', None),
+    }
+
+
+def lsqlin_auto(C, d, reg=0, A=None, b=None, Aeq=None, beq=None,
+                lb=None, ub=None, x0=None, opts=None):
+    """Use the legacy QP first, then retry the same problem robustly."""
+    primary_error = None
+    primary = None
+    try:
+        primary = lsqlin(C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts)
+    except Exception as exc:
+        primary_error = exc
+    if primary is not None and str(primary.get('status', '')).lower() == 'optimal':
+        primary['solver'] = 'cvxopt_qp'
+        return primary
+
+    primary_status = (
+        f"exception {type(primary_error).__name__}: {primary_error}"
+        if primary_error is not None
+        else f"status {primary.get('status', 'unknown')!r}"
+    )
+    robust = lsqlin_clarabel(
+        C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts
+    )
+    robust['fallback_reason'] = primary_status
+    if str(robust.get('status', '')).lower() not in {
+        'optimal', 'optimal_inaccurate'
+    }:
+        raise RuntimeError(
+            "Constrained least squares failed in both backends: "
+            f"CVXOPT {primary_status}; Clarabel status "
+            f"{robust.get('clarabel_status', robust.get('status'))!r}."
+        )
+    return robust
+
+
 def lsqlin(C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \
         lb=None, ub=None, x0=None, opts=None):
     '''

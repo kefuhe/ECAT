@@ -34,6 +34,7 @@ from .data_corrections import (
     build_correction_design_matrix,
     correction_coefficients_from_theta,
 )
+from .fault_angle_conventions import canonicalize_compact_fault_angles
 from .logging_utils.mpi_logging import ensure_default_logging
 from .smc_mpi_nonlinear import SMC_samples_parallel_mpi_nonlinear
 from .smc_convergence import evaluate_smc_convergence, write_convergence_report
@@ -289,6 +290,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         }
 
     def _build_parameter_registry(self):
+        self._validate_fault_angle_config()
         self.parameter_specs: List[ParameterSpec] = []
         self.parameter_index: Dict[str, int] = {}
         self.parameter_groups: Dict[str, List[ParameterSpec]] = defaultdict(list)
@@ -345,6 +347,89 @@ class NonlinearGeometrySMCInversion(SourceInv):
             )
 
         self._register_sigma_parameters()
+
+    def _validate_fault_angle_config(self):
+        """Validate compact-fault angle values and prior support.
+
+        The nonlinear sampler stores ``Uniform`` priors internally as
+        ``[Uniform, lower, range]``.  Dip supports the native ``[0, 180]``
+        geometry coordinate plus the historical signed compatibility interval
+        ``[-90, 0)``.  Strike is periodic and therefore only needs to be
+        finite; it is wrapped immediately before CSI geometry construction.
+        """
+        for fault_name in self.faultnames:
+            merged_bounds = self._merged_fault_bounds(fault_name)
+            fixed = self.fixed_params.get(fault_name, {})
+            fixed = fixed if isinstance(fixed, Mapping) else {}
+
+            fixed_strike = fixed.get("strike", 0.0)
+            fixed_dip = fixed.get("dip", 90.0)
+            self._canonicalize_fault_angles(fixed_strike, fixed_dip)
+
+            for local_name in ("strike", "dip"):
+                if local_name in fixed or local_name not in merged_bounds:
+                    continue
+                bound = merged_bounds[local_name]
+                if (
+                    not isinstance(bound, Sequence)
+                    or isinstance(bound, str)
+                    or len(bound) < 3
+                    or bound[0] != "Uniform"
+                ):
+                    # The existing prior parser owns distribution-shape and
+                    # distribution-family errors.  Do not create a second
+                    # competing protocol here.
+                    continue
+                lower = float(bound[1])
+                upper = lower + float(bound[2])
+                if not np.isfinite(lower) or not np.isfinite(upper):
+                    raise ValueError(
+                        f"{fault_name}.{local_name} prior bounds must be finite"
+                    )
+                if local_name == "dip" and (lower < -90.0 or upper > 180.0):
+                    raise ValueError(
+                        f"{fault_name}.dip prior must stay within [-90, 180] "
+                        f"degrees; got [{lower}, {upper}]"
+                    )
+
+    @staticmethod
+    def _canonicalize_fault_angles(strike, dip):
+        """Return the CSI solver representation of one compact-fault angle pair.
+
+        Parameters
+        ----------
+        strike, dip : float
+            Input geographic strike and dip in degrees. Strike is clockwise
+            from North. Dip accepts the native interval ``[0, 180]`` and the
+            historical signed compatibility interval ``[-90, 0)``.
+
+        Returns
+        -------
+        tuple of (float, float, bool)
+            Canonical ``(strike, dip, side_flipped)``. The returned strike is
+            in ``[0, 360)`` and dip is in ``[0, 90]``. ``side_flipped`` records
+            whether conversion added 180 degrees to strike.
+
+        Notes
+        -----
+        This conversion changes geometry coordinates only. Slip components
+        and rake keep their sampled meaning and are never transformed here.
+        """
+        return canonicalize_compact_fault_angles(strike, dip)
+
+    @classmethod
+    def _canonical_fault_geometry(cls, params):
+        """Describe raw sampled and canonical CSI geometry for one fault."""
+        strike, dip, side_flipped = cls._canonicalize_fault_angles(
+            params["strike"], params["dip"]
+        )
+        return {
+            "input_strike": float(params["strike"]),
+            "input_dip": float(params["dip"]),
+            "strike": strike,
+            "dip": dip,
+            "side_flipped": side_flipped,
+        }
 
     def _register_parameter(
         self,
@@ -613,12 +698,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         length = params["length"]
         width = params["width"]
 
-        if dip > 90:
-            dip = 180 - dip
-            strike = (strike + 180) % 360
-        elif dip < 0:
-            dip = -dip
-            strike = (strike + 180) % 360
+        strike, dip, _ = self._canonicalize_fault_angles(strike, dip)
 
         if updatepatch:
             fault.buildPatches(
@@ -2091,12 +2171,17 @@ class NonlinearGeometrySMCInversion(SourceInv):
         theta = self._select_model_vector(model)
         self.model = theta
         faults = self._faults_from_theta(theta, build_geometry=model not in {"STD", "std", "Std"})
+        fault_params = {
+            fault_name: self.build_fault_params(theta, fault_name)
+            for fault_name in self.faultnames
+        }
 
         self.model_dict = getattr(self, "model_dict", {})
         self.model_dict[model] = {
-            "faults": {
-                fault_name: self.build_fault_params(theta, fault_name)
-                for fault_name in self.faultnames
+            "faults": fault_params,
+            "canonical_geometry": {
+                fault_name: self._canonical_fault_geometry(params)
+                for fault_name, params in fault_params.items()
             },
             "data_corrections": self._data_correction_values(theta),
             "sigmas": self._sigma_values(theta),
@@ -2140,14 +2225,9 @@ class NonlinearGeometrySMCInversion(SourceInv):
         for fault_name in self.faultnames:
             fault = self.faults[fault_name]
             params = self.build_fault_params(theta, fault_name)
-            strike = params["strike"]
-            dip = params["dip"]
-            if dip > 90:
-                dip = 180 - dip
-                strike = (strike + 180) % 360
-            elif dip < 0:
-                dip = -dip
-                strike = (strike + 180) % 360
+            strike, dip, _ = self._canonicalize_fault_angles(
+                params["strike"], params["dip"]
+            )
             if build_geometry:
                 fault.buildPatches(
                     params["lon"],
@@ -2257,6 +2337,11 @@ class NonlinearGeometrySMCInversion(SourceInv):
             )
         )
         lines.extend(
+            self._format_canonical_geometry_summary(
+                model_entry.get("canonical_geometry", {})
+            )
+        )
+        lines.extend(
             self._format_data_correction_model_summary(
                 model_entry.get("data_corrections", {}),
                 std_by_index=std_by_index,
@@ -2308,6 +2393,11 @@ class NonlinearGeometrySMCInversion(SourceInv):
     def _compact_model_summary_rows(self, model_entry, *, theta, std_by_index):
         rows = []
         rows.extend(self._compact_fault_rows(model_entry.get("faults", {}), std_by_index))
+        rows.extend(
+            self._compact_canonical_geometry_rows(
+                model_entry.get("canonical_geometry", {})
+            )
+        )
         rows.extend(self._compact_data_correction_rows(model_entry.get("data_corrections", {}), std_by_index))
         rows.extend(self._compact_sigma_rows(model_entry.get("sigmas", {}), theta, std_by_index))
         return rows
@@ -2336,6 +2426,47 @@ class NonlinearGeometrySMCInversion(SourceInv):
                     std=self._compact_std(spec, std_by_index, fixed=fixed),
                     note="fixed *" if fixed else "",
                 ))
+        return rows
+
+    def _compact_canonical_geometry_rows(self, canonical_geometry):
+        """Return derived solver-angle rows only when input angles changed."""
+        rows = []
+        for fault_name in self._ordered_fault_names(canonical_geometry):
+            geometry = canonical_geometry[fault_name]
+            input_strike = float(geometry["input_strike"])
+            input_dip = float(geometry["input_dip"])
+            solver_strike = float(geometry["strike"])
+            solver_dip = float(geometry["dip"])
+            changed = not (
+                np.isclose(input_strike, solver_strike, rtol=0.0, atol=1e-12)
+                and np.isclose(input_dip, solver_dip, rtol=0.0, atol=1e-12)
+            )
+            if not changed:
+                continue
+            name = f"{fault_name} ({self._fault_alias(fault_name)})"
+            note = "derived; rake unchanged"
+            rows.append(
+                self._compact_summary_row(
+                    index="[data]",
+                    group="Solver geometry",
+                    name=name,
+                    parameter="strike",
+                    value=solver_strike,
+                    std=None,
+                    note=note,
+                )
+            )
+            rows.append(
+                self._compact_summary_row(
+                    index="[data]",
+                    group="Solver geometry",
+                    name=name,
+                    parameter="dip",
+                    value=solver_dip,
+                    std=None,
+                    note=note,
+                )
+            )
         return rows
 
     def _compact_data_correction_rows(self, data_corrections, std_by_index):
@@ -2518,6 +2649,35 @@ class NonlinearGeometrySMCInversion(SourceInv):
                 f"  values: {self._format_value_list(list_values)}",
                 "",
             ])
+        return lines
+
+    def _format_canonical_geometry_summary(self, canonical_geometry):
+        """Format the exact angle pair passed to CSI geometry construction."""
+        if not canonical_geometry:
+            return []
+        lines = [
+            "CSI solver geometry",
+            "=" * 60,
+            "Input/sample angles remain unchanged in the sample vector. "
+            "Only geometry coordinates are canonicalized; rake and slip "
+            "components are not transformed.",
+        ]
+        for fault_name in self._ordered_fault_names(canonical_geometry):
+            geometry = canonical_geometry[fault_name]
+            alias = self._fault_alias(fault_name)
+            lines.extend(
+                [
+                    f"  {fault_name} ({alias})",
+                    "    input  : "
+                    f"strike={self._format_model_float(geometry['input_strike'])}, "
+                    f"dip={self._format_model_float(geometry['input_dip'])}",
+                    "    solver : "
+                    f"strike={self._format_model_float(geometry['strike'])}, "
+                    f"dip={self._format_model_float(geometry['dip'])}, "
+                    f"side_flipped={bool(geometry['side_flipped'])}",
+                ]
+            )
+        lines.append("")
         return lines
 
     def _format_data_correction_model_summary(self, data_corrections, *, std_by_index):

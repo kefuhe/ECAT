@@ -33,21 +33,41 @@ def _freeze_tuple_of_arrays(seq):
 
 @dataclass(frozen=True)
 class DipControlPoints:
-    """Immutable container for dip control-point reference data.
+    """Immutable dip-control data with a continuous internal invariant.
 
-    Attributes:
-        x:   longitude (or x-UTM) coordinates of dip control points.
-        y:   latitude  (or y-UTM) coordinates of dip control points.
-        dip: dip angle values (degrees).
+    Public construction accepts oriented reference dip in
+    [-90, 0) U (0, 180) degrees. Equivalent signed values are normalized at
+    construction, so dip is always finite and strictly inside (0, 180).
+    The x, y and dip fields are one-dimensional, equal-length, read-only
+    arrays. Coordinates may be lon/lat or projected values as documented by
+    the calling API.
     """
     x: np.ndarray
     y: np.ndarray
     dip: np.ndarray
 
     def __post_init__(self):
-        object.__setattr__(self, 'x', _freeze_array(self.x))
-        object.__setattr__(self, 'y', _freeze_array(self.y))
-        object.__setattr__(self, 'dip', _freeze_array(self.dip))
+        from .fault_angle_conventions import normalize_oriented_reference_dip
+
+        x = np.atleast_1d(np.asarray(self.x, dtype=float))
+        y = np.atleast_1d(np.asarray(self.y, dtype=float))
+        dip = np.atleast_1d(np.asarray(self.dip, dtype=float))
+        if x.ndim != 1 or y.ndim != 1 or dip.ndim != 1:
+            raise ValueError("DipControlPoints x, y and dip must be 1-D arrays")
+        if len(x) == 0 or len(x) != len(y) or len(x) != len(dip):
+            raise ValueError(
+                "DipControlPoints x, y and dip must have the same non-zero length"
+            )
+        if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+            raise ValueError("DipControlPoints coordinates must be finite")
+        dip = normalize_oriented_reference_dip(
+            dip,
+            name='DipControlPoints.dip',
+        )
+
+        object.__setattr__(self, 'x', _freeze_array(x))
+        object.__setattr__(self, 'y', _freeze_array(y))
+        object.__setattr__(self, 'dip', _freeze_array(dip))
 
     # --- convenience constructors -------------------------------------------
     @classmethod
@@ -60,6 +80,9 @@ class DipControlPoints:
             is_utm:     if *True*, convert via *xy2ll_func* first.
             xy2ll_func: callable(x, y) → (lon, lat). Required when *is_utm*.
         """
+        coords = np.asarray(coords, dtype=float)
+        if coords.ndim != 2 or coords.shape[1] != 2:
+            raise ValueError("coords must have shape (n, 2)")
         if is_utm:
             if xy2ll_func is None:
                 raise ValueError("xy2ll_func is required when is_utm=True")
@@ -71,7 +94,11 @@ class DipControlPoints:
     @classmethod
     def from_file(cls, filename, header=0, is_utm=False, xy2ll_func=None):
         """Load from a text file (columns: lon lat dip  or  x y dip)."""
-        data = np.loadtxt(filename, skiprows=header)
+        data = np.atleast_2d(np.loadtxt(filename, skiprows=header))
+        if data.ndim != 2 or data.shape[1] < 3:
+            raise ValueError(
+                "dip control-point file must contain lon/x, lat/y and dip columns"
+            )
         coords = data[:, :2]
         dips = data[:, 2]
         return cls.from_coords(coords, dips, is_utm=is_utm, xy2ll_func=xy2ll_func)

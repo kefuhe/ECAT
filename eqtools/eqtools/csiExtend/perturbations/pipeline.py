@@ -412,10 +412,17 @@ class DipGeneratorStage(Stage):
     (top + dip + depth + strike).
 
     Workflow:
-        1. Perturb dip control-point values
+        1. Convert equivalent reference dips to continuous 0--180 coordinates
+           and add perturbations there
         2. Densify top in-state (DensificationConfig and/or discretization_interval)
         3. Interpolate dip onto densified top nodes
         4. Compute bottom = top + dip_vector * width
+
+    ``top_strike`` and ``top_dip`` written to ``state.meta`` are reference-node
+    values used to generate the bottom edge.  In particular, ``top_dip`` is the
+    signed side representation returned by interpolation.  They are not the
+    canonical strike/dip of a generated CSI patch; obtain final scientific
+    geometry from patch vertices and ``getpatchgeometry()``.
     """
 
     dip_control_points: DipControlPoints
@@ -467,6 +474,7 @@ class DipGeneratorStage(Stage):
             interpolate_dip_onto_coords,
             generate_bottom_from_dips,
             augment_control_points_with_buffers,
+            determine_interpolation_axis,
         )
         from ..geom_ops import discretize_coords
 
@@ -485,16 +493,31 @@ class DipGeneratorStage(Stage):
             state.mark_dirty('top')
 
         control_xy_dip = np.column_stack([dcp.x, dcp.y, perturbed_dips])
+        valid_axes = {'auto', 'x', 'y', 'arc_length'}
+        if self.interpolation_axis not in valid_axes:
+            raise ValueError(
+                "interpolation_axis must be one of 'auto', 'x', 'y', or "
+                f"'arc_length'; got {self.interpolation_axis!r}"
+            )
+        resolved_axis = self.interpolation_axis
+        if resolved_axis == 'auto':
+            resolved_axis = determine_interpolation_axis(
+                state.top[:, 0],
+                state.top[:, 1],
+            )
+        if (
+            self.buffer_nodes is not None
+            and self.buffer_radius is not None
+            and resolved_axis == 'arc_length'
+        ):
+            raise ValueError("buffer augmentation does not support arc_length")
 
         if self.buffer_nodes is not None and self.buffer_radius is not None:
             control_xy_dip = augment_control_points_with_buffers(
                 control_xy_dip,
                 buffer_nodes_lonlat=self.buffer_nodes,
                 buffer_radius=self.buffer_radius,
-                interpolation_axis=(
-                    self.interpolation_axis if self.interpolation_axis != 'auto'
-                    else 'x'
-                ),
+                interpolation_axis=resolved_axis,
                 top_coords_2d=state.top[:, :2],
                 ll2xy=ctx.fault.ll2xy,
                 xy2ll=ctx.fault.xy2ll,
@@ -502,7 +525,7 @@ class DipGeneratorStage(Stage):
 
         interpolated_dip, strike = interpolate_dip_onto_coords(
             control_xy_dip, state.top,
-            interpolation_axis=self.interpolation_axis,
+            interpolation_axis=resolved_axis,
         )
 
         state.bottom = generate_bottom_from_dips(
@@ -512,9 +535,12 @@ class DipGeneratorStage(Stage):
             use_average_strike=self.use_average_strike,
             average_strike_source=self.average_strike_source,
             user_direction_angle=self.user_direction_angle,
-            interpolation_axis=self.interpolation_axis,
+            interpolation_axis=resolved_axis,
         )
 
+        # Preserve the generator's reference-node convention.  Negative dip is
+        # converted to strike+180/abs(dip) only in the local bottom-generation
+        # calculation; final patch geometry is derived later from mesh vertices.
         state.meta['top_strike'] = strike
         state.meta['top_dip'] = interpolated_dip
         state.mark_dirty('top', 'bottom')
@@ -644,7 +670,11 @@ class MultiLayerMeshPolicy(MeshPolicy):
 # ============================================================================
 
 def materialize(state: GeometryState, ctx: PipelineContext):
-    """Write pipeline results back to the fault object (dirty fields only)."""
+    """Write pipeline results back to the fault object (dirty fields only).
+
+    ``top_strike``/``top_dip`` remain reference-node generator metadata.  This
+    function deliberately does not relabel them as canonical patch geometry.
+    """
     fault = ctx.fault
 
     if 'top' in state.dirty and state.top is not None:

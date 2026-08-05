@@ -42,6 +42,8 @@ Last Updated:
     2025-08-01
 """
 
+import copy
+
 # Standard library imports
 import os
 import pathlib
@@ -80,25 +82,34 @@ from matplotlib.ticker import FuncFormatter, AutoLocator
 from csi import gps, insar, leveling, crossfaultoffset
 
 # Local imports - utilities and plotting
-from ..plottools import sci_plot_style
+from ..viztools import sci_plot_style
 from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 
 # Local imports - core modules
 from .BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches as relocfault
 from .SMC_MPI import SMC_samples_parallel_mpi
-from .config.bayesian_config import BayesianMultiFaultsInversionConfig
+from .config.bayesian_config import (
+    BayesianMultiFaultsInversionConfig,
+    normalize_bayesian_sampling_mode,
+)
 from .fault_analysis_mixin import FaultAnalysisMixin
 from .data_correction_constraints import DataCorrectionConstraintMixin
 from .data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
 from .interseismic_mixin import InterseismicKinematicsMixin
 from .patch_indices import normalize_patch_indices
-from .constraint_manager_smc import ConstraintManager
+from .constraint_manager_smc import ConstraintManagerSMC
 from .multifaults_base import MyMultiFaultsInversion
+from .multifaultsolve_boundLSE import _validate_lsqlin_status
 from .source_adapters import FaultAdapter
+from .plot_product_mixin import FigureProductMixin
+from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
+from .geom_ops import InvalidFaultGeometryError
 import warnings
 from .bayesian_utils import det_of_laplace_smooth_lu, logpdf_multivariate_normal
 from . import lsqlin
+
+_INVALID_CONSTRAINED_SOLVE_LOGLIKE = -9999999.0
 
 # using the C++ backend
 os.environ['CUTDE_USE_BACKEND'] = 'cpp' # cuda, cpp, or opencl
@@ -241,6 +252,7 @@ class BayesianMultiFaultsInversion(
     DataCorrectionConstraintMixin,
     DeepSlipLoadingMixin,
     InterseismicKinematicsMixin,
+    FigureProductMixin,
     FaultAnalysisMixin,
 ):
     def __init__(self, config="default_config.yml", multifaults=None, geodata=None, faults_list=None, gfmethods=None, 
@@ -349,13 +361,15 @@ class BayesianMultiFaultsInversion(
 
         self.combine_GL_poly()
 
-    # Update _initialize_bounds method to use new ConstraintManager API
     def _initialize_bounds(self, bounds_config='bounds_config.yml'):
-        """Initialize bounds manager with new unified system."""
-        self.constraint_manager = ConstraintManager(self, verbose=self.config.verbose)
+        """Initialize and transactionally compile configured constraints."""
+        self.constraint_manager = ConstraintManagerSMC(
+            self,
+            verbose=self.config.verbose,
+        )
         try:
             # Use new unified constraint application method
-            self.constraint_manager.apply_all_constraints_from_config(
+            self.constraint_manager._apply_constraint_config(
                 bounds_config_file=bounds_config,
                 encoding='utf-8'
             )
@@ -365,6 +379,7 @@ class BayesianMultiFaultsInversion(
         except Exception as e:
             if self.constraint_manager.verbose:
                 print(f"Error setting bounds from config file: {e}")
+            raise
 
     @property
     def slip_poly_lb(self):
@@ -389,7 +404,7 @@ class BayesianMultiFaultsInversion(
     @property
     def lb(self):
         """Complete lower bounds array (always up-to-date)."""
-        if self.config.bayesian_sampling_mode == 'SMC_F_J':
+        if self.config.bayesian_sampling_mode == 'SMC_FJ':
             return np.concatenate([self.hyper_lb, self.slip_poly_lb])
         else:
             return self.constraint_manager.get_bounds_for_fullsmc()[0]
@@ -397,127 +412,175 @@ class BayesianMultiFaultsInversion(
     @property
     def ub(self):
         """Complete upper bounds array (always up-to-date)."""
-        if self.config.bayesian_sampling_mode == 'SMC_F_J':
+        if self.config.bayesian_sampling_mode == 'SMC_FJ':
             return np.concatenate([self.hyper_ub, self.slip_poly_ub])
         else:
             return self.constraint_manager.get_bounds_for_fullsmc()[1]
 
-    def update_bounds(self, **kwargs):
+    def update_bounds(
+        self,
+        *,
+        lb=None,
+        ub=None,
+        geometry=None,
+        sigmas=None,
+        alpha=None,
+        slip_magnitude_bounds=None,
+        rake_angle_bounds=None,
+        strikeslip_bounds=None,
+        dipslip_bounds=None,
+        poly_bounds=None,
+    ):
+        """Partially update the current coarse bounds declaration.
+
+        ``rake_angle_bounds`` belongs to sampled nonlinear magnitude/rake
+        parameterization. It is distinct from fault/patch rake-sector linear
+        constraints.
         """
-        Convenience method to update parameter bounds.
-        All changes are automatically synchronized.
-        
-        Parameters:
-        -----------
-        **kwargs: Various bound parameters like lb, ub, geometry, strikeslip, dipslip, etc.
-        """
-        # Set global bounds
-        if 'lb' in kwargs or 'ub' in kwargs:
-            self.constraint_manager.set_global_bounds(
-                lb=kwargs.get('lb', None), 
-                ub=kwargs.get('ub', None), 
-                source="manual_update"
-            )
-        
-        # Set hyperparameter bounds
-        hyperparams = ['geometry', 'sigmas', 'alpha']
-        hyper_kwargs = {k: v for k, v in kwargs.items() if k in hyperparams}
-        if hyper_kwargs:
-            self.constraint_manager.set_hyperparameter_bounds(**hyper_kwargs, source="manual_update")
-        
-        # Set linear parameter bounds
-        linear_params = ['slip_magnitude', 'rake_angle', 'strikeslip', 'dipslip', 'poly']
-        linear_kwargs = {k: v for k, v in kwargs.items() if k in linear_params}
-        if linear_kwargs:
-            self.constraint_manager.set_linear_parameter_bounds(**linear_kwargs, source="manual_update")
+        with self.constraint_manager.atomic_bounds_update():
+            if lb is not None or ub is not None:
+                self.constraint_manager.set_global_bounds(
+                    lb=lb,
+                    ub=ub,
+                    source="manual_update",
+                )
+
+            if geometry is not None or sigmas is not None or alpha is not None:
+                self.constraint_manager.set_hyperparameter_bounds(
+                    geometry=geometry,
+                    sigmas=sigmas,
+                    alpha=alpha,
+                    source="manual_update",
+                )
+
+            if any(
+                value is not None
+                for value in (
+                    slip_magnitude_bounds,
+                    rake_angle_bounds,
+                    strikeslip_bounds,
+                    dipslip_bounds,
+                    poly_bounds,
+                )
+            ):
+                self.constraint_manager.set_linear_parameter_bounds(
+                    slip_magnitude=slip_magnitude_bounds,
+                    rake_angle=rake_angle_bounds,
+                    strikeslip=strikeslip_bounds,
+                    dipslip=dipslip_bounds,
+                    poly=poly_bounds,
+                    source="manual_update",
+                )
         
         if self.constraint_manager.verbose:
             print("[OK] Bounds updated successfully - all parameters automatically synchronized")
 
-    def update_rake_constraints(self, rake_angle=None, fixed_rake=None):
+    def update_fault_rake_limits(self, rake_limits, *, source="manual"):
+        """Merge fault-level runtime rake sectors and rebuild constraints.
+
+        Existing patch-level rake overrides are preserved and are resolved
+        after these fault-level defaults.
         """
-        Update rake angle constraints (inequality or equality) and automatically refresh combined constraints.
-        
-        Parameters:
-        -----------
-        rake_angle : dict, optional
-            Rake angle range constraints, format: {fault_name: [min_rake, max_rake]}
-        fixed_rake : dict, optional
-            Fixed rake angle constraints, format: {fault_name: rake_value}
-        """
-        if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Rake constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
-        
-        if self.constraint_manager.verbose:
-            print("[SYNC] Updating rake constraints...")
-        
-        # Update inequality constraints (range constraints)
-        if rake_angle:
-            try:
-                # Remove old rake constraints
-                if 'rake_constraints' in self.constraint_manager._inequality_constraints:
-                    self.constraint_manager.remove_constraint('rake_constraints', 'inequality')
-                
-                # Add new rake constraints
-                self.constraint_manager.add_rake_angle_constraints(rake_angle)
-                
-                if self.constraint_manager.verbose:
-                    fault_names = [fault.name for fault in self.multifaults.faults]
-                    rake_angle = {k: v for k, v in rake_angle.items() if k in fault_names}
-                    print(f"[OK] Updated rake angle constraints for {len(rake_angle)} fault(s)")
-                    for fault, bounds in rake_angle.items():
-                        print(f"   - {fault}: {bounds}°")
-                        
-                self.constraint_manager.get_combined_inequality_constraints()  # Refresh combined constraints
-            except Exception as e:
-                if self.constraint_manager.verbose:
-                    print(f"[X] Failed to update rake angle constraints: {e}")
-                raise
-        
-        # Update equality constraints (fixed value constraints)
-        if fixed_rake:
-            try:
-                # Remove old fixed rake constraints
-                if 'fixed_rake_constraints' in self.constraint_manager._equality_constraints:
-                    self.constraint_manager.remove_constraint('fixed_rake_constraints', 'equality')
-                
-                # Add new fixed rake constraints
-                self.constraint_manager.add_fixed_rake_constraints(fixed_rake)
-                
-                if self.constraint_manager.verbose:
-                    fault_names = [fault.name for fault in self.multifaults.faults]
-                    fixed_rake = {k: v for k, v in fixed_rake.items() if k in fault_names}
-                    print(f"[OK] Updated fixed rake constraints for {len(fixed_rake)} fault(s)")
-                    for fault, rake in fixed_rake.items():
-                        print(f"   - {fault}: {rake}° (fixed)")
-                        
-                self.constraint_manager.get_combined_equality_constraints()  # Refresh combined constraints
-            except Exception as e:
-                if self.constraint_manager.verbose:
-                    print(f"[X] Failed to update fixed rake constraints: {e}")
-                raise
+        result = self.constraint_manager.update_fault_rake_limits(
+            rake_limits,
+            replace=False,
+            source=source,
+            sync=False,
+        )
+        self.constraint_manager.get_combined_inequality_constraints()
+        return result
+
+    def replace_fault_rake_limits(self, rake_limits, *, source="manual"):
+        """Replace all fault-level runtime rake sectors."""
+        result = self.constraint_manager.update_fault_rake_limits(
+            rake_limits,
+            replace=True,
+            source=source,
+            sync=False,
+        )
+        self.constraint_manager.get_combined_inequality_constraints()
+        return result
+
+    def clear_fault_rake_limits(self):
+        """Clear script-side fault rake sectors, preserving config/patch rake."""
+        result = self.constraint_manager.clear_fault_rake_limits(sync=False)
+        self.constraint_manager.get_combined_inequality_constraints()
+        return result
+
+    def set_fixed_rake_constraints(self, fixed_rake):
+        """Replace fixed-rake equalities in the active SMC_FJ linear block."""
+        with self.constraint_transaction():
+            result = self.constraint_manager.set_fixed_rake_constraints(
+                fixed_rake
+            )
+            self.constraint_manager.get_combined_equality_constraints()
+            return result
+
+    def clear_fixed_rake_constraints(self):
+        """Remove fixed-rake equalities; repeated calls are safe."""
+        result = self.constraint_manager.clear_fixed_rake_constraints()
+        self.constraint_manager.get_combined_equality_constraints()
+        return result
+
+    def add_patch_constraints(self, patch_constraints, *, source="manual"):
+        """Add patch-level bounds/rake override specs before sampling."""
+        result = self.constraint_manager.add_patch_constraints(
+            patch_constraints,
+            source=source,
+            sync=False,
+        )
+        self.constraint_manager.get_combined_inequality_constraints()
+        self.constraint_manager.get_combined_equality_constraints()
+        return result
+
+    def replace_patch_constraints(self, patch_constraints, *, source="manual"):
+        """Replace script-side patch overrides while keeping config rules."""
+        result = self.constraint_manager.replace_patch_constraints(
+            patch_constraints,
+            source=source,
+            sync=False,
+        )
+        self.constraint_manager.get_combined_inequality_constraints()
+        self.constraint_manager.get_combined_equality_constraints()
+        return result
+
+    def clear_patch_constraints(self, *, source="manual"):
+        """Remove script-side patch overrides while keeping config rules."""
+        result = self.constraint_manager.clear_patch_constraints(
+            source=source,
+            sync=False,
+        )
+        self.constraint_manager.get_combined_inequality_constraints()
+        self.constraint_manager.get_combined_equality_constraints()
+        return result
+
+    def get_constraint_snapshot(self, include_matrices=False, validate=False):
+        """Return compact manager-owned bounds and constraint diagnostics."""
+        return self.constraint_manager.get_constraint_snapshot(
+            include_matrices=include_matrices,
+            validate=validate,
+        )
     
     def update_interseismic_config(self, interseismic_config, reapply=True):
         """Load a new interseismic config and optionally rebuild its constraints."""
-        parsed = self.config.load_interseismic_config(interseismic_config)
-        if reapply:
-            self.constraint_manager.remove_constraint('euler_cap_constraints', 'inequality')
-            for constraint_name in ('interseismic_block_euler_constraints', 'interseismic_block_euler_sharing'):
-                if constraint_name in getattr(self.constraint_manager, '_equality_constraints', {}):
-                    self.constraint_manager.remove_constraint(constraint_name, 'equality')
-            for name in list(getattr(self.constraint_manager, '_equality_constraints', {})):
-                group = self.constraint_manager._equality_constraints[name]
-                if group.get('source') == 'interseismic_config.backslip_constraints':
-                    self.constraint_manager.remove_constraint(name, 'equality')
-            if parsed.get('blocks', {}).get('enabled', False):
-                self.constraint_manager.apply_interseismic_block_constraints()
-            self.constraint_manager.add_euler_cap_constraints()
-            self.constraint_manager.apply_interseismic_backslip_constraints()
-            self.constraint_manager.get_combined_inequality_constraints()
-            self.constraint_manager.get_combined_equality_constraints()
-        return parsed
+        with self.constraint_transaction():
+            parsed = self.config.load_interseismic_config(interseismic_config)
+            if reapply:
+                self.constraint_manager._remove_groups_by_owner(
+                    'config',
+                    families={
+                        'interseismic_blocks',
+                        'interseismic_cap',
+                        'interseismic_backslip',
+                    },
+                )
+                if parsed.get('blocks', {}).get('enabled', False):
+                    self.constraint_manager.apply_interseismic_block_constraints()
+                self.constraint_manager.add_euler_cap_constraints()
+                self.constraint_manager.apply_interseismic_backslip_constraints()
+                self.constraint_manager.get_combined_inequality_constraints()
+                self.constraint_manager.get_combined_equality_constraints()
+            return parsed
 
     def update_euler_cap_constraint(
         self,
@@ -595,9 +658,11 @@ class BayesianMultiFaultsInversion(
             cap['faults'][fault_name]['min_loading_abs'] = min_loading_abs
         return self.update_interseismic_config(interseismic, reapply=reapply)
     
-    def add_custom_inequality_constraint(self, A, b, name, source="user_defined"):
+    def add_linear_inequality_constraint(
+        self, A, b, *, name, source="user"
+    ):
         """
-        Add custom inequality constraint A @ x <= b and automatically refresh combined constraints.
+        Add one user-owned inequality group ``A @ x <= b``.
         
         Parameters:
         -----------
@@ -611,37 +676,66 @@ class BayesianMultiFaultsInversion(
             Constraint source description
         """
         if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Custom constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
+            raise RuntimeError(
+                "Adding a linear inequality requires SMC_FJ with "
+                "ss_ds sampling"
+            )
         
         if self.constraint_manager.verbose:
-            print(f"[+] Adding custom inequality constraint '{name}'...")
+            print(f"[+] Adding linear inequality constraint '{name}'...")
         
         try:
-            # Add constraint
-            self.constraint_manager.add_inequality_constraint(A, b, name, source=source, overwrite=True)
-            
-            if self.constraint_manager.verbose:
-                print(f"[OK] Added inequality constraint '{name}' ({A.shape[0]} constraints)")
-                print(f"   Matrix shape: {A.shape}, Vector shape: {b.shape}")
-                print(f"   Source: {source}")
+            with self.constraint_transaction():
+                self.constraint_manager._register_inequality_group(
+                    A,
+                    b,
+                    name,
+                    source,
+                    owner='user',
+                )
+                self.constraint_manager.get_combined_inequality_constraints()
 
-            self.constraint_manager.get_combined_inequality_constraints()  # Refresh combined constraints
+                if self.constraint_manager.verbose:
+                    matrix_shape = np.asarray(A).shape
+                    vector_shape = np.asarray(b).shape
+                    print(f"[OK] Added inequality constraint '{name}' ({matrix_shape[0]} constraints)")
+                    print(f"   Matrix shape: {matrix_shape}, Vector shape: {vector_shape}")
+                    print(f"   Source: {source}")
         except Exception as e:
             if self.constraint_manager.verbose:
                 print(f"[X] Failed to add inequality constraint '{name}': {e}")
             raise
-    
-    def add_custom_equality_constraint(self, A, b, name, source="user_defined"):
+
+    def replace_linear_inequality_constraint(
+        self, A, b, *, name, source="user"
+    ):
+        """Replace one existing user-owned inequality group."""
+        if not self.constraint_manager._is_smc_fj_mode():
+            raise RuntimeError(
+                "Replacing a linear inequality requires SMC_FJ with "
+                "ss_ds sampling"
+            )
+        with self.constraint_transaction():
+            self.constraint_manager._replace_user_group(
+                'inequality',
+                A,
+                b,
+                name=name,
+                source=source,
+            )
+            self.constraint_manager.get_combined_inequality_constraints()
+
+    def add_linear_equality_constraint(
+        self, Aeq, beq, *, name, source="user"
+    ):
         """
-        Add custom equality constraint A @ x = b and automatically refresh combined constraints.
+        Add one user-owned equality group ``A @ x = b``.
         
         Parameters:
         -----------
-        A : np.ndarray
+        Aeq : np.ndarray
             Constraint matrix (n_constraints × n_linear_params)
-        b : np.ndarray
+        beq : np.ndarray
             Constraint vector (n_constraints,)
         name : str
             Constraint name
@@ -649,34 +743,88 @@ class BayesianMultiFaultsInversion(
             Constraint source description
         """
         if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Custom constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
+            raise RuntimeError(
+                "Adding a linear equality requires SMC_FJ with ss_ds "
+                "sampling"
+            )
         
         if self.constraint_manager.verbose:
-            print(f"[==] Adding custom equality constraint '{name}'...")
+            print(f"[==] Adding linear equality constraint '{name}'...")
         
         try:
-            # Add constraint
-            self.constraint_manager.add_equality_constraint(A, b, name, source=source, overwrite=True)
-            
-            if self.constraint_manager.verbose:
-                print(f"[OK] Added equality constraint '{name}' ({A.shape[0]} constraints)")
-                print(f"   Matrix shape: {A.shape}, Vector shape: {b.shape}")
-                print(f"   Source: {source}")
-            
-            self.constraint_manager.get_combined_equality_constraints()  # Refresh combined constraints
+            with self.constraint_transaction():
+                self.constraint_manager._register_equality_group(
+                    Aeq,
+                    beq,
+                    name,
+                    source,
+                    owner='user',
+                )
+                self.constraint_manager.get_combined_equality_constraints()
+
+                if self.constraint_manager.verbose:
+                    matrix_shape = np.asarray(Aeq).shape
+                    vector_shape = np.asarray(beq).shape
+                    print(f"[OK] Added equality constraint '{name}' ({matrix_shape[0]} constraints)")
+                    print(f"   Matrix shape: {matrix_shape}, Vector shape: {vector_shape}")
+                    print(f"   Source: {source}")
         except Exception as e:
             if self.constraint_manager.verbose:
                 print(f"[X] Failed to add equality constraint '{name}': {e}")
             raise
+
+    def replace_linear_equality_constraint(
+        self, Aeq, beq, *, name, source="user"
+    ):
+        """Replace one existing user-owned equality group."""
+        if not self.constraint_manager._is_smc_fj_mode():
+            raise RuntimeError(
+                "Replacing a linear equality requires SMC_FJ with ss_ds "
+                "sampling"
+            )
+        with self.constraint_transaction():
+            self.constraint_manager._replace_user_group(
+                'equality',
+                Aeq,
+                beq,
+                name=name,
+                source=source,
+            )
+            self.constraint_manager.get_combined_equality_constraints()
+
+    def remove_linear_constraint(self, name):
+        """Remove one user-owned raw linear group."""
+        with self.constraint_transaction():
+            self.constraint_manager._remove_group(name)
+            self.constraint_manager.get_combined_inequality_constraints()
+            self.constraint_manager.get_combined_equality_constraints()
+
+    def get_linear_parameter_layout(self):
+        """Return the validated SMC linear-suffix or inactive layout."""
+        return self.constraint_manager.get_linear_parameter_layout()
+
+    def constraint_transaction(self):
+        """Return an advanced all-or-nothing constraint-update context."""
+        return self.constraint_manager.constraint_transaction()
+
+    def apply_constraints_from_config(
+        self,
+        bounds_config_file,
+        *,
+        encoding="utf-8",
+    ):
+        """Transactionally replace configuration-owned declarations."""
+        return self.constraint_manager._apply_constraint_config(
+            bounds_config_file=bounds_config_file,
+            encoding=encoding,
+        )
 
     def set_incompressibility_constraints(self, source_names=None):
         """Set incompressibility equality constraints for Sbarbot sources.
 
         For each volume element: eps11 + eps22 + eps33 = 0.
 
-        Only effective in SMC_F_J mode with ss_ds slip sampling.
+        Only effective in SMC_FJ mode with ss_ds slip sampling.
 
         Parameters
         ----------
@@ -685,9 +833,10 @@ class BayesianMultiFaultsInversion(
             Sbarbot sources.
         """
         if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Incompressibility constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
+            raise RuntimeError(
+                "Incompressibility constraints require SMC_FJ with ss_ds "
+                "sampling"
+            )
 
         if not hasattr(self.multifaults, 'adapters'):
             raise RuntimeError("Adapters not initialised on multifaults")
@@ -703,21 +852,49 @@ class BayesianMultiFaultsInversion(
                 print("[!]  No Sbarbot sources found for incompressibility constraints")
             return
 
-        linear_start = self.linear_sample_start_position
-        n_linear = self.lsq_parameters
+        layout = self.get_linear_parameter_layout()
+        linear_start = layout['global_offset']
+        n_linear = layout['width']
 
-        for sname in source_names:
-            adapter = self.multifaults.adapters[sname]
-            if adapter.source_type != 'Sbarbot':
-                raise TypeError(f"'{sname}' is not a Sbarbot source")
-            param_start = self.slip_positions[sname][0] - linear_start
-            cfg = {'incompressible': {'type': 'equality', 'rule': 'incompressible'}}
-            for cname, A, b in adapter.generate_source_equality_constraints(
-                    cfg, param_start, n_linear):
-                full_name = f"src_{sname}_{cname}"
-                self.add_custom_equality_constraint(
-                    A, b, name=full_name,
-                    source=f"incompressibility/{sname}")
+        with self.constraint_transaction():
+            self.constraint_manager._remove_groups_by_owner(
+                'managed',
+                families={'incompressibility'},
+            )
+            for sname in source_names:
+                adapter = self.multifaults.adapters[sname]
+                if adapter.source_type != 'Sbarbot':
+                    raise TypeError(f"'{sname}' is not a Sbarbot source")
+                param_start = self.slip_positions[sname][0] - linear_start
+                cfg = {
+                    'incompressible': {
+                        'type': 'equality',
+                        'rule': 'incompressible',
+                    }
+                }
+                for cname, A, b in adapter.generate_source_equality_constraints(
+                    cfg,
+                    param_start,
+                    n_linear,
+                ):
+                    full_name = f"src_{sname}_{cname}"
+                    self.constraint_manager._register_equality_group(
+                        A,
+                        b,
+                        name=full_name,
+                        source=f"incompressibility/{sname}",
+                        replace=True,
+                        owner='managed',
+                        family='incompressibility',
+                    )
+
+    def clear_incompressibility_constraints(self):
+        """Remove the complete managed incompressibility family."""
+        removed = self.constraint_manager._remove_groups_by_owner(
+            'managed',
+            families={'incompressibility'},
+        )
+        return tuple(name for _, name in removed)
 
     @staticmethod
     def _normalize_fault_slip_component(component):
@@ -730,48 +907,12 @@ class BayesianMultiFaultsInversion(
             f"Unknown slip component '{component}'. Please use 'strikeslip' or 'dipslip'."
         )
 
-    def _component_columns_for_patches(self, fault_name, component, patch_indices, source_start):
-        """Return columns for one named Fault slip component in the requested parameter space."""
-        if fault_name not in self.multifaults.faults_dict:
-            raise ValueError(
-                f"Fault '{fault_name}' not found. Available faults: "
-                f"{list(self.multifaults.faults_dict.keys())}"
-            )
-
-        adapter = self.multifaults.adapters[fault_name]
-        if adapter.source_type != 'Fault':
-            raise TypeError(
-                f"Slip constraints can only be applied to 'Fault' sources, "
-                f"but '{fault_name}' is '{adapter.source_type}'."
-            )
-
-        fault = self.multifaults.faults_dict[fault_name]
-        component = self._normalize_fault_slip_component(component)
-        component_slices = self.constraint_manager._source_component_slices(
-            fault, int(source_start), adapter=adapter
-        )
-        if component not in component_slices:
-            raise ValueError(
-                f"Fault '{fault_name}' has no {component} component "
-                f"(slipdir='{adapter.slipdir}')."
-            )
-
-        patch_indices = np.asarray(patch_indices, dtype=int)
-        n_component = component_slices[component].stop - component_slices[component].start
-        if np.any(patch_indices >= n_component) or np.any(patch_indices < 0):
-            raise ValueError(
-                f"Invalid patch indices found for fault '{fault_name}'. "
-                f"Indices must be between 0 and {n_component - 1}."
-            )
-
-        return component_slices[component].start + patch_indices
-
     def add_zero_edge_slip_constraint(self, fault_names, edges, slip_modes):
         """
         Add zero-slip equality constraints for triangles on specified fault edges.
 
         Builds a constraint matrix per (fault, edge, slip_mode) combination and
-        calls add_equality_constraint once per combination — instead of looping
+        registers one equality group per combination instead of looping
         triangle by triangle.
 
         Parameters
@@ -795,6 +936,12 @@ class BayesianMultiFaultsInversion(
         inversion.add_zero_edge_slip_constraint(
             ['FaultA', 'FaultB'], ['top', 'bottom'], 'dip slip')
         """
+        if not self.constraint_manager._is_smc_fj_mode():
+            raise RuntimeError(
+                "Zero-edge slip constraints require SMC_FJ with ss_ds "
+                "sampling"
+            )
+
         if isinstance(fault_names, str):
             fault_names = [fault_names]
         if isinstance(edges, str):
@@ -804,6 +951,7 @@ class BayesianMultiFaultsInversion(
 
         slip_modes = list(dict.fromkeys(self._normalize_fault_slip_component(m) for m in slip_modes))
 
+        groups = []
         for fault_name in fault_names:
             if fault_name not in self.multifaults.faults_dict:
                 raise ValueError(
@@ -823,8 +971,6 @@ class BayesianMultiFaultsInversion(
                     "Run edge detection first."
                 )
 
-            slip_st, _ = self.slip_positions[fault_name]
-
             for edge in edges:
                 if edge not in fault.edge_triangles_indices:
                     available = list(fault.edge_triangles_indices.keys())
@@ -835,8 +981,14 @@ class BayesianMultiFaultsInversion(
                 tri_indices = np.asarray(fault.edge_triangles_indices[edge])
 
                 for slip_mode in slip_modes:
-                    global_indices = self._component_columns_for_patches(
-                        fault_name, slip_mode, tri_indices, source_start=slip_st
+                    global_indices = (
+                        self.constraint_manager
+                        ._get_component_columns_for_patches(
+                            fault_name,
+                            slip_mode,
+                            tri_indices,
+                            space='active_linear',
+                        )
                     )
                     n_constrained = len(global_indices)
 
@@ -847,7 +999,19 @@ class BayesianMultiFaultsInversion(
                     b = np.zeros(n_constrained)
 
                     name = f"zero_edge_{fault_name}_{edge}_{slip_mode}"
-                    self.add_custom_equality_constraint(A=A, b=b, name=name)
+                    groups.append((name, A, b))
+
+        with self.constraint_transaction():
+            for name, A, b in groups:
+                self.constraint_manager._register_equality_group(
+                    A,
+                    b,
+                    name=name,
+                    source="zero_edge_slip",
+                    owner="user",
+                )
+            self.constraint_manager.get_combined_equality_constraints()
+        return [name for name, _, _ in groups]
     
     def add_patch_slip_constraint(self, fault_patches, slip_component, value=0.0, constraint_type='equality', operator='=='):
         """
@@ -857,7 +1021,7 @@ class BayesianMultiFaultsInversion(
         (e.g., slip >= 0) constraints for the strike-slip or dip-slip 
         components of a given set of patches.
         
-        Only effective in SMC_F_J mode with ss_ds slip sampling.
+        Only effective in SMC_FJ mode with ss_ds slip sampling.
 
         Parameters
         ----------
@@ -876,9 +1040,9 @@ class BayesianMultiFaultsInversion(
             Ignored for equality constraints. Default is '=='.
         """
         if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Patch slip constraints only supported in SMC_F_J mode with ss_ds sampling")
-            return
+            raise RuntimeError(
+                "Patch slip constraints require SMC_FJ with ss_ds sampling"
+            )
 
         if isinstance(slip_component, str):
             slip_components = [slip_component]
@@ -891,13 +1055,15 @@ class BayesianMultiFaultsInversion(
             if f_name not in self.multifaults.faults_dict:
                 raise ValueError(f"Fault '{f_name}' not found. Available faults: {list(self.multifaults.faults_dict.keys())}")
 
-            slip_st, _ = self.slip_positions[f_name]
-            # Adjust offset to index correctly into the linear parameters sub-matrix 
-            slip_st_linear = slip_st - self.linear_sample_start_position
-
             for s_comp in slip_components:
-                columns = self._component_columns_for_patches(
-                    f_name, s_comp, patch_indices, source_start=slip_st_linear
+                columns = (
+                    self.constraint_manager
+                    ._get_component_columns_for_patches(
+                        f_name,
+                        s_comp,
+                        patch_indices,
+                        space='active_linear',
+                    )
                 )
                 all_linear_indices.extend(columns.tolist())
 
@@ -914,7 +1080,12 @@ class BayesianMultiFaultsInversion(
         name = f"patch_slip_constraint_{f_name_str}_{c_name_str}"
 
         if constraint_type == 'equality':
-            self.add_custom_equality_constraint(A=A, b=b, name=name, source='manual')
+            self.add_linear_equality_constraint(
+                A,
+                b,
+                name=name,
+                source='manual',
+            )
         elif constraint_type == 'inequality':
             if operator in ('<=', '<'):
                 # A*x <= b is the standard form
@@ -925,139 +1096,14 @@ class BayesianMultiFaultsInversion(
                 b = -b
             else:
                 raise ValueError(f"Unsupported inequality operator '{operator}'. Please use '<=' or '>='.")
-            self.add_custom_inequality_constraint(A=A, b=b, name=name, source='manual')
+            self.add_linear_inequality_constraint(
+                A,
+                b,
+                name=name,
+                source='manual',
+            )
         else:
             raise ValueError(f"Invalid constraint type '{constraint_type}'. Please use 'equality' or 'inequality'.")
-
-    def remove_constraint(self, name, constraint_type=None):
-        """
-        Remove specified constraint and automatically refresh combined constraints.
-        
-        Parameters:
-        -----------
-        name : str
-            Constraint name
-        constraint_type : str, optional
-            Constraint type ('inequality' or 'equality'), None for auto-detection
-        """
-        if not self.constraint_manager._is_smc_fj_mode():
-            if self.constraint_manager.verbose:
-                print("[!]  Constraint removal only supported in SMC_F_J mode with ss_ds sampling")
-            return
-        
-        if self.constraint_manager.verbose:
-            print(f"[*] Removing constraint '{name}'...")
-        
-        try:
-            # Remove constraint
-            self.constraint_manager.remove_constraint(name, constraint_type)
-            
-            if self.constraint_manager.verbose:
-                print(f"[OK] Removed constraint '{name}'")
-            
-            self.constraint_manager.get_combined_inequality_constraints()  # Refresh combined constraints
-            self.constraint_manager.get_combined_equality_constraints()    # Refresh combined constraints
-        except Exception as e:
-            if self.constraint_manager.verbose:
-                print(f"[X] Failed to remove constraint '{name}': {e}")
-            raise
-    
-    def update_all_constraints(self, rake_angle=None, fixed_rake=None, interseismic_config=None,
-                              custom_inequality=None, custom_equality=None):
-        """
-        Update multiple types of constraints at once.
-        
-        Parameters:
-        -----------
-        rake_angle : dict, optional
-            Rake angle range constraints
-        fixed_rake : dict, optional
-            Fixed rake angle constraints
-        interseismic_config : dict, optional
-            Interseismic block-motion/cap/backslip constraint configuration
-        custom_inequality : list of dict, optional
-            Custom inequality constraints list, each dict contains {'A', 'b', 'name', 'source'}
-        custom_equality : list of dict, optional
-            Custom equality constraints list, each dict contains {'A', 'b', 'name', 'source'}
-        """
-        if self.constraint_manager.verbose:
-            print("[RUN] Updating multiple constraints...")
-        
-        # Update rake constraints
-        if rake_angle or fixed_rake:
-            self.update_rake_constraints(rake_angle, fixed_rake)
-        
-        # Update interseismic constraints
-        if interseismic_config:
-            self.update_interseismic_config(interseismic_config)
-        
-        # Add custom inequality constraints
-        if custom_inequality:
-            for constraint in custom_inequality:
-                self.add_custom_inequality_constraint(
-                    constraint['A'], constraint['b'], constraint['name'],
-                    source=constraint.get('source', 'user_defined')
-                )
-        
-        # Add custom equality constraints
-        if custom_equality:
-            for constraint in custom_equality:
-                self.add_custom_equality_constraint(
-                    constraint['A'], constraint['b'], constraint['name'],
-                    source=constraint.get('source', 'user_defined')
-                )
-        
-        self.constraint_manager.get_combined_inequality_constraints()  # Refresh combined constraints
-        self.constraint_manager.get_combined_equality_constraints()    # Refresh combined constraints
-        if self.constraint_manager.verbose:
-            print("[OK] All constraints updated successfully")
-
-    def set_parameter_bounds(self, lb=None, ub=None, geometry=None, poly=None, 
-                             strikeslip=None, dipslip=None, rake_angle=None, 
-                             slip_magnitude=None, alpha=None, sigmas=None):
-        """
-        Sets the parameter bounds for the Bayesian inversion process.
-
-        This method configures the bounds for all parameters involved in the inversion, including the default bounds,
-        geometry, polynomial coefficients, strike-slip, dip-slip, rake angle, slip magnitude, alpha, and sigmas. It
-        utilizes the BoundsManager to handle the complexity of setting these bounds.
-
-        Parameters:
-        - lb (float, optional): The lower bound for all parameters if not specified individually.
-        - ub (float, optional): The upper bound for all parameters if not specified individually.
-        - geometry (dict, optional): Specific bounds for the geometry parameters.
-        - poly (dict, optional): Specific bounds for the polynomial coefficients.
-        - strikeslip (dict, optional): Specific bounds for the strike-slip parameters.
-        - dipslip (dict, optional): Specific bounds for the dip-slip parameters.
-        - rake_angle (dict, optional): Specific bounds for the rake angle parameters.
-        - slip_magnitude (dict, optional): Specific bounds for the slip magnitude parameters.
-        - alpha (list, optional): Specific bounds for the alpha parameter.
-        - sigmas (list, optional): Specific bounds for the sigmas parameters.
-
-        The method updates the bounds in the BoundsManager instance and stores the updated lower and upper bounds,
-        as well as the detailed bounds configuration for each parameter type.
-        """
-
-        constraint_manager = self.constraint_manager
-        constraint_manager.set_global_bounds(lb, ub)
-        constraint_manager.set_hyperparameter_bounds(geometry, sigmas, alpha, source='manual')
-        constraint_manager.set_linear_parameter_bounds(slip_magnitude, rake_angle, strikeslip, dipslip, poly, source='manual')
-        self.bounds = constraint_manager._bounds
-
-        # Update properties to reflect new bounds
-        if self.constraint_manager.verbose:
-            print("[OK] Parameter bounds set successfully - all parameters automatically synchronized")
-
-    # Update set_parameter_bounds_from_config method
-    def set_parameter_bounds_from_config(self, config_file='bounds_config.yml', encoding='utf-8'):
-        """Set parameter bounds from configuration file using new API."""
-        self.constraint_manager.apply_all_constraints_from_config(
-            bounds_config_file=config_file,
-            encoding=encoding
-        )
-        
-        if self.constraint_manager.verbose:
-            print("[OK] Parameter bounds loaded from config - all parameters automatically synchronized")
 
     @classmethod
     def from_config(cls, config: BayesianMultiFaultsInversionConfig):
@@ -1073,7 +1119,7 @@ class BayesianMultiFaultsInversion(
         config = BayesianMultiFaultsInversionConfig(**kwargs)
         return cls(config)
 
-    def walk(self, nchains=None, chain_length=None, samples=None, magprior=True, comm=None, filename='samples_smc.h5',
+    def walk(self, nchains=None, chain_length=None, samples=None, magprior=False, comm=None, filename='samples_smc.h5',
              save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
              sliplb=None, slipub=None, rake_angle=None, rake_sigma=None, rake_range=None, magposteriors=False,
              log_enabled=False, decay_rate=0.1, run_bayesian=True, **kwargs):
@@ -1084,7 +1130,7 @@ class BayesianMultiFaultsInversion(
         nchains (int): Number of chains for the SMC sampling. Default is 100.
         chain_length (int): Length of each chain. Default is 50.
         samples (array): Initial samples for the SMC sampling. If None, samples are generated uniformly between the lower and upper bounds.
-        magprior (bool): If True, use magnitude prior for generating samples. Default is True.
+        magprior (bool): If True, use magnitude-aware initial samples. Default is False.
         comm (MPI.Comm): MPI communicator. If None, MPI.COMM_WORLD is used.
         filename (str): Name of the file where the final samples are saved. Default is 'samples_smc.h5'.
         save_every (int): Frequency at which the samples are saved. Default is 1.
@@ -1109,8 +1155,8 @@ class BayesianMultiFaultsInversion(
         """
         mode = self.config.bayesian_sampling_mode
     
-        if mode == 'SMC_F_J':
-            return self.walk_F_J(nchains=nchains, chain_length=chain_length, samples=samples, comm=comm, filename=filename,
+        if mode == 'SMC_FJ':
+            return self.walk_smc_fj(nchains=nchains, chain_length=chain_length, samples=samples, comm=comm, filename=filename,
                                  save_every=save_every, save_at_interval=save_at_interval, save_at_final=save_at_final,
                                  covariance_epsilon=covariance_epsilon, amh_a=amh_a, amh_b=amh_b, log_enabled=log_enabled,
                                  decay_rate=decay_rate, run_bayesian=run_bayesian, **kwargs)
@@ -1123,7 +1169,7 @@ class BayesianMultiFaultsInversion(
         else:
             raise ValueError(f"Unknown bayesian_sampling_mode: {mode}")
 
-    def walk_smc(self, nchains=None, chain_length=None, samples=None, magprior=True, comm=None, filename='samples_smc.h5',
+    def walk_smc(self, nchains=None, chain_length=None, samples=None, magprior=False, comm=None, filename='samples_smc.h5',
                  save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
                  sliplb=None, slipub=None, rake_angle=None, rake_sigma=None, rake_range=None, magposteriors=False,
                  log_enabled=False, decay_rate=0.1, run_bayesian=True):
@@ -1134,7 +1180,7 @@ class BayesianMultiFaultsInversion(
         nchains (int): Number of chains for the SMC sampling. Default is 100.
         chain_length (int): Length of each chain. Default is 50.
         samples (array): Initial samples for the SMC sampling. If None, samples are generated uniformly between the lower and upper bounds.
-        magprior (bool): If True, use magnitude prior for generating samples. Default is True.
+        magprior (bool): If True, use magnitude-aware initial samples. Default is False.
         comm (MPI.Comm): MPI communicator. If None, MPI.COMM_WORLD is used.
         filename (str): Name of the file where the final samples are saved. Default is 'samples_smc.h5'.
         save_every (int): Frequency at which the samples are saved. Default is 1.
@@ -1168,6 +1214,7 @@ class BayesianMultiFaultsInversion(
         assert chain_length is not None, "Chain length must be provided in the configuration or as an argument."
     
         self.target = self.make_target_for_parallel(log_enabled=log_enabled) if not magposteriors else self.make_magnitude_target_for_parallel(decay_rate=decay_rate, log_enabled=log_enabled)
+        bounds_snapshot = self._fullsmc_bounds_snapshot
     
         if not run_bayesian:
             return None
@@ -1179,13 +1226,35 @@ class BayesianMultiFaultsInversion(
             print('Number of MCMC samples:', self.mcmc_samples)
             self.print_mcmc_parameter_positions()
     
-        opt = NT1(nchains, chain_length, self.target, self.lb, self.ub)
+        if (
+            self.constraint_manager.state_revision
+            != bounds_snapshot['state_revision']
+        ):
+            raise RuntimeError(
+                "FULLSMC bounds changed after target construction. "
+                "Rebuild the target or call walk_smc() again before sampling."
+            )
+        opt = NT1(
+            nchains,
+            chain_length,
+            self.target,
+            bounds_snapshot['lb'].copy(),
+            bounds_snapshot['ub'].copy(),
+        )
     
         if samples is None:
-            samples = NT2(None, None, None, None, None, None)
-        if samples is None and magprior:
-            samples = self.prior_samples_vectorize(self.target, nchains, sliplb=sliplb, slipub=slipub, 
-                                                   rake_angle=rake_angle, rake_sigma=rake_sigma, rake_range=rake_range)
+            if magprior:
+                samples = self.prior_samples_vectorize(
+                    self.target,
+                    nchains,
+                    sliplb=sliplb,
+                    slipub=slipub,
+                    rake_angle=rake_angle,
+                    rake_sigma=rake_sigma,
+                    rake_range=rake_range,
+                )
+            else:
+                samples = NT2(None, None, None, None, None, None)
     
         if rank == 0:
             print('Starting the loop...', flush=True)
@@ -1200,9 +1269,9 @@ class BayesianMultiFaultsInversion(
         
         return final
 
-    def walk_F_J(self, nchains=None, chain_length=None, samples=None, comm=None, filename='samples_smc.h5',
+    def walk_smc_fj(self, nchains=None, chain_length=None, samples=None, comm=None, filename='samples_smc.h5',
                  save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
-                 log_enabled=False, A=None, b=None, Aeq=None, beq=None, lb=None, ub=None, x0=None, opts=None, smooth_prior_weight=1.0,
+                 log_enabled=False, x0=None, opts=None, smooth_prior_weight=1.0,
                  magnitude_log_prior=False, decay_rate=0.1, run_bayesian=True):
         """
         Perform a Sequential Monte Carlo (SMC) sampling walk.
@@ -1220,12 +1289,6 @@ class BayesianMultiFaultsInversion(
         amh_a (float): Parameter 'a' for the Adaptive Metropolis-Hastings algorithm. Default is 1.0/9.0.
         amh_b (float): Parameter 'b' for the Adaptive Metropolis-Hastings algorithm. Default is 8.0/9.0.
         log_enabled (bool): If True, enable logging. Default is False.
-        A (array): Matrix A for the linear constraints.
-        b (array): Vector b for the linear constraints.
-        Aeq (array): Matrix Aeq for the equality constraints.
-        beq (array): Vector beq for the equality constraints.
-        lb (array): Lower bounds for the parameters.
-        ub (array): Upper bounds for the parameters.
         x0 (array): Initial guess for the parameters.
         opts (dict): Options for the optimization algorithm.
         smooth_prior_weight (float): Weight for the smoothness prior. Default is 1.0.
@@ -1247,8 +1310,8 @@ class BayesianMultiFaultsInversion(
         assert nchains is not None, "Number of chains must be provided in the configuration or as an argument."
         assert chain_length is not None, "Chain length must be provided in the configuration or as an argument."
     
-        self.target = self.make_F_J_target_for_parallel(log_enabled=log_enabled, A=A, b=b, Aeq=Aeq, beq=beq, 
-                                                        lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
+        self.target = self.make_smc_fj_target_for_parallel(log_enabled=log_enabled,
+                                                        x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
                                                         magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate)
     
         if not run_bayesian:
@@ -1280,11 +1343,11 @@ class BayesianMultiFaultsInversion(
         
         return final
     
-    def returnModel(self, model='mean', lb=None, ub=None, A=None, b=None, recal_target=False, print_stat=True):
+    def returnModel(self, model='mean', recal_target=False, print_stat=True):
         from scipy.stats import gaussian_kde
         if recal_target or not hasattr(self, 'target'):
-            if self.config.bayesian_sampling_mode == 'SMC_F_J':
-                self.target = self.make_F_J_target_for_parallel(log_enabled=False, A=A, b=b, lb=lb, ub=ub)
+            if self.config.bayesian_sampling_mode == 'SMC_FJ':
+                self.target = self.make_smc_fj_target_for_parallel(log_enabled=False)
             else:
                 self.target = self.make_target_for_parallel()
         
@@ -1328,17 +1391,20 @@ class BayesianMultiFaultsInversion(
                 self._update_fault_geometry_and_mesh(fault.name, fault_config, specs)
                 self._update_fault_GFs_and_Laplacian(fault.name, fault_config)
         
-        if self.bayesian_sampling_mode == 'SMC_F_J':
+        if self.bayesian_sampling_mode == 'SMC_FJ':
             if isinstance(model, str) and model == 'std':
                 mpost = []
                 for isample in self.sampler.allsamples:
                     self.target(isample)
+                    self._require_current_linear_solution('returnModel(std)')
                     mpost.append(self.mpost)
                 specs_slip_poly = np.std(mpost, axis=0)
                 specs_full = np.hstack((specs[:self.linear_sample_start_position], specs_slip_poly))
                 self.target(specs[:self.linear_sample_start_position])
+                self._require_current_linear_solution('returnModel(std)')
             else:
                 self.target(specs)
+                self._require_current_linear_solution(f'returnModel({model})')
                 specs_slip_poly = self.mpost
                 specs_full = np.hstack((specs[:self.linear_sample_start_position], specs_slip_poly))
             specs = specs_full
@@ -1346,11 +1412,12 @@ class BayesianMultiFaultsInversion(
             mpost_tmp = self.mpost.copy()
         else:
             self.G_combined = np.hstack([fault.Gassembled for fault in self.multifaults.faults])
-            self.mpost = specs[self.linear_sample_start_position:]
             if self.config.slip_sampling_mode == 'rake_fixed':
-                mpost_tmp = np.zeros_like(self.G_combined.shape[1])
+                expanded_specs = self.transfer_samples(specs)
+                mpost_tmp = expanded_specs[self.linear_sample_start_position:].copy()
             else:
                 mpost_tmp = specs[self.linear_sample_start_position:].copy()
+            self.mpost = mpost_tmp
         
         print('Number of data: {}'.format(self.multifaults.Nd))
         print('Number of MCMC parameters: {}'.format(self.mcmc_samples)) # self.multifaults.Np
@@ -1363,7 +1430,8 @@ class BayesianMultiFaultsInversion(
             if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
                 print(f"  Geometry positions: {self.config.faults[fault.name]['geometry']['sample_positions']}")
             
-            slip_start, slip_end = self.slip_positions[fault.name]
+            full_slip_start, full_slip_end = self.full_slip_positions[fault.name]
+            slip_start, slip_end = full_slip_start, full_slip_end
             slip_start -= total_half
             slip_end -= total_half
 
@@ -1378,19 +1446,22 @@ class BayesianMultiFaultsInversion(
                 mpost_segment = specs[slip_start:slip_end]
                 _adapter.distribute_results(mpost_segment)
             elif self.config.slip_sampling_mode == 'rake_fixed':
-                print(f"  Slip positions: [{slip_start}, {slip_start + half}]")
-                half = (slip_end - slip_start) // 2
-                ss = specs[slip_start:slip_start + half]*np.cos(np.radians(self.config.rake_angle))
-                ds = specs[slip_start:slip_start + half]*np.sin(np.radians(self.config.rake_angle))
+                compact_start, compact_end = self.constraint_manager.sample_slip_positions[
+                    fault.name
+                ]
+                print(f"  Slip positions: [{compact_start}, {compact_end}]")
+                ss_ds = expanded_specs[full_slip_start:full_slip_end]
                 if _adapter is not None:
-                    _adapter.distribute_results(np.hstack([ss, ds]))
+                    _adapter.distribute_results(ss_ds)
                 else:
-                    fault.slip[:, :2] = np.vstack([ss, ds]).T
+                    half = len(ss_ds) // 2
+                    fault.slip[:, :2] = np.vstack([
+                        ss_ds[:half], ss_ds[half:]
+                    ]).T
 
-                linear_start = self.linear_sample_start_position
-                mpost_tmp[slip_start-linear_start:slip_end-linear_start] = np.hstack([ss, ds])
-
-                total_half += half
+                total_half += full_slip_end - full_slip_start - (
+                    compact_end - compact_start
+                )
             elif self.config.slip_sampling_mode == 'magnitude_rake':
                 half = (slip_end - slip_start) // 2
                 print(f"  Slip magnitude positions: [{slip_start}, {slip_start + half}]")
@@ -1413,18 +1484,25 @@ class BayesianMultiFaultsInversion(
                 else:
                     fault.slip[:, :2] = specs[slip_start:slip_end].reshape(2, -1).T
 
-            poly_start, poly_end = self.poly_positions[fault.name]
-            poly_start -= total_half
-            poly_end -= total_half
+            full_poly_start, full_poly_end = self.full_poly_positions[fault.name]
+            if self.config.slip_sampling_mode == 'rake_fixed':
+                poly_start, poly_end = self.constraint_manager.sample_poly_positions[
+                    fault.name
+                ]
+                poly_values = expanded_specs[full_poly_start:full_poly_end]
+            else:
+                poly_start = full_poly_start - total_half
+                poly_end = full_poly_end - total_half
+                poly_values = specs[poly_start:poly_end]
             if poly_start != poly_end:
                 print(f"  Poly positions: [{poly_start}, {poly_end}]")
+            poly_offset = 0
             for i, (key, value) in enumerate(fault.poly.items()):
                 if value is not None:
-                    fault.polysol[key] = specs[poly_start: poly_start + value]
-                    if self.config.slip_sampling_mode == 'rake_fixed':
-                        mpost_tmp[poly_start: poly_end] = specs[poly_start: poly_start + value]
-
-                    poly_start += value
+                    fault.polysol[key] = poly_values[
+                        poly_offset:poly_offset + value
+                    ]
+                    poly_offset += value
 
         if self._sigma_update_flag:
             sigmas_start, sigmas_end = self.sigmas_position
@@ -1451,6 +1529,14 @@ class BayesianMultiFaultsInversion(
                 print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
 
         return specs
+
+    def _require_current_linear_solution(self, context):
+        """Reject result extraction after an invalid constrained F_J solve."""
+        if not getattr(self, '_last_linear_solve_valid', False) or self.mpost is None:
+            raise RuntimeError(
+                f"{context} could not obtain a feasible constrained linear "
+                "solution; no previous mpost result was reused."
+            )
     
     def calculate_and_print_fit_statistics(self, model='median'):
         """
@@ -1501,7 +1587,7 @@ class BayesianMultiFaultsInversion(
         Returns:
         - None
         """
-        from ..plottools import optimize_3d_plot
+        from ..viztools import optimize_3d_plot
         from matplotlib.ticker import FuncFormatter
         import matplotlib.pyplot as plt
         from mpl_toolkits.mplot3d import Axes3D
@@ -1923,7 +2009,7 @@ class BayesianMultiFaultsInversion(
                                           gps_figsize=None, sar_figsize='double', gps_scale=0.05, gps_legendscale=0.2,
                                           file_type='png', fault_cbaxis=[0.15, 0.22, 0.15, 0.02], fault_style=['notebook'],
                                           remove_direction_labels=False, cbticks=None, cblinewidth=None, cbfontsize=None, cb_label_side='opposite',
-                                          map_cbaxis=None, data_poly=None, print_fit_statistics=True, print_fault_statistics=True,
+                                          map_cbaxis=None, data_poly="config", print_fit_statistics=True, print_fault_statistics=True,
                                           pdf_fonttype=None, gps_fontsize=None, sar_fontsize=None, gps_xticks=None, gps_yticks=None,
                                           sar_xticks=None, sar_yticks=None,
                                           gps_kwargs={}, sar_kwargs={}):
@@ -1958,7 +2044,9 @@ class BayesianMultiFaultsInversion(
         cbfontsize (int): Font size of the colorbar label (default is 10).
         cb_label_side (str): Position of the label relative to the ticks ('opposite' or 'same', default is 'opposite').
         map_cbaxis    : Axis for the colorbar on the map plot, default is None
-        data_poly: None or 'include' (default is None)
+        data_poly: "config" (default) follows each dataset's parsed
+            geodata.polys value; "include" includes solved corrections;
+            None explicitly plots source/slip-only results.
         print_fit_statistics: whether to print fit statistics (default is True)
         print_fault_statistics: whether to print fault statistics (default is True)
         pdf_fonttype: PDF font type (default is None)
@@ -2028,19 +2116,20 @@ class BayesianMultiFaultsInversion(
             coopt_list = []
             coleveling_list = []
             cocrossfault_list = []
-            datas = self.config.geodata.get('data', [])
-            verticals = self.config.geodata.get('verticals', [])
-            for data, vertical in zip(datas, verticals):
+            for spec in get_geodata_prediction_specs(self):
+                data = spec.data
+                vertical = spec.vertical
+                resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
                 if data.dtype == 'gps':
-                    cogps_vertical_list.append([data, vertical])
+                    cogps_vertical_list.append([data, vertical, resolved_poly])
                 elif data.dtype == 'insar':
-                    cosar_list.append(data)
+                    cosar_list.append([data, resolved_poly])
                 elif data.dtype == 'opticorr':
-                    coopt_list.append(data)
+                    coopt_list.append([data, resolved_poly])
                 elif data.dtype == 'leveling':
-                    coleveling_list.append(data)
+                    coleveling_list.append([data, resolved_poly])
                 elif data.dtype == 'crossfaultoffset':
-                    cocrossfault_list.append(data)
+                    cocrossfault_list.append([data, resolved_poly])
 
             if file_type == 'pdf':
                 pdf_fonttype = pdf_fonttype if pdf_fonttype is not None else 42  # Use Type 42 (TrueType) for better compatibility
@@ -2052,8 +2141,8 @@ class BayesianMultiFaultsInversion(
                     if fault.lon is None or fault.lat is None:
                         fault.setTrace(0.1)
                     fault.color = 'b' # Set the color to blue
-                for cogps, vertical in cogps_vertical_list:
-                    cogps.buildsynth(faults, vertical=vertical, poly=data_poly)
+                for cogps, vertical, resolved_poly in cogps_vertical_list:
+                    cogps.buildsynth(faults, vertical=vertical, poly=resolved_poly)
                     if plot_data:
                         box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
                         cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=gps_scale, 
@@ -2069,8 +2158,8 @@ class BayesianMultiFaultsInversion(
             with sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=sar_fontsize):
                 for fault in faults:
                     fault.color = 'k'
-                for cosar in cosar_list:
-                    cosar.buildsynth(faults, vertical=True, poly=data_poly)
+                for cosar, resolved_poly in cosar_list:
+                    cosar.buildsynth(faults, vertical=True, poly=resolved_poly)
                     if plot_data:
                         datamin, datamax = cosar.vel.min(), cosar.vel.max()
                         absmax = max(abs(datamin), abs(datamax))
@@ -2110,27 +2199,27 @@ class BayesianMultiFaultsInversion(
                 # Plot Opticorr data
                 for fault in faults:
                     fault.color = 'k'
-                for coopt in coopt_list:
-                    coopt.buildsynth(faults, vertical=False, poly=data_poly)
+                for coopt, resolved_poly in coopt_list:
+                    coopt.buildsynth(faults, vertical=False, poly=resolved_poly)
 
             # Build synthetics and save/plot leveling data
-            for colev in coleveling_list:
-                colev.buildsynth(faults, vertical=True, poly=data_poly)
+            for colev, resolved_poly in coleveling_list:
+                colev.buildsynth(faults, vertical=True, poly=resolved_poly)
             if plot_data and coleveling_list:
                 out_modeling_dir = pathlib.Path('Modeling')
                 out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for colev in coleveling_list:
+                for colev, _resolved_poly in coleveling_list:
                     for itype in ['data', 'synth']:
                         colev.write2file(f'{colev.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
                     _plot_leveling_fit(colev, save_dir=out_modeling_dir, file_type=file_type)
             
             # Build synthetics and save/plot cross-fault offset data
-            for cocf in cocrossfault_list:
-                cocf.buildsynth(faults, poly=data_poly)
+            for cocf, resolved_poly in cocrossfault_list:
+                cocf.buildsynth(faults, poly=resolved_poly)
             if plot_data and cocrossfault_list:
                 out_modeling_dir = pathlib.Path('Modeling')
                 out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for cocf in cocrossfault_list:
+                for cocf, _resolved_poly in cocrossfault_list:
                     for itype in ['data', 'synth']:
                         cocf.write2file(f'{cocf.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
                     _plot_crossfaultoffset_fit(cocf, save_dir=out_modeling_dir, file_type=file_type)
@@ -2643,6 +2732,16 @@ class BayesianMultiFaultsInversion(
             self.poly_positions[fault.name] = (start_position + num_slip_samples, start_position + num_slip_samples + num_poly_samples)
             start_position += num_slip_samples + num_poly_samples
 
+    @property
+    def full_slip_positions(self):
+        """Source slip slices in the full physical model vector."""
+        return self.slip_positions
+
+    @property
+    def full_poly_positions(self):
+        """Source polynomial slices in the full physical model vector."""
+        return self.poly_positions
+
     def calculate_linear_sample_start_position(self):
         start_position = self.total_geometry_parameters
         if self._sigma_update_flag:
@@ -2692,7 +2791,10 @@ class BayesianMultiFaultsInversion(
             slip = slip_magnitude_and_rake[:half]
             return slip
         elif self.config.slip_sampling_mode == 'rake_fixed':
-            slip = samples[slip_start:slip_start + (slip_end - slip_start) // 2].copy()
+            compact_start, compact_end = self.constraint_manager.sample_slip_positions[
+                fault.name
+            ]
+            slip = samples[compact_start:compact_end].copy()
             return slip
         else:
             slip = samples[slip_start:slip_end].copy()  # Create a copy of slip to avoid modifying samples
@@ -2735,17 +2837,38 @@ class BayesianMultiFaultsInversion(
                 new_samples[slip_start:slip_end] = self.transfer_magnitude_rake_to_ss_ds(slip_magnitude, rake)
             return new_samples
         elif self.config.slip_sampling_mode == 'rake_fixed':
-            new_samples = samples
-            for fault_name in self.faultnames:
-                slip_start, slip_end = self.slip_positions[fault_name]
-                half = (slip_end - slip_start) // 2
-                slip = new_samples[slip_start:slip_start + half]
-                rake = np.full_like(slip, self.config.rake_angle)
-                ss_ds = self.transfer_magnitude_rake_to_ss_ds(slip, rake)
-                new_samples = np.concatenate((new_samples[:slip_start], ss_ds, new_samples[slip_start + half:]))
-            return new_samples
+            return self._expand_rake_fixed_samples(samples)
         else:
             return samples
+
+    def _expand_rake_fixed_samples(self, samples):
+        """Expand compact fixed-rake magnitudes into the full linear layout."""
+        samples = np.asarray(samples)
+        full_ends = [self.linear_sample_start_position]
+        full_ends.extend(end for _, end in self.full_slip_positions.values())
+        full_ends.extend(end for _, end in self.full_poly_positions.values())
+        expanded = np.zeros(max(full_ends), dtype=samples.dtype)
+        linear_start = self.linear_sample_start_position
+        expanded[:linear_start] = samples[:linear_start]
+
+        for source in self.multifaults.faults:
+            name = source.name
+            adapter = self.multifaults.adapters[name]
+            compact_slip = slice(*self.constraint_manager.sample_slip_positions[name])
+            full_slip = slice(*self.full_slip_positions[name])
+            compact_poly = slice(*self.constraint_manager.sample_poly_positions[name])
+            full_poly = slice(*self.full_poly_positions[name])
+
+            if adapter.source_type != 'Fault':
+                expanded[full_slip] = samples[compact_slip]
+            else:
+                magnitude = samples[compact_slip]
+                rake = np.full_like(magnitude, self.config.rake_angle)
+                expanded[full_slip] = self.transfer_magnitude_rake_to_ss_ds(
+                    magnitude, rake
+                )
+            expanded[full_poly] = samples[compact_poly]
+        return expanded
     
     def compute_magnitude_log_prior(self, samples, decay_rate=0.1):
         moment_magnitude_threshold = self.moment_magnitude_threshold
@@ -2755,16 +2878,18 @@ class BayesianMultiFaultsInversion(
         fault_sources = [fault for fault in self.multifaults.faults
                          if fault.name in self.patch_areas]
 
-        # Precompute the constant value
-        constant_value = self.shear_modulus * np.array([self.patch_areas[fault.name] for fault in fault_sources])
-    
-        # Compute slip for all fault sources
-        slips = np.array([self.compute_slip(samples, fault) for fault in fault_sources])
-    
-        # Compute moment for all faults
-        moments = np.sum(constant_value * slips, axis=1)
-    
-        total_moment = np.sum(moments)*1e6 # km^2 to m^2
+        total_moment = 0.0
+        for fault in fault_sources:
+            areas = np.asarray(self.patch_areas[fault.name], dtype=float)
+            slip = np.asarray(self.compute_slip(samples, fault), dtype=float)
+            if areas.shape != slip.shape:
+                raise ValueError(
+                    f"Fault '{fault.name}' has {areas.size} patch areas but "
+                    f"{slip.size} slip magnitudes."
+                )
+            total_moment += self.shear_modulus * np.sum(areas * slip)
+
+        total_moment *= 1e6  # km^2 to m^2
         moment_magnitude = 2.0 / 3.0 * (np.log10(total_moment) - 9.1)
     
         magnitude_difference = np.abs(moment_magnitude - moment_magnitude_threshold)
@@ -2793,26 +2918,53 @@ class BayesianMultiFaultsInversion(
 
         # If faults is not provided, use all faults
         if faults is None:
-            faults = [fault.name for fault in self.multifaults.faults]
+            faults = list(self.patch_areas)
+        unknown = [name for name in faults if name not in self.patch_areas]
+        if unknown:
+            raise ValueError(
+                f"Magnitude-based initialization only supports Fault sources; "
+                f"unsupported sources: {unknown}"
+            )
 
-        # If lb is not provided, use the first or second half of self.lb based on mode
+        # Resolve physical non-negative magnitude ranges from the active bounds.
         if lb is None or ub is None:
             lb = {}
             ub = {}
+            full_lb, full_ub = self.constraint_manager.get_bounds_for_fullsmc()
             if self.config.slip_sampling_mode == 'ss_ds':
-                bound_ss = self.constraint_manager.bounds['strikeslip']
-                bound_ds = self.constraint_manager.bounds['dipslip']
                 for name in faults:
-                    npatch = len(self.multifaults.faults_dict[name].patch)
-                    lb_ss, ub_ss = np.full(npatch, bound_ss[name][0]), np.full(npatch, bound_ss[name][1])
-                    lb_ds, ub_ds = np.full(npatch, bound_ds[name][0]), np.full(npatch, bound_ds[name][1])
-                    lb[name] = np.min(np.abs(np.vstack((lb_ss, ub_ss, lb_ds, ub_ds)).T), axis=1)
-                    ub[name] = np.max(np.abs(np.vstack((lb_ss, ub_ss, lb_ds, ub_ds)).T), axis=1)
+                    fault = self.multifaults.faults_dict[name]
+                    adapter = self.multifaults.adapters[name]
+                    start, _ = self.constraint_manager.sample_slip_positions[name]
+                    slices = self.constraint_manager._source_component_slices(
+                        fault, start, adapter=adapter
+                    )
+                    npatch = len(fault.patch)
+                    max_ss = np.zeros(npatch)
+                    max_ds = np.zeros(npatch)
+                    if 'strikeslip' in slices:
+                        slc = slices['strikeslip']
+                        max_ss = np.maximum(
+                            np.abs(full_lb[slc]), np.abs(full_ub[slc])
+                        )
+                    if 'dipslip' in slices:
+                        slc = slices['dipslip']
+                        max_ds = np.maximum(
+                            np.abs(full_lb[slc]), np.abs(full_ub[slc])
+                        )
+                    lb[name] = np.zeros(npatch)
+                    ub[name] = np.hypot(max_ss, max_ds)
             else:
-                bound = self.constraint_manager.bounds['slip_magnitude']
                 for name in faults:
-                    npatch = len(self.multifaults.faults_dict[name].patch)
-                    lb[name], ub[name] = np.full(npatch, bound[name][0]), np.full(npatch, bound[name][1])
+                    start, end = self.constraint_manager.sample_slip_positions[name]
+                    if self.config.slip_sampling_mode == 'magnitude_rake':
+                        end = start + (end - start) // 2
+                    lb[name] = np.maximum(full_lb[start:end], 0.0)
+                    ub[name] = full_ub[start:end].copy()
+                    if np.any(ub[name] < lb[name]):
+                        raise ValueError(
+                            f"Non-positive slip_magnitude bounds for '{name}'"
+                        )
 
         # Generate Mw from a normal distribution
         moment_magnitude = np.random.normal(self.moment_magnitude_threshold, self.magnitude_tolerance)
@@ -2856,8 +3008,10 @@ class BayesianMultiFaultsInversion(
         list: A list of moment magnitudes of the generated samples.
         """
 
-        # Initialize a dictionary to store the samples
-        samples = {name: [] for name in self.patch_areas.keys()}
+        if faults is None:
+            faults = list(self.patch_areas)
+        # Initialize only the requested Fault sources.
+        samples = {name: [] for name in faults}
         mws = []
 
         for _ in range(nchains):
@@ -2916,10 +3070,10 @@ class BayesianMultiFaultsInversion(
                 if sample_mode == 'magnitude_rake':
                     sampzero[:, start:half] = samples[name]
                 elif sample_mode == 'rake_fixed':
-                    rake_rad = np.radians(self.config.rake_angle)
-                    ss = samples[name] * np.cos(rake_rad)
-                    ds = samples[name] * np.sin(rake_rad)
-                    sampzero[:, start:end] = np.hstack([ss, ds])
+                    compact_start, compact_end = (
+                        self.constraint_manager.sample_slip_positions[name]
+                    )
+                    sampzero[:, compact_start:compact_end] = samples[name]
                 elif sample_mode == 'ss_ds':
                     if rake_sigma == 0:
                         rake_rad = np.radians(rake_angle)
@@ -2940,28 +3094,74 @@ class BayesianMultiFaultsInversion(
     def compute_log_prior(self, samples):
         return compute_log_prior(samples, self.lb, self.ub)
 
+    def _require_bayesian_sampling_mode(self, expected, caller):
+        """Keep target construction aligned with the configured mode."""
+        actual = self.config.bayesian_sampling_mode
+        if actual != expected:
+            raise RuntimeError(
+                f"{caller} requires bayesian_sampling_mode='{expected}', "
+                f"got '{actual}'. Use walk() for mode-aware dispatch."
+            )
+
+    def _freeze_fullsmc_bounds(self):
+        """Freeze one effective bounds snapshot for target and proposal use."""
+        self.constraint_manager._require_activation_flags_reconciled(
+            "FULLSMC target construction"
+        )
+        lb, ub = self.constraint_manager.get_bounds_for_fullsmc()
+        snapshot = {
+            'lb': np.asarray(lb, dtype=float).copy(),
+            'ub': np.asarray(ub, dtype=float).copy(),
+            'state_revision': self.constraint_manager.state_revision,
+        }
+        self._fullsmc_bounds_snapshot = snapshot
+        return snapshot
+
+    def _build_fullsmc_prior_guard(self):
+        """Return frozen bounds and a revision guard for a FULLSMC target."""
+        snapshot = self._freeze_fullsmc_bounds()
+        lb = snapshot['lb']
+        ub = snapshot['ub']
+        constraint_revision = snapshot['state_revision']
+
+        def ensure_current_bounds():
+            if self.constraint_manager.state_revision != constraint_revision:
+                raise RuntimeError(
+                    "FULLSMC bounds changed after target construction. "
+                    "Rebuild the target or call walk_smc() again before "
+                    "sampling."
+                )
+
+        return lb, ub, ensure_current_bounds
+
     def make_target_for_parallel(self, log_enabled=False):
-        self.bayesian_sampling_mode = 'FullSMC'
+        self._require_bayesian_sampling_mode('FULLSMC', 'make_target_for_parallel')
+        lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
         if self.nonlinear_inversion:
             def target(samples):
+                ensure_current_bounds()
                 # Compute log prior
-                log_prior = compute_log_prior(samples, self.lb, self.ub)
+                log_prior = compute_log_prior(samples, lb, ub)
                 if log_prior == -np.inf:
                     return -np.inf
 
                 for fault_name, fault_config in self.config.faults.items():
                     if fault_name in self.faultnames and fault_config['geometry']['update']:
                         # self._update_fault(fault_name, fault_config, samples)
-                        self._update_fault_geometry_and_mesh(fault_name, fault_config, samples, log_enabled=log_enabled)
+                        if not self._try_update_fault_geometry_and_mesh(
+                                fault_name, fault_config, samples,
+                                log_enabled=log_enabled):
+                            return -np.inf
                         self._update_fault_GFs_and_Laplacian(fault_name, fault_config, log_enabled=log_enabled)
 
                 new_samples = self.transfer_samples(samples)
                 return log_prior + self._compute_likelihoods(new_samples)
         else:
             def target(samples):
+                ensure_current_bounds()
                 # Compute log prior
                 # start_time = time.time()
-                log_prior = compute_log_prior(samples, self.lb, self.ub)
+                log_prior = compute_log_prior(samples, lb, ub)
                 # end_time = time.time()
                 # print(f"Execution time for computing log prior: {end_time - start_time} seconds")
 
@@ -2974,17 +3174,24 @@ class BayesianMultiFaultsInversion(
         return target
 
     def make_magnitude_target_for_parallel(self, decay_rate=0.1, log_enabled=False):
-        self.bayesian_sampling_mode = 'FullSMC'
+        self._require_bayesian_sampling_mode(
+            'FULLSMC', 'make_magnitude_target_for_parallel'
+        )
+        lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
         if self.nonlinear_inversion:
             def target(samples):
+                ensure_current_bounds()
                 # Compute log prior
-                log_prior = compute_log_prior(samples, self.lb, self.ub)
+                log_prior = compute_log_prior(samples, lb, ub)
                 if log_prior == -np.inf:
                     return -np.inf
 
                 for fault_name, fault_config in self.config.faults.items():
                     if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        self._update_fault_geometry_and_mesh(fault_name, fault_config, samples, update_areas=True, log_enabled=log_enabled)
+                        if not self._try_update_fault_geometry_and_mesh(
+                                fault_name, fault_config, samples,
+                                update_areas=True, log_enabled=log_enabled):
+                            return -np.inf
 
                 # Compute log magnitude prior
                 # start_time_magnitude_log_prior = time.time()
@@ -3003,8 +3210,9 @@ class BayesianMultiFaultsInversion(
                 return log_prior + magnitude_log_prior + self._compute_likelihoods(new_samples)
         else:
             def target(samples):
+                ensure_current_bounds()
                 # Compute log prior
-                log_prior = compute_log_prior(samples, self.lb, self.ub)
+                log_prior = compute_log_prior(samples, lb, ub)
 
                 if log_prior == -np.inf:
                     return -np.inf
@@ -3019,26 +3227,55 @@ class BayesianMultiFaultsInversion(
         self.target = target
         return target
 
-    def make_F_J_target_for_parallel(self, log_enabled=False, A=None, b=None, Aeq=None, beq=None, \
-                lb=None, ub=None, x0=None, opts=None, smooth_prior_weight=1.0, 
+    def make_smc_fj_target_for_parallel(self, log_enabled=False, x0=None, opts=None,
+                smooth_prior_weight=1.0,
                 magnitude_log_prior=False, decay_rate=0.1):
-        self.bayesian_sampling_mode = 'SMC_F_J'
-        self.config.slip_sampling_mode = 'ss_ds'
+        self._require_bayesian_sampling_mode(
+            'SMC_FJ', 'make_smc_fj_target_for_parallel'
+        )
 
-        # Get the constraints if not provided
-        if A is None or b is None:
-            A, b = self.constraint_manager.get_combined_inequality_constraints()
-        if Aeq is None or beq is None:
-            Aeq, beq = self.constraint_manager.get_combined_equality_constraints()
-        # Get the bounds if not provided    
-        if (lb is None or ub is None) and self.config.use_bounds_constraints:
+        self.constraint_manager._require_activation_flags_reconciled(
+            "SMC_FJ target construction"
+        )
+
+        # The manager is the single source of truth for the linear problem.
+        # This prevents call-site arrays from bypassing named groups, ownership
+        # checks, active-space column validation, or config/runtime precedence.
+        A, b = self.constraint_manager.get_combined_inequality_constraints()
+        Aeq, beq = self.constraint_manager.get_combined_equality_constraints()
+        n_linear = int(self.constraint_manager.get_linear_parameter_layout()['width'])
+
+        has_manager_bounds = self.constraint_manager.has_active_linear_bounds()
+        lb = ub = None
+        if self.config.use_bounds_constraints or has_manager_bounds:
             lb, ub = self.constraint_manager.get_bounds_for_linear_parameters()
+            lb, ub = self.constraint_manager._normalise_active_bounds_pair(
+                lb,
+                ub,
+                expected_length=n_linear,
+                label='SMC_FJ linear bounds',
+            )
 
         # Get hyperparameter bounds
         hyper_lb, hyper_ub = self.constraint_manager.get_bounds_for_hyperparameters()
+        hyper_lb, hyper_ub = self.constraint_manager._normalise_active_bounds_pair(
+            hyper_lb,
+            hyper_ub,
+            expected_length=int(np.asarray(hyper_lb).size),
+            label='SMC_FJ hyperparameter bounds',
+        )
+        constraint_revision = self.constraint_manager.state_revision
+
+        def ensure_current_constraints():
+            if self.constraint_manager.state_revision != constraint_revision:
+                raise RuntimeError(
+                    "SMC_FJ constraints changed after target construction. "
+                    "Rebuild the target or call walk_smc_fj() again before sampling."
+                )
 
         if self.nonlinear_inversion:
             def target(samples):
+                ensure_current_constraints()
                 # Compute log prior
                 log_prior = compute_log_prior(samples, hyper_lb, hyper_ub)
                 if log_prior == -np.inf:
@@ -3046,25 +3283,43 @@ class BayesianMultiFaultsInversion(
 
                 for fault_name, fault_config in self.config.faults.items():
                     if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        self._update_fault_geometry_and_mesh(fault_name, fault_config, samples, log_enabled=log_enabled)
+                        if not self._try_update_fault_geometry_and_mesh(
+                                fault_name, fault_config, samples,
+                                log_enabled=log_enabled):
+                            return -np.inf
                         self._update_fault_GFs_and_Laplacian(fault_name, fault_config, log_enabled=log_enabled)
 
-                return log_prior + self._compute_likelihoods_F_J(samples, A=A, b=b, Aeq=Aeq, beq=beq, \
+                return log_prior + self._compute_likelihoods_smc_fj(samples, A=A, b=b, Aeq=Aeq, beq=beq, \
                                                                  lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
                                                                  magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate)
         else:
             def target(samples):
+                ensure_current_constraints()
                 # Compute log prior
                 log_prior = compute_log_prior(samples, hyper_lb, hyper_ub)
 
                 if log_prior == -np.inf:
                     return -np.inf
                 
-                return log_prior + self._compute_likelihoods_F_J(samples, GL_combined=self.GL_combined, A=A, b=b, Aeq=Aeq, beq=beq, \
+                return log_prior + self._compute_likelihoods_smc_fj(samples, GL_combined=self.GL_combined, A=A, b=b, Aeq=Aeq, beq=beq, \
                                                                  lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
                                                                  magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate)
         self.target = target
         return target
+
+    def _try_update_fault_geometry_and_mesh(self, *args, **kwargs):
+        """Update one Bayesian candidate, rejecting only invalid geometry.
+
+        Returns False for InvalidFaultGeometryError so the target can assign
+        -inf. Other exceptions remain visible because configuration, indexing,
+        and numerical-programming errors must not be hidden as an ordinary
+        rejected sample.
+        """
+        try:
+            self._update_fault_geometry_and_mesh(*args, **kwargs)
+        except InvalidFaultGeometryError:
+            return False
+        return True
 
     def _update_fault_geometry_and_mesh(self, fault_name, fault_config, samples, update_areas=False, log_enabled=False):
         # Followers share geometry via SharedFaultInfo; nothing to update.
@@ -3182,7 +3437,7 @@ class BayesianMultiFaultsInversion(
         # Return the total log-likelihood
         return data_log_likelihood + smooth_log_likelihood
 
-    def _compute_likelihoods_F_J(self, samples, GL_combined=None, A=None, b=None, Aeq=None, beq=None, 
+    def _compute_likelihoods_smc_fj(self, samples, GL_combined=None, A=None, b=None, Aeq=None, beq=None,
                                  lb=None, ub=None, x0=None, opts=None, 
                                  smooth_prior_weight=1.0, magnitude_log_prior=False, decay_rate=0.1):
         """
@@ -3253,18 +3508,12 @@ class BayesianMultiFaultsInversion(
             G2I = np.dot(W, G)
             self.G_combined = G_combined
             self.G2I = G2I
+            self._last_linear_solve_valid = False
             try:
                 mpost = self.least_squares_inversion(G2I, d2I, reg=0, A=A, b=b, Aeq=Aeq, beq=beq, lb=lb, ub=ub, x0=x0, opts=opts)
             except Exception as e:
-                if self.config.parallel_rank is None or self.config.parallel_rank == 0:
-                    warnings.warn(
-                        f"Equality constraints caused solver failure "
-                        f"({type(e).__name__}: {e}). "
-                        f"Returning -9999999 log-likelihood for this sample. "
-                        f"Check constraint matrix rank with validate_constraints().",
-                        RuntimeWarning, stacklevel=2,
-                    )
-                return -9999999
+                return self._record_linear_solve_failure(e)
+            self._last_linear_solve_valid = True
             self.mpost = mpost
             mpost = np.hstack((samples[:self.linear_sample_start_position], mpost))
     
@@ -3301,18 +3550,12 @@ class BayesianMultiFaultsInversion(
         G2I = np.vstack((np.dot(W, G), GL_combined_poly / alpha[:, None]))
         self.G_combined = G_combined
         self.G2I = G2I
+        self._last_linear_solve_valid = False
         try:
             mpost = self.least_squares_inversion(G2I, d2I, reg=0, A=A, b=b, Aeq=Aeq, beq=beq, lb=lb, ub=ub, x0=x0, opts=opts)
         except Exception as e:
-            if self.config.parallel_rank is None or self.config.parallel_rank == 0:
-                warnings.warn(
-                    f"Equality constraints caused solver failure "
-                    f"({type(e).__name__}: {e}). "
-                    f"Returning -9999999 log-likelihood for this sample. "
-                    f"Check constraint matrix rank with validate_constraints().",
-                    RuntimeWarning, stacklevel=2,
-                )
-            return -9999999
+            return self._record_linear_solve_failure(e)
+        self._last_linear_solve_valid = True
         self.mpost = mpost
         mpost = np.hstack((samples[:self.linear_sample_start_position], mpost))
     
@@ -3335,6 +3578,29 @@ class BayesianMultiFaultsInversion(
     
         return data_log_likelihood + smooth_log_likelihood * smooth_prior_weight + magnitude_log_prior_value + ATA_logdet
 
+    def _record_linear_solve_failure(self, error):
+        """Mark one constrained F_J solve invalid and return its low likelihood."""
+        self.mpost = None
+        self._last_linear_solve_valid = False
+        self.invalid_linear_solve_count = (
+            getattr(self, 'invalid_linear_solve_count', 0) + 1
+        )
+        if (
+            (self.config.parallel_rank is None or self.config.parallel_rank == 0)
+            and not getattr(self, '_linear_solve_failure_warned', False)
+        ):
+            warnings.warn(
+                "Constrained SMC_FJ linear solve failed "
+                f"({type(error).__name__}: {error}). The full constraint set "
+                f"was retained and this sample receives log-likelihood "
+                f"{_INVALID_CONSTRAINED_SOLVE_LOGLIKE:g}. Inspect "
+                "get_constraint_snapshot(validate=True) before sampling.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._linear_solve_failure_warned = True
+        return _INVALID_CONSTRAINED_SOLVE_LOGLIKE
+
     def least_squares_inversion(self, C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \
         lb=None, ub=None, x0=None, opts=None):
         '''
@@ -3356,20 +3622,11 @@ class BayesianMultiFaultsInversion(
                 lb  is n x 1 matrix or scalar
                 ub  is n x 1 matrix or scalar
             '''
-        # Compute using lsqlin equivalent to the lsqlin in matlab
-        opts = {'show_progress': False}
-        try:
-            ret = lsqlin.lsqlin(C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts)
-        except Exception as e:
-            if self.config.parallel_rank is None or self.config.parallel_rank == 0:
-                warnings.warn(
-                    f"Equality constraints caused solver failure "
-                    f"({type(e).__name__}: {e}). "
-                    f"Retrying without equality constraints. "
-                    f"Check constraint matrix rank with validate_constraints().",
-                    RuntimeWarning, stacklevel=2,
-                )
-            ret = lsqlin.lsqlin(C, d, reg, A, b, None, None, lb, ub, x0, opts)
+        # Compute using lsqlin equivalent to the lsqlin in matlab.
+        opts = {'show_progress': False} if opts is None else dict(opts)
+        opts.setdefault('show_progress', False)
+        ret = lsqlin.lsqlin(C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts)
+        _validate_lsqlin_status(ret, context="SMC_FJ constrained least squares")
         mpost = ret['x']
         # Store mpost
         self.mpost = lsqlin.cvxopt_to_numpy_matrix(mpost)
@@ -3464,7 +3721,9 @@ class BayesianMultiFaultsInversion(
     
     @bayesian_sampling_mode.setter
     def bayesian_sampling_mode(self, value):
-        self.config.bayesian_sampling_mode = value
+        self.config.bayesian_sampling_mode = normalize_bayesian_sampling_mode(
+            value
+        )
 
     @property
     def geodata(self):

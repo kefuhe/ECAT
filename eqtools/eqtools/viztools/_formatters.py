@@ -36,11 +36,13 @@ def set_degree_formatter(ax, axis='both'):
     >>> set_degree_formatter(ax, axis='both')   # both axes show 45°
     >>> set_degree_formatter(ax, axis='x')      # only x-axis
     """
-    formatter = DegreeFormatter()
     if axis in ['x', 'both']:
-        ax.xaxis.set_major_formatter(formatter)
+        # Matplotlib formatters retain a reference to their owning Axis.
+        # Use one instance per axis so formatting x and y does not silently
+        # rebind the same formatter to the second axis.
+        ax.xaxis.set_major_formatter(DegreeFormatter())
     if axis in ['y', 'both']:
-        ax.yaxis.set_major_formatter(formatter)
+        ax.yaxis.set_major_formatter(DegreeFormatter())
 
 
 def _decimal_to_dms(decimal_deg: float, precision: int = 0) -> tuple:

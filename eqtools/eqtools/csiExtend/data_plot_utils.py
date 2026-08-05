@@ -14,7 +14,12 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import logging
 
-from eqtools.viztools import PlotStyle, set_degree_formatter, save_fig
+from eqtools.viztools import (
+    PlotStyle,
+    publication_figsize,
+    save_fig,
+    set_degree_formatter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,29 @@ def _merge_style_kwargs(user_kwargs: dict) -> dict:
     merged = _DEFAULT_STYLE.copy()
     merged.update(user_kwargs)
     return merged
+
+
+def _resolve_style_layout(user_kwargs, *, default_figsize, default_dpi=300):
+    """Resolve style, layout, and output settings without changing defaults.
+
+    ``PlotStyle`` owns rcParams, while ``plt.subplots(figsize=...)`` and
+    ``save_fig(dpi=...)`` own the concrete figure and file.  Resolving the
+    shared ``figsize`` and ``dpi`` inputs here prevents accepted keyword
+    arguments from being silently shadowed by hard-coded local values.
+    """
+    style_kwargs = _merge_style_kwargs(user_kwargs)
+    if user_kwargs.get("figsize") is not None:
+        figure_size = publication_figsize(
+            style_kwargs["figsize"],
+            fraction=style_kwargs.get("figsize_fraction", 1.0),
+            aspect=style_kwargs.get("figsize_aspect", 0.75),
+            height=style_kwargs.get("figsize_height"),
+            unit=style_kwargs.get("figsize_unit", "inch"),
+        )
+    else:
+        figure_size = default_figsize
+    output_dpi = style_kwargs.get("dpi", default_dpi)
+    return style_kwargs, figure_size, output_dpi
 
 
 def _plot_leveling_fit(data, save_dir=None, file_type='png', show=False,
@@ -61,9 +89,12 @@ def _plot_leveling_fit(data, save_dir=None, file_type='png', show=False,
     res = obs - syn
     stations = data.station if data.station is not None else np.arange(len(obs))
 
-    skw = _merge_style_kwargs(style_kwargs)
+    skw, figure_size, output_dpi = _resolve_style_layout(
+        style_kwargs,
+        default_figsize=(14, 4),
+    )
     with PlotStyle(**skw):
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True)
+        fig, axes = plt.subplots(1, 3, figsize=figure_size, constrained_layout=True)
         fig.suptitle(f'Leveling Fit: {data.name}', fontweight='bold')
 
         # Panel 1: Scatter observed vs synthetic
@@ -112,7 +143,7 @@ def _plot_leveling_fit(data, save_dir=None, file_type='png', show=False,
             save_dir = Path(save_dir)
             save_dir.mkdir(parents=True, exist_ok=True)
             save_fig(fig, str(save_dir / f'{data.name}_leveling_fit.{file_type}'),
-                     dpi=300)
+                     dpi=output_dpi)
 
         if show:
             plt.show()
@@ -148,9 +179,12 @@ def _plot_leveling_map(data, save_dir=None, file_type='png', show=False,
     if absmax == 0:
         absmax = 0.01
 
-    skw = _merge_style_kwargs(style_kwargs)
+    skw, figure_size, output_dpi = _resolve_style_layout(
+        style_kwargs,
+        default_figsize=(10, 4),
+    )
     with PlotStyle(**skw):
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+        fig, axes = plt.subplots(1, 2, figsize=figure_size, constrained_layout=True)
         fig.suptitle(f'Leveling Map: {data.name}', fontweight='bold')
 
         for ax, values, title in zip(axes, [obs, syn], ['Observed', 'Synthetic']):
@@ -166,7 +200,7 @@ def _plot_leveling_map(data, save_dir=None, file_type='png', show=False,
             save_dir = Path(save_dir)
             save_dir.mkdir(parents=True, exist_ok=True)
             save_fig(fig, str(save_dir / f'{data.name}_leveling_map.{file_type}'),
-                     dpi=300)
+                     dpi=output_dpi)
 
         if show:
             plt.show()
@@ -207,9 +241,12 @@ def _plot_crossfaultoffset_fit(data, save_dir=None, file_type='png', show=False,
     stations = data.station if data.station is not None else np.arange(len(components[0][1]))
     n_comp = len(components)
 
-    skw = _merge_style_kwargs(style_kwargs)
+    skw, figure_size, output_dpi = _resolve_style_layout(
+        style_kwargs,
+        default_figsize=(10, 3.5 * n_comp),
+    )
     with PlotStyle(**skw):
-        fig, axes = plt.subplots(n_comp, 2, figsize=(10, 3.5 * n_comp),
+        fig, axes = plt.subplots(n_comp, 2, figsize=figure_size,
                                  constrained_layout=True, squeeze=False)
         fig.suptitle(f'Cross-Fault Offset Fit: {data.name}', fontweight='bold')
 
@@ -248,7 +285,7 @@ def _plot_crossfaultoffset_fit(data, save_dir=None, file_type='png', show=False,
             save_dir = Path(save_dir)
             save_dir.mkdir(parents=True, exist_ok=True)
             save_fig(fig, str(save_dir / f'{data.name}_crossfault_fit.{file_type}'),
-                     dpi=300)
+                     dpi=output_dpi)
 
         if show:
             plt.show()
@@ -284,10 +321,13 @@ def _plot_crossfaultoffset_map(data, save_dir=None, file_type='png', show=False,
         logger.warning(f"Cross-fault offset '{data.name}' missing lon1/lat1, skipping map plot.")
         return
 
-    skw = _merge_style_kwargs(style_kwargs)
+    skw, figure_size, output_dpi = _resolve_style_layout(
+        style_kwargs,
+        default_figsize=(5 * len(components), 4),
+    )
     with PlotStyle(**skw):
         n_comp = len(components)
-        fig, axes = plt.subplots(1, n_comp, figsize=(5 * n_comp, 4),
+        fig, axes = plt.subplots(1, n_comp, figsize=figure_size,
                                  constrained_layout=True, squeeze=False)
         fig.suptitle(f'Cross-Fault Offset Map: {data.name}', fontweight='bold')
 
@@ -314,7 +354,7 @@ def _plot_crossfaultoffset_map(data, save_dir=None, file_type='png', show=False,
             save_dir = Path(save_dir)
             save_dir.mkdir(parents=True, exist_ok=True)
             save_fig(fig, str(save_dir / f'{data.name}_crossfault_map.{file_type}'),
-                     dpi=300)
+                     dpi=output_dpi)
 
         if show:
             plt.show()
