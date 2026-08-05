@@ -1,16 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Uncomment the following line to download the full ECAT case library
+# Uncomment the following line to download the full ECAT case library.
 # git submodule update --init --recursive
 
-# install eqtools
-cd eqtools
-pip install .
-cd ..
+repo_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+python_bin="${PYTHON:-python}"
 
-# install csi_cutde_mpiparallel
-cd csi_cutde_mpiparallel
-pip install .
-cd ..
+"$python_bin" -c 'import sys; assert (3, 10) <= sys.version_info[:2] <= (3, 12), "ECAT supports CPython 3.10, 3.11, and 3.12 only."'
 
-echo "Installation complete. If you need the full ECAT case library, uncomment the submodule command in this script or download it manually."
+if ! "$python_bin" -c 'import okada4py' >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Missing required dependency: okada4py.
+Install a wheel matching the active CPython version and your platform before
+running this script. See Install.md for the wheel and source-build instructions.
+EOF
+    exit 1
+fi
+
+# Install CSI first because eqtools imports it for its main workflows.
+"$python_bin" -m pip install "$repo_dir/csi_cutde_mpiparallel"
+"$python_bin" -m pip install "$repo_dir/eqtools"
+
+"$python_bin" -c 'import csi, eqtools; print("ECAT package imports succeeded.")'
+echo "Installation complete. Install optional extras such as eqtools[geoexport], eqtools[viewer], or eqtools[interaction] only when needed."

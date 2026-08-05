@@ -1,76 +1,58 @@
 # Installation
 
-This page describes the recommended installation workflow for ECAT. ECAT is a research toolkit, so the exact dependency set can vary by operating system, Python version, and the Green's function backends used in a given case. The practical goal is to create a working environment first, then install any missing optional packages as needed.
+ECAT supports CPython 3.10, 3.11, and 3.12 on 64-bit Windows and Linux. The
+supported installation is a direct-dependency environment, not a copy of a
+maintainer's entire Python installation.
 
-## 1. Create a Python Environment
+## 1. Create the ECAT environment
 
-We recommend using Anaconda or Miniconda:
-
-```bash
-conda create -n myecat python=3.10
-conda activate myecat
-python -m pip install -U pip setuptools wheel build numpy
-```
-
-Python 3.10 is currently a conservative choice for the released examples and compiled dependencies. Python 3.11 or 3.12 may also work, but make sure compiled packages such as `okada4py` provide wheels for your Python version and platform, or that you have a working compiler toolchain.
-
-## 2. Optional: Use the Provided Requirements Files
-
-ECAT provides platform-specific requirements files:
-
-```text
-requirements/conda-requirements-win-64.txt
-requirements/pip-requirements-win-64.txt
-requirements/conda-requirements-linux-64.txt
-requirements/pip-requirements-linux-64.txt
-```
-
-These files are snapshots of the maintainer-tested Windows/Linux environments. They are useful references, but they are not universal lock files that every platform must install exactly.
-
-If you want to start from the tested snapshot, use the file matching your platform:
+Install the one supported dependency list with conda-forge:
 
 ```bash
-# Windows
-conda create -n myecat --file requirements/conda-requirements-win-64.txt
-conda activate myecat
-python -m pip install -r requirements/pip-requirements-win-64.txt
-
-# Linux
-conda create -n myecat --file requirements/conda-requirements-linux-64.txt
-conda activate myecat
-python -m pip install -r requirements/pip-requirements-linux-64.txt
+conda create -n ecat -c conda-forge --file requirements/ecat-requirements.txt
+conda activate ecat
 ```
 
-If conda cannot solve or download one of the pinned packages, copy the requirements file, remove the failing pinned line, and continue. On a different platform or Python build, it is normal for some exact build strings to be unavailable. After ECAT is installed, run the examples and install missing packages only when they are actually needed:
+The file permits Python 3.10--3.12. To choose a particular supported version,
+add it explicitly; for example, use `python=3.11` in the create command.
+
+`requirements/ecat-requirements.txt` contains only direct ECAT runtime
+dependencies with tested compatibility ranges. It intentionally does not pin
+operating-system build strings or list transitive packages such as Flask,
+Werkzeug, or build tools.
+
+## 2. Install the required okada4py wheel
+
+CSI imports `okada4py` at package import time, so it is required for the
+supported ECAT installation. Obtain a wheel matching the active CPython version
+and platform from [okada4py Releases](https://github.com/kefuhe/okada4py/releases), then install it in the active environment:
 
 ```bash
-conda install -c conda-forge <package>
-# or
-python -m pip install <package>
+python -m pip install path/to/okada4py-<version>-cp<major><minor>-cp<major><minor>-<platform>.whl
+python -c "import okada4py; print(okada4py.__file__)"
 ```
 
-The `*-full.txt` files are closer to complete environment exports. They are useful for debugging or reproducing the maintainer's machine, but they are not recommended as the first installation path for new users.
-
-If you need `conda-forge`, add it explicitly:
+For example, `win_amd64` is 64-bit Windows and `linux_x86_64` is 64-bit Linux.
+If pip reports that the wheel is unsupported, choose the wheel matching the
+current Python version, ABI, operating system, and CPU architecture. For
+example, CPython 3.12 requires a `cp312-cp312` wheel. If no matching release
+wheel is available, build the public source at the pinned tag instead (a C++
+compiler is required):
 
 ```bash
-conda config --add channels conda-forge
-conda config --set channel_priority flexible
+python -m pip install "git+https://github.com/kefuhe/okada4py.git@v12.0.2"
+python -c "import okada4py; print(okada4py.__file__)"
 ```
 
 ## 3. Install ECAT
 
-Clone the repository:
+Clone the repository and run the platform script:
 
 ```bash
 git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
-```
 
-Install the ECAT Python packages from the repository root:
-
-```bash
-# Linux / macOS
+# Linux
 chmod +x install.sh
 ./install.sh
 
@@ -78,159 +60,78 @@ chmod +x install.sh
 .\install.bat
 ```
 
-The install scripts install the two main Python subpackages:
+The scripts use `python -m pip`, install `csi` before `eqtools`, and verify that
+both packages import. They stop early if the interpreter is outside Python
+3.10--3.12 or `okada4py` is missing.
 
-- `eqtools`
-- `csi_cutde_mpiparallel`, which provides the `csi` package used by the examples
-
-For development installs, you can also install the subpackages manually:
+For an editable installation:
 
 ```bash
-python -m pip install -e eqtools
 python -m pip install -e csi_cutde_mpiparallel
+python -m pip install -e eqtools
 ```
 
-## 4. Install okada4py
+## 4. Standard mesh and SAR support
 
-ECAT uses [okada4py](https://github.com/kefuhe/okada4py) for some Okada Green's function workflows. This package contains a compiled extension, so installation can fail if a compiler is missing. This is especially common on Windows.
+Mesh generation and commonly used SAR/InSAR and GeoTIFF readers are part of
+the base ECAT environment. The required Gmsh, meshio, GeoPandas, GDAL,
+Rasterio, and Xarray dependencies are installed from
+`requirements/ecat-requirements.txt`; no mesh or SAR extra is needed.
 
-The recommended path is to install a prebuilt wheel from GitHub Releases:
+## 5. Optional feature groups
 
-[https://github.com/kefuhe/okada4py/releases](https://github.com/kefuhe/okada4py/releases)
-
-Download the wheel matching your Python version and platform, then install it in the activated `myecat` environment:
+Install optional dependencies only for the workflows you use:
 
 ```bash
-python -m pip install path/to/okada4py-<version>-<python-tag>-<abi-tag>-<platform-tag>.whl
+python -m pip install -e "eqtools[geoexport]"   # Google Earth export
+python -m pip install -e "eqtools[viewer]"      # Dash/Plotly map viewer
+python -m pip install -e "eqtools[interaction]" # Bokeh trace editor
 ```
 
-Example wheel names:
+The standard SMC geometry inversion and BLSE/VCE linear slip inversion are in
+the base environment. `pymc`, `pytensor`, and `theano` are deliberately not
+installed or supported. The current SMC implementation uses ECAT's MPI SMC
+sampler with `mpi4py` and `numba` instead.
 
-```text
-okada4py-12.0.2-cp310-cp310-win_amd64.whl
-okada4py-12.0.2-cp310-cp310-linux_x86_64.whl
-```
-
-Here, `cp310` means CPython 3.10 and `win_amd64` means 64-bit Windows. A wheel built for one Python version or platform will not install on another. If pip reports `not a supported wheel on this platform`, download a matching wheel or install from source.
-
-Only build from source when no matching wheel is available:
+## 6. Verify the installation
 
 ```bash
-git clone https://github.com/kefuhe/okada4py.git
-cd okada4py
-python -m pip install -U pip setuptools wheel build numpy
-python -m pip install .
-```
-
-Source builds require a compiler:
-
-- Windows: Microsoft C++ Build Tools with MSVC and a Windows SDK.
-- Linux: `build-essential` and Python development headers, or equivalent packages for your distribution.
-- macOS: Xcode Command Line Tools.
-
-For most Windows users, the release wheel is the best option.
-
-Verify the installation:
-
-```bash
-python -c "import okada4py; print(okada4py.__file__)"
-```
-
-## 5. Optional Parallel and Performance Dependencies
-
-Small examples can be run without configuring a full MPI or oneAPI environment. Configure these only when you need large Bayesian sampling jobs or production-scale parallel runs.
-
-Optional packages:
-
-```bash
-conda install -c conda-forge mpi4py
-conda install scikit-learn-intelex
-```
-
-On Linux, if you use Intel MPI / oneAPI, install oneAPI following Intel's official instructions and load the environment before running MPI jobs:
-
-```bash
-source ~/intel/oneapi/setvars.sh intel64
-```
-
-If MPI is not working yet, first verify ECAT with small non-MPI examples, then debug `mpi4py`, the MPI runtime, or oneAPI separately.
-
-## 6. Case Library
-
-The case library is hosted separately:
-
-[https://github.com/kefuhe/ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)
-
-Clone it when you need to run the tutorial cases:
-
-```bash
-git clone https://github.com/kefuhe/ECAT-Cases.git
-```
-
-The ECAT repository contains the code, templates, and method documentation. `ECAT-Cases` contains data, runnable scripts, reference outputs, and figures.
-
-## 7. Verify the Installation
-
-Check the Python packages:
-
-```bash
-python -c "import eqtools; print('eqtools import ok')"
-python -c "import csi; print('csi import ok')"
-python -c "import okada4py; print('okada4py import ok')"
-```
-
-Check the ECAT command line tools:
-
-```bash
+python -c "import csi, eqtools, okada4py; print('ECAT imports succeeded')"
 ecat-generate-downsample --help
-ecat-downsample --help
 ecat-generate-nonlinear --help
-ecat-generate-config --help
-ecat-generate-boundary --help
+ecat-downsample --help
 ```
 
-If the command line entry points are not available, try the module form:
-
-```bash
-python -m eqtools.cli_tools.generate_downsample_config --help
-python -m eqtools.cli_tools.process_data_downsampling --help
-python -m eqtools.cli_tools.generate_nonlinear_config --help
-```
-
-If you plan to use MPI:
+For MPI runs, also verify the runtime before launching a large SMC job:
 
 ```bash
 mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank())"
 ```
 
-## 8. Common Installation Problems
+## Dependency maintenance
 
-### `ModuleNotFoundError`
+There is one dependency directory, `requirements/`, and one user-facing
+environment file, `requirements/ecat-requirements.txt`. Do not recreate it
+with `conda list`, `pip freeze`, or a personal `cutde` environment: those
+commands mix unrelated applications and transitive dependencies into ECAT.
 
-Install the missing package in the active environment:
+Use the repository dependency tool after changing imports or package metadata:
 
 ```bash
-conda install -c conda-forge <package>
-# or
-python -m pip install <package>
+python scripts/generate_requirements.py --check
 ```
 
-### Conda cannot solve the requirements file
+It derives the conda file from the two package `install_requires` lists and
+reports source imports not covered by package metadata. Exact, platform-specific
+reproducibility locks should be generated separately from a clean test
+environment; they are not a normal installation instruction.
 
-The requirements files are tested environment snapshots. Remove the failing pinned package line from a copy of the file and continue. Different platforms do not always provide the same build strings.
+## Common installation problems
 
-### okada4py fails to build on Windows
-
-Use a matching release wheel from [okada4py Releases](https://github.com/kefuhe/okada4py/releases). Building from source on Windows requires Microsoft C++ Build Tools and is not the recommended first attempt for most users.
-
-### `No module named 'okada4py._okada92'`
-
-The compiled extension was not installed correctly. Reinstall a matching wheel, or rebuild from source in an environment with a working compiler and NumPy installed.
-
-### MPI fails but normal Python imports work
-
-This is usually an MPI runtime or `mpi4py` configuration issue. You can still run non-MPI examples. Fix MPI separately before launching large Bayesian sampling jobs.
-
-## Tested Platforms
-
-The installation has been tested on Windows 11 and Ubuntu 20.04.6. Other platforms may work, but may require small dependency adjustments.
+- `No module named 'okada4py'`: install a matching release wheel before running
+  `install.sh` or `install.bat`.
+- Conda cannot solve the environment: create a fresh CPython 3.10, 3.11, or
+  3.12 environment using conda-forge. Do not remove arbitrary lines from the
+  supplied file.
+- MPI fails while imports succeed: diagnose the system MPI runtime and
+  `mpi4py` separately; non-MPI workflows remain available.

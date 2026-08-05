@@ -31,12 +31,23 @@ See [Install.md](Install.md) for detailed instructions.
 
 ```bash
 # Clone the repository
-git clone [https://github.com/kefuhe/ECAT.git](https://github.com/kefuhe/ECAT.git)
+git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
-# Run installation script
-./install.sh  # Linux/Mac
+
+# Create an ECAT environment with CPython 3.10, 3.11, or 3.12
+conda create -n ecat -c conda-forge --file requirements/ecat-requirements.txt
+conda activate ecat
+
+# Install an okada4py wheel matching the active CPython version first.
+# If no matching release wheel is available, Install.md shows the source-build route.
+# Then run the installation script.
+./install.sh  # Linux
 # or install.bat for Windows
 ```
+
+`csi` and its runtime dependencies are required. ECAT does not use or install
+PyMC, PyTensor, or Theano. See [Install.md](Install.md) for the wheel and
+optional-feature instructions.
 
 -----
 

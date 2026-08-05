@@ -1,32 +1,50 @@
 # 安装与环境检查
 
-本文给出运行本手册教程所需的推荐环境。ECAT 面向科研使用，依赖会随平台、Python 版本和 Green's function 后端有所差异；安装目标不是逐字复刻某一个开发环境，而是先建立可运行环境，再按案例缺什么补什么。
+ECAT 支持 64 位 Windows 和 Linux 上的 CPython 3.10、3.11 和 3.12。推荐环境只包含
+ECAT 的直接运行依赖，不复刻维护者机器的完整 Conda/Pip 环境。
 
-## 推荐策略
-
-建议使用 Anaconda 或 Miniconda 管理环境：
+## 1. 创建环境
 
 ```bash
-conda create -n myecat python=3.10
-conda activate myecat
-python -m pip install -U pip setuptools wheel build numpy
+conda create -n ecat -c conda-forge --file requirements/ecat-requirements.txt
+conda activate ecat
 ```
 
-Python 3.10 是当前较稳妥的选择。Python 3.11/3.12 也可以尝试，但需要确保 `okada4py` 等编译扩展包有对应 wheel，或本机具备可用编译环境。
+清单允许 Python 3.10--3.12。若需要指定某个支持版本，可在创建命令中额外加入
+`python=3.11`（或 `python=3.10`、`python=3.12`）。
 
-## 安装 ECAT
+仓库只保留 `requirements/ecat-requirements.txt` 这一个用户环境清单。它使用
+经过测试的兼容版本范围，不包含平台 build string、PyMC/PyTensor/Theano，
+也不包含 Flask、Jupyter、构建工具等传递或开发依赖。
 
-从 GitHub 克隆 [ECAT](https://github.com/kefuhe/ECAT)：
+## 2. 安装必需的 okada4py
+
+当前 `csi` 在导入时会加载 `okada4py`，因此它是标准 ECAT 安装的必需前置。
+请从 [okada4py Releases](https://github.com/kefuhe/okada4py/releases) 下载与
+当前 CPython 版本和本机平台匹配的预编译 wheel，然后在已激活的环境中执行：
+
+```bash
+python -m pip install path/to/okada4py-<version>-cp<major><minor>-cp<major><minor>-<platform>.whl
+python -c "import okada4py; print(okada4py.__file__)"
+```
+
+`win_amd64` 对应 64 位 Windows，`linux_x86_64` 对应 64 位 Linux。若提示
+wheel 不受支持，应更换与 Python 版本、ABI、操作系统和 CPU 架构都匹配的文件。
+例如 CPython 3.12 需要 `cp312-cp312` wheel。若 Releases 中没有对应文件，可从公开
+固定标签构建（需要 C++ 编译器）：
+
+```bash
+python -m pip install "git+https://github.com/kefuhe/okada4py.git@v12.0.2"
+python -c "import okada4py; print(okada4py.__file__)"
+```
+
+## 3. 安装 ECAT
 
 ```bash
 git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
-```
 
-ECAT 对外发布为一个代码包，包内包含 `eqtools` 和 `csi` 两个 Python 子包。推荐使用仓库中的安装脚本安装这两个子包：
-
-```bash
-# Linux / macOS
+# Linux
 chmod +x install.sh
 ./install.sh
 
@@ -34,194 +52,59 @@ chmod +x install.sh
 .\install.bat
 ```
 
-安装脚本会进入 `eqtools/` 和 `csi_cutde_mpiparallel/` 子目录并执行 `pip install .`。如果需要开发模式，也可以进入对应子目录后手动执行：
+安装脚本会使用 `python -m pip`，先安装 `csi`，再安装 `eqtools`，并检查两者
+能否导入。若 Python 不在 3.10--3.12 范围内或缺少 `okada4py`，脚本会立即给出明确提示。
+
+开发模式可使用：
 
 ```bash
-python -m pip install -e eqtools
 python -m pip install -e csi_cutde_mpiparallel
+python -m pip install -e eqtools
 ```
 
-## 依赖安装
+## 4. 基础环境已包含网格与 SAR
 
-ECAT 仓库提供了平台相关的 requirements 文件：
+网格生成以及常用 SAR/InSAR、GeoTIFF 读取功能属于基础环境。Gmsh、meshio、
+GeoPandas、GDAL、Rasterio 和 Xarray 已包含在
+`requirements/ecat-requirements.txt` 中，不需要再单独安装 mesh 或 SAR extra。
 
-```text
-requirements/conda-requirements-win-64.txt
-requirements/pip-requirements-win-64.txt
-requirements/conda-requirements-linux-64.txt
-requirements/pip-requirements-linux-64.txt
-```
-
-这些文件是维护者在特定 Windows/Linux 平台上的测试环境快照，不一定需要在所有机器上逐包、逐版本完整安装。推荐理解为“参考环境”，而不是强制锁死的通用环境。
-
-如果希望尽量贴近维护者环境，可以使用：
+## 5. 按需安装可选功能
 
 ```bash
-# Windows
-conda create -n myecat --file requirements/conda-requirements-win-64.txt
-conda activate myecat
-python -m pip install -r requirements/pip-requirements-win-64.txt
-
-# Linux
-conda create -n myecat --file requirements/conda-requirements-linux-64.txt
-conda activate myecat
-python -m pip install -r requirements/pip-requirements-linux-64.txt
+python -m pip install -e "eqtools[geoexport]"   # Google Earth 导出
+python -m pip install -e "eqtools[viewer]"      # Dash/Plotly 地图查看器
+python -m pip install -e "eqtools[interaction]" # Bokeh 交互断层迹线编辑
 ```
 
-如果某个包或特定 build 在你的平台上解析失败，可以复制 requirements 文件，删除报错的那一行后继续创建环境。后续运行案例时，如果出现 `ModuleNotFoundError` 或后端缺失，再按报错补装即可：
+标准流程仍是：先用 SMC 非线性反演估计紧凑断层几何，再在固定几何上用
+BLSE/VCE 线性反演求分布式滑动。它们的运行依赖已在基础环境中。
+ECAT 不再安装或支持 `pymc`、`pytensor`、`theano`；当前 SMC 使用
+`mpi4py` 和 `numba`。
+
+## 6. 快速检查
 
 ```bash
-conda install -c conda-forge <package>
-# 或
-python -m pip install <package>
-```
-
-`*-full.txt` 文件更接近完整环境导出，适合调试和复现维护者机器，不建议初学者第一步就完整安装。
-
-如需 `conda-forge`：
-
-```bash
-conda config --add channels conda-forge
-conda config --set channel_priority flexible
-```
-
-## 安装 okada4py
-
-[okada4py](https://github.com/kefuhe/okada4py) 是 ECAT 中部分 Okada Green's function 工作流使用的依赖。它不是纯 Python 包，包含 C/C++ 编译扩展；Windows 用户本地编译最容易失败。
-
-优先使用 GitHub Releases 中与你的平台和 Python 版本匹配的预编译 wheel：
-
-[okada4py Releases](https://github.com/kefuhe/okada4py/releases)
-
-下载后在已激活的 `myecat` 环境中安装：
-
-```bash
-python -m pip install path/to/okada4py-<version>-<python-tag>-<abi-tag>-<platform-tag>.whl
-```
-
-wheel 是平台和 Python 版本相关的，例如：
-
-```text
-okada4py-12.0.2-cp310-cp310-win_amd64.whl
-okada4py-12.0.2-cp310-cp310-linux_x86_64.whl
-```
-
-`cp310` 对应 CPython 3.10，`win_amd64` 对应 64 位 Windows。若提示 `not a supported wheel on this platform`，说明 wheel 与当前 Python 版本、ABI、操作系统或 CPU 架构不匹配，需要换对应 wheel，或从源码安装。
-
-只有在没有合适 wheel 时，才建议从源码编译：
-
-```bash
-git clone https://github.com/kefuhe/okada4py.git
-cd okada4py
-python -m pip install -U pip setuptools wheel build numpy
-python -m pip install .
-```
-
-Windows 源码编译需要 Microsoft C++ Build Tools；Linux 通常需要 `build-essential` 和 Python 开发头文件；macOS 需要 Xcode Command Line Tools。初学者尤其是 Windows 用户，建议优先使用 release wheel。
-
-安装后检查：
-
-```bash
-python -c "import okada4py; print(okada4py.__file__)"
-```
-
-## 可选本地科研地图
-
-如需使用本地 Dash/Plotly 科研地图查看器，在 ECAT 源码目录安装独立可选依赖：
-
-```bash
-python -m pip install -e ".[viewer]"
-```
-
-该 extra 包含 Dash/Plotly、标准 NetCDF/HDF5 网格和 GeoTIFF 图层所需的查看依赖，
-但不会让 BLSE/VCE、SMC、约束或降采样代码 import 网页运行时。安装后进入
-[本地科研地图查看](../workflows/07_research_map_viewer.md)。
-
-如需在观测图上复制、移动和另存断层迹线，安装独立的 Bokeh 交互依赖：
-
-```bash
-python -m pip install -e ".[interaction]"
-```
-
-`interaction` 提供 Bokeh、Datashader、Matplotlib/CMCrAmeri 色表及标准观测读取依赖；它不依赖 `viewer`，也不会进入反演或降采样数值核心。用法见
-[交互调整断层迹线](../workflows/02c_interactive_trace_editing.md)。
-
-只需要把标准观测、CSI varres、地震目录或内存 fault 导出为 Google Earth KMZ 时，
-安装更小的导出依赖：
-
-```bash
-python -m pip install -e ".[geoexport]"
-```
-
-随后按 [Google Earth 科研导出](../workflows/06_google_earth_export.md) 使用
-`ecat-export-google-earth`；不需要安装或运行 Dash。
-
-## 可选并行与性能依赖
-
-初学者先跑小案例时，不需要一开始就配置完整 MPI 或 oneAPI。等需要运行大规模 Bayesian 采样或多进程生产计算时，再单独处理并行环境。
-
-可选安装：
-
-```bash
-conda install -c conda-forge mpi4py
-conda install scikit-learn-intelex
-```
-
-Linux 上如需 Intel MPI / oneAPI，可参考 Intel oneAPI 官方安装流程，并在 shell 启动文件或当前终端中加载环境，例如：
-
-```bash
-source ~/intel/oneapi/setvars.sh intel64
-```
-
-MPI 检查见下方“快速检查”。如果 MPI 配置失败，不影响先用非 MPI 模式检查 ECAT 基本功能。
-
-## 案例仓库
-
-案例材料放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)。需要运行案例时，另行克隆案例仓库：
-
-```bash
-git clone https://github.com/kefuhe/ECAT-Cases.git
-```
-
-[ECAT](https://github.com/kefuhe/ECAT) 负责代码、方法文档、接口说明和模板；[ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 负责数据、脚本、参考输出和图件。
-
-## 快速检查
-
-ECAT 子包：
-
-```bash
-python -c "import eqtools; print('eqtools import ok')"
-python -c "import csi; print('csi import ok')"
-```
-
-CLI 命令：
-
-```bash
+python -c "import csi, eqtools, okada4py; print('ECAT imports succeeded')"
 ecat-generate-downsample --help
-ecat-downsample --help
 ecat-generate-nonlinear --help
-ecat-generate-config --help
-ecat-generate-boundary --help
+ecat-downsample --help
 ```
 
-如果命令行入口暂时不可用，可以使用模块形式：
-
-```bash
-python -m eqtools.cli_tools.generate_downsample_config --help
-python -m eqtools.cli_tools.process_data_downsampling --help
-python -m eqtools.cli_tools.generate_nonlinear_config --help
-```
-
-如果使用 MPI：
+如需 MPI 并行采样，先检查 MPI 运行时：
 
 ```bash
 mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank())"
 ```
 
-## 常见安装判断
+## 依赖维护
 
-- `ModuleNotFoundError`：按缺失包名用 `conda install -c conda-forge ...` 或 `python -m pip install ...` 补装。
-- conda requirements 解析失败：删除报错包的固定版本行，继续创建环境；不同平台不必强行使用同一个 build。
-- okada4py Windows 编译失败：优先下载匹配 Python 版本和平台的 release wheel。
-- `okada4py._okada92` 缺失：说明编译扩展没有正确安装；重新安装匹配 wheel，或在具备编译工具的环境中源码安装。
-- MPI 不可用：先用非 MPI 小案例检查 ECAT 基本功能，再单独处理 `mpi4py`、MPI runtime 或 oneAPI/Intel MPI。
+不要再使用 `conda list`、`pip freeze` 或个人 `cutde` 环境导出 requirements；
+这些方式会混入与 ECAT 无关的包和传递依赖。修改源码导入或包依赖声明后，运行：
+
+```bash
+python scripts/generate_requirements.py --check
+```
+
+该脚本从两个包的 `install_requires` 生成唯一环境清单，并报告源码导入与
+安装元数据的差异。若需要精确复现实验，应在干净测试环境中单独生成平台锁文件，
+不要把锁文件当作普通用户的安装说明。

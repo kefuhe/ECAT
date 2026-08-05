@@ -78,9 +78,6 @@ from . import sbarbotfull
 ## Uncertainties in the Green's functions
 from .uncertainties import uncertainties
 
-## Fancy stuff
-from .explorefault import explorefault
-
 ## Pre-Proc
 from .imagedownsampling import imagedownsampling
 from .imagecovariance import *

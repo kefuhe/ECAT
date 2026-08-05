@@ -1,6 +1,3 @@
-# Ignore dependencies folder
-dependencies/
-
 # Ignore dot-prefixed local files and directories, while keeping Git metadata files.
 .*
 !.gitignore

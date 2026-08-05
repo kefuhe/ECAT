@@ -130,7 +130,7 @@ class explorefault(SourceInv):
                        - 'magnitude'  : Magnitude (tuple or float)
                        - 'rake'       : Rake (tuple or float)
 
-                              One bound should be a list with the name of a pymc distribution as first element. The following elements will be passed on to the function.
+                              One bound should be a list whose first element names the configured distribution. The remaining elements define its parameters.
                               example:  bounds[0] = ('Normal', 0., 2.) will give a Normal distribution centered on 0. with a 2. standard deviation.
 
         Kwargs:
@@ -509,7 +509,7 @@ class explorefault(SourceInv):
             * None
         '''
 
-        # Plot the pymc stuff
+        # Plot the sampled parameter traces.
         for iprior, prior in enumerate(self.Priors):
             trace = self.sampler['allsamples'][:,iprior]
             fig = plt.figure()

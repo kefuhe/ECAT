@@ -10,7 +10,7 @@ R. Jolivet 2017
 Modifications:
 Changed by Kefeng He on 2023-11-16 for the purpose of exploring multiple faults
 
-and change pymc to SMP-MPI for parallel sampling, which is more efficient for large number of parameters
+Uses the MPI SMC sampler for parallel sampling of larger parameter sets.
 '''
 import logging
 # Setup module-level logger
@@ -338,7 +338,7 @@ class explorefault(SourceInv):
                    - 'data_name'  : A dictionary for each data set that holds the following keys.
                        - 'reference' : Reference value (tuple or float)
 
-                              One bound should be a list with the name of a pymc distribution as first element. The following elements will be passed on to the function.
+                              One bound should be a list whose first element names the configured distribution. The remaining elements define its parameters.
                               example:  bounds[0] = ('Normal', 0., 2.) will give a Normal distribution centered on 0. with a 2. standard deviation.
 
         Kwargs:
