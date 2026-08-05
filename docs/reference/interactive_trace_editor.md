@@ -14,8 +14,12 @@
 ## 安装与职责
 
 ```bash
+cd eqtools
 python -m pip install -e ".[interaction]"
 ```
+
+第一行假定当前位于 ECAT 仓库根目录；独立 eqtools 开发仓库中已经位于项目根目录，
+只执行第二行。
 
 `interaction` extra 使用 `bokeh>=3.6,<4` 和 `datashader>=0.19,<0.20`，并提供 Matplotlib/CMCrAmeri 色表；这些依赖只在启动编辑器时延迟导入。`ecat-map` 仍是 Plotly/Dash 只读多图层查看器；`ecat-trace-edit` 只负责一条 working polyline 的调整。当前不实现剖面采样、自由手绘、polygon、自动吸附、自动平滑或多观测联合编辑。
 
@@ -183,9 +187,11 @@ authoritative reader / correction
 
 ## 常见错误
 
-- “requires the optional interaction dependencies”：在 ECAT 源码目录安装 `.[interaction]`。
+- “requires the optional interaction dependencies”：进入 ECAT 的 `eqtools` 子目录，
+  安装 `.[interaction]`。
 - “requires Bokeh >=3.6,<4”：当前 Bokeh 不在已测试范围，使用 interaction extra 的版本约束。
-- “Continuous trace-editor imagery requires Datashader”：重新安装 `.[interaction]`；非结构化输入仍可回退为点显示，但结构化连续图需要受测版本。
+- “Continuous trace-editor imagery requires Datashader”：在 eqtools 项目根目录重新
+  安装 `.[interaction]`；非结构化输入仍可回退为点显示，但结构化连续图需要受测版本。
 - “Set both --vmin and --vmax”：同时提供上下限，或两者都省略。
 - 输出已存在：更换 Save As 文件名；确认确需替换时再显式允许覆盖。
 - reference 不显示：检查文件至少有两个有限 `lon lat` 节点；降采样交接还要检查 `enabled` 和 `stages: [raw]`。

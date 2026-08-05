@@ -6,9 +6,11 @@
 
 ## 1. 安装查看器依赖
 
-在 ECAT 源码目录执行：
+从 ECAT 仓库根目录进入 eqtools 子项目执行。若当前已经位于独立 eqtools 仓库
+根目录，只执行第二行：
 
 ```bash
+cd eqtools
 python -m pip install -e ".[viewer]"
 ```
 

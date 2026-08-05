@@ -10,9 +10,11 @@
 | ECAT 标准 `.nc/.h5`、GeoTIFF 或 CSI varres | `ecat-trace-edit` | 无需再写降采样 YAML |
 | 只需浏览多类背景和图层，不改迹线 | `ecat-map` | 地图查看器保持只读，职责更清楚 |
 
-安装可选交互依赖：
+从 ECAT 仓库根目录进入 eqtools 子项目，再安装可选交互依赖。若当前已经位于
+独立 eqtools 仓库根目录，只执行第二行：
 
 ```bash
+cd eqtools
 python -m pip install -e ".[interaction]"
 ```
 

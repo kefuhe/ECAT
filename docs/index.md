@@ -58,5 +58,5 @@ BLSE/VCE 线性滑动分布反演
 
 真实案例材料维护在
 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)；本仓库维护代码、用户手册与接口参考。
-文档维护者参阅 [Documentation Architecture](developer/architecture.md) 和
-[Documentation Guidelines](developer/contributing_docs.md)。
+文档和发布维护者从 [Developer Notes](developer/index.md) 进入，参阅文档架构、
+贡献规范以及独立 eqtools/CSI 与统一 ECAT 的同步边界。

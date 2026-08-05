@@ -8,9 +8,11 @@
 
 ## 安装
 
-在 ECAT 源码目录安装导出所需的轻量可选依赖：
+从 ECAT 仓库根目录进入 eqtools 子项目，安装导出所需的轻量可选依赖。若当前
+已经位于独立 eqtools 仓库根目录，只执行第二行：
 
 ```bash
+cd eqtools
 python -m pip install -e ".[geoexport]"
 ```
 

@@ -23,4 +23,4 @@ fi
 "$python_bin" -m pip install "$repo_dir/eqtools"
 
 "$python_bin" -c 'import csi, eqtools; print("ECAT package imports succeeded.")'
-echo "Installation complete. Install optional extras such as eqtools[geoexport], eqtools[viewer], or eqtools[interaction] only when needed."
+echo "Installation complete. See Install.md for eqtools incremental updates and optional extras."

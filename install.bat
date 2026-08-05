@@ -27,5 +27,5 @@ if errorlevel 1 exit /b 1
 %PYTHON_BIN% -c "import csi, eqtools; print('ECAT package imports succeeded.')"
 if errorlevel 1 exit /b 1
 
-echo Installation complete. Mesh and SAR support are already installed; add only optional eqtools extras when needed.
+echo Installation complete. See Install.md for eqtools incremental updates and optional extras.
 endlocal

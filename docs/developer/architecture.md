@@ -6,18 +6,18 @@
 
 | 功能 | 代码位置 |
 | --- | --- |
-| SAR 读取 | [eqtools/csiExtend/sarUtils](https://github.com/kefuhe/ECAT/tree/main/eqtools/csiExtend/sarUtils) |
-| 降采样 CLI | [eqtools/cli_tools/process_data_downsampling.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/cli_tools/process_data_downsampling.py) |
-| 降采样配置校验 | [eqtools/csiExtend/downsample/config.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/downsample/config.py) |
-| 非线性几何反演 | [eqtools/csiExtend/exploremultifaults_smc.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/exploremultifaults_smc.py) |
-| Bayesian 联合几何-滑动反演 | [eqtools/csiExtend/bayesian_multifaults_inversion.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/bayesian_multifaults_inversion.py) |
-| 可扰动三角断层几何 | [eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py) |
-| BLSE/VCE | [eqtools/csiExtend/blse_multifaults_inversion.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/blse_multifaults_inversion.py) |
-| 线性求解器 | [eqtools/csiExtend/multifaultsolve_boundLSE.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/multifaultsolve_boundLSE.py) |
-| 约束共享状态和 registry | [eqtools/csiExtend/constraint_manager_base.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/constraint_manager_base.py) |
-| BLSE/VCE 与 SMC 约束编译器 | [constraint_manager_blse.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/constraint_manager_blse.py), [constraint_manager_smc.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/constraint_manager_smc.py) |
-| VCE 算法 | [simple_vce.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/simple_vce.py), [rigorous_vce.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/csiExtend/rigorous_vce.py) |
-| 图件样式工具 | [eqtools/viztools](https://github.com/kefuhe/ECAT/tree/main/eqtools/viztools) |
+| SAR 读取 | [eqtools/csiExtend/sarUtils](https://github.com/kefuhe/ECAT/tree/main/eqtools/eqtools/csiExtend/sarUtils) |
+| 降采样 CLI | [eqtools/cli_tools/process_data_downsampling.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/cli_tools/process_data_downsampling.py) |
+| 降采样配置校验 | [eqtools/csiExtend/downsample/config.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/downsample/config.py) |
+| 非线性几何反演 | [eqtools/csiExtend/exploremultifaults_smc.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/exploremultifaults_smc.py) |
+| Bayesian 联合几何-滑动反演 | [eqtools/csiExtend/bayesian_multifaults_inversion.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/bayesian_multifaults_inversion.py) |
+| 可扰动三角断层几何 | [eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py) |
+| BLSE/VCE | [eqtools/csiExtend/blse_multifaults_inversion.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/blse_multifaults_inversion.py) |
+| 线性求解器 | [eqtools/csiExtend/multifaultsolve_boundLSE.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/multifaultsolve_boundLSE.py) |
+| 约束共享状态和 registry | [eqtools/csiExtend/constraint_manager_base.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/constraint_manager_base.py) |
+| BLSE/VCE 与 SMC 约束编译器 | [constraint_manager_blse.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/constraint_manager_blse.py), [constraint_manager_smc.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/constraint_manager_smc.py) |
+| VCE 算法 | [simple_vce.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/simple_vce.py), [rigorous_vce.py](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/rigorous_vce.py) |
+| 图件样式工具 | [eqtools/viztools](https://github.com/kefuhe/ECAT/tree/main/eqtools/eqtools/viztools) |
 
 ## 文档边界
 
@@ -63,7 +63,7 @@
 | --- | --- | --- | --- |
 | 公开短例层 | [Constraint Runtime Example](../examples/constraint_config_runtime.md) | 可复制的配置基线、会话修改、patch/rake 调整和求解前检查 | 完整字段字典、私有实现 |
 | 公开用户层 | [Constraint Manager](../reference/constraint_manager.md), [Rake Constraints](../reference/rake_constraints.md) | 配置字段、稳定 facade、`update/add/replace/set/clear` 语义、config/runtime 生命周期、公式和诊断 | 私有 registry、`owner/family` 写入、内部重建方法 |
-| 内部维护层 | [Constraint Manager Developer Guide](../../eqtools/csiExtend/docs/CONSTRAINT_MANAGER_DEVELOPER_GUIDE.md) | 声明态与解析态、owner/family、CRUD 和 reconciliation、事务、参数布局、solver handoff、扩展清单 | 重复维护面向用户的完整配置教程 |
+| 内部维护层 | [Constraint Manager Developer Guide](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/csiExtend/docs/CONSTRAINT_MANAGER_DEVELOPER_GUIDE.md) | 声明态与解析态、owner/family、CRUD 和 reconciliation、事务、参数布局、solver handoff、扩展清单 | 重复维护面向用户的完整配置教程 |
 | 追溯层 | `eqtools/csiExtend/docs/` 中的 plan、audit、changelog | 设计原因、迁移记录、验证证据 | 作为当前公开接口的唯一依据 |
 
 推荐阅读顺序是“workflow 选择任务 → example 复制最小搭配 → reference 查完整语义”。
@@ -72,7 +72,7 @@
 公开接口或层级语义变化时，应同时更新公开 reference 和内部 developer guide。
 只有内部实现细节变化且用户行为不变时，只更新 developer guide 和相应测试/变更记录。
 
-Viztools 同样遵守双层边界：普通用户从 [科研绘图短例](../examples/viztools_scientific_figures.md) 进入，再到 [Viztools reference](../reference/viztools.md) 和 [Figure Products](../reference/figure_products.md) 查完整语义；代码层级、兼容入口、参数所有权和扩展模板只维护在 [Viztools Developer Guide](../../eqtools/viztools/docs/VIZTOOLS_DEVELOPER_GUIDE.md)。
+Viztools 同样遵守双层边界：普通用户从 [科研绘图短例](../examples/viztools_scientific_figures.md) 进入，再到 [Viztools reference](../reference/viztools.md) 和 [Figure Products](../reference/figure_products.md) 查完整语义；代码层级、兼容入口、参数所有权和扩展模板只维护在 [Viztools Developer Guide](https://github.com/kefuhe/ECAT/blob/main/eqtools/eqtools/viztools/docs/VIZTOOLS_DEVELOPER_GUIDE.md)。
 
 ## 手册当前覆盖
 

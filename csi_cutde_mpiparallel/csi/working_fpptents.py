@@ -36,11 +36,11 @@ class faultpostproctents(object):
         self.numPatches = len(fault.patch)
  
         # Get some geometrical informations
-        self.areas = np.array([super(self.fault.class, self.fault).patchArea(p) \
+        self.areas = np.array([super(self.fault.__class__, self.fault).patchArea(p) \
                 for p in self.fault.patch])
-        self.strike = super(self.fault.class, self.fault).getStrikes()
-        self.dip = super(self.fault.class, self.fault).getDips()
-        self.depth = super(self.fault.class, self.fault).getDepths()
+        self.strike = super(self.fault.__class__, self.fault).getStrikes()
+        self.dip = super(self.fault.__class__, self.fault).getDips()
+        self.depth = super(self.fault.__class__, self.fault).getDepths()
 
         # Assign Mu to each node
         if len(np.array(Mu).flatten())==1:
@@ -538,7 +538,7 @@ class faultpostproctents(object):
         from numpy.linalg import eigh
 
         # Get Mout in the righ tconvention
-        if form is 'aki':
+        if form == 'aki':
             Mout = self._aki2harvard(Mout)
 
         # Calculate the Eigenvectors for Mout
@@ -770,7 +770,7 @@ class faultpostproctents(object):
         else:
             fout = sys.stdout
 
-        if form is 'full':
+        if form == 'full':
             # Write the BS header
             fout.write(' PDE 1999  1  1  9 99 99.00  99.9900   99.9900  99.0 5.3 5.0 BULLSHIT \n')
             fout.write('event name:    thebigbaoum \n')
@@ -785,7 +785,7 @@ class faultpostproctents(object):
             fout.write('Mrt:           {:7e}       \n'.format(M[0,1]*1e7))
             fout.write('Mrp:           {:7e}       \n'.format(M[0,2]*1e7))
             fout.write('Mtp:           {:7e}       \n'.format(M[1,2]*1e7))
-        elif form is 'line':
+        elif form == 'line':
             # get the largest mantissa
             mantissa = 0
             A = [M[0,0], M[1,1], M[2,2], M[0,1], M[0,2], M[1,2]]

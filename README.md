@@ -49,6 +49,21 @@ conda activate ecat
 PyMC, PyTensor, or Theano. See [Install.md](Install.md) for the wheel and
 optional-feature instructions.
 
+### Updating an existing checkout
+
+After pulling a newer ECAT revision, update eqtools from its own project
+directory instead of recreating the complete environment:
+
+```bash
+git pull
+conda activate ecat
+cd eqtools
+python -m pip install -e .
+```
+
+Reinstall `csi_cutde_mpiparallel` separately only when CSI changed. The full
+update and optional-extra commands are documented in [Install.md](Install.md).
+
 -----
 
 ## 🏃 Running ECAT & Case Studies

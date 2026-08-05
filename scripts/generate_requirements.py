@@ -13,9 +13,9 @@ Usage:
     python scripts/generate_requirements.py          # rewrite the txt file
     python scripts/generate_requirements.py --check  # verify it is current
 
-The import audit is advisory: it reports imports that are not covered by the
-base or optional package metadata, so maintainers can classify a new import as
-required, optional, or unsupported before adding it to an environment file.
+The import audit is strict for unclassified third-party imports. Known optional
+or legacy backends are listed explicitly below; every other import must be
+declared by package metadata before this check succeeds.
 """
 
 from __future__ import annotations
@@ -61,6 +61,19 @@ FIRST_PARTY = {
     "Tectonic_Utils",
     "input_adapter",
     "generate_nonlinear_geometry_config",
+    "seismo_tools",
+    "yangfull",
+}
+# These imports occur inside explicitly optional, legacy, or external-backend
+# methods. They are deliberately excluded from the base ECAT environment.
+KNOWN_NON_BASE = {
+    "altarexplore",  # legacy AlTar posterior helpers
+    "arviz",         # optional posterior diagnostic plotting
+    "mayavi",        # obsolete optional 3-D plotting method
+    "obspy",         # optional beachball plotting in earthquake clients
+    "sacpy",         # external kinematic waveform backend
+    "sqlalchemy",    # optional GPS SQL-file reader
+    "tsinsar",       # optional legacy InSAR time-series backend
 }
 SKIPPED_DIRECTORIES = {"__pycache__", "build", "docs", "examples", "test", "tests"}
 
@@ -152,7 +165,7 @@ def render_requirements(csi_base: list[str], eqtools_base: list[str]) -> str:
         "",
         "python>=3.10,<3.13",
         "",
-        "# Required by csi.__init__ and its public classes.",
+        "# Required by CSI public imports and supported runtime methods.",
         *csi,
         "",
         "# Required by supported ECAT SMC, BLSE/VCE, mesh, and SAR workflows.",
@@ -170,10 +183,13 @@ def iter_source_files(source_root: Path) -> Iterable[Path]:
         yield path
 
 
-def scan_imports() -> tuple[set[str], dict[str, set[str]]]:
+def scan_imports() -> tuple[
+    dict[str, set[str]],
+    dict[str, dict[str, set[str]]],
+]:
     stdlib = set(getattr(sys, "stdlib_module_names", set())) | set(sys.builtin_module_names)
-    distributions: set[str] = set()
-    locations: dict[str, set[str]] = {}
+    distributions: dict[str, set[str]] = {name: set() for name in SOURCE_ROOTS}
+    locations: dict[str, dict[str, set[str]]] = {name: {} for name in SOURCE_ROOTS}
     for package_name, source_root in SOURCE_ROOTS.items():
         for path in iter_source_files(source_root):
             try:
@@ -192,27 +208,42 @@ def scan_imports() -> tuple[set[str], dict[str, set[str]]]:
                     if module in stdlib or module in FIRST_PARTY:
                         continue
                     distribution = normalize_name(IMPORT_TO_DISTRIBUTION.get(module, module))
-                    distributions.add(distribution)
-                    locations.setdefault(distribution, set()).add(relative)
+                    distributions[package_name].add(distribution)
+                    locations[package_name].setdefault(distribution, set()).add(relative)
     return distributions, locations
 
 
-def audit_imports(declared: set[str]) -> set[str]:
-    imported, locations = scan_imports()
-    forbidden_imports = imported & FORBIDDEN
-    if forbidden_imports:
-        print("Forbidden probabilistic imports:")
-        for name in sorted(forbidden_imports):
-            print(f"  {name}: {', '.join(sorted(locations[name]))}")
+def audit_imports(declared: dict[str, set[str]]) -> set[str]:
+    imported_by_package, locations_by_package = scan_imports()
+    issues: set[str] = set()
 
-    uncovered = imported - declared - FORBIDDEN
-    if uncovered:
-        print("Advisory: imports not represented by package metadata:")
-        for name in sorted(uncovered):
-            print(f"  {name}: {', '.join(sorted(locations[name]))}")
-    else:
-        print("Source-import audit: every discovered third-party import is declared.")
-    return forbidden_imports
+    for package_name in SOURCE_ROOTS:
+        imported = imported_by_package[package_name]
+        locations = locations_by_package[package_name]
+
+        forbidden_imports = imported & FORBIDDEN
+        if forbidden_imports:
+            print(f"Forbidden probabilistic imports in {package_name}:")
+            for name in sorted(forbidden_imports):
+                print(f"  {name}: {', '.join(sorted(locations[name]))}")
+                issues.add(f"{package_name}:{name}")
+
+        known_non_base = imported & KNOWN_NON_BASE
+        if known_non_base:
+            print(f"Known optional/legacy imports excluded from {package_name} base:")
+            for name in sorted(known_non_base):
+                print(f"  {name}: {', '.join(sorted(locations[name]))}")
+
+        uncovered = imported - declared[package_name] - FORBIDDEN - KNOWN_NON_BASE
+        if uncovered:
+            print(f"Unclassified imports missing from {package_name} metadata:")
+            for name in sorted(uncovered):
+                print(f"  {name}: {', '.join(sorted(locations[name]))}")
+                issues.add(f"{package_name}:{name}")
+        else:
+            print(f"Source-import audit ({package_name}): every base import is declared.")
+
+    return issues
 
 
 def main() -> int:
@@ -224,15 +255,23 @@ def main() -> int:
     eqtools_base, eqtools_optional = read_setup_dependencies(SETUP_FILES["eqtools"])
     rendered = render_requirements(csi_base, eqtools_base)
 
-    declared = {
-        requirement_name(item)
-        for item in [*csi_base, *csi_optional, *eqtools_base, *eqtools_optional]
+    declared_by_package = {
+        "csi": {
+            requirement_name(item)
+            for item in [*csi_base, *csi_optional]
+        },
+        "eqtools": {
+            requirement_name(item)
+            for item in [*eqtools_base, *eqtools_optional]
+        },
     }
+    declared = set().union(*declared_by_package.values())
     forbidden_declared = declared & FORBIDDEN
     if forbidden_declared:
         print(f"Forbidden package metadata: {', '.join(sorted(forbidden_declared))}")
-    forbidden = forbidden_declared | audit_imports(declared)
-    if forbidden:
+    issues = {f"metadata:{name}" for name in forbidden_declared}
+    issues |= audit_imports(declared_by_package)
+    if issues:
         return 1
 
     if args.check:

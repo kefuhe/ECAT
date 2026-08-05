@@ -13,36 +13,45 @@
 
 python>=3.10,<3.13
 
-# Required by csi.__init__ and its public classes.
+# Required by CSI public imports and supported runtime methods.
 cartopy>=0.21,<0.23
+cmcrameri>=1.8,<2
+cutde>=23.6.25,<24
+decorator>=5,<6
+gmsh>=4.11,<5
+h5py>=3.8,<4
 hdbscan>=0.8.33,<0.9
 matplotlib>=3.6,<3.9
+netCDF4>=1.6,<2
+networkx>=3,<4
 numba>=0.58,<0.60
 numpy>=1.23,<2
 pandas>=2.0,<2.3
+psutil>=5.9,<7
 pyproj>=3.5,<3.7
 pyshp>=2.3,<3
+ruamel.yaml>=0.18,<0.19
 scienceplots>=2.1,<3
 scikit-image>=0.22,<0.24
 scikit-learn>=1.2,<1.5
 scipy>=1.10,<1.12
+seaborn>=0.12,<0.14
 shapely>=2.0,<2.1
 tqdm>=4.65,<5
 
 # Required by supported ECAT SMC, BLSE/VCE, mesh, and SAR workflows.
+affine>=2.4,<3
 clarabel>=0.11.1,<0.12
-cmcrameri>=1.8,<2
-cutde>=23.6.25,<24
 cvxopt>=1.3,<1.4
 gdal>=3.6,<4
 geopandas>=0.14,<1
-gmsh>=4.11,<5
-h5py>=3.8,<4
 joblib>=1.3,<2
 meshio>=5.3,<6
 mpi4py>=3.1,<4
+pytz>=2023.3
 PyYAML>=6,<7
 rasterio>=1.3,<2
-ruamel.yaml>=0.18,<0.19
+requests>=2.28,<3
+rtree>=1.0,<2
 tabulate>=0.9,<1
 xarray>=2023.1,<2026
