@@ -1,19 +1,22 @@
-# ECAT 图件样式参考 / Viztools
+# ECAT 科研绘图参考 / Viztools
 
-`eqtools.viztools` 是 ECAT 的 Matplotlib 样式、出版尺寸、字体和常用格式化工具入口。它适合帮助用户建立稳定的科研绘图规范：统一字号、列宽、字体、保存格式和经纬度标注，而不是在每个脚本里临时调整 Matplotlib 全局参数。
+`eqtools.viztools` 是 ECAT 的 Matplotlib 绘图公共入口。它负责科研图件的样式、字体、出版尺寸、保存收尾、经纬度刻度和轻量栅格 quick-look；它不解释 SAR 正负号、LOS 投影或反演结果的物理意义。
+
+只想复制常用画法，先看 [科研绘图短例](../examples/viztools_scientific_figures.md)。本页用于查完整语义、参数优先级和兼容边界。
 
 ## 阅读路径
 
-- 只想快速画一张统一风格的图：看 [快速使用](#快速使用)。
-- 正在做论文图或报告图：看 [推荐科研图件配方](#推荐科研图件配方)、[出版尺寸](#出版尺寸) 和 [保存图件](#保存图件)。
-- 需要统一整个项目的绘图规范：看 [建立项目绘图规范](#建立项目绘图规范)。
-- 需要中文、数学公式或 LaTeX：看 [字体和数学公式](#字体和数学公式)。
-- 地理图件经纬度坐标不统一：看 [经纬度格式化](#经纬度格式化)。
-- 想快速重绘 GeoTIFF、NetCDF/GRD 或二维数组：看 [科学栅格 Quick-Look](#科学栅格-quick-look)。
+| 想完成的事 | 从这里开始 |
+| --- | --- |
+| 直接复制一个论文图样式 | [科研绘图短例](../examples/viztools_scientific_figures.md) |
+| 选择 preset、理解叠加关系 | [Preset 的职责](#preset-的职责) |
+| 覆盖字体、线宽、DPI 等参数 | [参数覆盖顺序](#参数覆盖顺序) 与 [PlotStyle 常用参数](#plotstyle-常用参数) |
+| 统一字体、公式和出版尺寸 | [字体与数学公式](#字体与数学公式) 与 [出版尺寸](#出版尺寸) |
+| 保存图件或绘制栅格 quick-look | [保存与显示](#保存与显示) 与 [二维科学栅格 quick-look](#二维科学栅格-quick-look) |
 
-## 快速使用
+## 最短推荐用法
 
-推荐在函数或脚本局部使用上下文管理器，避免污染后续绘图：
+在函数或脚本局部使用上下文管理器：
 
 ```python
 import matplotlib.pyplot as plt
@@ -25,126 +28,45 @@ with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
     ax.set_xlabel("Distance (km)")
     ax.set_ylabel("Displacement (mm)")
     fig.savefig("figure.pdf")
-    plt.show()
 ```
 
-推荐先理解为三件事：
+离开 `with` 后，Matplotlib 的全局 `rcParams` 会恢复。库函数和可复用模块应优先采用这一模式。
 
-- `PlotStyle` 管样式、字体、字号、出版尺寸和默认保存 dpi。
-- `fig.savefig(..., dpi=...)` 或 `PlotStyle(..., dpi=...)` 管保存质量。
-- `plt.show()` 是正常屏显方式；`show_fig()` / `screen_dpi` 只是异常高 dpi figure 的保护工具。
+## 三个使用层级
 
-因此，普通用户可以像使用 Matplotlib 或 scienceplots 一样工作：`with PlotStyle(...)` 激活风格，`fig.savefig()` 保存，`plt.show()` 显示。`finish_fig()` 不是必需步骤，它只是 ECAT 内部和批量绘图常用的保存/屏显收尾工具。
-
-论文图保存 600 dpi 时，可以在 `fig.savefig("figure.png", dpi=600)` 中指定，也可以用 `PlotStyle(..., dpi=600)` 设置当前样式上下文的默认 `savefig.dpi`。`PlotStyle(dpi=...)` 不改变交互 figure dpi。
-
-屏显图应理解为保存图的自然预览：布局、字号、线宽和图面比例应一致，保存 dpi 只提高输出分辨率。需要显式控制交互 figure dpi 时，使用 `PlotStyle(..., figure_dpi=...)` 或 `rcparams={"figure.dpi": ...}`。`screen_dpi=200` 只是异常保护：当 figure dpi 已经过高时限制窗口大小。检查最终发表质量时，应打开保存出的 `pdf/svg/png` 文件。
-
-快速创建 figure：
-
-```python
-fig, ax = PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8).subplots()
-```
-
-脚本顶部全局应用：
-
-```python
-from eqtools.viztools import PlotStyle, Presets
-
-PlotStyle.apply(Presets.SCIENCE, figsize="double", fontsize=9)
-# ... many plots ...
-PlotStyle.reset()
-```
-
-只保存不屏显：
-
-```python
-with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
-    fig, ax = plt.subplots()
-    ax.plot(x, y)
-    fig.savefig("figure.pdf")
-```
-
-批量保存多格式时再使用 `save_fig()`：
-
-```python
-from eqtools.viztools import save_fig
-
-save_fig(fig, "figure", fmts=["pdf", "png"], dpi=600)
-```
-
-只屏显检查时，普通情况直接 `plt.show()`；如果外部样式把 figure dpi 设得很高，可以使用 `show_fig()` 做屏显保护：
-
-```python
-from eqtools.viztools import show_fig
-
-with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8):
-    fig, ax = plt.subplots()
-    ax.plot(x, y)
-    show_fig(fig)
-```
-
-## 推荐科研图件配方
-
-论文单栏图：
-
-```python
-with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8):
-    fig, ax = plt.subplots()
-```
-
-论文双栏或两列子图：
-
-```python
-with PlotStyle([Presets.SCIENCE, Presets.COLORS_BRIGHT], figsize="double", fontsize=8):
-    fig, axes = plt.subplots(1, 2)
-```
-
-中文报告或中文论文图：
-
-```python
-with PlotStyle(Presets.CHINESE, figsize="single", fontsize=8):
-    fig, ax = plt.subplots()
-```
-
-Notebook 快速检查：
-
-```python
-PlotStyle.apply(Presets.NOTEBOOK, fontsize=10, figure_dpi=150)
-```
-
-演示文稿：
-
-```python
-with PlotStyle(Presets.PRESENTATION, figsize="double", fontsize=12):
-    fig, ax = plt.subplots()
-```
-
-## 常用 Presets
-
-| 常量 | 字符串 | 用途 |
+| 层级 | 推荐入口 | 适用情况 |
 | --- | --- | --- |
-| `Presets.SCIENCE` | `science` | 默认科学图件，无衬线 |
-| `Presets.SCIENCE_SERIF` | `science-serif` | 衬线科学图件 |
-| `Presets.MINIMAL` | `minimal` | 极简坐标轴和图件 |
-| `Presets.PRESENTATION` | `presentation` | 演示文稿 |
-| `Presets.NOTEBOOK` | `notebook` | Notebook 交互检查 |
-| `Presets.IEEE` | `ieee` | IEEE 风格 |
-| `Presets.SCATTER` | `scatter` | 散点图优化 |
-| `Presets.CHINESE` | `chinese` | 中文无衬线 |
-| `Presets.CHINESE_SERIF` | `chinese-serif` | 中文衬线 |
-| `Presets.COLORS_BRIGHT` | `colors-bright` | 明亮色板，可叠加 |
-| `Presets.COLORS_VIBRANT` | `colors-vibrant` | 高饱和色板，可叠加 |
-| `Presets.COLORS_CONTRAST` | `colors-contrast` | 高对比色板，可叠加 |
+| 普通用户 | `with PlotStyle(...):` | 单图、论文图、报告图；最清晰且不会污染后续绘图 |
+| 项目脚本 | `PlotStyle.apply(...)` / `PlotStyle.reset()` | 同一脚本连续生成许多同风格图；必须成对恢复 |
+| 高级扩展 | `register_preset()`、`rcparams`、自定义 handler | 项目统一规范或新增可复用 preset；不建议为单张图使用 |
 
-多个 preset 可以叠加：
+`PlotStyle(...).subplots()` 是保留的兼容接口。它依赖 Matplotlib `close_event` 恢复样式，而无界面后端不保证触发该事件；新代码不要把它作为默认入口。
+
+## Preset 的职责
+
+完整 preset 已包含基础字体、线宽和版式，可单独使用：
+
+| Preset | 用途 |
+| --- | --- |
+| `science` | 默认无衬线科研图 |
+| `science-serif` | 衬线科研图 |
+| `chinese` / `chinese-serif` | 在对应基础 preset 上加入系统 CJK 字体回退 |
+| `minimal` | 继承 `science` 的极简坐标轴 |
+| `scatter` | 继承 `science` 的散点循环 |
+| `ieee` | 继承 `science-serif` 的 IEEE 线型循环 |
+| `notebook` | Notebook 快速检查 |
+| `presentation` | 幻灯片和海报 |
+
+颜色 preset 只负责颜色循环，用来叠加到一个完整 preset 上：
 
 ```python
 with PlotStyle([Presets.SCIENCE, Presets.COLORS_BRIGHT], figsize="double"):
     fig, axes = plt.subplots(1, 2)
 ```
 
-查看可用 preset：
+可选颜色层为 `colors-bright`、`colors-vibrant` 和 `colors-contrast`。不要重复叠加已经包含基础 preset 的 `minimal`、`scatter`、`ieee` 或 `chinese`。
+
+查看当前可用项：
 
 ```python
 from eqtools.viztools import list_presets
@@ -152,127 +74,104 @@ from eqtools.viztools import list_presets
 print(list_presets())
 ```
 
+## 参数覆盖顺序
+
+同一个 rcParam 被多处设置时，后者优先：
+
+```text
+基础 preset / mplstyle
+  < 后续叠加的 preset
+  < PlotStyle 显式参数
+  < 自定义 handler
+  < rcparams
+```
+
+因此 `rcparams` 是最后的高级逃生口，不适合作为普通图件的主要配置方式。
+
+## PlotStyle 常用参数
+
+```python
+PlotStyle(
+    preset="science",
+    figsize="single",
+    fontsize=8,
+    tick_fontsize=7,
+    legend_fontsize=7,
+    title_fontsize=9,
+    legend_frame=False,
+    dpi=600,
+    figure_dpi=None,
+    pdf_fonttype=42,
+    usetex=False,
+    mathfont=None,
+    rcparams=None,
+)
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| `preset` | 一个 preset 名或从左到右覆盖的名称列表 |
+| `figsize` | 列宽名、数值宽度或 `(width, height)` |
+| `fontsize` | 基础字号和轴标签字号；未单设时派生 tick、legend 和 figure title 字号 |
+| `tick_fontsize` | `xtick.labelsize` 与 `ytick.labelsize` |
+| `legend_fontsize` | legend 字号 |
+| `title_fontsize` | `figure.titlesize`，即 `fig.suptitle()` 的默认字号；轴标题用 `rcparams={"axes.titlesize": ...}` 或 `ax.set_title(..., fontsize=...)` |
+| `dpi` | 默认 `savefig.dpi`，不改变交互窗口的 figure dpi |
+| `figure_dpi` | 显式设置交互 figure dpi；普通用户通常不需要 |
+| `pdf_fonttype` | PDF/PS 字体类型；可编辑文本常用 42 |
+| `usetex` | 调用外部 LaTeX 渲染；默认不建议开启 |
+| `mathfont` | Matplotlib mathtext 字体族 |
+| `rcparams` | 最终覆盖的原生 Matplotlib rcParams 字典 |
+
+`PlotStyle` 没有 `fontfamily` 参数。字体族由 preset 决定；如确需覆盖，使用 `rcparams={"font.family": ...}`。
+
+## 字体与数学公式
+
+- `science` 使用无衬线文本并匹配 sans 数学字体。
+- `science-serif` 使用衬线文本并匹配 serif 数学字体。
+- `chinese` 和 `chinese-serif` 在上述基础上探测可用 CJK 字体。
+- `usetex=True` 依赖本机 LaTeX；CJK preset 会禁用不兼容的 pdfLaTeX 路径并给出提示。
+- 默认 PDF/PS 字体为可编辑的 Type 42；最终投稿前仍应在目标机器检查字体嵌入。
+
+查询本机中文字体：
+
+```python
+from eqtools.viztools import list_chinese_fonts
+
+print(list_chinese_fonts())
+```
+
 ## 出版尺寸
 
-`figsize` 支持字符串、数值宽度或显式 `(width, height)`。字符串会由 `publication_figsize()` 转换为 inch。
-
-| 名称 | 宽度含义 |
-| --- | --- |
-| `single` | 通用单栏，约 3.5 inch |
-| `double` | 通用双栏，约 7.0 inch |
-| `full` | 全页宽度，约 7.16 inch |
-| `nature` / `nature_double` | Nature 单栏/双栏 |
-| `science` / `science_double` | Science 单栏/双栏 |
-| `ieee_column` / `ieee_page` | IEEE 单栏/全页 |
-| `pnas` / `pnas_double` | PNAS 单栏/双栏 |
-| `a4` / `a4_margin` | A4 纸宽或带边距宽度 |
-
-示例：
+`publication_figsize()` 返回英寸单位的 `(width, height)`：
 
 ```python
 from eqtools.viztools import publication_figsize
 
-publication_figsize("single")                 # (width, height), inch
+publication_figsize("single")
 publication_figsize("double", fraction=0.8)
-publication_figsize(10, unit="cm")
 publication_figsize((10, 8), unit="cm")
 ```
 
-注册自己的期刊列宽：
+常用名字包括 `single`、`double`、`full`、`nature`、`nature_double`、`science`、`science_double`、`ieee_column`、`ieee_page`、`pnas`、`pnas_double`、`a4` 和 `a4_margin`。
+
+## 保存与显示
+
+单一格式直接使用 Matplotlib：
 
 ```python
-from eqtools.viztools import register_column_width
-
-register_column_width("agu_single", 3.37)
+fig.savefig("result.pdf", dpi=600, bbox_inches="tight")
 ```
 
-## 建立项目绘图规范
-
-一个项目或案例目录建议固定一套出图约定，避免每张图独立调参：
-
-```python
-from eqtools.viztools import PlotStyle, Presets, save_fig
-
-PLOT_STYLE = Presets.SCIENCE
-PLOT_FIGSIZE = "single"
-PLOT_FONTSIZE = 8
-PLOT_DPI = 300
-
-def save_paper_figure(fig, name):
-    save_fig(fig, name, fmts=["pdf", "png"], dpi=PLOT_DPI)
-```
-
-在绘图函数中使用：
-
-```python
-def plot_result(x, y, output):
-    with PlotStyle(PLOT_STYLE, figsize=PLOT_FIGSIZE, fontsize=PLOT_FONTSIZE):
-        fig, ax = plt.subplots()
-        ax.plot(x, y)
-        ax.set_xlabel("Distance (km)")
-        ax.set_ylabel("Displacement (mm)")
-        save_paper_figure(fig, output)
-        return fig
-```
-
-如果一个项目要遵循特定期刊列宽，可先注册列宽，再在所有脚本中使用同一个字符串：
-
-```python
-register_column_width("my_journal_single", 3.35)
-
-with PlotStyle(Presets.SCIENCE, figsize="my_journal_single", fontsize=8):
-    fig, ax = plt.subplots()
-```
-
-## 字体和数学公式
-
-常用参数：
-
-| 参数 | 含义 |
-| --- | --- |
-| `fontsize` | 基础字号 |
-| `fontfamily` | 文本字体族 |
-| `mathfont` | Matplotlib mathtext 字体 |
-| `usetex` | 是否使用 LaTeX 渲染 |
-| `chinese` preset | 自动选择可用 CJK 字体 |
-
-建议：
-
-- 普通论文图优先用 `usetex=False`，减少环境依赖。
-- 需要中文标签时使用 `Presets.CHINESE` 或 `Presets.CHINESE_SERIF`。
-- 封装绘图函数返回 figure 前，如果担心后续样式重置影响文字，可调用 `bake_text_fonts(fig)`。
-
-```python
-from eqtools.viztools import bake_text_fonts
-
-bake_text_fonts(fig)
-```
-
-## 保存图件
-
-普通单图优先使用 Matplotlib 标准保存：
-
-```python
-with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
-    fig, ax = plt.subplots()
-    ax.plot(x, y)
-    fig.savefig("result.pdf")
-```
-
-`dpi=600` 也可以直接写在 `fig.savefig("result.png", dpi=600)` 中。`PlotStyle(dpi=...)` 设置的是默认 `savefig.dpi`，不会改变屏幕 figure dpi。
-
-需要多格式保存或自动创建输出目录时，使用 `save_fig`：
+批量格式使用 `save_fig()`：
 
 ```python
 from eqtools.viztools import save_fig
 
-save_fig(fig, "result", fmts=["pdf", "png"])
-save_fig(fig, "result.pdf", dpi=600, transparent=True)
+save_fig(fig, "result", fmts=["pdf", "png"], dpi=600)
 ```
 
-论文图通常保存为 `pdf` 或 `svg`，检查图可保存为 `png` 或 `jpg`。高 DPI 只影响栅格格式；矢量格式主要由线宽、字体和图元复杂度决定。
-
-如果同一个内部绘图函数既要保存又要可选屏显，使用 `finish_fig` 统一收尾：
+ECAT 内部绘图函数需要统一处理保存、显示和关闭时，可用：
 
 ```python
 from eqtools.viztools import finish_fig
@@ -280,19 +179,9 @@ from eqtools.viztools import finish_fig
 finish_fig(fig, "result.png", show=True, dpi=600, screen_dpi=200)
 ```
 
-这里 `dpi=600` 只控制保存图，`screen_dpi=200` 只在交互 figure dpi 已经过高时限制窗口。`finish_fig()` 适合 ECAT 内部批量绘图和脚本批处理，不是普通单图必须步骤。若只想显示，不保存：
+`screen_dpi` 只限制异常高的交互预览 dpi，不改变已保存文件的分辨率。正式质量检查应打开保存后的 PDF/SVG/PNG，而不是只看 `plt.show()` 窗口。
 
-```python
-from eqtools.viztools import show_fig
-
-show_fig(fig, max_dpi=200)
-```
-
-注意：`show_fig()` 和 `screen_dpi` 面向异常高 dpi 屏显保护，不是最终质量检查。保存图仍由 `fig.savefig()` / `save_fig()` / `finish_fig(..., dpi=...)` 和矢量/栅格格式决定。若确实需要高 dpi 交互预览，应显式设置 `figure_dpi`，并接受窗口可能变大的代价。
-
-## 经纬度格式化
-
-地理图件常用：
+## 经纬度刻度
 
 ```python
 from eqtools.viztools import LatFormatter, LonFormatter
@@ -301,119 +190,73 @@ ax.xaxis.set_major_formatter(LonFormatter())
 ax.yaxis.set_major_formatter(LatFormatter())
 ```
 
-也可以使用：
+只需给数值添加度符号时：
 
 ```python
 from eqtools.viztools import set_degree_formatter
 
-set_degree_formatter(ax)
+set_degree_formatter(ax, axis="both")
 ```
 
-## 检查清单
+x、y 轴分别拥有独立 formatter 实例，避免 Matplotlib 在两个 Axis 之间重新绑定同一个 formatter。
 
-正式保存图件前建议检查：
+## 二维科学栅格 quick-look
 
-- 图件尺寸是否对应目标版式：单栏用 `single`，双栏或多子图用 `double`。
-- 字号是否统一；论文图通常从 8 pt 左右开始，特别窄的图不要低于可读范围。
-- 坐标轴和 colorbar label 是否写清单位，例如 `(m)`、`(cm)`、`(mm/yr)`。
-- 经纬度图是否使用统一格式化器。
-- 线宽、marker 大小和透明度是否在最终保存尺寸下仍然清晰。
-- 论文图优先保存 `pdf` 或 `svg`，同时保留 `png` 便于快速查看。
-- 高 DPI 只提高栅格图分辨率，不会改善矢量图线条或字体质量。
-- 不要只按 `plt.show()` 窗口判断最终质量；屏显是 preview，正式检查应打开保存文件。
-
-## 常见误区
-
-- 不要在库函数中长期 `PlotStyle.apply()` 后不恢复；函数内部优先用 `with PlotStyle(...)`。
-- 不要用放大 `figsize` 代替合理字号；版面尺寸和字号应一起设计。
-- 不要把 `usetex=True` 作为默认选项；它依赖本机 LaTeX 环境，适合最终论文图而不是所有脚本。
-- 不要只保存高 DPI 位图作为论文最终图；线图、散点图和多数模型图更适合矢量格式。
-- 不要在一个项目中混用过多 preset；通常固定 1 个基础 preset，再按需要叠加一个颜色 preset。
-
-## 兼容入口
-
-旧代码中的 `eqtools.plottools` 和 `sci_plot_style` 仍可用作兼容入口，但新代码建议直接使用：
+数组或坐标网格：
 
 ```python
-from eqtools.viztools import PlotStyle, Presets, save_fig
-```
+from eqtools.viztools import plot_raster
 
-这样能获得统一 preset、出版尺寸和字体系统，也更容易和新文档对应。
-
-## 科学栅格 Quick-Look
-
-`eqtools.viztools` 提供轻量的二维栅格绘图入口，适合已经准备好的科学栅格数据，例如正演位移 GeoTIFF、NetCDF/GRD 网格、`xarray.DataArray` 或普通 `numpy.ndarray`。
-
-推荐入口：
-
-```python
-from eqtools.viztools import plot_raster, plot_geotiff, plot_netcdf_grid
-```
-
-普通二维数组：
-
-```python
-fig, ax, im = plot_raster(
+fig, ax, image = plot_raster(
     data,
+    x=lon,
+    y=lat,
+    axis="geo",
     cmap="RdBu_r",
     symmetric=True,
     percentile=99,
     colorbar_label="LOS displacement (m)",
     save="quicklook.png",
-    show=True,
 )
 ```
 
-已经保存的 GeoTIFF：
+文件入口：
 
 ```python
-fig, ax, im = plot_geotiff(
-    "forward_los.tif",
-    symmetric=True,
-    percentile=99,
-    axis="geo",
-    axis_max_major_ticks=5,
-    colorbar_label="LOS displacement (m)",
-    colorbar_max_major_ticks=4,
-    save="forward_los.png",
-)
+from eqtools.viztools import plot_geotiff, plot_netcdf_grid
+
+plot_geotiff("los.tif", axis="geo", colorbar_label="LOS displacement (m)")
+plot_netcdf_grid("los.nc", variable="los", colorbar_label="LOS displacement (m)")
 ```
 
-NetCDF/GRD 文件：
+色阶规则：
+
+- 非对称模式的 `percentile=99` 保留有限值的中央 99%，两端各裁掉 0.5%。
+- `symmetric=True` 时，对 `abs(data - center)` 取指定 percentile，再围绕 `center` 对称。
+- `percentile=None` 使用完整有限范围。
+- 传入 Matplotlib `norm=...` 时，`norm` 独立负责色阶；不能再同时传 `vmin`、`vmax`、`symmetric=True` 或非零 `center`。
+
+坐标规则：
+
+- 同时给 `x`、`y` 时使用 `pcolormesh`，支持一维坐标或二维 mesh，不把二维经纬度错误压成一维插值。
+- 只给 `extent` 时使用 `imshow`。
+- `plot_geotiff(axis="geo")` 不做重投影。缺少 CRS、使用投影 CRS、旋转/剪切 transform 或索引式坐标时会告警；应先把数据重投影到经纬度后再使用地理标签。
+
+这些入口只画已准备好的二维数据，不读取 GAMMA/GMTSAR/HyP3 物理约定，也不改变 LOS 正负号或单位。
+
+## 兼容入口
+
+`eqtools.plottools`、`sci_plot_style()` 和 `set_plot_style()` 仍保留给旧脚本；它们转发到 `eqtools.viztools`。ECAT 内部新代码和新用户脚本统一从下面入口导入：
 
 ```python
-fig, ax, im = plot_netcdf_grid(
-    "forward_disp.nc",
-    variable="los",
-    symmetric=True,
-    colorbar_label="LOS displacement (m)",
-)
+from eqtools.viztools import PlotStyle, Presets, save_fig
 ```
 
-如果 NetCDF/GRD 中只有一个数据变量，`variable` 可以省略；如果有多个变量，必须显式指定，避免误画错误分量。
-
-这些函数只做通用二维栅格显示：
-
-- 自动处理 `NaN`、mask 和 GeoTIFF `nodata`。
-- 可用 `percentile` 设置稳健色标，避免少量极端值撑大色标。
-- 可用 `symmetric=True` 让形变、残差等正负场围绕 0 对称显示。
-- 可用 `axis="geo"` 显示经纬度轴、Longitude/Latitude 标签和经纬度 tick 格式；用 `axis="off"` 可生成无边框 quick-look。
-- `plot_geotiff(axis="geo")` 只使用 GeoTIFF 文件自身的 bounds；如果文件缺少 CRS、transform 接近行列号，或 bounds 像像素 index，会提示检查 georeferencing metadata。
-- 可用 `axis_max_major_ticks`、`colorbar_max_major_ticks`、`tickfontsize` 和 `labelfontsize` 做基础刻度控制。
-- 返回 `fig, ax, im`，用户可以继续叠加断层线、台站、标注或自定义 colorbar。
-- 使用 `PlotStyle` 和 `finish_fig` 的保存/屏显逻辑，保存 dpi 与屏显预览仍按本页前述规则处理。
-
-不要把这些函数理解为 SAR reader 或 GIS 绘图框架。它们不解释 GAMMA、HyP3、GMTSAR 的正负号，不计算 LOS 投影，也不依赖 PyGMT、Cartopy 或底图服务。SAR/LOS 的物理语义应先由 reader 或脚本处理清楚，再把可画的二维数据交给这些 quick-look 函数。
-
-如果需要论文或 PPT 细调，保留返回对象后继续使用 Matplotlib：
-
-```python
-fig, ax, im = plot_geotiff("forward_los.tif", axis="geo", show=False)
-ax.plot(fault_lon, fault_lat, "k-", linewidth=0.8)
-fig.savefig("forward_los_paper.png", dpi=600)
-```
+不要为兼容入口复制第二套实现或文档。
 
 ## 相关页面
 
-- [降采样超级入口参考：`check_plots`](downsampling_app.md#check_plots)
-- [SAR Reader 参考：诊断和 Quick-Look](sar_reader.md#诊断和-quick-look)
+- [科研绘图短例](../examples/viztools_scientific_figures.md)
+- [Figure Products](figure_products.md)
+- [SAR Reader](sar_reader.md)
+- [降采样应用](downsampling_app.md)

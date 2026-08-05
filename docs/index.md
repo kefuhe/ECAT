@@ -7,103 +7,56 @@
 1. **Bayesian 非线性几何反演**：估计断层顶边中点经纬度和深度、走向、倾角、长度、宽度等几何参数。
 2. **BLSE/VCE 线性滑动分布反演**：固定优选几何后，反演分布式滑动。
 
-数据读取、SAR/InSAR 降采样和断层几何构建是这两步之前的准备工作。高级用户可在完成标准两步走检查后继续阅读 Bayesian 联合几何-滑动分布反演。
+数据读取和 SAR/InSAR 降采样是前期准备；固定优选几何并构建 mesh 用于衔接两个反演阶段。高级用户可在完成标准两步走检查后继续阅读 Bayesian 联合几何-滑动分布反演。
 
-## 如何导航
+## 从这里开始
 
-| 你想做什么 | 先读 | 说明 |
+| 当前目标 | 入口 | 用法 |
 | --- | --- | --- |
-| 第一次安装或跑通最短路线 | [安装与环境检查](getting_started/installation.md), [标准两步走路线](getting_started/quickstart_two_step.md) | 从环境、数据读取、非线性几何到线性滑动建立主线 |
-| 理解为什么这样组织 | [核心概念入口](concepts/index.md) | 解释两步走、SAR 投影和断层几何状态 |
-| 复制一个小任务的代码 | [任务短例入口](examples/index.md) | trace 预处理、GAMMA quick-look、BLSE 最小脚本和地表正演 |
-| 对照真实事件脚本和输出 | [案例选择表](casebook/index.md) | 根据数据类型和反演阶段选择 ECAT-Cases 中的案例 |
-| 查命令、字段、API 或误区 | [Reference Map](reference/index.md) | 确认 CLI、配置、reader、约束、几何和输出细节 |
+| 第一次使用 | [安装与环境检查](getting_started/installation.md) → [标准两步走路线](getting_started/quickstart_two_step.md) | 先跑通环境和标准反演主线 |
+| 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
+| 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
+| 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |
+| 需要确认字段、接口或误区 | [Reference Map](reference/index.md) | 按需查阅，不必从头顺序阅读全部 reference |
+| 需要设置跨直立倾角或核对 `strike/dip/rake` | [断层角度约定](concepts/fault_angle_conventions.md) | 先确认输入、solver geometry 和滑动基底的区别 |
+| 西半球或跨日界线区域配置 | [经度约定与区域配置](reference/longitude_regions.md) | 核对处理区域、过滤、协方差掩膜和检查图范围的等价经度匹配 |
+| 需要统一科研图件字体、尺寸和保存 | [科研绘图短例](examples/viztools_scientific_figures.md) | 先复制常用场景，再到 Viztools reference 查高级参数 |
+| 需要在观测图上调整断层迹线 | [交互调整断层迹线](workflows/02c_interactive_trace_editing.md) | 复用降采样 reader 或直接打开标准观测，另存两列经纬度迹线 |
 
-## 任务地图
+## 工作流主线
 
-| 科研任务 | 主线页面 | 参考与案例 |
-| --- | --- | --- |
-| 读取 InSAR/GPS 数据 | [InSAR 和 GPS 数据读取](workflows/01_data_reading_insar_gps.md) | [SAR Reader](reference/sar_reader.md), [SAR 投影约定](concepts/sar_projection_conventions.md) |
-| 从 SAR/offset 生成反演输入 | [InSAR 降采样](workflows/02_insar_downsampling.md) | [Downsampling App](reference/downsampling_app.md), [GAMMA quick-look](examples/gamma_sar_quicklook.md) |
-| 自定义读取或时序 InSAR 复用网格 | [Adapter 降采样](workflows/02b_adapter_downsampling.md) | [Downsampling App: `input_adapter`](reference/downsampling_app.md#input_adapter) |
-| Bayesian 非线性几何反演 | [非线性几何反演](workflows/03_nonlinear_geometry_bayesian.md) | [非线性几何配置](reference/config_nonlinear_geometry.md), [数据改正项](reference/data_corrections.md), [两步走概念](concepts/two_step_inversion.md) |
-| 构建断层几何和 mesh | [Fault Geometry Construction](reference/fault_geometry_construction.md) | [Fault Summary](reference/fault_summary.md), [Fault Edges](reference/fault_edges.md), [Fault Patch Indices](reference/fault_patch_indices.md) |
-| BLSE/VCE 线性滑动反演 | [BLSE/VCE 线性滑动反演](workflows/04_linear_slip_blse_vce.md) | [线性滑动配置](reference/config_linear_slip.md), [数据改正项](reference/data_corrections.md), [约束管理器](reference/constraint_manager.md), [Dingri 2020](casebook/dingri_blse_vce.md) |
-| 震间 loading/backslip/coupling 解释 | [Interseismic Kinematics](reference/interseismic_kinematics.md) | [Fault Patch Indices](reference/fault_patch_indices.md), [Constraint Manager](reference/constraint_manager.md) |
-| 高级联合 Bayesian 几何-滑动反演 | [Joint Bayesian Geometry-Slip](workflows/05_joint_bayesian_geometry_slip.md) | [Bayesian Joint Inversion](reference/bayesian_joint_inversion.md), [Perturbable Fault Geometry](reference/geometry_perturbation.md) |
-| 生成地表位移或统一图件格式 | [Surface Forward Example](examples/surface_forward_grid.md) | [Surface Displacement Forward](reference/surface_displacement_forward.md), [Viztools](reference/viztools.md) |
+```text
+数据读取 / 可选降采样
+          ↓
+Bayesian 非线性几何反演
+          ↓
+固定几何并构建 mesh
+          ↓
+BLSE/VCE 线性滑动分布反演
+```
 
-## 文档目录
+完整任务分流、降采样调参分支和高级联合反演入口见
+[Workflows / 科研工作流](workflows/index.md)。
 
-### Getting Started
+完成数据准备或反演后，如需在 Google Earth Pro 中叠加观测、降采样单元、断层、
+滑动和地震目录，进入
+[Google Earth 科研导出](workflows/06_google_earth_export.md)。该输出是显示副本，
+不替代权威科学文件。
 
-- [安装与环境检查](getting_started/installation.md)
-- [标准两步走路线](getting_started/quickstart_two_step.md)
+如需在本机浏览器中随手切换地震、断层、GNSS、标准观测和降采样图层，进入
+[本地科研地图查看](workflows/07_research_map_viewer.md)。查看器同样只读科学源，
+不执行数据改正或反演。
 
-### Concepts
+## 按需深入
 
-- [核心概念入口](concepts/index.md)
-- [标准两步走反演逻辑](concepts/two_step_inversion.md)
-- [断层几何状态](concepts/fault_geometry_states.md)
-- [SAR 投影和观测约定](concepts/sar_projection_conventions.md)
+| 文档层 | 什么时候使用 |
+| --- | --- |
+| [Concepts / 核心概念](concepts/index.md) | 理解两步走、SAR 投影约定和断层几何状态 |
+| [Examples / 任务短例](examples/index.md) | 复制一个小任务的最小代码或命令 |
+| [Casebook / 公开案例](casebook/index.md) | 对照 ECAT-Cases 中的真实事件脚本、数据和输出 |
+| [Reference / 完整参考](reference/index.md) | 查 CLI、配置、reader、约束、几何、结果解释和 API 细节 |
 
-### Workflows
-
-- [InSAR 和 GPS 数据读取](workflows/01_data_reading_insar_gps.md)
-- [InSAR 降采样](workflows/02_insar_downsampling.md)
-- [InSAR 降采样 Step1/Step2 调参](workflows/02a_insar_downsampling_two_step.md)
-- [自定义读取 Adapter 降采样](workflows/02b_adapter_downsampling.md)
-- [Bayesian 非线性几何反演](workflows/03_nonlinear_geometry_bayesian.md)
-- [BLSE/VCE 线性滑动分布反演](workflows/04_linear_slip_blse_vce.md)
-- [Bayesian 联合几何-滑动分布反演](workflows/05_joint_bayesian_geometry_slip.md)
-
-### Examples
-
-- [任务短例入口](examples/index.md)
-- [Trace 预处理与断层顶部边界](examples/fault_trace_preprocessing.md)
-- [非线性几何结果到 fault object](examples/fault_from_nonlinear_geometry.md)
-- [GAMMA SAR quick-look 与配置生成](examples/gamma_sar_quicklook.md)
-- [BLSE/VCE 最小脚本骨架](examples/blse_minimal_run.md)
-- [地表形变正演最小例子](examples/surface_forward_grid.md)
-
-### Casebook
-
-案例放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 仓库中，主仓库 [ECAT](https://github.com/kefuhe/ECAT) 维护代码、方法手册与接口参考。
-
-- [案例选择表](casebook/index.md)
-- [Wushi: InSAR-only 非线性几何反演](casebook/wushi_nonlinear_geometry.md)
-- [Ridgecrest: GPS+InSAR 非线性几何反演](casebook/ridgecrest_gps_insar.md)
-- [Dingri 2020: BLSE/VCE 线性滑动反演](casebook/dingri_blse_vce.md)
-- [InSAR/Offset 降采样案例](casebook/insar_downsampling_gamma_geotiff.md)
-
-### Reference
-
-- [Reference Map](reference/index.md)
-- [CLI Reference](reference/cli.md)
-- [SAR Reader](reference/sar_reader.md)
-- [Data Corrections](reference/data_corrections.md)
-- [Downsampling App](reference/downsampling_app.md)
-- [Nonlinear Config](reference/config_nonlinear_geometry.md)
-- [Linear Slip Config](reference/config_linear_slip.md)
-- [Fault Geometry Construction](reference/fault_geometry_construction.md)
-- [Fault Summary](reference/fault_summary.md)
-- [Fault Edges](reference/fault_edges.md)
-- [Fault Patch Indices](reference/fault_patch_indices.md)
-- [Fault Contours](reference/fault_contours.md)
-- [Sigmas and Alpha](reference/sigmas_alpha.md)
-- [Constraint Manager](reference/constraint_manager.md)
-- [Interseismic Kinematics](reference/interseismic_kinematics.md)
-- [BLSE/VCE](reference/blse_vce.md)
-- [Surface Displacement Forward](reference/surface_displacement_forward.md)
-- [Bayesian Joint Inversion](reference/bayesian_joint_inversion.md)
-- [Perturbable Fault Geometry](reference/geometry_perturbation.md)
-- [Viztools](reference/viztools.md)
-
-### Developer
-
-- [Documentation Architecture](developer/architecture.md)
-- [Documentation Guidelines](developer/contributing_docs.md)
-
-## 手册范围
-
-本手册放在 [ECAT 仓库 `docs/`](https://github.com/kefuhe/ECAT/tree/main/docs)，按学习路线组织常用工作流、案例导读和字段参考。真实数据和可运行脚本放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)。
+真实案例材料维护在
+[ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)；本仓库维护代码、用户手册与接口参考。
+文档维护者参阅 [Documentation Architecture](developer/architecture.md) 和
+[Documentation Guidelines](developer/contributing_docs.md)。

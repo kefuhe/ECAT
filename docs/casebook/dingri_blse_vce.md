@@ -133,7 +133,7 @@ if args.mode == "single":
 `--mode loop` 不输出最终滑动模型，而是扫描一组 penalty weight，用于检查数据拟合和模型粗糙度的权衡。本案例实际使用的是 smoothing loop；VCE 是另一种权重估计路线，见 [BLSE/VCE 参考](../reference/blse_vce.md)。
 
 ```python
-elif args.mode == "loop":
+if args.mode == "loop":
     penalty_weight = [1.0, 5.0, 10.0, 30.0, 50.0, 80.0, 100.0, 125.0,
                       150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0,
                       800.0, 1000.0]

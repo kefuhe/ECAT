@@ -239,9 +239,22 @@ geodata:
 
 解析后内部会统一转换成底层采样需要的 lower/range 形式。旧版 `default_config.yml` 仍默认使用 `prior_bounds_format: lower_range`，即 `[Uniform, lower, range]`；不要在两个配置文件之间直接复制边界数值而不检查格式。
 
-`geodata.polys` 与脚本里的 `geodata` 顺序一一对应。SAR/InSAR 常用 `1` 表示 offset，`3` 表示 offset + x/y ramp，`4` 表示二阶 ramp。普通用户通常只需要设置 `polys` 和统一的 `poly_bounds`；只有需要逐数据集或逐参数覆盖边界、显示名时，才使用 `data_corrections` 高级段。
+`geodata.polys` 的简化设置可直接写成标量或列表：`null` 表示不估计改正项；仅包含同类 SAR/InSAR 数据时可写 `polys: 3`；混合数据应按脚本中的 `geodata` 顺序写列表，例如 `polys: [3, null, translation]`。SAR/InSAR 中 `1` 表示 offset，`3` 表示 offset + x/y ramp，`4` 再增加 xy cross term；GPS 在新版非线性几何入口中只开放 `translation`。普通用户通常只需要设置 `polys` 和统一的 `poly_bounds`；只有需要逐数据集或逐参数覆盖边界、显示名时，才使用 `data_corrections` 高级段。
 
 `geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 字段作为初值，若 `update: true`，`bounds` 给出 sigma 采样范围；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 可设为 `single`、`individual` 或 `grouped`，详见 [Sigmas 与 Alpha 配置模式](../reference/sigmas_alpha.md)。本几何工作流不设置 `alpha`；`alpha` 是后续分布式滑动反演中的平滑尺度。
+
+### 第一次设置 strike/dip 时
+
+普通单侧断层优先把 `dip` 先验限制在 `(0, 90]`。若确实需要跨直立搜索，使用连续的
+`0–180°` 表达，例如 `dip: [Uniform, 70.0, 110.0]`；不要同时混用负 dip 和大于 `90°`
+表达同一侧。程序会把每个完整样本的 strike/dip 转成 CSI solver geometry，但不会自动修改
+rake 或 ss/ds。运行后同时检查摘要中的 input/sample 角度和 `Solver geometry`。
+新版和旧版入口使用同一 strike/dip 几何规范化规则；旧版只是先验仍常写成
+`[Uniform, lower, range]`。为保证代表模型随后能进入三角元或矩形元 bridge，不要把固定
+`dip` 设为 `0°/180°`，先验也应留在非退化范围内。
+
+公式、跨 `90°` 时的机制含义和 BLSE/VCE 交接规则见
+[断层走向、倾角与滑动基底约定](../concepts/fault_angle_conventions.md)。
 
 ## 案例应保留
 
@@ -257,6 +270,6 @@ geodata:
 
 ## 下一步
 
-选定优选几何后，进入 [BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md)。如果需要先理解配置字段，查 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)；如果要解释 sigma 参数，查 [Sigmas 与 Alpha 配置模式](../reference/sigmas_alpha.md)。
+选定优选几何后，进入 [BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md)。如果需要先理解配置字段，查 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)；如果要解释角度转换，查 [断层走向、倾角与滑动基底约定](../concepts/fault_angle_conventions.md)；如果要解释 sigma 参数，查 [Sigmas 与 Alpha 配置模式](../reference/sigmas_alpha.md)。
 
 如果研究目标是把可扰动断层几何和分布式滑动放在同一个后验中，而不是先选一个优选几何再固定求解滑动，转到高级路线 [Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)。

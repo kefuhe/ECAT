@@ -24,6 +24,15 @@ GAMMA、GeoTIFF、GMTSAR direct-projection 和 adapter 模板。
 - `-s/-c/-d` 三步运行、协方差估计、`std` 降采样、`processing_region` 和 `guide_grid`。
 - 输出 CSI `.txt/.rsp/.cov` 并进入后续非线性几何反演或 BLSE/VCE 线性反演。
 
+本案例库同时保留两条入口：
+
+- 复现既有案例时，继续从 `covarSAR-Step1.py` 和
+  `downsampleSAR-Step2*.py` 理解、运行两步走代码；
+- 新建数据处理目录时，可用统一 YAML/CLI 表达同样的协方差准备和正式降采样步骤。
+
+两条入口对应同一科学流程。旧脚本不是被删除的模式；CLI 映射用于减少新案例重复复制
+runtime，并使 reader、配置和输出检查保持一致。
+
 <a id="choose-by-format"></a>
 
 ## 按数据格式选择案例
@@ -132,10 +141,11 @@ sar_config:
       up: enu_range/u_sample.grd
 ```
 
-`files.value` 与 `files.projection.east/north/up` 必须描述同一个原始正方向。GMTSAR
-`mode: range_offset` 默认认为 value 和 projection 都以朝向卫星为正；`mode: azimuth_offset`
-默认认为 value 和 projection 都以沿 heading 为正。不要只手工翻转 value 而不同时表达 projection
-正方向，确实需要覆盖时应使用 `mode/preset/convention`。
+GMTSAR `mode: range_offset` 默认把 value 和 projection 分别解释为
+`toward_sensor` 与 `ground_to_sensor`；`mode: azimuth_offset` 分别解释为
+`along_heading` 与 `along_heading`。二者是独立事实，不要通过手工翻转数组隐式修改。
+输入 projection 与内置方向不同时，用 `projection_convention` 明确其 axis 和 direction；
+非内置标量协议应使用显式 Python reader config。
 
 ### 输出前缀和 `output_suffix`
 
@@ -184,6 +194,10 @@ downsample:
       unit: km
 ```
 
+Gaussian 适合连续的局部高频噪声；若检查图显示问题主要是少量孤立 offset 错配，可把
+`filter` 改为 `kind: median`，默认使用 3 × 3 像素窗口。连续条带、解缠边界或有效数据
+边缘不属于 median 的目标问题。
+
 若要真实删除粗差点，使用 `sar_config.data_filters`；不要把粗差剔除、协方差掩膜、正式处理区域和
 std 近场细化混在一个字段里。
 
@@ -198,7 +212,11 @@ downsampler.stdBased(threshold=0.02, plot=False, verboseLevel="minimum")
 downsampler.writeDownsampled2File(prefix=outName + "_ifg", rsp=True)
 ```
 
-这段代码是旧脚本的最小示意。当前 `ecat-downsample -d` 写矩形 `.rsp` 时默认使用 18 列 full-corner cell；`trirb` 或三角格网复用正式使用 8 列三角 `.rsp`。旧 10 列矩形 `.rsp` 仍可通过 `from_rsp` 读取，但新案例里的矩形输出应以 full-corner 语义为准。
+这段代码是现有两步走案例的最小示意。复现案例时，`maskOut`、协方差参数、
+`initialstate` 和 `stdBased` 的数值仍应以对应脚本为准，不要用通用模板值机械覆盖。
+当前 `ecat-downsample -d` 写矩形 `.rsp` 时默认使用 18 列 full-corner cell；
+`trirb` 或三角格网复用正式使用 8 列三角 `.rsp`。旧 10 列矩形 `.rsp` 仍可通过
+`from_rsp` 读取，但新案例里的矩形输出应以 full-corner 语义为准。
 
 CLI 路线：
 

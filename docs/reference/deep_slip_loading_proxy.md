@@ -4,6 +4,16 @@
 
 它不是完整块体模型反演。若目标是闭合 block polygon、自动 segment/block topology、同一长断层不同段自动继承不同 block pair，建议使用 Blocks/celeri 这类专门震间块体模型程序，或先用这些程序确定块体拓扑后再把需要的几何和先验转入 ECAT。
 
+## 阅读路径
+
+| 当前问题 | 建议阅读顺序 |
+| --- | --- |
+| 判断是否应使用 deep-slip proxy | [先选模型](#先选模型) → [变量和公式](#变量和公式) |
+| 第一次只计算 coupling | [基本流程](#基本流程) → [只计算 coupling](#只计算-coupling不加深部约束) |
+| 添加浅深连续或锁定约束 | [添加底边连续约束](#添加底边连续约束) → [浅深映射](#浅深映射) → [约束状态](#约束状态) |
+| 导出和解释结果 | [字段和导出](#字段和导出) → [比值图异常时的诊断](#比值图异常时的诊断) |
+| 长断层分段场景 | [与分段场景的关系](#与分段场景的关系) → [检查清单](#检查清单) |
+
 ## 先选模型
 
 ECAT 当前有两套震间解释路径，字段名和公式不要混用：
@@ -132,8 +142,26 @@ inversion.print_deep_slip_loading_report(mapping)
 inversion.add_deep_slip_loading_constraint(
     mapping=mapping,
     state="bottom_continuity",
+    name="bottom_loading",
 )
 ```
+
+`add_deep_slip_loading_constraint()` 只新增。需要改变同一个命名 family 时使用
+`replace_deep_slip_loading_constraint()`：
+
+```python
+inversion.replace_deep_slip_loading_constraint(
+    mapping=mapping,
+    state="cap",
+    cap_ratio=1.0,
+    motion_sense="dextral",
+    name="bottom_loading",
+)
+```
+
+替换以整个 deep-slip family 为单位原子完成。即使新旧状态分别生成 equality 和
+inequality，也不会遗留上一状态的 sibling 组。`replace` 要求同名 family 已存在；
+首次创建仍使用 `add`。
 
 默认推荐先约束浅部孕震层底边：
 

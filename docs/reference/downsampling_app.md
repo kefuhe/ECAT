@@ -1,6 +1,6 @@
 # 降采样超级入口参考
 
-本页是 `ecat-downsample` 的字段字典和执行逻辑参考。若只是想跑通流程，先读 [InSAR 降采样](../workflows/02_insar_downsampling.md)；若要理解 SAR 观测方向、GMTSAR direct-projection 或 `mode/preset/convention`，读 [SAR Reader 参考](sar_reader.md)。
+本页是 `ecat-downsample` 的字段字典和执行逻辑参考。若只是想跑通流程，先读 [InSAR 降采样](../workflows/02_insar_downsampling.md)；若要理解 SAR 观测方向、左右视或 GMTSAR direct projection，读 [SAR Reader 参考](sar_reader.md)。
 
 ## 阅读路径
 
@@ -14,17 +14,39 @@
 降采样超级入口负责把原始 SAR、offset 或 optical 产品整理为 CSI 风格的反演输入：
 
 ```text
-raw product -> reader -> optional data filters -> optional processing region -> covariance/downsampling -> <effective_outName>_ifg.txt/.rsp/.cov
+raw product
+  -> reader
+  -> optional data filters
+  -> optional observation correction
+  -> optional processing region
+  -> covariance/downsampling
+  -> <effective_outName>_ifg.txt/.rsp/.cov
 ```
 
 常用命令：
 
 ```bash
 ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode range_offset -o downsample.yml
+ecat-downsample -f downsample.yml
 ecat-downsample -f downsample.yml -s
 ecat-downsample -f downsample.yml -c
 ecat-downsample -f downsample.yml -d
+ecat-downsample -f downsample.yml --edit-trace
 ```
+
+### 四种处理模式与可选编辑入口
+
+| 调用 | 有效步骤 |
+| --- | --- |
+| 不加 `-s/-c/-d` | 使用 YAML 的 `covar.do_covar` 和 `downsample.enabled`；生成模板两者均为 `false`，所以通常只执行已启用的改正与导出 |
+| `-s` | quick-look，并强制关闭本次 covariance/downsample |
+| `-c` | 强制启用 covariance；downsample 是否同时运行仍由 `downsample.enabled` 决定 |
+| `-d` | 强制启用 downsample；covariance 是否同时运行仍由 `covar.do_covar` 决定 |
+| `--edit-trace` | 打开可选迹线编辑器，并强制关闭本次 covariance/downsample；不属于四种数值处理模式 |
+
+`-c -d` 可以组合。标准 `observation_grid` 在启用后随任一模式写出；集成
+`google_earth` 只在三个有效步骤全部为 `false` 时写出，避免 quick-look、协方差调参
+或降采样时反复覆盖 KMZ。
 
 模块形式：
 
@@ -46,27 +68,32 @@ extract_raw_grd()
 read_observation()
 checkZeros() / checkNaNs() / checkLosEqualsOne()  # SAR only
 apply_data_filters()
-print_input_summary()
-if -s: quick-look plot
-if -c or -d:
+print_input_summary()  # reader/filter summary before reference correction
+build ObservationGrid only when correction/export is enabled
+apply phase_cycle_correction()  # optional; user-declared integer cycles
+apply observation_correction()  # optional; keeps the original observation
+export full-resolution observation grid  # optional; no resampling
+if effective edit_trace: open the optional editor, skip covariance/downsampling
+if effective show_raw_data: quick-look plot
+if effective do_covar or do_downsample:
   build_processing_image()
   apply_processing_region()
-  if -c:
+  if effective do_covar:
     create CSI imagecovariance from processing data
     apply covar.mask_out to exclude deformation-source area
     sample background pixels and fit exp/gauss covariance model
     write Covariance_estimator*.cov
-  if -d and downsample.guide_grid.enabled and method in [std, data]:
+  if effective do_downsample and downsample.guide_grid.enabled and method in [std, data]:
     build filtered guide image from the processing data
     construct std/data grid on the guide image
     restore the unfiltered processing data
     extract final cell values by downsample.extraction
-  if -d without guide_grid:
+  if effective do_downsample without guide_grid:
     construct grid and extract final cell values from processing data
 write run metadata
 ```
 
-`data_filters` 会真实删除读入后的坏点或粗差点；SAR 使用 `sar_config.data_filters`，optical 使用 `optical_config.data_filters`。`processing_region` 只在协方差和正式降采样前保留科学关注区域；`-s` quick-look 不受它影响，应使用数据类型对应的 quick-look 绘图设置控制显示范围。`guide_grid` 在 `processing_region` 之后生效，只影响 `std/data` 的网格生成，不改变最终取值来源。`covar.mask_out` 沿用 CSI 的 `maskOut()` 语义，只在协方差估计阶段排除震源形变区，不改变最终降采样数据。
+`data_filters` 会真实删除读入后的坏点或粗差点；SAR 使用 `sar_config.data_filters`，optical 使用 `optical_config.data_filters`。少见的 `phase_cycle_correction` 只给用户明确指定的解缠相位区域增加整数周对应的 LOS delta；随后 `observation_correction` 在过滤后、正式处理区域之前估计并应用 offset/plane。原观测仍保留，启用任一改正时 quick-look、协方差和降采样使用最终改正后观测。`processing_region` 只在协方差和正式降采样前保留科学关注区域；`-s` quick-look 不受它影响，应使用数据类型对应的 quick-look 绘图设置控制显示范围。`guide_grid` 在 `processing_region` 之后生效，只影响 `std/data` 的网格生成，不改变最终取值来源。`covar.mask_out` 沿用 CSI 的 `maskOut()` 语义，只在协方差估计阶段排除震源形变区，不改变最终降采样数据。
 
 eqtools 在这里承担流程编排：读入、单位/符号转换、过滤、区域裁剪、YAML 字段校验、报告和输出命名。CSI 承担核心数值对象和算法：`imagecovariance`、`std/data/trirb/from_rsp` 以及最终 varres `.txt/.rsp/.cov` 约定。文档中的配置字段按 eqtools 入口解释；涉及 `imagecovariance` 和 varres 输出时，保持 CSI 命名。
 
@@ -83,10 +110,13 @@ eqtools 在这里承担流程编排：读入、单位/符号转换、过滤、�
 | `optical_config` | optical offset 读入、过滤和 summary 设置 | `filename/read/grid` |
 | `input_adapter` | 可选自定义读入开关；只在 adapter 模板中使用 | `enabled` |
 | `check_plots` | raw quick-look 和 decim 检查图显示/保存设置 | `raw`, `decim` |
+| `phase_cycle_correction` | 高级：给已确认的不连通解缠分量移除整数周 | `corrections[].cycles_to_remove/selector` |
+| `observation_correction` | 过滤后、降采样前的 offset/一阶 plane 参考改正 | `model/coefficient_mode/fit` |
+| `export` | 无重采样导出标准网格或全分辨率 Google Earth 显示副本 | `observation_grid`, `google_earth` |
 | `processing_region` | SAR 或 optical 的协方差和正式降采样处理区域 | `enabled/coord_type/geometry` |
 | `covar` | 协方差估计设置 | `mask_out/function/frac/every/distmax` |
 | `downsample` | 降采样方法、计算后端和参数 | `compute`, `std`, `data`, `trirb`, `from_rsp` |
-| `fault_traces` | 可选断层迹线叠加，只用于 raw/decim 检查图 | lon/lat 文本文件 |
+| `fault_traces` | raw/decim 检查图叠加；`--edit-trace` 时 raw-stage 项作为只读参考 | lon/lat 文本文件 |
 | `fault_models` | 可选断层模型，用于 `trirb` 计算或 GMT 网格叠加 | `generated_from_trace`, `csi_gmt` |
 
 `config_version` 用于固定当前 YAML 语义。当前版本为 `1`；已有旧配置未写该字段时会按 `1` 归一化。运行时写出的 `<outputName>_run_metadata.yml` 会记录 `config_version` 和 `compatibility.deprecated_fields`，方便后续判断案例是否仍依赖旧字段。
@@ -140,6 +170,8 @@ general:
 | 观测量 | 单个标量 `vel`，配套 ENU projection/LOS | `east` 和 `north` 两个水平分量 |
 | 粗差过滤 | `sar_config.data_filters`，按转换后的单标量观测和 projection 过滤 | `optical_config.data_filters`，按 `east/north` 分量或水平模长过滤 |
 | quick-look 范围 | `check_plots.raw.coordrange` | `check_plots.raw.coordrange` |
+| 参考改正 | `observation` 单分量系数 | east/north 共用区域、分别估计系数 |
+| 标准导出 | `observation/corrected_observation` | `east/north/corrected_east/corrected_north` |
 | 正式处理范围 | 顶层 `processing_region` | 顶层 `processing_region` |
 | 协方差输出 | `Covariance_estimator.cov` | `Covariance_estimator_East.cov` 和 `Covariance_estimator_North.cov` |
 | 降采样结果文件 | `<outputName>_ifg.txt/.rsp/.cov` | `<outputName>_ifg.txt/.rsp/.cov` |
@@ -152,9 +184,10 @@ general:
 | `outName` | 基础输出前缀；最终 SAR 输出前缀还会经过 `output_suffix` 解析 |
 | `output_suffix` | 默认 `auto`；`range_offset` 自动追加 `_RngOff`，`azimuth_offset` 自动追加 `_AziOff`，若 `outName` 已带同名后缀则不重复追加；`none`、`false` 或空值表示不追加，自定义字符串会直接追加 |
 | `reader` | `gamma`, `gamma_tiff`, `gmtsar`, `hyp3` |
-| `mode` | `unwrapped_phase`, `phase_los`, `los_displacement`, `range_offset`, `azimuth_offset` |
-| `preset` | 完整产品 preset；与 `mode`、`convention` 三选一 |
-| `convention` | 显式产品语义；高级用户用于非内置产品 |
+| `mode` | `unwrapped_phase`, `los_displacement`, `range_offset`, `azimuth_offset` |
+| `acquisition_look_side` | `right` 或 `left`；表示地面条带位于平台航向哪一侧 |
+| `geometry_convention` | angle reader 的高级角度协议；普通产品省略 |
+| `projection_convention` | GMTSAR direct-projection reader 的高级投影协议；普通产品省略 |
 | `directory` | 数据文件所在目录 |
 | `files` | value、角度或 ENU projection 文件 |
 | `read` | 读入抽稀、单位缩放和波长 |
@@ -162,7 +195,7 @@ general:
 | `data_filters` | 真实删除数据点的过滤规则；默认关闭 |
 | `qc` | summary 百分位等诊断设置；绘图统一放在顶层 `check_plots` |
 
-`reader/mode/preset/convention` 的语义见 [SAR Reader 参考](sar_reader.md)。
+`reader/mode`、左右视和高级协议的语义见 [SAR Reader 参考](sar_reader.md)。
 
 ## `sar_config.files`
 
@@ -203,6 +236,7 @@ sar_config:
 | `zero2nan` | 读入时将 0 值视为无效值 |
 | `wavelength` | phase 转 LOS disp. 的波长 |
 | `factor_to_m` | 位移/offset 产品单位缩放到米；相位通常保持 `1.0` |
+| `byte_order` | 仅 GAMMA 二进制：`native`, `little`, `big`；`native` 保持历史默认 |
 
 ## `sar_config.grid`
 
@@ -566,6 +600,59 @@ box:
   max: 1.5
 ```
 
+## `phase_cycle_correction`、`observation_correction` 与 `export`
+
+这些顶层块位于 reader 配置之外。`phase_cycle_correction` 仅用于
+`sar_config.mode: unwrapped_phase`，而 `observation_correction` 和 `export`
+服务 SAR 与 optical：
+
+```yaml
+observation_correction:
+  enabled: false
+  model: offset
+  coefficient_mode: estimate
+  fit:
+    coord_type: lonlat
+    regions:
+      - kind: circle
+        center: [100.0, 20.0]
+        radius_km: 20.0
+    exclude_regions: []
+
+export:
+  observation_grid:
+    enabled: false
+    format: netcdf
+    file: auto
+    geotiff_sidecar: auto
+    verify: true
+  google_earth:
+    enabled: false
+    file: auto
+    style:
+      cmap: RdBu_r
+      display_factor: 100.0
+      display_unit: cm
+      vmin:               # 显示单位中的色标下限；不是经纬度范围
+      vmax:               # vmin/vmax 同时设置或同时留空
+      symmetry: true      # 只作用于自动范围；显式 vmin/vmax 优先
+```
+
+`phase_cycle_correction` 不出现在默认模板；完整配置见下方链接。
+`observation_correction` 只支持 `offset/plane` 和 `estimate/fixed`。
+`export.observation_grid` 当前只支持规范化的 CF-NetCDF；具有可靠 affine/CRS
+的 TIFF reader 可自动附加同网格 GeoTIFF。导出不插值、不重投影，也不把二维
+经纬度压成一维轴。显式文件可使用 `.nc/.h5/.hdf5`；HDF5 扩展名要求
+`netCDF4` 或 `h5netcdf` 引擎。完整周跳公式、circle/box/polygon、固定 plane
+原点、输出变量和 PyGMT 限制见
+[观测参考改正与无重采样网格导出](observation_correction_export.md)。
+
+`export.google_earth` 复用同一个 reader 和改正结果，只导出全分辨率观测，不自动
+加入 CSI `.txt/.rsp`。启用后使用无阶段选项命令
+`ecat-downsample -f downsample.yml`；`-s/-c/-d` 不触发 KMZ。自动变量选择、
+mask、`vmin/vmax/symmetry` 样式和严格坐标限制见
+[Google Earth Export Reference](google_earth_export.md#downsample-integration)。
+
 ## `processing_region`
 
 `processing_region` 是正式处理区域，不是坏点过滤。它是顶层配置，SAR/InSAR/offset 和 optical offset 共用。启用后，程序先完整读取原始数据并执行对应的 `data_filters`，然后在构造协方差/降采样使用的 CSI 数据对象时，只保留该区域内的点。它会影响 `-c` 和 `-d`，不会影响 `-s` quick-look；quick-look 只看局部时用对应数据类型的绘图范围配置。
@@ -594,6 +681,11 @@ processing_region:
 | `box` | list/mapping/null | `null` | `geometry: box` 时使用；列表格式为 `[minlon, maxlon, minlat, maxlat]` 或 `[minx, maxx, miny, maxy]` |
 | `polygon` | list/null | `null` | `geometry: polygon` 时使用，至少三个点 |
 | `polygon_file` | string/null | `null` | `geometry: polygon_file` 时使用，相对配置文件路径 |
+
+经度区域按 360° 周期匹配。西经 `-118°` 与 `242°` 等价，配置无需迁就 CSI
+对象内部使用的经度分支；程序不会因此改写 CSI 经度、局部 `x/y` 或输出文件。
+跨日界线 box 使用 `[179, 181, minlat, maxlat]` 这类连续展开写法。完整规则、
+polygon 行为和诊断字段见 [经度约定与区域配置](longitude_regions.md)。
 
 三种范围配置不要混用：
 
@@ -714,6 +806,10 @@ check_plots:
 | `colorbar_minor_ticks` | 是否启用 colorbar 次刻度；默认 `false` |
 | `colorbar_minor_subdivisions` | colorbar 次刻度分段数；仅在 `colorbar_minor_ticks: true` 时使用 |
 
+`coordrange` 的经度同样按 360° 周期匹配。程序会把观测中心、cell corners 和断层
+叠加线临时显示到 `coordrange` 所在分支，因此负经度范围可以直接显示 CSI 中保存为
+`0–360°` 的降采样结果；数据和输出坐标不被改写。
+
 当 `vmin/vmax` 为空时，程序使用中心百分位的稳健范围计算色标；`symmetry: true` 时取正负对称范围。命令行 `--vmin/--vmax` 仍会覆盖当前图的上下限。optical raw 和 decim 默认都在一张图中用两列显示 east/north，各分量有独立 colorbar，避免 east/north 色标范围互相遮蔽；默认 `colorbar_orientation: auto` 会为这种双列图使用横向色标，减少分量标签与另一列地图互相遮挡。主图和 colorbar 默认只显示受 `*_max_major_ticks` 限制的主刻度，次刻度默认关闭；如果论文图需要更细读数，再显式启用 `axis_minor_ticks` 或 `colorbar_minor_ticks`。
 
 典型起步值：SAR 单图用 `figsize: single`，需要更高的经纬度图幅时试 `[4, 5]`；optical east/north 双列图用 `figsize: double`，高瘦图幅或横向 colorbar 较拥挤时试 `[7, 5]` 或 `[8, 5]`。`single/double/full` 会由 viztools 转成出版列宽和默认高宽比；显式 `[width, height]` 的单位是 inch，适合最终微调。`fontsize/tickfontsize/labelfontsize` 留空时，程序按最终 `figsize` 宽度自动给字号：`single` 及以下约 6 pt，`double` 及以上约 10 pt，中间线性过渡。正式论文图如果要求统一字号，可显式写定这些字段。
@@ -749,6 +845,11 @@ check_plots:
 | `rampEst` | 调用 CSI 估计协方差前是否估计/移除 ramp |
 
 `mask_out` 可以是一个框，也可以是多个框。它用于背景噪声估计，不应理解为坏点删除或降采样范围控制。
+
+调用 CSI `maskOut()` 前，eqtools 会把每个经度区间解析到当前处理数据的数值分支。
+例如负经度 box 可以正确掩膜 CSI 中保存为 `0–360°` 的点；跨日界线时可能解析为
+两个数值 box。解析只作用于本次协方差调用，原始 YAML 保持不变，并记录在运行
+metadata 的 `_runtime.resolved_covariance_mask_out` 中。
 
 运行 `ecat-downsample -c` 时，eqtools 先按当前配置读入数据、执行 `data_filters`，再在 `processing_region` 内构造轻量 CSI 处理对象。之后程序创建 CSI `imagecovariance`，用 `mask_out` 排除主形变源区，并在剩余背景点上按 `frac/every/distmax/rampEst/function` 拟合经验协方差模型。SAR 写 `Covariance_estimator.cov`；optical offset 分别写 `Covariance_estimator_East.cov` 和 `Covariance_estimator_North.cov`。
 
@@ -799,27 +900,70 @@ downsample:
 `sem` 是标准误，`none` 写 0。`coordinate_statistic: block_center` 会把输出点放在
 cell 几何中心；默认 `mean` 保持旧行为。
 
+<a id="guide-grid"></a>
+
 `downsample.guide_grid` 是可选的 Guided Quadtree Downsampling（引导式四叉树降采样）入口，
 也可理解为 Two-stage Quadtree（两阶段四叉树）。它只允许用于 `method: std` 和 `method: data`。
 启用后，程序先执行 quadtree partitioning based on filtered/smoothed interferograms
 （基于滤波/平滑干涉图的四叉树划分），再切回原始未滤波数据，按 `downsample.extraction`
 提取最终值。它不删除数据，也不改变协方差输入；若要真实剔除粗差，仍使用 `data_filters`。
 
-对规则 SAR/optical 栅格，Gaussian 滤波会优先使用 lon/lat 网格重建后的 NaN-aware 二维滤波；
-这适合大幅 InSAR 栅格。只有无法识别为规则栅格时才退回散点邻域滤波。
+`component: auto` 在 SAR 中等价于 `observation`，在 optical 中等价于 `both`。
+optical 的 `both` 会分别过滤 east/north，再由 CSI 以两个分量的联合离散程度决定是否细分；
+这是推荐入口，因为只过滤 `magnitude` 可能漏掉“水平位移幅值近似不变、方向发生变化”的边界。
+`magnitude`、`east` 和 `north` 保留为进阶诊断选项，使用时应明确接受只让所选量控制网格。
 
 ```yaml
 downsample:
   guide_grid:
     enabled: false
     source: filtered_observation
-    component: auto        # SAR 为 observation；optical 可用 magnitude/east/north/both
+    component: auto        # SAR: observation；optical: both
     filter:
       kind: gaussian
       sigma: null          # enabled: true 时必须设置
       unit: km             # km | pixel
       radius_sigma: 3.0
 ```
+
+`filter.kind` 目前只提供两个职责清楚的选项：
+
+| `kind` | 主要适用问题 | 参数 | 不适合替代的处理 |
+| --- | --- | --- | --- |
+| `gaussian` | 连续、局部的高频随机噪声使 quadtree 过度细分 | `sigma`、`unit`、`radius_sigma` | 连续大气/电离层条带、解缠边界、轨道坡度 |
+| `median` | SAR offset 或 optical offset 中少量孤立错配、小尺度亮暗斑点 | `window_size`，默认 `3`，必须是大于等于 3 的奇数像素窗口 | 长距离相干异常带、有效数据边界、需要真正删除的坏点 |
+
+最短 median 配置只需：
+
+```yaml
+downsample:
+  guide_grid:
+    enabled: true
+    filter:
+      kind: median          # 默认使用 3 x 3 像素窗口
+```
+
+若需显式调整窗口：
+
+```yaml
+downsample:
+  guide_grid:
+    enabled: true
+    filter:
+      kind: median
+      window_size: 5
+```
+
+Gaussian 和 median 都保留输入的原始 NaN 掩膜，并只改变网格生成阶段的引导值。
+median 仅对可识别的完整或稀疏规则 lon/lat 栅格开放，不为散点输入猜测“像素邻域”。
+Gaussian 对这类规则栅格使用分块 NaN-aware 二维计算；稀疏栅格只重建 value 网格，
+不再同时重建完整 `x/y` 网格。小型非规则点集仍可使用散点邻域实现。若大数据无法识别为规则栅格，
+程序会明确停止并提示保留规则 lon/lat 网格拓扑或在上游滤波，不会静默进入耗时的逐点散点循环。
+
+生成模板同时列出两种 `kind`。把 `kind` 改为 `median` 时，未删除的 Gaussian 默认字段
+不会进入运行时 filter；`window_size` 未写时使用 3。运行报告中的 `guide_grid.filter`
+记录实际采用的、按 `kind` 归一化后的字段；`components.*` 还记录 backend、grid layout、
+grid shape 和有效点覆盖率。未知或拼错的 filter 字段会在运行前报错。
 
 `guide_grid` 不用于 `trirb`，因为 `trirb` 的网格由断层 Green 函数、样本权重和分辨率判据控制，
 不是由观测图像局部标准差或曲率直接驱动。`trirb` 和 `from_rsp` 仍会使用
@@ -857,6 +1001,22 @@ downsample:
 | `high_value_refinement` | 高值区域额外细分 |
 | `low_amplitude_cap` | 低振幅区域限制过度细分 |
 
+`focus_region` 启用时，`box`、`polygon` 和 `polygon_file` 必须且只能设置一个。
+最常用的矩形写法是：
+
+```yaml
+focus_region:
+  enabled: true
+  coord_type: lonlat
+  box: [94.5, 97.0, 20.0, 23.0]  # [minlon, maxlon, minlat, maxlat]
+  max_splits_outside: 5
+```
+
+`focus_region.box` 当前只支持经纬度顺序
+`[minlon, maxlon, minlat, maxlat]`，且两个最小值必须分别小于最大值。它不会删除
+box 外的数据；CSI 根据降采样块中心是否位于该区域内，限制区域外的最大细分层级。
+需要真正移除区域外数据时使用顶层 `processing_region.box`。
+
 `std_config.split_metric_correction` 只控制 std-based quadtree 的“是否继续分裂”判据，不控制最终
 `<outName>_ifg.txt` 的 cell 值。新模板默认 `median`，需要复现 CSI 原行为时可显式设置为 `std`；`bilinear` 会在每个候选块内
 先拟合并去掉一个局部平面趋势，再用残差标准差判断是否分裂，适合存在长波坡度但不希望坡度本身
@@ -876,7 +1036,21 @@ downsample:
 | `split_metric` | 分裂判据类型：`curvature` 或 `gradient`；传给 CSI `dataBased(quantity=...)` |
 | `split_metric_smoothing` | 可选的分裂判据平滑长度；传给 CSI `dataBased(smooth=...)` |
 
-`trirb_config.min_valid_fraction` 和 `from_rsp_config.min_valid_fraction` 也是有效像素比例阈值；
+`trirb_config` 的参数对本次参与计算的全部断层模型统一生效：
+
+| 字段 | 作用 |
+| --- | --- |
+| `minimumsize` | 三角初始网格允许的最小尺寸 |
+| `min_valid_fraction` | 三角候选块内最小有效像素比例；传给 CSI `initialstate(..., tolerance=...)` |
+| `max_samples` | 目标最大降采样观测数 |
+| `change_threshold` | 相邻迭代样本数变化的停止阈值，单位为百分比 |
+| `smooth_factor` | 分辨率矩阵中断层 Laplacian 平滑项的统一权重 |
+| `slipdirection` | 构建 Green 函数的分量组合：`s`、`d`、`t` 或其组合；对全部活动断层统一生效 |
+| `plot` | 是否显示 CSI 内部迭代图；不同于顶层检查图叠加设置 |
+| `decimorig` | 仅在 `plot: true` 时使用的内部绘图抽稀 |
+| `verboseLevel` | CSI 迭代输出级别 |
+
+`trirb_config.min_valid_fraction` 和 `from_rsp_config.min_valid_fraction` 都是有效像素比例阈值；
 它们保留同一含义，但分别作用于三角初始块和复用 `.rsp` cell。`from_rsp` 读取 `.rsp` 中的
 lon/lat 顶点并投影到当前数据对象的局部坐标；10 列 legacy 矩形只有左上和右下角，18 列
 full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` 复用的正式三角 cell。
@@ -894,6 +1068,14 @@ full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` �
 | `fault_traces` | 读取 lon/lat 文本迹线，叠加到 `-s` raw quick-look 或 `-d` decim 检查图 | 否 |
 | `fault_models` | 读取或生成 CSI 断层模型；可用于 `trirb`，也可把 patch edges 叠加到检查图 | 仅当 `use_for` 包含当前方法时 |
 
+两类条目都使用列表形式。`type` 表示模型从哪里来，`geometry` 表示 patch 形状，
+两者不是同一个维度：
+
+| 字段 | 可选值 | 含义 |
+| --- | --- | --- |
+| `type` | `generated_from_trace`、`csi_gmt` | 从迹线构建模型，或读取已有 CSI GMT patch 文件 |
+| `geometry` | `triangular`、`rectangular` | 模型的 patch 形状；`trirb` 只接受 `triangular` |
+
 常用迹线叠加：
 
 ```yaml
@@ -902,7 +1084,14 @@ fault_traces:
     id: surface_trace
     file: Fault_Trace_Menyuan.txt
     stages: [raw, decim]   # raw | decim | all
+    marker: null           # null=只画线；改为 "x" 可标出输入迹线点
+    markersize: 3.0        # marker 非 null 时生效，单位 pt
 ```
+
+`marker` 省略或设为 YAML `null` 时保持原有纯线条绘图；临时改为 `"x"` 会在每个输入迹线点上
+叠加小叉号，适合对照检查并调整迹线节点。符号继承当前 raw/decim 图的 `trace_color`，
+`markersize` 只控制符号大小，不参与读取、断层构建或降采样计算，也不会作用到
+`fault_models` 的 patch edges。
 
 `fault_traces.file` 是至少两列的文本文件，默认按 `lon lat` 读取。若列名或分隔符不同，可加：
 
@@ -942,21 +1131,86 @@ fault_models:
     type: csi_gmt
     geometry: triangular    # triangular | rectangular；trirb 只支持 triangular
     file: fault_mesh.gmt
-    readpatchindex: true
-    donotreadslip: true
-    gmtslip: true           # triangular GMT 常用；rectangular 不用该项
+    readpatchindex: true     # 段头含 3 个拓扑索引
+    donotreadslip: true      # 只读几何并忽略滑动量
+    gmtslip: true            # 仅 triangular；段头含 -Z... 时为 true
     use_for: []             # 若要用于 trirb，设为 [trirb]
     plot:
       stages: [raw, decim]
-      mode: edges           # edges | outline | both
+      mode: edges           # edges | trace | both
 ```
+
+CSI GMT 读取字段必须与文件段头一致：
+
+| 字段 | 何时设为 `true` | 适用范围 |
+| --- | --- | --- |
+| `readpatchindex` | 每个 `>` 段头包含三个 patch/拓扑索引 | 三角和矩形 CSI GMT |
+| `donotreadslip` | 只需要几何，或希望忽略段头中的滑动量；`trirb` 通常保持 `true` | 三角和矩形 CSI GMT |
+| `gmtslip` | 三角 GMT 段头包含 `-Z...` token；它会改变后续索引/滑动列的解析位置 | 仅三角 CSI GMT；矩形条目必须省略 |
+| `increasingy` | 希望 CSI 按递增 y 方向整理矩形 patch 角点 | 仅矩形 CSI GMT；默认 `true` |
+
+三角 GMT 没有 `-Z...` 时写 `gmtslip: false`；没有三个拓扑索引时写
+`readpatchindex: false`。矩形模型不参与 `trirb`，应写 `use_for: []`，但仍可通过
+`plot.stages` 叠加到 raw/decim 检查图。
+
+多断层或混合来源不需要额外的 `group`/`role` 层。将条目依次放入同一个列表：
+
+```yaml
+fault_models:
+  - enabled: true
+    id: trace_built_fault
+    type: generated_from_trace
+    geometry: triangular
+    trace_file: fault_a_trace.txt
+    dip_angle: 82
+    dip_direction: 194
+    top_size: 2.0
+    bottom_size: 3.0
+    top_depth: 0.0
+    bottom_depth: 21.0
+    use_for: [trirb]
+    plot:
+      stages: [decim]
+      mode: edges
+
+  - enabled: true
+    id: gmt_fault
+    type: csi_gmt
+    geometry: triangular
+    file: fault_b_mesh.gmt
+    readpatchindex: true
+    donotreadslip: true
+    gmtslip: true
+    use_for: [trirb]
+    plot:
+      stages: [raw, decim]
+      mode: edges
+```
+
+活动计算条目的精确条件是：`enabled: true`、`geometry: triangular`，并且
+`use_for` 包含当前的 `trirb` 方法。多个活动模型按列表顺序共同传给同一个 CSI
+downsampler；底层构造 `G_total = [G_1 G_2 ...]`，并以
+`D_total = block_diag(D_1, D_2, ...)` 组合各断层平滑矩阵。因此它是一次联合的
+分辨率计算，不是逐断层依次重新降采样。`trirb_config.slipdirection` 和
+`smooth_factor` 对这些活动模型统一生效。
+
+计算和绘图是两条独立选择路径：
+
+| `enabled` | `use_for` | `plot.stages` | 实际作用 |
+| --- | --- | --- | --- |
+| `false` | 任意 | 任意 | 不读取、不计算、不绘图 |
+| `true` | `[trirb]` | `[]` 或未设置 | 只参与 `trirb` 计算 |
+| `true` | `[]` | `[raw]`、`[decim]` 或两者 | 只叠加到指定检查图 |
+| `true` | `[trirb]` | `[raw, decim]` | 同时参与计算和两类检查图 |
 
 要点：
 
 - `std`、`data`、`from_rsp` 不需要断层模型；入门两步走建议先用这些方法跑通。
 - `trirb` 必须至少启用一个 `geometry: triangular` 且 `use_for: [trirb]` 的 `fault_models` 条目。
-- `fault_traces` 只画线，不会自动生成 `trirb` 所需模型。
+- `fault_traces` 只用于绘图，不会自动生成 `trirb` 所需模型；`marker` 只标记文本迹线的输入节点。
 - `fault_models.plot: true` 表示 raw 和 decim 两类检查图都叠加；若要精确控制，用 `plot.stages`。
+- `fault_traces` 的绘图阶段直接写在 `stages`；`fault_models` 必须写在 `plot.stages`。配置校验会拒绝放错层级的字段。
+- 同一 `fault_traces` 或 `fault_models` 列表中的显式 `id` 必须唯一，便于报告、绘图和排错。
 - `csi_gmt` 只作为已构建 CSI patch 网格的轻量入口；不在降采样配置里扩展更多网格格式，避免维护和理解负担。
 
 ## 输出文件
@@ -971,6 +1225,12 @@ fault_models:
 | `optical_output.txt` | `-s` optical quick-look | 记录 east/north 统计、色标和水平模长 |
 | `<outName>_deformation_map.jpg` | `-s` optical quick-look | 原始 optical east/north 形变图 |
 | `<outputName>_filter_report.yml` | 启用 `data_filters` | 记录每条过滤规则删除点数 |
+| `<outputName>_phase_cycle_correction.yml` | 启用 `phase_cycle_correction` | 记录 selector、整数周、波长、LOS delta 和像元数 |
+| `<outputName>_observation_correction.yml` | 启用 `observation_correction` | 记录参考区、系数、公式和改正前后统计 |
+| `<outputName>_observation.nc` 或显式 `.h5/.hdf5` | 启用 `export.observation_grid` | 无重采样全分辨率原观测、周跳 delta、改正面、最终观测、projection 和坐标 |
+| `<outputName>_observation_grid.yml` | 启用 `export.observation_grid` | 记录 topology、变量、shape 和实际导出文件 |
+| `<outputName>_<variable>.tif` | affine TIFF 且 `geotiff_sidecar: auto/true` | 保持原 geotransform/CRS 的逐变量绘图副本 |
+| `<outputName>_google_earth.kmz` | 启用 `export.google_earth` 且无 `-s/-c/-d` 阶段 | 全分辨率最终观测的显示副本；不含降采样单元 |
 | `<outputName>_processing_region_report.yml` | 启用 `processing_region` 且运行 `-c` 或 `-d` | 记录正式处理区域保留/删除点数 |
 | `<outputName>_run_metadata.yml` | 每次运行 | 有效配置、配置版本、deprecated compatibility 字段、执行步骤和预期输出 |
 | `<outputName>_downsample_report.yml` | `-d` 且 `downsample.report.enabled: true` | 记录降采样点数、格网、guide-grid、提取规则和质量诊断 |
@@ -987,6 +1247,10 @@ fault_models:
 | --- | --- |
 | `data_filters` vs `covar.mask_out` | 前者真实删除点；后者只在协方差估计时排除震源形变区 |
 | `data_filters` vs `processing_region` | 前者用于数据质量过滤；后者用于科学关注区域，会影响 `-c/-d` |
+| `phase_cycle_correction.selector` vs `observation_correction.fit.regions` | 前者是实际施加整数周改正的目标；后者只是估计全局 offset/plane 的参考样本 |
+| `observation_correction` vs `covar.rampEst` | 前者改正降采样输入；后者只服务协方差拟合 |
+| `observation_correction` vs 反演 `geodata.polys` | 前者是确定性预处理；后者在反演中联合估计 nuisance 参数 |
+| 标准 NetCDF vs PyGMT 派生网格 | 标准文件不重采样；地图投影显示若需重采样，必须另存派生文件 |
 | `check_plots.*.coordrange` vs `processing_region` | 前者只裁剪图件视野；后者裁剪正式处理数据 |
 | `processing_region` vs `std_config.focus_region` | 前者保留处理区域；后者只控制 std-based 细分层级 |
 | `guide_grid` vs `extraction` | 前者只控制 `std/data` 的网格怎么生成；后者控制所有方法最终如何从原始数据提取 cell 值 |
@@ -1008,5 +1272,6 @@ fault_models:
 - 手动调参：[InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)
 - 自定义读入和时序网格复用：[自定义读入 Adapter 降采样](../workflows/02b_adapter_downsampling.md)
 - Reader 和符号约定：[SAR Reader 参考](sar_reader.md)
+- 参考改正和全网格导出：[观测参考改正与无重采样网格导出](observation_correction_export.md)
 - 命令行入口：[CLI 命令参考](cli.md)
 - 图件样式和出版尺寸：[ECAT 图件样式参考 / Viztools](viztools.md)

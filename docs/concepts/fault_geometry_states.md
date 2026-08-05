@@ -19,7 +19,13 @@ ECAT/eqtools 中同一个断层几何会经历多个状态。理解这些状态�
 简单地表 trace 加固定倾角：
 
 ```text
-trace -> top_coords -> bottom_coords -> mesh -> slip initialization
+trace -> top_coords -> fixed dip + explicit dip direction -> bottom_coords -> mesh
+```
+
+地表 trace 加沿走向变化倾角：
+
+```text
+trace -> top_coords -> dip control points -> per-node strike/dip -> bottom_coords -> mesh
 ```
 
 非线性几何结果：
@@ -43,13 +49,18 @@ readPatchesFromFile -> fault summary -> edge/contour checks -> inversion or forw
 ## 常见误区
 
 - 不要直接在经纬度上做 trace 长度、延伸和重采样；先转成局部 `x/y` km。
+- strike 和 dip direction 都是从北顺时针增加的地理方位角；右手规则下通常有 `dip_direction = strike + 90°`。
+- trace/top 点序定义 strike 正点序。多倾角模式可使用一个显式/PCA 代表性 strike，也可使用
+  top edge 自动局部 strike，或插值四列 `xydip` 中的控制点 strike；正倾角始终向最终采用的
+  strike 右手侧下倾。
+- 沿走向变化倾角和随深度变化倾角是不同问题；后者需要 layered-dip 几何。
 - `fault.discretize(...)` 是 CSI legacy trace 离散接口，新代码优先用 `fault.discretize_trace(...)`。
 - 普通 polyline GMT 不等于 CSI patch GMT；只有后者能直接表示 fault patches。
 - top/bottom 分别按距离重采样可能导致点数不一致；需要配对建 mesh 时，优先使用相同 `num_segments`。
 
 ## 继续阅读
 
-- [Trace 预处理与断层顶部边界](../examples/fault_trace_preprocessing.md)
+- [地表迹线预处理与倾角建模短例](../examples/fault_trace_preprocessing.md)
 - [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)
 - [Fault Geometry Construction](../reference/fault_geometry_construction.md)
 - [Fault Summary](../reference/fault_summary.md)

@@ -8,6 +8,7 @@
 | --- | --- |
 | 为什么推荐先非线性几何、再线性滑动 | [标准两步走反演逻辑](two_step_inversion.md) |
 | trace、top/bottom、layers、mesh 和 patch 有什么区别 | [断层几何状态](fault_geometry_states.md) |
+| `strike/dip/rake` 如何配套解释，跨 `90°` 时怎样进入 CSI | [断层走向、倾角与滑动基底约定](fault_angle_conventions.md) |
 | SAR/offset 数据的正负号和 LOS projection 怎么理解 | [SAR 投影和观测约定](sar_projection_conventions.md) |
 
 ## 和其他文档层的关系

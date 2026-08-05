@@ -3,6 +3,9 @@
 本页说明 `geodata.polys`、`poly_bounds` 和 `data_corrections` 的统一语义。这里的
 `poly` 是历史字段名，更准确的概念是数据改正项或 nuisance transform：
 
+如果目的是在降采样前用指定参考区确定性归零或去一阶平面，应使用
+[观测参考改正](observation_correction_export.md)，而不是本页的反演参数。
+
 ```text
 d = G_slip m_slip + H_corr c + noise
 ```
@@ -11,6 +14,16 @@ d = G_slip m_slip + H_corr c + noise
 offset、ramp、参考框架平移或框架形变项。数据改正项会和滑动一起估计，但不应解释为断层滑动。
 
 所有改正项参数都使用进入反演矩阵后的观测数值单位。主配置的 `units.observation` 用来说明这个单位：累计位移反演通常写 `m`，震间速度反演通常写 `m/yr` 或 `mm/yr`。ECAT 假设观测、Green 函数预测、滑动变量和约束右端项已经统一到同一数值单位；该字段不会自动重标定原始数据，只用于固定 Euler loading、矩震级换算和改正项物理解释报告。
+
+## 阅读路径
+
+| 当前问题 | 建议阅读顺序 |
+| --- | --- |
+| 第一次决定是否启用改正项 | [什么时候使用](#什么时候使用) → [配置位置](#配置位置) → [边界和输出检查](#边界和输出检查) |
+| 配置 BLSE/VCE 中的改正参数 | [线性 BLSE/VCE 支持范围](#线性-blsevce-支持范围) → [模式关系和使用场景](#模式关系和使用场景) → [改正参数边界](#数据改正参数边界) |
+| 处理 SAR/InSAR ramp 或 offset | [SAR/InSAR 标量 Polynomial](#sarinsar-标量-polynomial) → [预测、移除与单项改正检查](#预测移除与单项改正检查) |
+| 处理 GPS 参考框架 | [GPS Frame Transform](#gps-frame-transform) → [GPS 2D Strain 和 Rotation](#gps-2d-strain-和-rotation) 或 [`full` Helmert-Like Transform](#gps-full-helmert-like-transform) |
+| 确认非线性几何阶段支持什么 | [非线性几何 SMC 支持范围](#非线性几何-smc-支持范围) |
 
 ## 什么时候使用
 
@@ -225,7 +238,7 @@ v_i - v_j -> (v_i - v_j) + theta J (r_i - r_j)
 
 这个附加速度差垂直于基线方向，代表刚体旋转；它不表示拉张、压缩或剪切，但会改变图上看到的相对速度矢量。
 `full` 的 rotation 部分也是刚体旋转，scale 部分则是各向同性尺度率；它不含剪切或各向异性伸缩，但会改变基线长度变化率。
-`strain` 和 `internalstrain` 才允许一般对称应变，包括方向性伸缩和剪切。
+`strain` 和 `internalstrain` 才允许一阶连续应变/速度梯度，包括方向性伸缩和剪切。
 
 可以用下面的表判断风险：
 
@@ -236,7 +249,7 @@ v_i - v_j -> (v_i - v_j) + theta J (r_i - r_j)
 | `full` | 是 | 是 | 只有各向同性尺度率，无剪切和各向异性伸缩 |
 | `strain` | 是 | 是 | 一般二维均匀应变，含剪切和各向异性伸缩 |
 | `eulerrotation` | 是 | 是 | 球面刚体旋转；不是 block 内部应变 |
-| `internalstrain` | 依赖中心和是否同时估计平移 | 是 | block 或区域内部连续应变 |
+| `internalstrain` | 依赖中心和是否同时估计平移 | 是 | block 或区域内部连续应变；使用余纬方向 basis |
 
 因此，“不改变内部形状”不等于“不改变速度场相对关系”。如果科学目标是断层 loading 或 coupling，
 应优先确认 frame transform 改变的是参考框架表达，而不是吸收了真实构造长波场。
@@ -329,7 +342,7 @@ v(lon, lat) ~= v0 + A_euler delta r
 因此震间块体刚体运动应优先用 `eulerrotation` 或专门的 block 配置，而不是用 `full` 或 `strain`
 间接吸收。
 
-`internalstrain` 与 `strainonly` 都表示对称水平应变，但坐标和语义不同。`strainonly` 使用投影平面归一化坐标：
+`internalstrain` 与 `strainonly` 都表示一阶水平连续变形场，但坐标和语义不同。`strainonly` 使用投影平面归一化坐标：
 
 ```text
 v_E = exx x' + 0.5 exy y'
@@ -339,15 +352,16 @@ v_N = eyy y' + 0.5 exy x'
 `internalstrain` 使用相对中心的球面弧长坐标：
 
 ```text
-x_s = R Delta_lambda cos(phi)
-y_s = R Delta_phi
-v_E = sxx x_s + 0.5 sxy y_s
-v_N = syy y_s + 0.5 sxy x_s
+x_s = R (lambda - lambda0) cos(phi0)
+y_s = R (phi0 - phi)
+v_E = sxx x_s + sxy y_s
+v_N = sxy x_s + syy y_s
 ```
 
-所以在小区域、坐标近似一致时，它们可以表达相似的对称速度梯度；但 `internalstrain` 更适合和
-`eulerrotation` 一起表示 block 内部连续应变，而 `strainonly` 是普通 GPS frame transform 里的局部
-归一化 basis。两者的参数单位和缩放不同，不能直接比较。
+这里的 `y_s` 是余纬方向弧长，也就是向南为正；参数列顺序为 `[sxx, sxy, syy]`，`sxy`
+是张量剪切分量，不再除以 2。小区域内它可以表达类似的一阶连续应变场；但 `internalstrain`
+更适合和 `eulerrotation` 一起表示 block 内部连续应变，而 `strainonly` 是普通 GPS frame
+transform 里的局部归一化 basis。两者的坐标、参数单位和缩放不同，不能直接比较。
 
 CSI/ECAT 代码实现中，常用归一化量保存在数据对象上，便于后处理换算：
 
@@ -369,6 +383,7 @@ BLSE/VCE 和 Bayesian inversion 对象提供一个只读后处理接口，用来
 ```python
 report = inversion.collect_data_correction_parameters()
 inversion.print_data_correction_report(report)
+inversion.write_data_correction_report("output")
 
 df = inversion.data_correction_parameters_to_dataframe(report)
 ```
@@ -388,10 +403,20 @@ df = inversion.data_correction_parameters_to_dataframe(report)
 | `translationrotation`, `strain*` | 平移、真实一阶速度梯度、应变张量、顺时针旋转梯度 |
 | `full` | local Helmert-like 平移、旋转梯度和尺度梯度 |
 | `eulerrotation` | Cartesian Euler vector 和 Euler pole |
-| `internalstrain` | 以内应变中心为参考的内部应变张量 |
+| `internalstrain` | 以内应变中心为参考的内部应变 basis，坐标为经向弧长与余纬弧长 |
+
+对应变类参数，报告同时保留 raw 参数、SI/物理张量和便于人工检查的显示单位。若
+`units.observation` 是速率单位，例如 `m/yr` 或 `mm/yr`，`strain_tensor_display`
+使用 `nanostrain/year`；若是位移单位，例如 `m` 或 `mm`，则使用 `nanostrain`。
+例如 `units.observation: mm/yr` 时，raw 内部应变系数先乘以 `1e-3` 转成
+`1/year`，再乘以 `1e9` 显示为 `nanostrain/year`。
 
 如果归一化 metadata 缺失，报告会给 warning，而不会静默重新计算。科研解释时应优先修复
 metadata 来源，因为重新计算中心或尺度可能和原设计矩阵不一致。
+
+`write_data_correction_report()` 默认写出 `data_correction_parameters.txt` 和
+`data_correction_parameters.tsv`。文本文件适合人工检查，TSV 适合后续用 pandas、Excel
+或绘图脚本读取。该接口和打印接口使用同一套只读解析逻辑，不会重新计算合成数据或修改反演结果。
 
 ### 数据改正参数关系约束
 
@@ -528,8 +553,8 @@ inversion.set_data_correction_bounds(
 建议在正式反演前打印一次核对。
 
 调用时机和 equality helper 相同：必须在反演对象已经构建、`poly_positions` 已知之后，求解或构建 SMC target
-之前。BLSE/VCE 在 `run()` 时读取最新 constraint manager 状态；`SMC_F_J` 会在
-`make_F_J_target_for_parallel()` / `walk_F_J()` 构建 target 时冻结当前 bounds，因此之后若再改 data-correction
+之前。BLSE/VCE 在 `run()` 时读取最新 constraint manager 状态；`SMC_FJ` 会在
+标准 `walk()` 入口构建 target 时冻结当前 bounds，因此之后若再改 data-correction
 bounds，需要重新构建 target。
 
 ### 预测、移除与单项改正检查
@@ -547,6 +572,10 @@ d = G_slip m_slip + H_corr c + residual
 | `data.buildsynth(faults, poly="include")` | `data` vs `G_slip m_slip + H_corr c` | 不改变 `data.vel_enu` / `data.vel` |
 | `data.buildsynth(faults, poly=None)` | `data` vs `G_slip m_slip` | 不改变 `data.vel_enu` / `data.vel` |
 | `data.removeTransformation(fault)` 后再 `buildsynth(poly=None)` | `data - H_corr c` vs `G_slip m_slip` | **会原地修改观测数据** |
+
+上层结果接口（`extract_and_plot_blse_results()`、`plot_data_fits()` 和 `collect_fit_statistics()`）默认使用 `data_poly="config"`。该模式读取配置对象中已经展开并与数据集对齐的 `geodata.polys`：配置了改正项的数据集调用 `poly="include"`，未配置的数据集调用 `poly=None`。上层接口不会再次解析 YAML 单值，也不会用截断或补齐来掩盖长度错配。
+
+显式传入 `data_poly=None` 仍表示 source/slip-only 诊断；显式传入 `data_poly="include"` 表示对所有选中数据集强制请求总预测。
 
 因此下面两个残差在数学上应一致：
 
@@ -720,7 +749,7 @@ SAR/InSAR 也有高级字符串 transform，但它们不是普通 orbit/ramp：
 | --- | --- | --- |
 | `strain` | `[exx, exy, eyy]` | `los_E (exx x' + 0.5 exy y') + los_N (0.5 exy x' + eyy y')` |
 | `eulerrotation` | `[wx, wy, wz]` | `los_E v_E(w) + los_N v_N(w)` |
-| `internalstrain` | `[sxx, syy, sxy]` | `los_E u_E(s) + los_N u_N(s)` |
+| `internalstrain` | `[sxx, sxy, syy]` | `los_E u_E(s) + los_N u_N(s)` |
 
 这里 `x', y'` 使用 CSI 的 strain 归一化；`v_E, v_N` 是 Euler vector 产生的水平速度；`u_E, u_N`
 是球面近似内部应变产生的水平速度。它们都会投影到 SAR 标量观测方向。除非有明确参考框架或块体运动假设，常规
@@ -748,7 +777,7 @@ GPS 的 frame transform 用于描述数据集参考框架误差或长波背景�
 | `strainnotranslation` | 4 | 5 | `[exx, exy, eyy, omega, (tz)]` |
 | `strain` | 6 | 7 | `[tx, ty, exx, exy, eyy, omega, (tz)]` |
 | `eulerrotation` | 3 | 3 | `[wx, wy, wz]` |
-| `internalstrain` | 3 | 3 | `[sxx, syy, sxy]` |
+| `internalstrain` | 3 | 3 | `[sxx, sxy, syy]` |
 
 ### GPS 2D Strain 和 Rotation
 
@@ -889,7 +918,7 @@ full Helmert rotation gradient        = theta / M
 
 - `translationrotation` 只含平移和刚体旋转；它会改变站点间速度差，但不改变基线长度变化率。
 - `full` 额外包含 `scale`；作为 frame scale rate，它在速度场中表现为各向同性尺度率，会统一改变基线长度变化率。
-- `strain` / `internalstrain` 则允许一般对称应变，可能表示真实区域内部形变，也可能和深部滑动、Euler loading trade off。
+- `strain` / `internalstrain` 则允许一阶连续变形场，可能表示真实区域内部形变，也可能和深部滑动、Euler loading trade off。
 
 含垂直 GPS 时，CSI 使用 7 参数局部 Helmert-like 矩阵：
 
@@ -951,21 +980,23 @@ GPS 三分量时垂向行为为 0，因为刚体 Euler rotation 在球面切平�
 `internalstrain` 使用相对数据集中心的球面近似内部应变。先把经纬度差转换为局部弧长：
 
 ```text
-x_s = R Delta_lambda cos(phi)
-y_s = R Delta_phi
+x_s = R (lambda - lambda0) cos(phi0)
+y_s = R (phi0 - phi)
 ```
 
 然后使用不含平移和旋转的水平 strain basis：
 
 ```text
 Delta_lambda = lambda - lambda0
-Delta_phi    = phi - phi0
+Delta_theta  = phi0 - phi
 
-v_E = sxx x_s + 0.5 sxy y_s
-v_N = syy y_s + 0.5 sxy x_s
+v_E = sxx x_s + sxy y_s
+v_N = sxy x_s + syy y_s
 ```
 
-这两个 transform 更适合震间块体或区域框架问题；不要把它们当作普通 GPS offset/ramp 的替代品。
+参数列顺序为 `[sxx, sxy, syy]`；`sxy` 是张量剪切项，不是工程剪切项，因此这里没有
+`1/2`。这两个 transform 更适合震间块体或区域框架问题；不要把它们当作普通 GPS
+offset/ramp 的替代品。
 
 ## Optical 和水平 offset 数据
 

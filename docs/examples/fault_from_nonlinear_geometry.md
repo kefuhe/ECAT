@@ -21,6 +21,11 @@ top, depth = 0.0, 8.0
 
 这里的 `clon/clat/cdepth` 表示**断层顶边中点**，不是断层面中心。`top/depth` 是后续分布式滑动面网格的顶部和底部深度。
 
+优先从非线性模型报告的 `CSI solver geometry` 读取交接角度。标准矩形/三角入口也会再次执行
+同一规范化，因此把历史负 `dip` 原样传入不会改变 SMC 实际使用的几何；这一步只处理
+`strike/dip`，不会搬运或转换紧凑源 `rake/slip`。详见
+[断层角度约定](../concepts/fault_angle_conventions.md)。
+
 ## 矩形元
 
 矩形元适合快速、规则、可控的线性滑动反演。
@@ -103,6 +108,8 @@ tri.writePatches2File("tri_fault.gmt", add_slip="total")
 ```
 
 线性滑动反演前，至少检查 trace 长度、patch 数量、面积、深度范围、顶部/底部边界和平均走向/倾角。
+如果非线性 input `dip` 曾超过 `90°` 或为负值，还应确认 fault summary/getpatchgeometry
+给出的 canonical strike/dip 与非线性报告中的 `CSI solver geometry` 一致。
 
 相关参考：
 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md),

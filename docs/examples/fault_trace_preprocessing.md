@@ -1,6 +1,7 @@
-# Trace 预处理与断层顶部边界
+# 地表迹线预处理与倾角建模短例
 
-这个例子演示如何在写入 fault object 前，用数组级工具统一 trace 方向、裁剪、端点延伸和重采样。
+这个例子先用数组级工具统一 trace 方向、裁剪、端点延伸和重采样，再分别给出固定倾角和
+沿走向变化倾角的最短建模代码。
 
 ## 输入
 
@@ -43,20 +44,85 @@ fault.trace(lon_new, lat_new)
 fault.set_top_coords_from_trace()
 ```
 
-## 继续生成断层面
+## 选择倾角模式
+
+| 已有信息 | 使用模式 |
+| --- | --- |
+| 一个倾角和一个明确下倾方向 | `generate_bottom_from_single_dip(...)` |
+| 多个沿走向倾角控制点 | `interpolate_top_dip_from_relocated_profile(...)` 后接 `generate_bottom_from_segmented_relocated_dips(...)` |
+| 倾角还随深度变化 | 不使用本短例；转到 reference 的 layered-dip 路线 |
+
+角度统一使用地理方位角：北为 `0°`、东为 `90°`，从北顺时针增加；strike 正点序由
+trace 点序决定。
+
+## A. 固定倾角
 
 如果使用单一倾角生成底边：
 
 ```python
 fault.top = 0.0
 fault.depth = 20.0
+
+# Example: the ordered trace has a representative eastward strike (90°).
+reference_strike = 90.0
+dip_direction = (reference_strike + 90.0) % 360.0  # right-hand rule
 fault.generate_bottom_from_single_dip(
     dip_angle=70.0,
-    dip_direction=180.0,
+    dip_direction=dip_direction,
 )
 fault.generate_mesh(top_size=1.0, bottom_size=2.0, show=False, verbose=0)
 fault.initializeslip(values="depth")
 ```
+
+`dip_direction` 不会由代码自动从 trace 推导。右手规则通常使用
+`(strike + 90°) % 360°`；使用前应确认 trace 点序和实际倾向。
+
+## B. 沿走向变化倾角
+
+最常用的控制点数组是三列 `[lon, lat, dip]`：
+
+```python
+dip_points = np.array([
+    [96.00, 21.00, 55.0],
+    [96.20, 21.10, 65.0],
+    [96.45, 21.20, 72.0],
+])
+
+fault.depth = 25.0
+dip_table = fault.interpolate_top_dip_from_relocated_profile(
+    dip_points,
+    is_utm=False,
+    discretization_interval=2.0,
+    interpolation_axis="auto",
+)
+
+# Nearly straight trace: use one explicit representative strike.
+representative_strike = 65.0
+fault.generate_bottom_from_segmented_relocated_dips(
+    fault_depth=fault.depth,
+    use_average_strike=True,
+    average_strike_source="user",
+    user_direction_angle=representative_strike,
+    verbose=True,
+)
+fault.generate_mesh(top_size=1.0, bottom_size=2.0, show=False, verbose=0)
+fault.initializeslip(values="depth")
+```
+
+`dip_table` 包含插值后的 `lon/lat/strike/dip`，建议先检查再建 mesh。上例中的
+`user_direction_angle` 是北为 `0°`、顺时针为正的 **strike**，不是下倾方向；底边按其右手侧
+生成，`verbose=True` 会打印实际应用的统一走向。近直线但暂时没有可靠走向角时，可改用
+`use_average_strike=True, average_strike_source="pca"` 自动取 trace 的 PCA 主轴。只有明显弯曲
+且希望下倾方向随走向变化时，才改用 `use_average_strike=False`：三列 `[lon, lat, dip]` 会从
+有序 top edge 自动计算逐节点局部 strike；四列 `[lon, lat, strike, dip]` 会把用户给定的
+控制点 strike 圆周插值到顶部节点并真正用于底边计算。
+
+多倾角模式推荐把 dip 写成 `[-90°, 0°) ∪ (0°, 90°]`：正值向 strike 右手侧下倾，负值向
+左手侧下倾，`90°` 为垂直。`0°`/`180°` 会因无法投影到更深底边而被拒绝；兼容输入
+`(90°, 180°)` 会转换成 `dip - 180°`，例如 `150°` 与 `-30°` 等价。
+
+DataFrame、CSV、投影 `x/y` 控制点以及三种走向来源的完整可复制形式见
+[Fault Geometry Construction：沿走向变化倾角](../reference/fault_geometry_construction.md#trace-dip-varying)。
 
 ## 检查
 
@@ -66,13 +132,15 @@ from eqtools.csiExtend import print_fault_summary
 print_fault_summary(fault)
 ```
 
-重点看 trace 长度、顶部/底部深度范围、mesh 数量和平均走向/倾角。
+重点看 trace 长度、顶部/底部深度范围、mesh 数量和平均走向/倾角；同时画出 top/bottom，
+确认底边确实位于预期倾向一侧。
 
 ## 何时不用这个例子
 
 - 如果只是要把 CSI fault trace 离散成 `xi/yi`，直接用 `fault.discretize_trace(every=...)`。
 - 如果已有 top/bottom 三维曲线，优先用 `discretize_top_coords(...)` 和 `discretize_bottom_coords(...)` 统一点数。
 - 如果是多条等深线或 slab 几何，使用 `FaultGeometryEngine` 管理 layers。
+- 如果倾角随深度而不是只沿走向变化，使用 `AdaptiveLayeredDipTriangularPatches`。
 
 相关参考：
 [Fault Geometry Construction](../reference/fault_geometry_construction.md),

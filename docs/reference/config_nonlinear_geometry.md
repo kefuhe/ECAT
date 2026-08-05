@@ -15,6 +15,7 @@ ECAT 目前保留两套入口：
 
 - 第一次运行：先看 [生成模板](#生成模板)，再复制或参考 `scripts/test_nonlinear_geometry_smc.py`。
 - 设置几何搜索范围：读 [几何参数边界](#几何参数边界)。
+- 设置跨直立倾角或解释 `strike/dip/rake`：先读 [断层角度约定](../concepts/fault_angle_conventions.md)。
 - 设置数据顺序、断层参与关系和改正项：读 [Geodata 段](#geodata-段)。
 - 设置 sigma：本页只说明字段位置，完整模式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
 
@@ -92,6 +93,34 @@ bounds:
 
 这里 `[Uniform, lower, upper]` 直接表示下界和上界。解析后内部会转换成底层采样需要的 lower/range 形式。
 
+### Strike、dip 和 rake 的输入协议
+
+- `strike` 是从北顺时针增加的地理方位角。有限值均可输入，建立 CSI 几何前会取模到
+  `[0, 360)`；配置中仍建议使用常见 `[0, 360)` 表达。
+- 新版紧凑几何的 `dip` 推荐使用 `[0, 180]`。只搜索一个确定下倾侧时，优先限制在
+  `(0, 90]`；需要让几何连续跨过直立面时，可让先验跨过 `90°`。
+- 历史带符号 `dip in [-90, 0)` 继续兼容，且与 `180 + dip` 的原生表达等价；新配置不建议
+  用它跨直立采样。超出 `[-90, 180]`、非有限的固定值或先验边界会在参数注册时拒绝。
+- 新版 `NonlinearGeometrySMCInversion` 与旧版 `explorefault` 现在经过同一个几何规范化函数和
+  同一类早期角度边界校验；二者的差别仍是配置结构和 `lower_upper/lower_range` 表达，不是
+  strike/dip 的物理约定。共享紧凑源正演可代数表示 `0°/180°`，但标准两阶段 bridge 需要
+  用深度差反推 top/bottom edge，会明确拒绝这两个水平退化端点。面向完整工作流时请使用
+  非退化的开区间，并避免把固定 dip 设为 `0°` 或 `180°`。
+- `rake` 或 `strikeslip/dipslip` 不随几何规范化自动转换。它们属于完整样本中的滑动基底
+  坐标，不是一个独立于 strike/dip 的全球方向角。
+
+实际传给 CSI 的角度为：
+
+```text
+0 <= dip <= 90 : solver = (strike, dip)
+90 < dip <= 180: solver = (strike + 180, 180 - dip)
+-90 <= dip < 0 : solver = (strike + 180, -dip)
+```
+
+模型详细报告同时保留 input/sample 角度和 `CSI solver geometry`；屏幕表格只在二者不同时
+增加两行 `Solver geometry`。完整原理、rake 语义和两阶段衔接见
+[断层走向、倾角与滑动基底约定](../concepts/fault_angle_conventions.md)。
+
 旧版默认使用：
 
 ```yaml
@@ -121,6 +150,10 @@ fixed_params:
 ```
 
 固定参数不进入 SMC 采样向量，但会在模型摘要中以 fixed 标记并放回对应断层的顺序列表，便于后续线性滑动反演复制几何。
+
+若固定 `dip` 使用另一侧表达，例如 `110°` 或历史 `-70°`，摘要中的原始固定值保持不变，
+同时会列出实际用于建 patch 的 canonical `strike/dip`。不要根据看到 `dip=70°` 就手工改变
+`rake`；标准两阶段几何入口会自动使用相同的几何规范化协议。
 
 ## Geodata 段
 
@@ -170,6 +203,10 @@ offset/ramp 或 GPS frame transform。新版 nonlinear geometry SMC 当前只开
 | SAR/InSAR, leveling | `4` | offset, x ramp, y ramp, xy cross term |
 | GPS | `translation` | east/north/up 平移；是否包含 up 由 `verticals` 决定 |
 
+仅包含同类且支持同一 transform 的数据集时，可以使用标量简写，例如
+`polys: 3`。混合数据必须使用与 Python `geodata` 顺序一致的列表，例如
+`polys: [3, null, translation]`；不要把整数 `1/3/4` 用于 GPS。
+
 `poly_bounds` 是所有启用改正项的默认边界。正式案例中建议根据数据单位和物理量级收紧，不要长期依赖默认的 `[-1000, 1000]`。
 
 线性 BLSE/VCE 可以直接使用 CSI GPS 的更多字符串 transform；非线性几何 SMC 目前只开放
@@ -207,7 +244,7 @@ data_corrections.datasets.<data>.parameter_bounds.<parameter>
 
 ## Sigma 参数
 
-`geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 作为初值；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 支持 `single`、`individual` 和 `grouped`，完整组织方式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
+`geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 作为初值；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 支持 `single`、`individual` 和 `grouped`。切换到 `grouped` 时不能只修改 `mode`，还必须增加 `groups`，并让每个实际 `data.name` 恰好属于一个组；完整组织方式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
 
 非线性几何反演不设置 `alpha`。`alpha` 是后续分布式滑动反演中的平滑尺度，放在线性滑动或滑动 Bayesian 配置中说明。
 

@@ -26,6 +26,29 @@ ecat-generate-nonlinear -o default_config.yml
 
 随后按案例修改断层别名、每个断层的几何边界、数据集顺序和 sigma 策略。CLI 说明见 [CLI 命令参考](../reference/cli.md)，配置字段见 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)。
 
+这个公开案例使用 legacy `explorefault` 和已有 `default_config.yml`。新项目推荐的
+`NonlinearGeometrySMCInversion` 使用另一份 `nonlinear_geometry.yml`，不要把两种
+bounds 协议直接混用。
+
+## 运行方式
+
+以下命令假设当前工作目录是已克隆的
+[ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 仓库根目录：
+
+```bash
+cd Cases/Ridgecrest_20190706Mw7_1/Nonlinear
+mpiexec -n 4 python test_nonlinear_mag_rake.py -r
+```
+
+`-r` 执行采样；进程数可按本机资源调整。已有
+`samples_mag_rake_multifaults.h5` 时，可只重建摘要和图件：
+
+```bash
+python test_nonlinear_mag_rake.py
+```
+
+运行前检查 `default_config.yml`、`../GPS/` 和 `../InSAR/` 是否保持案例目录结构。
+
 ## 为什么选这个案例
 
 - 同时包含 GPS 和 InSAR。

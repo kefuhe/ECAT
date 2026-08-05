@@ -54,6 +54,16 @@ python scripts/test_sar_los_surface_forward.py -r --no-plot
 
 SAR LOS 模板的 `SAVE_GEOREFERENCE_MODE="auto"` 会优先尝试用 reader 中的 `sar.raw_mesh_lon/raw_mesh_lat` 写规则经纬度 GeoTIFF；如果网格不是普通 affine lon/lat 栅格，则回退到复制参考 phase tif 的 georeferencing metadata。正演计算始终使用 reader 生成的观测点坐标，GeoTIFF 轴是否显示经纬度取决于输出文件本身是否带有可靠的 `crs/transform/bounds`。
 
+## 阅读路径
+
+| 当前问题 | 建议阅读顺序 |
+| --- | --- |
+| 第一次做单断层 ENU 正演 | [何时使用](#何时使用) → [支持对象](#支持对象) → [三种计算路径](#三种计算路径) → [最小示例](#最小示例) |
+| 多断层求和或自定义观测点 | [多断层通用接口](#多断层通用接口) → [自定义密集点](#自定义密集点) |
+| 从已有反演结果恢复滑动后正演 | [读入矩形元结果后正演](#读入矩形元结果后正演) → [Slip 设置](#slip-设置) |
+| 投影为 SAR LOS | [SAR LOS 投影](#sar-los-投影) → [输出文件](#输出文件) |
+| 大网格计算或结果复查 | [加速和内存控制](#加速和内存控制) → [与 geodata 正演的区别](#与-geodata-正演的区别) |
+
 ## 何时使用
 
 适合使用本接口的场景：

@@ -9,6 +9,16 @@
 | Euler/block direct-backslip | `b = project(blocks[0] - blocks[1])` | `q = backslip_rate` | `coupling_ratio = -q / b` | 本页 |
 | Deep-slip loading proxy | `b = matched deep slip` | `s = shallow_slip_rate` | `coupling_to_deep = (b - s) / b` | [深部滑动加载代理](deep_slip_loading_proxy.md) |
 
+## 阅读路径
+
+| 当前问题 | 建议阅读顺序 |
+| --- | --- |
+| 第一次配置 Euler/block direct-backslip | [配置分工](#配置分工) → [符号和公式](#符号和公式) → [Interseismic Config](#interseismic-config) |
+| 需要分段 block pair、reference strike 或 motion sense | [Loading 与 Motion Sense 覆盖](#loading-与-motion-sense-覆盖的查阅与绘图) → [计算和导出](#计算和导出) |
+| 添加 loading cap | [Euler Cap](#euler-cap) → [Cap 配置模式与排错](#cap-配置模式与排错) |
+| 添加锁定、蠕滑或 prescribed backslip 硬约束 | [Backslip 约束](#backslip-约束) → [诊断报告](#诊断报告) |
+| 只想解释求解结果 | [计算和导出](#计算和导出) → [诊断报告](#诊断报告) → [检查清单](#检查清单) |
+
 ## 配置分工
 
 震间相关设置单独放在 `interseismic_config.yml`，主配置只保留一个文件指针：
@@ -32,6 +42,37 @@ units:
 | `backslip_constraints` | 可选地对部分 patch 添加 `q=0`、`q+b=0`、`q+k*b=0` 等硬等式 | 否 |
 
 关键原则：`blocks` 和 `fault_loading` 决定物理加载率；`cap_constraints` 和 `backslip_constraints` 只决定哪些 patch 被约束。不要用约束 selector 来间接定义构造加载率。
+
+四层具有明确的单向依赖，不应互相代替：
+
+```text
+blocks
+  -> 提供 Euler 参数来源或固定 Euler 值
+fault_loading
+  -> 选择有序 block pair，并在全部 patch 上定义 loading b
+cap_constraints
+  -> 可选：对选中 patch 添加 q 与 b 的不等式
+backslip_constraints
+  -> 可选：对选中 patch 添加 q 与 b 的硬等式
+```
+
+`blocks` 本身不选择 fault patch；`fault_loading` 的默认关系覆盖整条 fault，
+`loading_overrides` 才对少量明确分段覆盖 block pair 或参考走向；cap/backslip 的
+selector 只改变约束作用范围，不会让未选 patch 的 loading 变成零。
+
+用户编写 YAML 时，顶层只使用以下字段：
+
+| 顶层字段 | 主要子字段 | 不应承担的职责 |
+| --- | --- | --- |
+| `blocks` | `<block>.datasets`, `<block>.euler` | 不选择 fault 或 patch |
+| `fault_loading` | `defaults`, `faults`, `loading_overrides`, `motion_sense_overrides` | 不固定 backslip 状态 |
+| `cap_constraints` | `defaults`, `faults`, `selector`, `mode`, `max_coupling`, `hard_overlap` | 不定义 block pair、参考走向或 motion sense |
+| `backslip_constraints` | `fault`, `state`, `selector`, `component`, `coupling/value` | 不定义长期 loading |
+| `outputs` | 输出字段选择 | 不参与解算约束 |
+
+此外可写 `version: 1`。`configured_blocks`、`configured_faults`、
+`blocks_standard` 等是内部规范化结果，不需要手工写入 YAML。旧名
+`loading_regions` 只作为兼容输入；新配置统一使用 `loading_overrides`。
 
 约束层级按严格程度理解：
 
@@ -134,10 +175,14 @@ ECAT 与专业块体模型程序的层级不同：
 
 | 程序类型 | loading 关系 |
 | --- | --- |
-| ECAT 当前震间接口 | `one fault -> one ordered block pair -> all patches use the same loading definition` |
+| ECAT 当前震间接口 | `one fault -> one default ordered block pair + optional manual loading_overrides`；patch 使用默认关系或显式 selector 命中的覆盖关系 |
 | Blocks/celeri 类块体模型 | `one fault/network -> many segments -> each segment has a block pair -> patches inherit the segment pair` |
 
-因此，ECAT 当前接口适合已经明确断层两侧 block pair 的线性滑动反演或局部 backslip/coupling 约束。若研究目标是完整块体网络、闭合 block polygon、同一长断层不同段自动继承不同 block pair，建议直接使用更专业的震间块体模型反演程序，或先在这些程序中确定 segment/block 关系，再把需要的断层几何和先验结果转入 ECAT。
+因此，ECAT 当前接口适合已经明确默认 block pair，并且只需少量手动分段覆盖的
+线性滑动反演或局部 backslip/coupling 约束。它不会从 block polygon 自动推导
+segment topology。若研究目标是完整块体网络、闭合 block polygon、同一长断层
+不同段自动继承不同 block pair，建议直接使用更专业的震间块体模型反演程序，
+或先在这些程序中确定 segment/block 关系，再把需要的断层几何和先验结果转入 ECAT。
 
 Euler 速度先在 patch 中心投影到 EN 速度，再投影到走向：
 
@@ -227,6 +272,12 @@ backslip_constraints:
 
 `blocks` 先定义物理块体和该块体对应的数据集。`geodata.polys` 仍然是数据改正参数的统一入口；当某个数据集在 `geodata.polys` 中打开 `eulerrotation`，震间 block 模型可以把这三列解释为该数据集所属块体的 Cartesian Euler vector。
 
+parser 会拒绝未知顶层键、未知 fault 名，以及 `blocks`、`fault_loading`、
+`cap_constraints`、`backslip_constraints` 主要层级中的未知字段；报错信息包含完整
+YAML 路径。解析后的 `config.interseismic_config` 也可以再次交给 parser，因此脚本
+可深拷贝当前配置、修改 selector，再调用 `update_interseismic_config(...)`。重载采用
+声明式替换：旧配置生成的 block/cap/backslip 矩阵组会被替换，manual/runtime 组保留。
+
 `euler.mode` 有三种常用取值：
 
 | mode | 含义 | 对 `datasets` 的处理 |
@@ -250,6 +301,99 @@ inversion.print_data_correction_report(report)
 `internalstrain`、`full` 或 `strain`，应检查这些长波项是否与 Euler/block loading 或 coupling
 发生 trade-off。
 
+## Loading 与 Motion Sense 覆盖的查阅与绘图
+
+当一条 fault 使用 `loading_overrides` 做手动分段时，只看 YAML 很难确认每个 patch
+最终继承了哪一组 block pair。ECAT 提供一组只读辅助接口，用于检查
+`fault_loading` 的实际解析结果：
+
+```python
+pair_result = inversion.resolve_interseismic_loading_pairs("MyFault")
+
+inversion.print_interseismic_pair_diagnostics("MyFault", result=pair_result)
+
+inversion.plot_interseismic_loading_pairs(
+    "MyFault",
+    field="pair_id",
+    cmap="tab20",
+    plot_on_2d=False,
+)
+
+inversion.export_interseismic_loading_pair_table(
+    "MyFault",
+    "output/MyFault_loading_pairs.csv",
+    result=pair_result,
+)
+```
+
+这些接口只做查阅，不改变 `fault_loading`、cap、不等式、hard equality 或
+`fault.slip`。`pair_id` 是稳定的配置标签：`0` 表示 fault 级默认 pair，
+`loading_overrides[0]` 为 `1`，`loading_overrides[1]` 为 `2`，依此类推；
+即使只查某个 patch 子集，编号也不会改变。CSV 表会列出 `patch_index`、
+`pair_id`、`source`、`region_name`、两侧 block 名、`reference_strike`、
+`motion_sense`、可计算时的 loading，以及 patch 中心坐标。
+
+也可以绘制实际 loading：
+
+```python
+inversion.plot_interseismic_loading_pairs(
+    "MyFault",
+    field="loading",
+    cmap="cmc.vik",
+    cblabel="Tectonic loading rate",
+)
+```
+
+建议使用顺序是：先画 `pair_id` 确认分段是否命中正确 patch，再看 loading 的正负号和量级，
+最后再启用或调试 cap/backslip 约束。若没有当前解向量，pair assignment 仍可解析，
+但 loading 数值会留空；正式解释 loading 前应先完成反演或显式传入 `solution`。
+
+如果只想测试某一段是否应按另一种走滑模式约束，而不想改变该段的 block pair，
+使用 `motion_sense_overrides`。它只覆盖 cap 方向和诊断期望，不重新计算 loading `b`：
+
+```yaml
+fault_loading:
+  faults:
+    MyFault:
+      blocks: [Block_A, Block_B]
+      reference_strike: 315
+      motion_sense: dextral
+      loading_overrides:
+        - name: south_pair
+          selector: {trace_segment: {start: {longitude: 103.0}, end: {longitude: 104.0}}}
+          blocks: [Block_C, Block_B]
+          reference_strike: 315
+          motion_sense: dextral
+      motion_sense_overrides:
+        - name: trial_sinistral_zone
+          selector: {trace_segment: {start: {longitude: 101.8}, end: {longitude: 102.4}}}
+          motion_sense: sinistral
+```
+
+查阅和绘图：
+
+```python
+sense_result = inversion.resolve_interseismic_motion_sense("MyFault")
+inversion.print_interseismic_motion_sense_diagnostics("MyFault", result=sense_result)
+
+inversion.plot_interseismic_motion_sense(
+    "MyFault",
+    field="motion_sign",
+    cmap="coolwarm",
+    plot_on_2d=False,
+)
+
+inversion.export_interseismic_motion_sense_table(
+    "MyFault",
+    "output/MyFault_motion_sense.csv",
+    result=sense_result,
+)
+```
+
+`motion_sign` 中 `+1` 表示 dextral/right-lateral，`-1` 表示
+sinistral/left-lateral。`source_id` 中 `0` 表示 fault 默认，
+正值表示 `loading_overrides`，负值表示 `motion_sense_overrides`。
+
 ## Euler Cap
 
 Euler cap 是可选不等式，作用在 direct backslip `q` 和 loading `b` 上。`k` 是 `cap_constraints` 中的 `max_coupling`，默认 1.0；旧键名 `factor` 仍作为输入别名解析为 `max_coupling`。
@@ -264,7 +408,8 @@ ECAT 支持两种 cap 模式：
 这里有一个命名细节：`cap_constraints.mode: motion_sense` 中的
 `motion_sense` 是“使用 fault loading 方向”的模式名，不是一个新的右旋/左旋
 字段。右旋/左旋只能写在 `fault_loading.faults.<fault>.motion_sense`，或写在
-`fault_loading.faults.<fault>.loading_regions[].motion_sense` 做局部分段覆盖。
+`fault_loading.faults.<fault>.loading_overrides[].motion_sense` 做 loading 分段覆盖，
+也可以写在 `fault_loading.faults.<fault>.motion_sense_overrides[]` 中只覆盖运动模式预期。
 `cap_constraints` 只接受 `selector`、`mode`、`max_coupling`、`hard_overlap`、
 `min_loading_abs` 等 cap 自身字段；误把 `motion_sense`、`reference_strike`
 或 `blocks` 放到 cap 下会直接报错。
@@ -379,9 +524,10 @@ group，说明 cap 没有实际进入求解矩阵。
 | cap 只对部分 patch 生效 | `selector` 是否只选中了局部 patch；用 `print_interseismic_constraint_report(...)` 看 selected patches |
 | loading 量级接近 0 | 先检查 `blocks` 顺序、`reference_strike`、GPS `eulerrotation` 参数和内部应变 trade-off |
 
-若使用 `loading_regions`，默认 `motion_sense` cap 会按 region 的
-`motion_sense` 覆盖对应 patch 的不等式方向；未命中 region 的 patch 使用 fault 级
-`motion_sense`。
+若使用 `loading_overrides`，默认 `motion_sense` cap 会按 override 的
+`motion_sense` 覆盖对应 patch 的不等式方向；未命中 override 的 patch 使用 fault 级
+`motion_sense`。若只是测试某段走滑模式转换而不改变 block pair，优先使用
+`motion_sense_overrides`。
 
 是否强制这个区间取决于科学假设。若允许 over-coupling、反向 creep 或数据驱动的异常 patch，可以只设置宽 bounds，不启用 cap，或只对特定 patch group 启用 cap。
 
@@ -390,7 +536,12 @@ group，说明 cap 没有实际进入求解矩阵。
 ```python
 patch_ids = select_patch_indices(
     fault,
-    {"trace_range": {"point1": (100.25, 25.57), "point2": (101.80, 23.80), "buffer_distance": 30.0}},
+    {
+        "trace_segment": {
+            "start": {"point": [100.25, 25.57], "coord_system": "lonlat"},
+            "end": {"point": [101.80, 23.80], "coord_system": "lonlat"},
+        }
+    },
 )
 
 inversion.update_euler_cap_constraint(
@@ -405,6 +556,53 @@ inversion.update_euler_cap_constraint(
 这只改变 cap 不等式的应用范围，不改变 `fault_loading` 计算出的 loading。
 固定 loading 场景可以传入 `mode="loading_sign"`；若存在 loading 接近 0 的 patch，
 可同时设置 `min_loading_abs` 让接口提前报错。
+
+若分段边界需要循环测试，可用 trace marker helper 在脚本中生成 selector，
+而不是把循环逻辑写进 YAML：
+
+```python
+from eqtools.csiExtend import (
+    sample_trace_markers,
+    update_fault_loading_override_from_trace_segment,
+    update_fault_motion_sense_override_from_trace_segment,
+)
+
+markers = sample_trace_markers(
+    fault,
+    {"longitude": 101.5},
+    {"longitude": 102.5},
+    step_km=5.0,
+)
+
+trial_config, meta = update_fault_loading_override_from_trace_segment(
+    inversion.config.interseismic_config,
+    fault,
+    "MyFault",
+    "north_segment",
+    markers[0],
+    {"longitude": 102.5},
+    depth_range=(0.0, 25.0),
+    return_metadata=True,
+)
+```
+
+如果搜索的是局部 dextral/sinistral 转换点，而 block pair 不变，改用：
+
+```python
+trial_config, meta = update_fault_motion_sense_override_from_trace_segment(
+    inversion.config.interseismic_config,
+    fault,
+    "MyFault",
+    "trial_sinistral_zone",
+    markers[0],
+    {"longitude": 102.5},
+    depth_range=(0.0, 25.0),
+    return_metadata=True,
+)
+```
+
+`meta["trace_distance_km"]` 是沿 fault trace 的真实弧长距离，通常为 km；
+它不是 GPS station distance，也不是经度或纬度方向上的单轴距离。
 
 ## Backslip 约束
 
@@ -432,8 +630,25 @@ inversion.add_interseismic_backslip_constraint(
     "MyFault",
     state="full_coupling",
     selector={"edge": "top"},
+    name="top_full_coupling",
 )
 ```
+
+`add_interseismic_backslip_constraint()` 只新增；同名组已存在时会报错。如果要改变
+已经命名的用户约束，应显式调用：
+
+```python
+inversion.replace_interseismic_backslip_constraint(
+    "MyFault",
+    state="prescribed_coupling",
+    selector={"edge": "top"},
+    coupling=0.8,
+    name="top_full_coupling",
+)
+```
+
+配置重载会事务式重建 config-owned backslip 组，因此
+`backslip_constraints` 不使用 `overwrite` 字段。
 
 `full_coupling` 和 `prescribed_coupling` 依赖 `fault_loading`，目前只支持 `component="strikeslip"`。`q=0` 或 `q=value` 可用于 `strikeslip` 或 `dipslip`。
 
@@ -444,8 +659,10 @@ Selector 由 [Fault Patch Indices](fault_patch_indices.md) 统一解析，常用
 {"edges": ["top", "bottom"]}
 {"patches": [0, 1, 2]}
 {"depth_range": [0.0, 10.0]}
-{"trace_range": {"point1": [100.0, 25.0], "point2": [101.0, 24.5], "buffer_distance": 30.0}}
+{"trace_segment": {"start": {"longitude": 101.8}, "end": {"longitude": 102.4}}}
 ```
+
+完整可复制 selector 写法见 [Fault Patch Indices](fault_patch_indices.md#selector-cookbook)。震间分段推荐使用 `trace_segment` 的 `start/end` 写法；`trace_range` 是兼容旧配置和明确 `point1/point2` 输入的低层形式。
 
 ## 计算和导出
 

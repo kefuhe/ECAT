@@ -7,8 +7,8 @@
 | 你要确认的问题 | 推荐案例 | 相关参考 |
 | --- | --- | --- |
 | 降采样 InSAR `.txt/.rsp/.cov` 如何读入 | [Wushi：InSAR-only 非线性几何反演](../casebook/wushi_nonlinear_geometry.md), [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md) | [InSAR 降采样](02_insar_downsampling.md#read-downsampled-output) |
-| 外部 ASCII InSAR 点位格式如何读入 | [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md) | [SAR Reader 参考](../reference/sar_reader.md#external-ascii-point-data) |
-| 原始 GAMMA/GeoTIFF/GMTSAR/HyP3/offset 产品如何进入降采样 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR Reader 参考](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#downsampling-config) |
+| 外部 ASCII InSAR 点位格式如何读入 | [Ridgecrest：GPS+InSAR 非线性几何反演](../casebook/ridgecrest_gps_insar.md) | [本页：InSAR 数据入口](#insar-data-entry) |
+| 原始 GAMMA/GeoTIFF/GMTSAR/HyP3/offset 产品如何进入降采样 | [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md) | [SAR/光学读入脚本](../reference/observation_data_readers.md), [SAR Reader 语义](../reference/sar_reader.md), [CLI 命令参考](../reference/cli.md#downsampling-config) |
 
 <a id="insar-data-entry"></a>
 
@@ -78,6 +78,11 @@ sar.extract_raw_grd(
 sar.read_observation(downsample=1)
 ```
 
+本节只展示一个骨架。GAMMA prefix、GAMMA TIFF、HyP3、GMTSAR direct projection、
+optical GeoTIFF、标准 `.nc/.h5` 和 CSI varres 的完整可复制脚本统一放在
+[SAR 与光学观测读入参考](../reference/observation_data_readers.md)，避免在多个 workflow
+中维护彼此偏离的 reader 版本。
+
 ## SAR Reader 模式
 
 手册中优先使用 `reader + mode`，不要在脚本里手动翻转符号。
@@ -89,7 +94,7 @@ sar.read_observation(downsample=1)
 | GAMMA range offset | `gamma` | `range_offset` |
 | GAMMA azimuth offset | `gamma` | `azimuth_offset` |
 | GAMMA GeoTIFF 相位/位移 | `gamma_tiff` | 对应观测模式 |
-| GMTSAR-style direct-projection GRD/NetCDF + ENU projection | `gmtsar` | `phase_los`、`los_displacement`、`range_offset` 或 `azimuth_offset` |
+| GMTSAR-style direct-projection GRD/NetCDF + ENU projection | `gmtsar` | `unwrapped_phase`、`los_displacement`、`range_offset` 或 `azimuth_offset` |
 | HyP3 GeoTIFF | `hyp3` | `unwrapped_phase` 或 `los_displacement` |
 
 reader 会把产品转换到 CSI 使用的投影形式：
@@ -129,4 +134,6 @@ cogps.buildCd(direction="enu")
 ## 下一步
 
 - 如果手里是原始 SAR/offset 产品，进入 [InSAR 降采样](02_insar_downsampling.md)。
+- 如果需要手写 reader 或标准格式读写脚本，查
+  [SAR 与光学观测读入参考](../reference/observation_data_readers.md)。
 - 如果已有可反演的 InSAR/GPS 数据，进入 [Bayesian 非线性几何反演](03_nonlinear_geometry_bayesian.md) 或 [BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md)。

@@ -1,53 +1,61 @@
 # GAMMA SAR quick-look 与配置生成
 
-这个例子用于快速查看 GAMMA LOS/phase/offset 数据是否能被 ECAT 正确读取，并生成后续降采样模板。
+## 无 YAML 快速预览
 
-## 快速预览
-
-如果文件组遵循 GAMMA prefix 约定，先用 prefix 直接预览：
+默认右视 LOS displacement：
 
 ```bash
-ecat-downsample --sar-prefix geo_20250319_20250331 -s
+ecat-downsample -s --sar-prefix geo_20250101_20250113
 ```
 
-常用覆盖项：
+默认右视解缠相位：
 
 ```bash
-ecat-downsample --sar-prefix geo_20250319_20250331 --sar-dir InSAR/raw --sar-mode los_displacement -s
+ecat-downsample -s --sar-prefix geo_20250101_20250113 --sar-mode unwrapped_phase
 ```
 
-`-s` 只读入数据并画 quick-look，不估计协方差，不执行降采样。它适合先检查：
-
-- 经纬度范围是否正确。
-- 形变正负号是否符合预期。
-- LOS 投影或几何文件是否被正确解析。
-- `vmin/vmax` 是否需要为后续图件固定。
-
-## 生成降采样配置
-
-确认 quick-look 正常后，在工作目录生成 YAML 模板：
+左视、由 GAMMA 导出的 NISAR 解缠相位：
 
 ```bash
-ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode los_displacement -o downsample.yml
+ecat-downsample -s --sar-prefix nisar_pair --sar-mode unwrapped_phase --sar-look-side left
 ```
 
-打开 `downsample.yml` 后，通常先改：
+已知为大端 float32：
+
+```bash
+ecat-downsample -s --sar-prefix gamma_pair --sar-mode unwrapped_phase --sar-byte-order big
+```
+
+还可用 `--sar-dir InSAR/raw` 指定目录。快捷入口固定为 GAMMA reader，仅用于
+`-s`；协方差估计和正式降采样应保存 YAML。
+
+## 生成短配置
+
+```bash
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase -o downsample.yml
+```
+
+左视：
+
+```bash
+ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase --sar-look-side left -o downsample_left.yml
+```
+
+模板中通常只需改：
 
 ```yaml
 sar_config:
   directory: InSAR/raw
-  outName: S1_T012A_ifg
-  mode: los_displacement
+  outName: S1_T012A
+  mode: unwrapped_phase
+  acquisition_look_side: right
   files:
-    prefix: geo_20250319_20250331
-
-check_plots:
-  raw:
-    vmin: -0.2
-    vmax: 0.2
+    prefix: geo_20250101_20250113
+  read:
+    byte_order: native
 ```
 
-## 运行顺序
+## 三步执行
 
 ```bash
 ecat-downsample -f downsample.yml -s
@@ -55,25 +63,8 @@ ecat-downsample -f downsample.yml -c
 ecat-downsample -f downsample.yml -d
 ```
 
-含义：
+相关页面：
 
-- `-s`：只看原始数据 quick-look。
-- `-c`：估计协方差，需要配置 `covar.mask_out`。
-- `-d`：正式降采样，写出 CSI 输入前缀。
-
-## 输出检查
-
-正式降采样后，检查工作目录中是否有：
-
-- `<outName>_ifg.txt` 或对应 mode 的数据文件。
-- `<outName>_ifg.rsp`。
-- `<outName>_ifg.cov`。
-- `<outName>_run_metadata.yml`。
-- quick-look 和 downsample check 图件。
-
-相关参考：
-[InSAR 降采样](../workflows/02_insar_downsampling.md),
-[InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md),
-[SAR Reader](../reference/sar_reader.md),
-[Downsampling App](../reference/downsampling_app.md),
-[CLI Reference](../reference/cli.md)。
+- [SAR 投影与方向约定](../concepts/sar_projection_conventions.md)
+- [SAR Reader 参考](../reference/sar_reader.md)
+- [InSAR 降采样](../workflows/02_insar_downsampling.md)

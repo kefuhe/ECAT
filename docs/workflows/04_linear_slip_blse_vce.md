@@ -14,6 +14,9 @@ BLSE/VCE 是非线性几何反演后的标准第二步。几何固定后，建�
 | 如何计算 Euler/block 模式的震间 loading/backslip/coupling | [Interseismic Kinematics](../reference/interseismic_kinematics.md) | [线性滑动配置](../reference/config_linear_slip.md#震间配置) |
 | 如何用深部自由滑动作为浅部加载代理 | [Deep Slip Loading Proxy](../reference/deep_slip_loading_proxy.md) | [Fault Patch Indices](../reference/fault_patch_indices.md) |
 | sigma 和 alpha 如何解释 | [Sigmas and Alpha](../reference/sigmas_alpha.md) | [BLSE/VCE 参考](../reference/blse_vce.md) |
+| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](../../scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
+| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](../../scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
+| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](../../scripts/test_dip_smoothing_search_BLSE.py) |
 
 ## 目标
 
@@ -49,6 +52,25 @@ ecat-generate-interseismic -o interseismic_config.yml -f MyFault
 | `interseismic_config.yml` | 震间 `blocks`、`fault_loading`、可选 `cap_constraints`、可选 `backslip_constraints` |
 
 旧的主配置 `euler_constraints` 已移除。震间块体运动不要写在 `bounds_config.yml`，也不要通过 cap selector 间接控制 loading。
+
+### 约束从哪一层开始
+
+普通同震或震后反演先把可复现的 bounds、rake 和零滑规则写入
+`bounds_config.yml`。只有当前实验需要临时改变时，才在 inversion 初始化后调用
+runtime 接口：
+
+| 当前任务 | 推荐入口 | 下一步 |
+| --- | --- | --- |
+| 建立可分享的默认约束 | `bounds_config.yml` | 生成模板后修改断层名、边界和 rake |
+| 当前对象试验一个 fault/component 边界 | `update_bounds(...)` | 求解前检查 snapshot |
+| 试验局部 patch | `add/replace_patch_constraints(...)` | 明确 selector；重叠时显式决定是否覆盖 |
+| 临时调整 fault rake | `update/replace_fault_rake_limits(...)` | 需要恢复时调用对应 `clear` |
+| 不确定约束最终是否生效 | `get_constraint_snapshot(validate=True)` | 检查 bounds、group 数和 validation |
+
+可直接复制的 YAML 与 Python 片段见
+[约束配置与运行时调整短例](../examples/constraint_config_runtime.md)；完整优先级、
+FULLSMC/SMC_FJ 差异和高级矩阵接口见
+[约束管理器](../reference/constraint_manager.md)。
 
 ## 典型脚本流程
 
@@ -108,6 +130,17 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 
 `clon/clat/cdepth` 对应非线性几何结果中的 `lon/lat/depth`，含义是断层顶边中点三维坐标。`fault.top` 和 `fault.depth` 是线性滑动面扩展后的顶部、底部深度，不能混写。
 
+如果一个脚本里需要反复生成多数据集拟合图、多断层滑动图或震间字段图，可以在保留上述
+`extract_and_plot_blse_results()` 主线的基础上使用上层 figure product：
+
+```python
+inv.plot_data_fits(outdir="Modeling", file_type="pdf")
+inv.plot_fault_fields(fields=("total", "ss"), outdir="output")
+```
+
+这些接口复用已有 CSI/ECAT 绘图方法，只负责组织常用图件。完整参数见
+[Figure Products](../reference/figure_products.md)。
+
 ## 求解模式
 
 | 模式 | 方法 | 用途 |
@@ -116,7 +149,11 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 | L-curve / smoothing loop | `simple_run_loop(...)` | 诊断平滑与数据拟合权衡 |
 | VCE | `run_simple_vce()` | 估计数据和约束权重 |
 
-三种模式共用同一套约束管理器。`bounds_config.yml` 中的边界、rake、零滑、边界零滑和自定义线性约束会在固定权重 BLSE、smoothing loop 和 VCE 中统一生效。震间 cap/backslip 约束来自 `interseismic_config.yml`。
+三种模式共用同一套约束配置和管理器。`bounds_config.yml` 中的边界、rake、
+零滑、边界零滑和自定义线性约束由同一入口组装；震间 cap/backslip 约束来自
+`interseismic_config.yml`。VCE 如果输出移除等式或不等式后重试的 warning，
+该结果不再代表完整约束模型，应回到固定权重 BLSE 检查约束可行性；详细限制见
+[BLSE/VCE 参考](../reference/blse_vce.md#约束检查)。
 
 第一个可运行例子建议先用固定平滑 BLSE，确认约束和输出链条正确后，再用 smoothing loop 或 VCE 做权重诊断。
 
@@ -217,6 +254,11 @@ creep_fraction_to_deep = s / b
 - 若使用 deep-slip loading proxy，先运行 `inv.print_deep_slip_loading_report(mapping)`，确认浅深映射距离、unique deep patch 数、分量和 near-zero deep loading 警告。
 - 若启用 Euler cap，确认 `interseismic_config.yml:cap_constraints.faults` 不是显式空字典 `{}`；preflight 中 active cap 行应为非零。默认 `hard_overlap: skip` 会让 cap 自动跳过 `full_coupling`、`creep` 等 hard equality patch；默认 `mode: motion_sense` 下，若 cap 行数正常但 `coupling_ratio > max_coupling`，再检查 `bounds_config.yml` 是否同时约束 direct backslip `q` 的符号；固定 loading 场景可用 `mode: loading_sign` 直接按实际 loading 符号约束。
 - InSAR `polys` 明确；若包含 GPS，vertical 分量使用方式明确。
+- 做倾角、smoothing 或约束方案循环测试时，按
+  [循环统计可复制模式](../examples/script_templates.md#loop-statistics) 在每轮求解后立即保存逐数据集
+  RMS/VR 和全局 solver-vector RMS/VR；不要把逐数据集 RMS/VR 的算术平均当作总拟合。
+- 做倾角循环时优先使用 [固定拓扑倾角搜索](04b_blse_dip_search.md)，避免把每轮重新剖分造成的 patch 数量和位置差异误当成倾角效应。
+- BLSE 的 `run()` 和 VCE 的 `run_simple_vce()` 返回时已分发最新模型；统计应紧跟在该轮求解之后。`fit_statistics_to_dataframe()` 只转换已有 rows，不会重新求解或重建另一套模型。
 - VCE 或 L-curve 结果被保存，而不只是保留最终图。
 
 ## 下一步
@@ -226,4 +268,8 @@ creep_fraction_to_deep = s / b
 - 要计算 Euler/block 震间 loading/backslip/coupling 或导出 GMT，查 [震间加载、Backslip 与 Coupling](../reference/interseismic_kinematics.md)。
 - 要用深部自由滑动作为加载代理，查 [深部滑动加载代理](../reference/deep_slip_loading_proxy.md)。
 - 要解释 trace 长度、mesh、面积、slip 和 Mw 统计，查 [Fault Summary](../reference/fault_summary.md)。
+- 要确认 RMS/VR 公式、poly include 语义或输出结构化拟合表，查 [Fit Statistics](../reference/fit_statistics.md)。
+- 要在固定几何上选择平滑强度，查 [BLSE 固定几何平滑参数搜索](04a_blse_smoothing_search.md)。
+- 要在保持 patch 身份一致的条件下比较一组倾角，查 [BLSE 固定拓扑倾角搜索](04b_blse_dip_search.md)。
+- 要检查倾角与平滑耦合，查 [倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md)。
 - 如果固定几何不足以表达滑动分布不确定性，查高级路线 [Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)。

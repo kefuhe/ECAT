@@ -6,7 +6,11 @@
 
 - 只想跑通线性滑动反演：先读 workflow 和案例，本页作为方法和结果检查参考。
 - 不确定 BLSE、smoothing loop、VCE 的区别：看 [三种运行模式](#三种运行模式)。
+- 不确定应该复制普通 BLSE、平滑、倾角还是联合搜索脚本：看 [可运行脚本模板导航](../examples/script_templates.md)。
 - 正在配置 sigma/alpha 或 poly：先查 [线性滑动反演配置](config_linear_slip.md) 和 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)，再回到本页看运行模式。
+- 想复制常用 bounds/rake/patch 搭配：看 [约束配置与运行时调整短例](../examples/constraint_config_runtime.md)。
+- 想选择平滑强度：看 [固定几何平滑搜索](../workflows/04a_blse_smoothing_search.md)；想比较倾角：看 [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md)。
+- 想检查倾角与平滑是否耦合：看 [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md)。
 - 正在检查物理约束是否生效：看 [约束检查](#约束检查) 和 [ECAT 约束管理器](constraint_manager.md)。
 - 准备论文或报告：看 [推荐报告内容](#recommended-reporting)。
 
@@ -143,9 +147,11 @@ inv.returnModel(print_stat=True)
 inv.extract_and_plot_blse_results(
     plot_faults=True,
     plot_data=True,
-    data_poly=None,
+    data_poly="config",
 )
 ```
+
+`data_poly="config"` 是推荐默认值：它逐数据集跟随已经解析的 `geodata.polys`。只有在明确诊断 source/slip-only 贡献时才传 `data_poly=None`；`data_poly="include"` 用于强制请求包含已求解改正项的预测。
 
 `extract_and_plot_blse_results(...)` 通常会生成：
 
@@ -158,6 +164,27 @@ inv.extract_and_plot_blse_results(
 
 案例脚本也可额外调用断层和数据对象的方法，例如写出 `slip_<FaultName>.gmt`、`slipdir_<FaultName>.txt`、每条 InSAR 的 `data/synth/resid` 文本文件。Dingri 案例的对应代码见 [脚本对照：导出滑动、滑动方向和模型数据](../casebook/dingri_blse_vce.md#export-slip-and-model-data)。
 
+### 结构化拟合统计
+
+`run()` 和 `run_simple_vce()` 都会在返回前把最终 `mpost` 分发到断层滑动和
+poly 字段，因此完成求解后可以直接收集当前结果，不需要为了统计再次调用
+`returnModel()`：
+
+```python
+inv.run(alpha=[-2.0])
+rows = inv.collect_fit_statistics(
+    model="BLSE",
+    data_poly="config",
+    include_dataset=True,
+    include_global=True,
+)
+df = inv.fit_statistics_to_dataframe(rows)
+```
+
+`collect_fit_statistics()` 负责计算；`fit_statistics_to_dataframe()` 只负责把已有
+rows 转为 DataFrame。逐数据集和全局统计的公式、poly 语义及通用循环模板见
+[Fit Statistics](fit_statistics.md)。
+
 ## 约束检查
 
 BLSE/VCE 支持的约束主要包括：
@@ -169,7 +196,26 @@ BLSE/VCE 支持的约束主要包括：
 - `zero_edge_slip(...)` 这类边界零滑等式约束。
 - 用户通过 `source_constraints` 添加的线性等式/不等式约束。
 
-这些约束由统一约束管理器应用。固定权重 BLSE、smoothing loop 和 VCE 共用同一套约束矩阵；VCE 只估计权重，不改变约束写法。`rake_angle` 在线性 BLSE/VCE 中不是待求滑动参数，而是限制 `strikeslip/dipslip` 的角度范围；零滑和边界零滑的配置细节见 [ECAT 约束管理器](constraint_manager.md#zero-slip-constraints)。
+这些约束由统一约束管理器组装。固定权重 BLSE、smoothing loop 和 VCE 使用相同
+的约束配置写法；`rake_angle` 在线性 BLSE/VCE 中不是待求滑动参数，而是限制
+`strikeslip/dipslip` 的角度范围。零滑和边界零滑的配置细节见
+[ECAT 约束管理器](constraint_manager.md#zero-slip-constraints)。
+
+### 求解器与约束保留
+
+BLSE/VCE 首先使用原有 CVXOPT QP 路径，因此普通成功案例的目标函数、参数排列
+和数值结果不变。若 QP 因 Euler 列、滑动列和硬等式之间的尺度差异返回
+`unknown` 或抛出数值异常，ECAT 才自动启用稳健后备：
+
+1. 对具有独立 pivot 参数的硬等式做严格代数消元；这不是删除或软化约束。
+2. 对变量列和约束行做可逆缩放。
+3. 用 Clarabel 的二阶锥形式直接最小化 `||Gm-d||₂`，避免显式形成
+   `G.T @ G` 后放大条件数。
+4. 恢复原始参数，并用原始 `bounds/A/b/Aeq/beq` 再检查全部残差。
+
+后备路径只在原 QP 失败时运行，计算时间可能明显增加。若两个后端都不收敛，
+求解会明确报错；ECAT 不会再通过移除等式或不等式约束来生成一个看似成功的
+结果。正式研究仍应检查约束配置的物理可行性，不能把数值后备当作放宽先验。
 
 <a id="recommended-reporting"></a>
 
@@ -194,4 +240,5 @@ BLSE/VCE 支持的约束主要包括：
 - 若某条 InSAR 轨道残差呈大尺度 ramp，检查 `geodata.polys` 和输出时的 `data_poly` 设置。
 - 若 rake 约束没有效果，检查 `use_rake_angle_constraints: true`、`bounds_config.yml` 中断层名是否匹配、滑动参数化是否为 `ss_ds`。
 - 若 VCE 权重异常，先用固定权重 BLSE 和 smoothing loop 检查数据、协方差和边界是否合理。
+- 若出现稳健求解后备提示，说明原 QP 存在明显尺度或条件数问题；结果虽会按原矩阵复核约束，但循环计算会更慢，应同时检查 poly bounds、Euler 参数尺度和重复约束。
 - 若 `alpha` 与预期相反，确认当前传入的是 `alpha` 还是 `penalty_weight`，以及 `log_scaled` 是否为 `true`。

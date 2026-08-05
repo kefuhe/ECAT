@@ -125,6 +125,37 @@ Windows 源码编译需要 Microsoft C++ Build Tools；Linux 通常需要 `build
 python -c "import okada4py; print(okada4py.__file__)"
 ```
 
+## 可选本地科研地图
+
+如需使用本地 Dash/Plotly 科研地图查看器，在 ECAT 源码目录安装独立可选依赖：
+
+```bash
+python -m pip install -e ".[viewer]"
+```
+
+该 extra 包含 Dash/Plotly、标准 NetCDF/HDF5 网格和 GeoTIFF 图层所需的查看依赖，
+但不会让 BLSE/VCE、SMC、约束或降采样代码 import 网页运行时。安装后进入
+[本地科研地图查看](../workflows/07_research_map_viewer.md)。
+
+如需在观测图上复制、移动和另存断层迹线，安装独立的 Bokeh 交互依赖：
+
+```bash
+python -m pip install -e ".[interaction]"
+```
+
+`interaction` 提供 Bokeh、Datashader、Matplotlib/CMCrAmeri 色表及标准观测读取依赖；它不依赖 `viewer`，也不会进入反演或降采样数值核心。用法见
+[交互调整断层迹线](../workflows/02c_interactive_trace_editing.md)。
+
+只需要把标准观测、CSI varres、地震目录或内存 fault 导出为 Google Earth KMZ 时，
+安装更小的导出依赖：
+
+```bash
+python -m pip install -e ".[geoexport]"
+```
+
+随后按 [Google Earth 科研导出](../workflows/06_google_earth_export.md) 使用
+`ecat-export-google-earth`；不需要安装或运行 Dash。
+
 ## 可选并行与性能依赖
 
 初学者先跑小案例时，不需要一开始就配置完整 MPI 或 oneAPI。等需要运行大规模 Bayesian 采样或多进程生产计算时，再单独处理并行环境。

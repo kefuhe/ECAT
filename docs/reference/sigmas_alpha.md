@@ -39,11 +39,13 @@
 | `individual` | 每个数据集或每个断层独立参数 | N |
 | `grouped` | 按自定义分组共享参数 | M |
 
-`mode` 与 `update`、`initial_value` 或 `values` 的长度必须一致：
+`mode` 与 `update`、`initial_value` 或 `values` 的组织必须一致：
 
 - `single`：`update` 和值字段必须是单个值，或长度为 1 的列表。
-- `individual`：列表长度必须等于数据集数量或断层数量；也可用名称字典指定部分对象，未指定项默认为 `0.0`。
-- `grouped`：列表长度必须等于分组数量；每个数据集或断层必须且只能出现在一个组里。
+- `individual`：布尔列表和数值列表长度必须等于数据集数量或断层数量；值字段也可使用名称字典，未指定项默认为 `0.0`。
+- `grouped`：必须提供分组；布尔列表和数值列表长度必须等于分组数量，每个数据集或断层必须且只能出现在一个组里。Sigma 的值字段也可使用组名字典。
+
+Sigma 的 `update` 应写成布尔标量或与 dataset/group 对齐的布尔列表；不要把索引列表、数据集名列表或 `true_indices` 字典当成这里的 `update` 格式。
 
 当前解析器的默认行为是：`sigmas` 未指定 `mode` 时按 `individual`，`alpha` 未指定 `mode` 时按 `single`。模板和手册应显式写出 `mode`，避免后来增删数据集或断层时产生歧义。
 
@@ -51,21 +53,44 @@
 
 ### 非线性几何反演
 
-`explorefault` 的 `sigmas` 写在 `geodata` 下，初值字段是 `values`。若 `update: true`，还需要给出 sigma 参数的先验边界：
+新版非线性几何 SMC 的 `sigmas` 写在 `geodata` 下，初值字段是 `values`。若 `update: true`，还需要给出 sigma 参数的先验边界：
 
 ```yaml
+prior_bounds_format: lower_upper
+
 geodata:
   sigmas:
     mode: individual
     update: true
     bounds:
-      defaults: [Uniform, -3.0, 6.0]
-      sigma_0: [Uniform, -3.0, 6.0]
+      defaults: [Uniform, -3.0, 3.0]
     values: [0.0, 0.0]
     log_scaled: true
 ```
 
-这里的 `bounds` 仍采用非线性配置中的分布写法。`[Uniform, -3.0, 6.0]` 表示从 `-3.0` 到 `3.0`，第三个数是 range，不是上界。
+边界含义由配置顶层的 `prior_bounds_format` 决定。新版模板使用 `lower_upper`，所以上例表示下界 `-3.0`、上界 `3.0`；legacy 模板使用 `lower_range` 时，同一范围应写成 `[Uniform, -3.0, 6.0]`。不要在两种模板之间直接复制第三个数。
+
+非线性几何中按数据组共享 sigma 的完整写法是：
+
+```yaml
+prior_bounds_format: lower_upper
+
+geodata:
+  sigmas:
+    mode: grouped
+    groups:
+      sentinel1: [S1_T134D_ifg]
+      alos2: [A2_P126A_ifg, A2_P025D_ifg]
+    update: true
+    bounds:
+      defaults: [Uniform, -3.0, 3.0]
+    values:
+      sentinel1: 0.0
+      alos2: 0.0
+    log_scaled: true
+```
+
+`groups` 中使用的是实际 `data.name`，不是 fault 名；每个输入数据集必须且只能出现一次。组名决定模型摘要中的 sigma 名称。若不同数据集的噪声尺度不应共享，继续使用 `individual`。
 
 ### 线性滑动与滑动 Bayesian
 
@@ -106,7 +131,7 @@ geodata:
     log_scaled: true
 ```
 
-如果在非线性几何配置中使用同样的 grouped 组织方式，值字段应改为 `values`，并按需要补上 `bounds`。
+线性滑动与滑动 Bayesian 的 `grouped` 结构相同，但值字段使用 `initial_value`。非线性几何使用前一节给出的 `values` 写法。
 
 ## Alpha
 

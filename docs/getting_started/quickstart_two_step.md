@@ -9,6 +9,18 @@ ECAT 教程按两步走路线组织反演阶段：
 
 如果还不清楚为什么要分成几何搜索和线性滑动两步，先读 [标准两步走反演逻辑](../concepts/two_step_inversion.md)。如果只需要某个小任务的最小代码，例如 trace 预处理、GAMMA quick-look 或 BLSE 最小脚本，看 [Examples / 任务短例](../examples/index.md)。
 
+## 先选择非线性入口
+
+ECAT 保留新版和 legacy 两套非线性几何入口，但职责不同：
+
+| 当前任务 | 推荐入口 | 配置生成命令 |
+| --- | --- | --- |
+| 新建自己的研究项目 | `NonlinearGeometrySMCInversion` | `ecat-generate-nonlinear-geometry -o nonlinear_geometry.yml` |
+| 原样复现 Wushi、Ridgecrest 等现有公开案例 | legacy `explorefault` | 使用案例已有的 `default_config.yml`；需要重建时运行 `ecat-generate-nonlinear -o default_config.yml` |
+
+两套配置的 bounds 协议不同，不能只改文件名后混用。新版使用 `prior_bounds_format: lower_upper`；legacy `Uniform` 使用 `[Uniform, start, range]`。
+完整差异见 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)。
+
 ## 完整上手顺序
 
 | 顺序 | 要做的事 | 说明 |
@@ -18,6 +30,26 @@ ECAT 教程按两步走路线组织反演阶段：
 | 2 | [InSAR 降采样](../workflows/02_insar_downsampling.md) | 原始 SAR/offset 产品先转成 CSI `.txt/.rsp/.cov` 前缀；手动调参可按 [InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)。非标准读入或时序复用网格看 [自定义读入 Adapter 降采样](../workflows/02b_adapter_downsampling.md)。已有点位数据可跳过。 |
 | 3 | [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md) | 估计顶边中点位置、走向、倾角、长度、宽度等几何参数。 |
 | 4 | [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md) | 固定优选几何，反演分布式滑动并做权重诊断。 |
+
+## 最短可运行公开案例
+
+下面命令假设已经克隆 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)，并且当前环境已经安装 ECAT、CSI 和 MPI。两个案例当前都使用 legacy `explorefault`，适合先验证完整计算链；新项目再按上一节切换到新版入口。
+
+Wushi InSAR-only：
+
+```bash
+cd Cases/Wushi_20240122M7_0/Nonlinear
+mpiexec -n 4 python test_nonlinear_mag_rake.py -r
+```
+
+Ridgecrest GPS+InSAR：
+
+```bash
+cd Cases/Ridgecrest_20190706Mw7_1/Nonlinear
+mpiexec -n 4 python test_nonlinear_mag_rake.py -r
+```
+
+已有 HDF5 样本时，去掉 `mpiexec -n 4` 和 `-r`，可只重建摘要与图件。运行前仍应检查脚本中的相对数据路径和配置文件；案例完整说明见 [Casebook](../casebook/index.md)。
 
 ## 第一步：Bayesian 非线性几何反演
 
@@ -37,10 +69,11 @@ ECAT 教程按两步走路线组织反演阶段：
 配置文件可以先在当前反演目录生成模板：
 
 ```bash
-ecat-generate-nonlinear -o default_config.yml
+ecat-generate-nonlinear-geometry -o nonlinear_geometry.yml
 ```
 
-然后参照案例修改参数。`bounds` 中的 `Uniform` 目前写作 `[Uniform, start, range]`，实际上界是 `start + range`；它不是 `[下界, 上界]`。更完整的配置说明见 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)。
+然后参照案例修改参数。新版模板默认使用 `prior_bounds_format: lower_upper`，即 `[Uniform, lower, upper]`。只有 legacy `ecat-generate-nonlinear` 模板使用 `[Uniform, start, range]`，上界为 `start + range`。
+更完整的配置说明见 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)。
 
 推荐案例：
 
@@ -69,7 +102,10 @@ ecat-generate-nonlinear -o default_config.yml
 # InSAR/optical 降采样配置
 ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phase -o downsample.yml
 
-# 非线性几何反演主配置
+# 非线性几何反演主配置（新项目推荐）
+ecat-generate-nonlinear-geometry -o nonlinear_geometry.yml
+
+# 仅在复现 legacy explorefault 案例时使用
 ecat-generate-nonlinear -o default_config.yml
 
 # 线性 BLSE/VCE 主配置和边界配置
@@ -87,23 +123,29 @@ CLI 生成的是模板，不是最终科学配置。需要继续修改数据路�
 - BLSE/VCE 的边界、rake、Euler 和自定义线性约束由约束管理器统一处理，参见 [ECAT 约束管理器](../reference/constraint_manager.md)。
 - 两步走跑通并完成质量检查后，如需把可扰动断层几何和分布式滑动放进同一个 Bayesian 后验，再阅读 [Bayesian 联合几何-滑动分布反演](../workflows/05_joint_bayesian_geometry_slip.md)。
 
-## 最小脚本骨架
+## API 调用顺序与完整模板
+
+下面代码只展示对象装配顺序，假设 `geodata`、MPI `comm/rank` 和固定断层对象已经在脚本前半段建立；它不是脱离数据读取即可运行的完整脚本。需要复制完整文件时，优先使用：
+
+- 新版非线性几何：[`scripts/test_nonlinear_geometry_smc.py`](../../scripts/test_nonlinear_geometry_smc.py)
+- legacy 案例复现：[`scripts/test_nonlinear_bayesian.py`](../../scripts/test_nonlinear_bayesian.py)
+- BLSE/VCE：[`scripts/test_slip_inv_BLSE.py`](../../scripts/test_slip_inv_BLSE.py)
 
 非线性几何反演：
 
 ```python
-from eqtools.csiExtend.exploremultifaults_smc import explorefault
+from eqtools.csiExtend import NonlinearGeometrySMCInversion
 
-expfault = explorefault(
+expfault = NonlinearGeometrySMCInversion(
     "geometry_search",
     lon0=lon0,
     lat0=lat0,
-    config_file="default_config.yml",
+    config_file="nonlinear_geometry.yml",
     geodata=geodata,
 )
 expfault.setPriors(bounds=None, initialSample=None, datas=None)
 expfault.setLikelihood(datas=None, verticals=None)
-expfault.walk(nchains=100, chain_length=50, comm=comm, filename="samples_geometry.h5")
+expfault.walk(nchains=expfault.nchains, chain_length=expfault.chain_length, comm=comm, filename="samples_geometry.h5")
 expfault.extract_and_plot_bayesian_results(filename="samples_geometry.h5")
 ```
 

@@ -13,7 +13,7 @@ Bayesian 非线性几何反演 -> BLSE/VCE 线性滑动分布反演
 ```text
 数据对象 + 可扰动断层对象 + Bayesian 配置
   -> BayesianMultiFaultsInversion
-  -> SMC_F_J 或 FULLSMC
+  -> SMC_FJ 或 FULLSMC
   -> 几何后验、滑动后验、sigma/alpha 后验和拟合诊断
 ```
 
@@ -32,10 +32,20 @@ Bayesian 非线性几何反演 -> BLSE/VCE 线性滑动分布反演
 
 | 模式 | 采样内容 | 滑动处理 | 适合场景 |
 | --- | --- | --- | --- |
-| `SMC_F_J` | 几何、sigma、alpha 等超参数 | 每个样本内用约束线性求解滑动 | 推荐的高级主线；维度较低，可复用 BLSE 约束体系 |
+| `SMC_FJ` | 几何、sigma、alpha 等超参数 | 每个样本内用约束线性求解滑动 | 推荐的高级主线；维度较低，可复用 BLSE 约束体系 |
 | `FULLSMC` | 几何、sigma、alpha 和滑动参数 | 滑动也作为采样参数 | 研究滑动先验或小规模模型；维度高，计算成本大 |
 
-`SMC_FJ` 是 `SMC_F_J` 的配置别名，读入后会归一化为 `SMC_F_J`。在当前配置层中，`SMC_F_J` 会使用 `ss_ds` 滑动参数化；线性 rake、Euler、零滑和自定义矩阵约束只在 `SMC_F_J + ss_ds` 或 BLSE 中形成线性约束矩阵。完整约束差异见 [ECAT 约束管理器 / Constraint Manager](../reference/constraint_manager.md)。
+`SMC_FJ` 是规范配置值，读入后也作为唯一内部名称保存。旧配置中的
+`SMC_F_J` 仍会在配置入口自动归一化为 `SMC_FJ`，但新配置、导出结果和
+运行状态不再使用旧拼写。`SMC_FJ` 会使用 `ss_ds` 滑动参数化；线性 rake、
+Euler、零滑和自定义矩阵约束只在 `SMC_FJ + ss_ds` 或 BLSE 中形成线性约束
+矩阵。完整约束差异见
+[ECAT 约束管理器 / Constraint Manager](../reference/constraint_manager.md)。
+
+两种模式复用同一份 bounds 和震间配置。切换到 `FULLSMC` 时，不必维护第二份
+YAML；线性子问题专属约束会被标为 inactive，bounds 和适用先验仍按当前参数化
+生效。纯断层小模型可使用 `magnitude_rake` 或 `rake_fixed`；包含 Pressure、
+Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 
 ## 数据和断层对象
 
@@ -52,8 +62,8 @@ Bayesian 非线性几何反演 -> BLSE/VCE 线性滑动分布反演
 联合 Bayesian 配置仍由主配置和边界配置控制。下面只展示和联合路线相关的关键字段，正式案例需要继续设置数据、断层、GF、sigma/alpha 和约束。
 
 ```yaml
-bayesian_sampling_mode: SMC_FJ    # SMC_FJ | SMC_F_J | FULLSMC
-slip_sampling_mode: ss_ds         # SMC_F_J 会使用 ss_ds；FULLSMC 可按问题选择
+bayesian_sampling_mode: SMC_FJ    # SMC_FJ | FULLSMC
+slip_sampling_mode: ss_ds         # SMC_FJ 会使用 ss_ds；FULLSMC 可按问题选择
 nchains: 100
 chain_length: 50
 
@@ -86,10 +96,23 @@ fault.help()
 1. 从样本向量取出当前几何、sigma、alpha 等超参数。
 2. 对启用 `update_fault_geometry` 的断层调用指定扰动方法。
 3. 根据扰动结果更新网格、patch 面积、Laplacian 和必要的 GF。
-4. 在 `SMC_F_J` 中，用当前超参数和约束求解线性滑动；在 `FULLSMC` 中，滑动来自样本本身。
+4. 在 `SMC_FJ` 中，用当前超参数和约束求解线性滑动；在 `FULLSMC` 中，滑动来自样本本身。
 5. 计算似然、权重和后验诊断。
 
 因此，联合路线的关键不是单独“画一个扰动几何”，而是保证每个样本中的几何、网格、GF、约束矩阵和数据协方差是一致的。
+
+开始采样前建议做一次轻量检查：
+
+```python
+snapshot = inversion.get_constraint_snapshot(validate=True)
+print(snapshot["sampling_mode"])
+print(snapshot["inactive_constraints"])
+print(snapshot["validation"])
+```
+
+初始化阶段的无效 active constraint 会直接报错，并回滚整次约束更新。`SMC_FJ`
+运行中若某个样本的受约束线性求解失败，该样本只获得低似然；程序不会移除等式
+约束后重算，因此不会把约束外解混入后验。
 
 ## 与两步走的关系
 
@@ -103,12 +126,26 @@ fault.help()
 
 ## 输出和检查
 
+后验采样完成后，先激活要报告的代表模型，再计算拟合统计：
+
+```python
+inversion.returnModel(model="median", print_stat=False)
+rows = inversion.collect_fit_statistics(model="median")
+df = inversion.fit_statistics_to_dataframe(rows)
+```
+
+这里 `returnModel()` 负责选择并分发 median；`collect_fit_statistics()` 中的
+`model="median"` 只是统计表标签。比较 MAP、mean 或 median 时，每个模型都要
+分别执行这两步。详细说明见 [Fit Statistics](../reference/fit_statistics.md)。
+
 联合反演结果至少应检查：
 
 - 几何参数后验是否收敛，是否贴边。
 - 滑动后验均值、中位数和可信区间是否受几何扰动主导。
 - 每条数据的残差、sigma 后验和权重是否合理。
-- `SMC_F_J` 中线性约束是否按预期生效。
+- `SMC_FJ` 中线性约束是否按预期生效。
+- `inactive_constraints` 是否只包含当前模式预期不消费的配置项。
+- 是否出现重复的 constrained linear solve 失败告警；若有，应先检查约束可行性。
 - 网格更新和 GF 重建是否与扰动方法一致。
 
 报告联合 Bayesian 结果时，应明确写出 `bayesian_sampling_mode`、`slip_sampling_mode`、几何扰动方法、扰动参数边界、网格策略、GF 后端、数据协方差处理和约束类型。
