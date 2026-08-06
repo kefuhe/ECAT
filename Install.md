@@ -20,6 +20,12 @@ file. It contains the direct runtime dependencies of CSI and eqtools with
 compatibility ranges. It is not a full export of a maintainer's environment
 and does not contain operating-system build strings, PyMC, PyTensor, or Theano.
 
+The generated file has three ownership sections: dependencies imported by both
+CSI and eqtools, CSI-only dependencies, and eqtools-only dependencies. Shared
+packages remain declared in both package `setup.py` files so either standalone
+checkout installs correctly; the ECAT environment file deduplicates them only
+after ownership has been verified.
+
 The file permits Python 3.10--3.12. To choose a version explicitly, use for
 example:
 
@@ -160,7 +166,9 @@ Run these commands only from the ECAT repository root after changing package
 imports or metadata. Do not generate the public environment file with
 `conda list`, `pip freeze`, or a personal development environment. See the
 [maintainer integration guide](docs/developer/release_sync.md) for the
-standalone-to-ECAT synchronization boundary.
+standalone-to-ECAT synchronization boundary. The audit fails both when a
+package imports an undeclared dependency and when a base dependency is declared
+by a package that does not import it.
 
 ## Common installation problems
 

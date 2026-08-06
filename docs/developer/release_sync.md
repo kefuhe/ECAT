@@ -62,6 +62,19 @@ requirements/ecat-requirements.txt
 不能掩盖当前包自己的元数据缺项。这样两个独立开发仓库的 editable 安装都能得到
 各自需要的直接依赖。
 
+依赖所有权按源码直接使用关系确定，而不是按生成清单的输出顺序确定。两边都 import
+的包必须分别保留在两个 `setup.py` 中；生成后的唯一清单把它们放入 shared 分组并
+只输出一次。只被一个源码树 import 的包进入相应的 CSI-only 或 eqtools-only 分组。
+生成检查也会拒绝“本包没有 import、却被错误加入本包基础依赖”的反向错误。
+
+同步前可在 ECAT 根目录直接审计两个独立 checkout，而不生成或修改统一清单：
+
+```bash
+python scripts/generate_requirements.py --audit-only \
+  --csi-project <path-to-csi-checkout> \
+  --eqtools-project <path-to-eqtools-checkout>
+```
+
 不要从个人 Conda 环境生成公开清单，也不要在独立包中保留带平台 build string 的
 完整环境快照。修改依赖后，在 ECAT 根目录运行：
 

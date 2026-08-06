@@ -23,6 +23,10 @@ conda activate ecat
 eqtools 的直接运行依赖和兼容范围。它不包含操作系统 build string、维护者机器上的
 无关应用、PyMC、PyTensor 或 Theano。
 
+清单按“CSI 与 eqtools 共享”“仅 CSI”“仅 eqtools”分组。共享包会分别保留在两个
+独立包的 `setup.py` 中，因为 CSI 和 eqtools 都直接使用它们；清单生成时只去重一次，
+不能根据它在清单中的显示位置判断依赖归属。
+
 清单允许 Python 3.10--3.12。若要明确选择版本，可在创建环境时加入版本约束：
 
 ```bash
@@ -171,7 +175,9 @@ python scripts/generate_requirements.py --check
 
 该工具从两个包的 `install_requires` 聚合唯一环境清单。独立包仓库以自己的
 `setup.py` 为依赖事实来源，不另外维护完整环境导出。同步和发布顺序见
-[独立开发仓库与 ECAT 集成](../developer/release_sync.md)。
+[独立开发仓库与 ECAT 集成](../developer/release_sync.md)。生成器会分别检查两个
+源码树：本包 import 但未声明、以及本包没有 import 却错误加入基础依赖的情况都会
+使检查失败。
 
 ## 常见问题
 

@@ -45,9 +45,11 @@ conda activate ecat
 # or install.bat for Windows
 ```
 
-`csi` and its runtime dependencies are required. ECAT does not use or install
-PyMC, PyTensor, or Theano. See [Install.md](Install.md) for the wheel and
-optional-feature instructions.
+`csi` and its runtime dependencies are required. The generated environment file
+separates dependencies shared by CSI and eqtools from package-specific entries;
+shared names remain declared by both packages so each can be installed on its
+own. ECAT does not use or install PyMC, PyTensor, or Theano. See
+[Install.md](Install.md) for the wheel and optional-feature instructions.
 
 ### Updating an existing checkout
 

@@ -12,12 +12,12 @@ preparation, nonlinear fault-geometry search, and distributed slip inversion.
 
 Start from the public user manual:
 
-- [ECAT User Manual](docs/index.md)
-- [Installation and environment checks](docs/getting_started/installation.md)
-- [Standard two-step quickstart](docs/getting_started/quickstart_two_step.md)
-- [Scientific workflow map](docs/workflows/index.md)
-- [Task-oriented examples](docs/examples/index.md)
-- [Reference map](docs/reference/index.md)
+- [ECAT User Manual](../docs/index.md)
+- [Installation and environment checks](../docs/getting_started/installation.md)
+- [Standard two-step quickstart](../docs/getting_started/quickstart_two_step.md)
+- [Scientific workflow map](../docs/workflows/index.md)
+- [Task-oriented examples](../docs/examples/index.md)
+- [Reference map](../docs/reference/index.md)
 
 The manual is organized by scientific workflow rather than source-code layout:
 
@@ -29,17 +29,26 @@ The manual is organized by scientific workflow rather than source-code layout:
 
 ## Installation
 
-From a local checkout:
-
-```bash
-python -m pip install .
-```
-
-For editable development installs:
+Create a complete user environment from the ECAT repository root as described
+in [Install.md](../Install.md). To update only eqtools in an existing ECAT
+environment, run from this directory:
 
 ```bash
 python -m pip install -e .
 ```
+
+Optional eqtools features are installed from the same directory:
+
+```bash
+python -m pip install -e ".[geoexport]"
+python -m pip install -e ".[viewer]"
+python -m pip install -e ".[interaction]"
+```
+
+The direct runtime dependencies and optional groups are declared in
+`setup.py`. A dependency is declared here only when eqtools imports it or
+requires it as an explicit optional backend. Names also declared by CSI are
+intentional shared dependencies, not dependencies borrowed from CSI.
 
 If pip cannot download isolated build dependencies because of network or SSL
 issues, use the Python environment that already contains `setuptools` and
@@ -50,13 +59,13 @@ python -m pip install -e . --no-build-isolation
 ```
 
 Full environment notes are in
-[Installation and environment checks](docs/getting_started/installation.md).
+[Installation and environment checks](../docs/getting_started/installation.md).
 
 ## Cases
 
 Runnable case scripts, input data, and reference outputs are maintained in
 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases).  Use the
-[casebook](docs/casebook/index.md) to choose a case that matches the workflow
+[casebook](../docs/casebook/index.md) to choose a case that matches the workflow
 you want to learn.
 
 ## Main Entry Points
@@ -66,7 +75,7 @@ you want to learn.
 - `ecat-generate-config` and `ecat-generate-boundary` for BLSE/VCE linear slip.
 - `ecat-fault-trace-tool` for trace simplification and smoothing.
 
-See the [CLI reference](docs/reference/cli.md) for command details.
+See the [CLI reference](../docs/reference/cli.md) for command details.
 
 ## Related Projects
 

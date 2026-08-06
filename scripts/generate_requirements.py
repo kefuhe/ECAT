@@ -12,10 +12,14 @@ Usage:
 
     python scripts/generate_requirements.py          # rewrite the txt file
     python scripts/generate_requirements.py --check  # verify it is current
+    python scripts/generate_requirements.py --audit-only \
+        --csi-project PATH --eqtools-project PATH
 
-The import audit is strict for unclassified third-party imports. Known optional
-or legacy backends are listed explicitly below; every other import must be
-declared by package metadata before this check succeeds.
+The import audit is strict in both directions. Known optional or legacy
+backends are listed explicitly below; every other import must be declared by
+the package that imports it, and every base dependency must be backed by an
+import in that same package. The rendered file separates shared, CSI-only, and
+eqtools-only dependencies so output order cannot be mistaken for ownership.
 """
 
 from __future__ import annotations
@@ -69,10 +73,14 @@ FIRST_PARTY = {
 KNOWN_NON_BASE = {
     "altarexplore",  # legacy AlTar posterior helpers
     "arviz",         # optional posterior diagnostic plotting
+    "global-share",  # case-local legacy __main__ demonstration module
     "mayavi",        # obsolete optional 3-D plotting method
     "obspy",         # optional beachball plotting in earthquake clients
+    "pyastronomy",   # legacy GPS time-series fitting utility
     "sacpy",         # external kinematic waveform backend
     "sqlalchemy",    # optional GPS SQL-file reader
+    "statsmodels",   # legacy GPS outlier helper
+    "sympy",         # optional symbolic rheology derivation helper
     "tsinsar",       # optional legacy InSAR time-series backend
 }
 SKIPPED_DIRECTORIES = {"__pycache__", "build", "docs", "examples", "test", "tests"}
@@ -140,14 +148,34 @@ def unique_requirements(requirements: Iterable[str]) -> list[str]:
     return [selected[name] for name in sorted(selected)]
 
 
+def requirements_by_name(requirements: Iterable[str]) -> dict[str, str]:
+    """Return normalized distribution names mapped to requirement strings."""
+
+    return {
+        requirement_name(requirement): requirement
+        for requirement in unique_requirements(requirements)
+    }
+
+
 def render_requirements(csi_base: list[str], eqtools_base: list[str]) -> str:
-    csi = [item for item in unique_requirements(csi_base) if requirement_name(item) not in WHEEL_ONLY]
-    csi_names = {requirement_name(item) for item in csi}
-    eqtools = [
-        item
-        for item in unique_requirements(eqtools_base)
-        if requirement_name(item) not in csi_names and requirement_name(item) not in WHEEL_ONLY
-    ]
+    csi = requirements_by_name(
+        item for item in csi_base if requirement_name(item) not in WHEEL_ONLY
+    )
+    eqtools = requirements_by_name(
+        item for item in eqtools_base if requirement_name(item) not in WHEEL_ONLY
+    )
+
+    shared_names = sorted(set(csi) & set(eqtools))
+    for name in shared_names:
+        if csi[name] != eqtools[name]:
+            raise ValueError(
+                f"Conflicting direct requirements for shared dependency {name}: "
+                f"CSI={csi[name]!r}, eqtools={eqtools[name]!r}"
+            )
+
+    shared = [csi[name] for name in shared_names]
+    csi_only = [csi[name] for name in sorted(set(csi) - set(eqtools))]
+    eqtools_only = [eqtools[name] for name in sorted(set(eqtools) - set(csi))]
 
     lines = [
         "# ECAT's supported runtime environment: direct dependencies only.",
@@ -165,11 +193,14 @@ def render_requirements(csi_base: list[str], eqtools_base: list[str]) -> str:
         "",
         "python>=3.10,<3.13",
         "",
-        "# Required by CSI public imports and supported runtime methods.",
-        *csi,
+        "# Shared direct runtime dependencies of CSI and eqtools.",
+        *shared,
         "",
-        "# Required by supported ECAT SMC, BLSE/VCE, mesh, and SAR workflows.",
-        *eqtools,
+        "# CSI-only direct runtime dependencies.",
+        *csi_only,
+        "",
+        "# eqtools-only direct runtime dependencies.",
+        *eqtools_only,
         "",
     ]
     return "\n".join(lines)
@@ -183,21 +214,28 @@ def iter_source_files(source_root: Path) -> Iterable[Path]:
         yield path
 
 
-def scan_imports() -> tuple[
+def scan_imports(
+    source_roots: dict[str, Path] | None = None,
+) -> tuple[
     dict[str, set[str]],
     dict[str, dict[str, set[str]]],
 ]:
+    source_roots = source_roots or SOURCE_ROOTS
     stdlib = set(getattr(sys, "stdlib_module_names", set())) | set(sys.builtin_module_names)
-    distributions: dict[str, set[str]] = {name: set() for name in SOURCE_ROOTS}
-    locations: dict[str, dict[str, set[str]]] = {name: {} for name in SOURCE_ROOTS}
-    for package_name, source_root in SOURCE_ROOTS.items():
+    distributions: dict[str, set[str]] = {name: set() for name in source_roots}
+    locations: dict[str, dict[str, set[str]]] = {name: {} for name in source_roots}
+    for package_name, source_root in source_roots.items():
         for path in iter_source_files(source_root):
+            relative = (
+                Path(source_root.parent.name)
+                / source_root.name
+                / path.relative_to(source_root)
+            ).as_posix()
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
             except (OSError, UnicodeDecodeError, SyntaxError) as error:
-                print(f"WARNING: cannot parse {path.relative_to(ROOT)}: {error}")
+                print(f"WARNING: cannot parse {relative}: {error}")
                 continue
-            relative = str(path.relative_to(ROOT)).replace("\\", "/")
             for node in ast.walk(tree):
                 names: list[str] = []
                 if isinstance(node, ast.Import):
@@ -213,11 +251,16 @@ def scan_imports() -> tuple[
     return distributions, locations
 
 
-def audit_imports(declared: dict[str, set[str]]) -> set[str]:
-    imported_by_package, locations_by_package = scan_imports()
+def audit_imports(
+    declared: dict[str, set[str]],
+    base_declared: dict[str, set[str]],
+    source_roots: dict[str, Path] | None = None,
+) -> set[str]:
+    source_roots = source_roots or SOURCE_ROOTS
+    imported_by_package, locations_by_package = scan_imports(source_roots)
     issues: set[str] = set()
 
-    for package_name in SOURCE_ROOTS:
+    for package_name in source_roots:
         imported = imported_by_package[package_name]
         locations = locations_by_package[package_name]
 
@@ -241,7 +284,22 @@ def audit_imports(declared: dict[str, set[str]]) -> set[str]:
                 print(f"  {name}: {', '.join(sorted(locations[name]))}")
                 issues.add(f"{package_name}:{name}")
         else:
-            print(f"Source-import audit ({package_name}): every base import is declared.")
+            print(
+                f"Source-import audit ({package_name}): every classified import "
+                "is declared by that package as base or optional metadata."
+            )
+
+        overdeclared = base_declared[package_name] - imported
+        if overdeclared:
+            print(f"Base dependencies declared by {package_name} but not imported there:")
+            for name in sorted(overdeclared):
+                print(f"  {name}")
+                issues.add(f"{package_name}:overdeclared:{name}")
+        else:
+            print(
+                f"Dependency-ownership audit ({package_name}): "
+                "every base declaration is imported by that package."
+            )
 
     return issues
 
@@ -249,10 +307,46 @@ def audit_imports(declared: dict[str, set[str]]) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if the generated txt file is stale")
+    parser.add_argument(
+        "--audit-only",
+        action="store_true",
+        help="audit package metadata and imports without reading or writing the ECAT txt file",
+    )
+    parser.add_argument(
+        "--csi-project",
+        type=Path,
+        help="CSI project root to use with --audit-only (defaults to ECAT's embedded copy)",
+    )
+    parser.add_argument(
+        "--eqtools-project",
+        type=Path,
+        help="eqtools project root to use with --audit-only (defaults to ECAT's embedded copy)",
+    )
     args = parser.parse_args()
 
-    csi_base, csi_optional = read_setup_dependencies(SETUP_FILES["csi"])
-    eqtools_base, eqtools_optional = read_setup_dependencies(SETUP_FILES["eqtools"])
+    if args.check and args.audit_only:
+        parser.error("--check and --audit-only are mutually exclusive")
+    if (args.csi_project or args.eqtools_project) and not args.audit_only:
+        parser.error("--csi-project and --eqtools-project require --audit-only")
+
+    setup_files = dict(SETUP_FILES)
+    source_roots = dict(SOURCE_ROOTS)
+    project_overrides = {
+        "csi": args.csi_project,
+        "eqtools": args.eqtools_project,
+    }
+    package_directories = {"csi": "csi", "eqtools": "eqtools"}
+    for package_name, project_root in project_overrides.items():
+        if project_root is None:
+            continue
+        resolved_root = project_root.resolve()
+        setup_files[package_name] = resolved_root / "setup.py"
+        source_roots[package_name] = (
+            resolved_root / package_directories[package_name]
+        )
+
+    csi_base, csi_optional = read_setup_dependencies(setup_files["csi"])
+    eqtools_base, eqtools_optional = read_setup_dependencies(setup_files["eqtools"])
     rendered = render_requirements(csi_base, eqtools_base)
 
     declared_by_package = {
@@ -265,14 +359,26 @@ def main() -> int:
             for item in [*eqtools_base, *eqtools_optional]
         },
     }
+    base_declared_by_package = {
+        "csi": {requirement_name(item) for item in csi_base},
+        "eqtools": {requirement_name(item) for item in eqtools_base},
+    }
     declared = set().union(*declared_by_package.values())
     forbidden_declared = declared & FORBIDDEN
     if forbidden_declared:
         print(f"Forbidden package metadata: {', '.join(sorted(forbidden_declared))}")
     issues = {f"metadata:{name}" for name in forbidden_declared}
-    issues |= audit_imports(declared_by_package)
+    issues |= audit_imports(
+        declared_by_package,
+        base_declared_by_package,
+        source_roots,
+    )
     if issues:
         return 1
+
+    if args.audit_only:
+        print("OK: dependency metadata ownership audit passed.")
+        return 0
 
     if args.check:
         current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""

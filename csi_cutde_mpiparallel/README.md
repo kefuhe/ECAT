@@ -30,12 +30,35 @@ For more details and configuration instructions, see the `README` file in the `c
 
 ## 🚦 Installation and Usage Notes
 
+For a new user environment, create the complete ECAT environment from the
+repository root first. Its supported dependency file and `okada4py`
+instructions prepare CSI and eqtools together.
+
+For an incremental CSI update, reuse that environment and run from this
+directory:
+
+```bash
+conda activate ecat
+python -m pip install -e .
+```
+
+CSI imports `okada4py` during package import, so a matching wheel must already
+be installed. Every base dependency in `setup.py` is backed by a CSI source
+import; a package is not added there merely because eqtools uses it.
+Dependencies imported by both packages are deliberately declared by both so
+either standalone checkout remains installable.
+
+The obsolete CSI `simpleSampler` implementation based on the incompatible
+legacy PyMC API has been removed. PyMC, PyTensor, and Theano are not CSI or
+ECAT installation dependencies; supported nonlinear geometry inversion is
+provided by the eqtools Bayesian SMC workflow.
+
 - **If you only need homogeneous (non-layered) Green's function calculation:**  
-  👉 Simply run  
+  no EDCMP/PSCMP binary compilation is required. Install this checkout with:
+
   ```bash
-  pip install .
+  python -m pip install -e .
   ```
-  No additional binaries or compilation are required.
 
 - **If you need layered Green's function calculation (EDCMP/PSCMP):**
   - On **Windows**:  
@@ -45,7 +68,7 @@ For more details and configuration instructions, see the `README` file in the `c
     - If you are on another Linux distribution, you may need to compile EDCMP/PSCMP yourself:
       1. Compile the binaries on your platform (see below for source and patch instructions).
       2. Replace the binaries in the corresponding `csi/bin` subfolder.
-      3. Then run `pip install .` to install the package.
+      3. Then run `python -m pip install -e .` to install the package.
 
 ---
 

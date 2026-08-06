@@ -30,8 +30,10 @@ setup(
     },
     python_requires=">=3.10,<3.13",
     install_requires=[
-        # Required by public CSI imports and supported runtime methods; keep
-        # this list in sync with ECAT's dependency generator.
+        # Direct runtime dependencies imported by CSI. A dependency that is
+        # also imported by eqtools is intentionally declared in both packages
+        # so each standalone checkout remains installable on its own. Keep
+        # this list in sync with ECAT's dependency ownership audit.
         "cartopy>=0.21,<0.23",
         "cmcrameri>=1.8,<2",
         "cutde>=23.6.25,<24",

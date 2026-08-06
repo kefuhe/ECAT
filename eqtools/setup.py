@@ -35,6 +35,9 @@ setup(
     description='Earthquake Cycle Analysis Toolkit (ECAT)',
     python_requires='>=3.10,<3.13',
     install_requires=[
+        # Direct runtime dependencies imported by eqtools. A dependency that
+        # is also imported by CSI is intentionally declared in both packages
+        # so each standalone checkout remains installable on its own.
         'affine>=2.4,<3',
         'cartopy>=0.21,<0.23',
         'cmcrameri>=1.8,<2',
@@ -71,6 +74,9 @@ setup(
         'xarray>=2023.1,<2026',
     ],
     extras_require={
+        "docs": [
+            "mkdocs-material==9.7.7",
+        ],
         "geoexport": [
             "h5netcdf>=1.2",
         ],
