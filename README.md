@@ -50,17 +50,19 @@ Open MPI, MS-MPI, or Intel MPI from the outset, choose one of the verified
 pre-install profiles in [Install.md](Install.md) before creating the
 environment; do not replace BLAS/MPI binaries after installing ECAT.
 
-`csi` and its runtime dependencies are required. The generated environment file
-separates dependencies shared by CSI and eqtools from package-specific entries;
-shared names remain declared by both packages so each can be installed on its
-own. ECAT does not use or install PyMC, PyTensor, or Theano. See
+`csi` and its runtime dependencies are required. The repository dependency list
+contains the direct runtime requirements of CSI and eqtools together with their
+compatibility ranges. See
 [Install.md](Install.md) for the wheel and optional-feature instructions. See
 [installation and runtime troubleshooting](docs/getting_started/troubleshooting.md)
 for VPN/proxy recovery, temporary BLAS thread tests, MPI diagnostics, and
 symptom-specific recovery steps. The
 [compute runtime stack](docs/concepts/compute_runtime_stack.md) explains how
 oneAPI, oneMKL, OpenBLAS, mpi4py, Open MPI, MPICH, Intel MPI, and MS-MPI fit
-together.
+together. The
+[parallel execution basics](docs/concepts/parallel_process_rank_thread.md)
+introduces processes, MPI ranks, threads, CPU affinity, and portable first-run
+commands.
 
 ### Updating an existing checkout
 

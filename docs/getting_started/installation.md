@@ -5,8 +5,8 @@
 
 ECAT 支持 64 位 Windows 和 Linux 上的 CPython 3.10、3.11 和 3.12。当前默认
 推荐并重点验证 CPython 3.10；3.11 和 3.12 保留为支持的安装目标。推荐使用
-Conda/conda-forge 建立基础环境，再用 `python -m pip` 安装本地源码。不要用
-`conda list`、`pip freeze` 或个人开发环境导出文件替代 ECAT 的依赖清单。
+Conda/conda-forge 建立基础环境，再用 `python -m pip` 安装本地源码。安装时直接
+使用仓库提供的依赖清单。
 
 ## 1. 第一次安装完整 ECAT
 
@@ -22,7 +22,8 @@ conda activate ecat
 
 上面是普通用户的默认命令，Conda 会按平台选择 BLAS 和 MPI 实现。如果已经确定要
 使用 MKL、Intel MPI 或 Windows MS-MPI，应在这一步创建环境时选择，不要装完以后
-再原地替换二进制运行库。
+再原地替换二进制运行库。默认命令不承诺 Intel MPI，也不要求 `I_MPI_*` 变量；
+实际实现必须用安装后的 `MPI.get_vendor()` 结果判断。
 
 ### 1.1 安装前选择数值和 MPI 实现（可选）
 
@@ -96,8 +97,7 @@ conda create -n ecat --override-channels -c conda-forge \
 [安装与运行故障排查](troubleshooting.md#2-conda-创建环境失败或很慢)。
 
 `requirements/ecat-requirements.txt` 是 ECAT 唯一的用户环境清单，包含 CSI 与
-eqtools 的直接运行依赖和兼容范围。它不包含操作系统 build string、维护者机器上的
-无关应用、PyMC、PyTensor 或 Theano。
+eqtools 的直接运行依赖和兼容范围。
 
 清单按“CSI 与 eqtools 共享”“仅 CSI”“仅 eqtools”分组。共享包会分别保留在两个
 独立包的 `setup.py` 中，因为 CSI 和 eqtools 都直接使用它们；清单生成时只去重一次，
@@ -167,7 +167,7 @@ python -m pip install .
 ```
 
 这会根据 `eqtools/setup.py` 检查直接依赖，只补装缺失项或调整超出兼容范围的包，
-不会把维护者环境中的所有包写入用户环境。
+不需要重新安装完整 ECAT 环境。
 
 只有需要直接编辑源码并让修改立即生效的维护者，才使用 editable 安装：
 
@@ -181,14 +181,6 @@ python -m pip install -e .
 # 当前位于 ECAT 仓库根目录
 cd csi_cutde_mpiparallel
 python -m pip install .
-```
-
-维护者在独立 eqtools 或 CSI 开发仓库中验证时，复用已经建立的 `ecat` 环境，并在
-各自仓库根目录直接执行：
-
-```bash
-conda activate ecat
-python -m pip install -e .
 ```
 
 该命令是包级增量安装，不是空白环境的完整 ECAT 部署。第一次使用 ECAT 时仍应从
@@ -243,6 +235,8 @@ mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank(),
 正确的两进程结果应包含 `0 2` 和 `1 2`。如果出现两次 `0 1` 或两次 rank 0，通常
 是 `mpiexec` 与 `mpi4py` 加载了不同 MPI 实现；按
 [MPI 故障排查](troubleshooting.md#7-mpi-或-mpiexec-失败) 检查路径和运行库。
+第一次运行和受控线程对照的跨 MPI 实现模板见
+[并行运行基础](../concepts/parallel_process_rank_thread.md#1-首次运行的通用复制模板)。
 
 MPI 检查失败不代表 CVXOPT/Clarabel、BLSE/VCE、数据读取或网格功能不可用；应把
 MPI runtime 问题与普通 Python 包导入问题分开诊断。
@@ -255,20 +249,6 @@ ecat-generate-downsample --help
 ecat-generate-nonlinear --help
 ecat-downsample --help
 ```
-
-## 9. 依赖维护边界
-
-普通用户不需要运行依赖生成脚本。只有将独立验证过的 eqtools 或 CSI 更新集成到
-ECAT 时，维护者才从 ECAT 仓库根目录执行：
-
-```bash
-python scripts/generate_requirements.py --check
-```
-
-该工具从两个包的 `install_requires` 聚合唯一环境清单。独立包仓库以自己的
-`setup.py` 为依赖事实来源，不另外维护完整环境导出。独立仓库与 ECAT 的同步细节
-属于维护流程，不是普通用户安装步骤。生成器会分别检查两个源码树：本包 import
-但未声明、以及本包没有 import 却错误加入基础依赖的情况都会使检查失败。
 
 ## 常见问题
 

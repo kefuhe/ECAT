@@ -18,9 +18,10 @@ eqtools 与 CSI 可以在各自开发仓库中独立维护和验证；对外发�
 ## 安装文档的所有权
 
 `docs/getting_started/installation.md` 是 ECAT 集成层页面，必须同时说明 CSI、
-eqtools、统一依赖清单和安装脚本。它不应被包级 README 或机器环境导出覆盖。
+eqtools、统一依赖清单和安装脚本。包级 README 只保留简要入口，不替代完整安装页。
 
 `docs/getting_started/troubleshooting.md` 与
+`docs/concepts/parallel_process_rank_thread.md`、
 `docs/concepts/compute_runtime_stack.md`、
 `docs/developer/dependency_environment_policy.md` 也属于安装发布边界，必须与安装页
 同步，不能在各仓库保留含义不同的代理、BLAS、MPI 或线程说明。
@@ -81,8 +82,8 @@ python scripts/generate_requirements.py --audit-only \
   --eqtools-project <path-to-eqtools-checkout>
 ```
 
-不要从个人 Conda 环境生成公开清单，也不要在独立包中保留带平台 build string 的
-完整环境快照。修改依赖后，在 ECAT 根目录运行：
+统一清单只从两个包的直接依赖元数据生成，完整环境快照不进入公开发布文件。修改
+依赖后，在 ECAT 根目录运行：
 
 ```bash
 python scripts/generate_requirements.py
@@ -95,7 +96,7 @@ python scripts/generate_requirements.py --check
 - `okada4py` 的 wheel/源码安装说明与支持平台一致；
 - CSI 与 eqtools 能在统一环境中导入；
 - mesh、SAR/InSAR、BLSE/VCE 和 SMC 基础依赖仍在 base 环境；
-- PyMC、PyTensor 和 Theano 未重新进入包元数据或统一环境清单；
+- 基础清单只包含核心功能直接使用的运行依赖，可选工具仍由 extras 或专项说明管理；
 - `cd eqtools && python -m pip install .` 能完成普通增量安装；
 - editable安装只作为维护者开发入口；
 - extras 从 eqtools 项目根目录使用 `.[extra]` 安装；
@@ -107,6 +108,7 @@ python scripts/generate_requirements.py --check
 - Windows的 MKL+MS-MPI、MKL+Intel MPI和 Linux/WSL的 MKL+Open MPI、
   MKL+Intel MPI至少完成依赖 dry-run；
 - 计算运行栈页区分 oneAPI、oneMKL、Intel MPI、编译器、MPI实现和 mpi4py绑定；
+- 并行基础页区分进程、rank、线程、CPU affinity 和环境变量归属；
 - MPI两进程检查输出 rank与 size，并检查启动器和动态库是否配套；
 - `python scripts/generate_requirements.py --check` 通过；
 - 公共文档不存在本地绝对路径、私有案例目录或失效相对链接。

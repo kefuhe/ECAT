@@ -15,6 +15,7 @@
 | --- | --- | --- |
 | 第一次使用 | [安装与环境检查](getting_started/installation.md) → [标准两步走路线](getting_started/quickstart_two_step.md) | 先跑通环境和标准反演主线 |
 | 安装、导入或运行速度异常 | [安装与运行故障排查](getting_started/troubleshooting.md) | 按症状检查版本、wheel、MPI、BLAS 和线程数 |
+| 不清楚 `-n`、rank、进程、线程或 affinity | [并行运行基础](concepts/parallel_process_rank_thread.md) | 先理解运行单位，再决定是否需要调参 |
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
 | 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
 | 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
@@ -53,7 +54,7 @@ BLSE/VCE 线性滑动分布反演
 
 | 文档层 | 什么时候使用 |
 | --- | --- |
-| [Concepts / 核心概念](concepts/index.md) | 理解两步走、SAR 投影约定和断层几何状态 |
+| [Concepts / 核心概念](concepts/index.md) | 理解两步走、并行运行、SAR 投影约定和断层几何状态 |
 | [Examples / 任务短例](examples/index.md) | 复制一个小任务的最小代码或命令 |
 | [Casebook / 公开案例](casebook/index.md) | 对照 ECAT-Cases 中的真实事件脚本、数据和输出 |
 | [Reference / 完整参考](reference/index.md) | 查 CLI、配置、reader、约束、几何、结果解释和 API 细节 |

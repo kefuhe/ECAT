@@ -166,7 +166,7 @@ python -c "import numpy, scipy; from threadpoolctl import threadpool_info; print
 
 - `internal_api`：常见为 `mkl` 或 `openblas`；
 - `filepath`：实际加载的动态库路径；
-- `num_threads`：当前线程数；
+- `num_threads`：该线程池当前配置或允许使用的线程上限，不是实时 CPU 占用；
 - `threading_layer`：常见为 `pthreads`、`openmp` 或 `intel`。
 
 安装完整 oneAPI 不会自动把现有 NumPy/SciPy 改成 MKL。只有这里实际显示
@@ -175,12 +175,21 @@ Python 扩展也可能各自带有 BLAS，因此输出中可能同时出现 MKL 
 
 oneMKL 与 OpenBLAS 的作用、切换测试环境以及 oneAPI 组件关系见
 [计算运行栈](../concepts/compute_runtime_stack.md)。
+进程、rank、线程、物理/逻辑 CPU 和 affinity 的基本关系见
+[并行运行基础](../concepts/parallel_process_rank_thread.md)。
+
+先区分物理核心和逻辑 CPU。Linux/WSL 运行 `lscpu`；Windows 在任务管理器 CPU
+性能页查看“内核”和“逻辑处理器”。物理核心数适合作为初始计算预算，逻辑 CPU
+包含 SMT/超线程，并不保证对每个矩阵规模都有等比例加速。容器、WSL、集群作业或
+CPU affinity 还可能只向当前进程开放其中一部分 CPU。
 
 ### 单进程临时测速
 
-不要假设线程越多越快。单进程 BLSE 可以先用 8 线程作为保守起点，再对同一个
-代表性案例测试 1、4、8、16 线程并记录总耗时。以下变量只对这一条命令启动的
-进程生效。
+先直接运行一次默认命令并记录基线，不要假设默认一定不好，也不要假设线程越多
+越快。只有默认运行较慢或需要调优时，再对同一个代表性 BLSE 案例测试 1、4、8、
+16 线程。以下变量只对这一条命令启动的进程生效。
+前置变量由 shell、MPI 和数值库怎样传递与读取，见
+[前置环境变量怎样生效、由谁配置](../concepts/parallel_process_rank_thread.md#6-前置环境变量怎样生效由谁配置)。
 
 Linux/WSL，OpenBLAS pthreads：
 
@@ -219,6 +228,56 @@ Remove-Item Env:MKL_NUM_THREADS -ErrorAction SilentlyContinue
 如果原来已经设置过变量，应在测试前记录旧值并在测试后恢复。环境变量必须在启动
 Python 前设置；NumPy/SciPy 已经加载后再修改可能不会生效。
 
+### 默认与手动配置怎样公平计时
+
+两次测试必须使用相同数据、配置、输出选项和绘图后端，比较完整脚本 wall time，
+不能把一次交互绘图与另一次无窗口运行直接比较。Linux/WSL 可使用：
+
+```bash
+# 默认基线
+/usr/bin/time -f "wall=%e s, max_rss=%M KiB" \
+  env MPLBACKEND=Agg python your_script.py
+
+# MKL 16 线程候选
+/usr/bin/time -f "wall=%e s, max_rss=%M KiB" \
+  env MPLBACKEND=Agg MKL_NUM_THREADS=16 OMP_NUM_THREADS=16 \
+  python your_script.py
+```
+
+如果实际后端是 OpenBLAS，把 `MKL_NUM_THREADS` 换成
+`OPENBLAS_NUM_THREADS`；同一进程同时出现两种 BLAS 时分别设置两者。`max_rss`
+是 Linux `/usr/bin/time` 报告的峰值常驻内存近似值，单位为 KiB。
+
+Windows PowerShell 可用 `Stopwatch`，既保留脚本输出又报告 wall time：
+
+```powershell
+# 默认基线
+$env:MPLBACKEND = "Agg"
+$timer = [Diagnostics.Stopwatch]::StartNew()
+python .\your_script.py
+$timer.Stop()
+$timer.Elapsed
+
+# 在新的专用终端中设置 MKL 16 线程候选
+$env:MPLBACKEND = "Agg"
+$env:MKL_NUM_THREADS = "16"
+$env:OMP_NUM_THREADS = "16"
+$timer = [Diagnostics.Stopwatch]::StartNew()
+python .\your_script.py
+$timer.Stop()
+$timer.Elapsed
+```
+
+测试前用 `env | grep -E 'MKL|OPENBLAS|OMP|NUMBA'` 或 PowerShell 的
+`Get-ChildItem Env:` 确认没有遗留变量。每个候选至少重复两次；若第一次包含 JIT、
+磁盘缓存或初次生成输出的额外成本，应单独标记，不把它与后续热运行混为一组。
+
+如果 `threadpool_info()` 同时列出 MKL 和 OpenBLAS，应在同一条测速命令中分别
+设置 `MKL_NUM_THREADS` 与 `OPENBLAS_NUM_THREADS`，避免只限制其中一个。不要仅看
+求解器内部某一步的时间；应比较从读取数据到写出主要结果的总耗时，并确认结果摘要
+在数值容差内一致。连续运行至少两次，忽略第一次的文件缓存或 JIT 预热影响，再选择
+稳定且资源占用合理的设置。
+
 OpenBLAS pthreads 构建读取 `OPENBLAS_NUM_THREADS`；OpenMP 构建通常读取
 `OMP_NUM_THREADS`。后者还可能影响 CUTDE、Numba 或其他 OpenMP 代码，因此只在
 `threading_layer` 明确显示 `openmp` 时进行单次临时测试。详见
@@ -234,21 +293,67 @@ MPI 启动多个 Python 进程，BLAS 又可能在每个进程内部启动多个
 ```
 
 例如 8 个 MPI 进程、每个进程 16 个 BLAS 线程，可能产生约 128 个计算线程。
-大型 SMC 或 MPI 任务变慢时，应同时比较进程数和每进程 BLAS 线程数：
+第一次使用先运行不带线程变量的默认命令：
 
 ```bash
-# OpenBLAS 环境
-OPENBLAS_NUM_THREADS=1 mpiexec -n 8 python your_script.py
-OPENBLAS_NUM_THREADS=4 mpiexec -n 8 python your_script.py
-
-# MKL 环境
-MKL_NUM_THREADS=1 mpiexec -n 8 python your_script.py
-MKL_NUM_THREADS=4 mpiexec -n 8 python your_script.py
+mpiexec -n 4 python your_script.py
 ```
 
-多进程任务先从每个 MPI 进程 1 个 BLAS 线程开始，再按实际物理核心数比较 2 或
+如果默认 MPI 已经为 rank 设置互不冲突的 affinity，并合理限制进程内数值线程，
+就继续使用这条简单命令。只有大型 SMC 变慢、增加 rank 后不再加速或观察到过量
+线程时，才使用下面的每 rank 1 线程模板作为受控对照。
+
+Linux/WSL Bash：
+
+```bash
+MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+NUMBA_NUM_THREADS=1 \
+  mpiexec -n 4 python your_script.py
+```
+
+Windows PowerShell，建议在新开的专用终端执行，完成后关闭终端：
+
+```powershell
+$env:MKL_NUM_THREADS = "1"
+$env:OPENBLAS_NUM_THREADS = "1"
+$env:OMP_NUM_THREADS = "1"
+$env:NUMBA_NUM_THREADS = "1"
+mpiexec -n 4 python .\your_script.py
+```
+
+无论 mpi4py 配套的是 Open MPI、MPICH、Intel MPI 还是 MS-MPI，这两个模板都没有
+使用厂商专属 MPI pinning 变量；未加载的数值库会忽略不属于自己的线程变量。它们
+只用于诊断，不替代上面的默认主命令。确认默认存在争用后，再保持 rank 数不变，
+把实际后端的线程值从 1 比较到 2 或 4。
+
+受控对照先从每个 MPI 进程 1 个 BLAS 线程开始，再按实际物理核心数比较 2 或
 4 线程；不要直接沿用单进程的 8 线程起点。Numba 的线程池由
 `NUMBA_NUM_THREADS` 单独控制，不等同于 BLAS 线程。
+
+通用的第一轮测试可以按下表组织。`P` 表示物理核心数，所有组合仍要受内存容量、
+SMC 粒子数和集群调度额度限制：
+
+| 测试目的 | MPI 进程数 | 每进程 BLAS 线程 | 初始判断 |
+| --- | ---: | ---: | --- |
+| 单进程 BLSE/VCE | 1 | 1、4、8、16（不超过 `P`） | 找到稠密线性代数的收益拐点 |
+| MPI SMC 默认基线 | `min(4, nchains)` | 由 MPI/数值库默认决定 | 先确认并行正确性并记录实际线程行为 |
+| MPI SMC 受控基线 | `min(4, nchains)` | 1 | 仅在默认存在争用时用于对照 |
+| 扩展 MPI 进程 | 8、16 或 `nchains` 的因数 | 1 | 保持 `进程数 × 线程数 ≤ P` 作为保守起点 |
+| 少进程、多线程对照 | `P/2` 或更少 | 2 | 仅当每个样本内部有明显 BLAS/OpenMP 工作时比较 |
+
+MPI 进程数不应超过 `nchains`；如果进程数能整除 `nchains`，每个 rank 分到的粒子
+数量更均衡。不能整除通常仍可运行，只是最后几个 rank 的工作量可能少一个粒子。
+`chain_length` 是每个 SMC 阶段内部的链长度，不是 MPI 进程或线程数。
+
+`SMC_FJ` 会在每个样本内调用受约束线性求解，通常比仅做矩阵向量计算的固定几何
+`FULLSMC` 占用更多内存。增加 rank 会复制 Python 对象、GF、协方差和求解工作区；
+此时最佳进程数常由内存先限制，而不是由逻辑 CPU 数决定。先用小进程数观察峰值
+内存，再逐步扩展到 8、16 或更高，不要直接把另一台机器的 `-n 20/-n 25` 当成默认。
+
+若 MPI 实现已经为每个 rank 设置了 CPU affinity，并自动把 BLAS 限制为 1，继续
+手工叠加更多进程内线程未必更快。可以在 rank 0 打印 `threadpool_info()`，并用
+系统监视器确认实际 CPU 与内存占用；“运行时可见 N 个线程”只代表上限或亲和范围，
+不代表 N 个线程正在同时计算。
 
 在本地电脑运行 MPI 不需要 oneAPI。Open MPI、MPICH、Intel MPI 和 MS-MPI 都能
 在单机启动多进程；Intel MPI 是否更快必须用同一案例、相同进程数和线程数实测。
@@ -259,11 +364,19 @@ MPI 的完整层级是：MPI 标准 → Open MPI/MPICH/Intel MPI/MS-MPI 实现 �
 `mpiexec` → mpi4py Python 绑定。实现可以选择，但启动器和动态库必须属于同一
 实现或明确兼容的 ABI，不能只替换其中一个。
 
-先检查 Python 绑定实际加载的实现：
+### 最短通用检查
+
+先复制下面两条命令。它们不假定具体 MPI 实现：
 
 ```bash
 python -c "from mpi4py import MPI; print(MPI.get_vendor()); print(MPI.Get_library_version())"
+mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank(), MPI.COMM_WORLD.Get_size())"
 ```
+
+第二条正确输出应包含 `0 2` 和 `1 2`，顺序可以不同。若已经正确，就不需要继续
+本节的路径排查，也不要因为文档列出 Intel MPI 就额外设置 `I_MPI_*`。
+
+### 启动器和动态库路径
 
 Linux/WSL 检查启动器搜索顺序：
 
@@ -282,19 +395,6 @@ $env:CONDA_PREFIX
 Get-Command python -All
 Get-Command mpiexec -All
 mpiexec --version
-```
-
-最后执行两进程自检：
-
-```bash
-mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank(), MPI.COMM_WORLD.Get_size())"
-```
-
-正确输出应包含：
-
-```text
-0 2
-1 2
 ```
 
 如果得到两次 `0 1`、两次 rank 0，或出现 PMIx/PMI singleton 警告，说明两个

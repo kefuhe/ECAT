@@ -19,7 +19,9 @@ conda activate ecat
 This is the normal user command; Conda selects platform-appropriate BLAS and
 MPI implementations. If you already want MKL, Intel MPI, or Windows MS-MPI,
 select it while creating the environment rather than replacing binary
-runtimes after ECAT has been installed.
+runtimes after ECAT has been installed. The default command does not promise
+Intel MPI or require any `I_MPI_*` variables; verify the selected
+implementation after installation with `MPI.get_vendor()`.
 
 ### 1.1 Choose the numerical and MPI runtime before installation (optional)
 
@@ -91,8 +93,7 @@ with an explicit BLAS/MPI profile.
 
 `requirements/ecat-requirements.txt` is the only supported user environment
 file. It contains the direct runtime dependencies of CSI and eqtools with
-compatibility ranges. It is not a full export of a maintainer's environment
-and does not contain operating-system build strings, PyMC, PyTensor, or Theano.
+compatibility ranges.
 
 The stable numerical compatibility window remains:
 
@@ -175,7 +176,7 @@ python -m pip install .
 ```
 
 Pip reconciles the direct requirements declared by `eqtools/setup.py`; it does
-not reproduce every package installed on a maintainer's machine.
+not require recreating the complete ECAT environment.
 
 Only maintainers who need source edits to take effect without reinstalling
 should use the editable form:
@@ -191,11 +192,6 @@ Update CSI separately only when its source or dependency metadata changed:
 cd csi_cutde_mpiparallel
 python -m pip install .
 ```
-
-In an independent eqtools or CSI development checkout, activate the existing
-ECAT environment and run `python -m pip install -e .` directly from that
-repository root when editable development is required. This is a package-level
-incremental install, not a bootstrap procedure for an empty environment.
 
 ## 5. Install optional eqtools features
 
@@ -213,8 +209,7 @@ python -m pip install ".[interaction]" # Bokeh trace editor
 ```
 
 The base environment includes the supported Bayesian SMC geometry inversion,
-BLSE/VCE linear slip inversion, mesh and SAR dependencies. PyMC, PyTensor, and
-Theano are not installed or supported.
+BLSE/VCE linear slip inversion, mesh, and SAR dependencies.
 
 ## 6. MPI, mpi4py, and oneAPI
 
@@ -247,7 +242,9 @@ mpiexec -n 2 python -c "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank(),
 
 The two-process result must contain `0 2` and `1 2`. Two rank-zero/singleton
 results indicate a launcher/runtime mismatch; follow the MPI path checks in
-the troubleshooting guide.
+the troubleshooting guide. For a vendor-neutral first-run command and a
+controlled comparison of rank and thread settings, see
+[parallel execution basics](docs/concepts/parallel_process_rank_thread.md#1-首次运行的通用复制模板).
 
 An MPI failure does not prevent non-MPI data preparation, mesh, CVXOPT/Clarabel,
 or BLSE/VCE workflows from running.
@@ -260,29 +257,6 @@ ecat-generate-downsample --help
 ecat-generate-nonlinear --help
 ecat-downsample --help
 ```
-
-## Dependency maintenance
-
-Package metadata is the source of truth for direct dependencies. The ECAT
-integration repository aggregates the two package declarations into the one
-user environment file:
-
-```bash
-python scripts/generate_requirements.py
-python scripts/generate_requirements.py --check
-```
-
-Run these commands only from the ECAT repository root after changing package
-imports or metadata. Do not generate the public environment file with
-`conda list`, `pip freeze`, or a personal development environment. See the
-[maintainer integration guide](docs/developer/release_sync.md) for the
-standalone-to-ECAT synchronization boundary. The audit fails both when a
-package imports an undeclared dependency and when a base dependency is declared
-by a package that does not import it.
-
-The [dependency and runtime environment policy](docs/developer/dependency_environment_policy.md)
-records the supported version window, Conda/pip boundary, BLAS/MPI policy, and
-release checks.
 
 ## Installation and runtime problems
 

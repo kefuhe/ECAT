@@ -5,6 +5,10 @@ ECAT 的安装包含 Python 包、数值运行库和并行运行时三个层次�
 “`mpiexec` 启动后所有进程都是 rank 0”以及“安装了 oneAPI 但 NumPy 没变快”等
 问题。
 
+如果还不清楚进程、MPI rank、进程内线程、物理核心和 affinity 的区别，先读
+[进程、MPI Rank、线程与 CPU 亲和性](parallel_process_rank_thread.md)。本页继续
+解释这些计算单位由哪些 Python 包和底层运行库实现。
+
 ```text
 ECAT / eqtools / CSI Python 代码
         │
@@ -70,6 +74,46 @@ python -c "import numpy, scipy; from threadpoolctl import threadpool_info; print
 python -c "import numpy; numpy.show_config()"
 ```
 
+### 物理核心、逻辑 CPU 与 `num_threads`
+
+性能设置中常见的三个数字含义不同：
+
+| 名称 | 含义 |
+| --- | --- |
+| 物理核心数 | CPU 上实际的计算核心数量，适合作为“进程数 × 每进程线程数”的保守起点 |
+| 逻辑 CPU 数 | 操作系统可调度的硬件线程数量；启用 SMT/超线程时通常大于物理核心数 |
+| `threadpool_info()` 的 `num_threads` | 该数值库当前配置或允许使用的线程上限，不是程序此刻正在占用的 CPU 数 |
+
+Linux/WSL 可用 `lscpu` 查看 `CPU(s)`、`Core(s) per socket` 和 `Socket(s)`；Windows
+可在任务管理器的 CPU 性能页查看“内核”和“逻辑处理器”。操作系统、容器、作业
+调度器或 CPU affinity 还可能只向当前进程开放其中一部分逻辑 CPU。
+
+Windows、原生 Linux 与 WSL 怎样呈现 CPU、环境变量和 MPI affinity，以及新用户
+应先用默认命令还是先设线程，见
+[并行运行基础](parallel_process_rank_thread.md#7-windows原生-linux-与-wsl-的一般差异)。
+
+因此，看到 OpenMP 或 BLAS “可见 32/64/104 个线程”，只说明运行时的默认上限或
+当前进程可调度范围，并不表示这些线程都在工作，也不能证明这个数字就是最佳配置。
+多个 `threadpool_info()` 条目也不能直接相加：NumPy、CVXOPT、CUTDE 或其他扩展
+可能各自加载一个线程池，但它们未必在同一阶段同时满负荷运行。
+
+常用变量控制的是不同层次：
+
+| 变量 | 主要控制对象 | 说明 |
+| --- | --- | --- |
+| `MKL_NUM_THREADS` | oneMKL | NumPy/SciPy/CVXOPT 实际链接 MKL 时生效 |
+| `OPENBLAS_NUM_THREADS` | OpenBLAS pthreads 构建 | 某些 wheel 可能单独携带 OpenBLAS |
+| `OMP_NUM_THREADS` | OpenMP 运行时 | 也可能影响 CUTDE 或 OpenMP 版 BLAS；范围比单一 BLAS 更广 |
+| `NUMBA_NUM_THREADS` | Numba parallel 线程池 | 只影响使用并行 Numba 内核的代码，不等同于 BLAS 线程 |
+
+`I_MPI_PIN` 不属于数值线程变量；它由 Intel MPI 读取，只控制 Intel MPI 是否执行
+进程 pinning。完整变量归属、默认来源和 shell 作用范围见
+[前置环境变量怎样生效、由谁配置](parallel_process_rank_thread.md#6-前置环境变量怎样生效由谁配置)。
+
+这些变量不应写成 ECAT 的永久默认值。先确认实际后端，再在单条运行命令中临时
+设置并比较代表性案例；具体测速矩阵见
+[安装与运行故障排查](../getting_started/troubleshooting.md#5-blse-初始化blas-后端与线程)。
+
 安装 oneAPI 后，如果输出仍是 `openblas`，说明当前 NumPy/SciPy 没有使用
 oneMKL；这不是安装失败，而是 Python 包仍链接到原来的 BLAS 实现。
 
@@ -106,6 +150,10 @@ conda create -n ecat-openblas --override-channels -c conda-forge \
 运行的程序。Open MPI、MPICH、Intel MPI 和 MS-MPI 是不同厂商或社区提供的 MPI
 实现。`mpi4py` 是 MPI 的 Python 绑定，`mpiexec` 是某个 MPI 实现提供的进程
 启动器。
+
+本节列出可选实现，不表示 ECAT 默认采用 Intel MPI。普通安装由 Conda 按平台和
+当前依赖解析出匹配组合；安装后以 `MPI.get_vendor()` 为准。通用运行模板不使用
+任何 `I_MPI_*`、Open MPI 或 MS-MPI 专属参数。
 
 ```text
 MPI 标准
