@@ -34,8 +34,8 @@ See [Install.md](Install.md) for detailed instructions.
 git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
 
-# Create an ECAT environment with CPython 3.10, 3.11, or 3.12
-conda create -n ecat -c conda-forge --file requirements/ecat-requirements.txt
+# Python 3.10 is recommended; 3.11 and 3.12 remain supported targets.
+conda create -n ecat -c conda-forge python=3.10 --file requirements/ecat-requirements.txt
 conda activate ecat
 
 # Install an okada4py wheel matching the active CPython version first.
@@ -45,11 +45,22 @@ conda activate ecat
 # or install.bat for Windows
 ```
 
+The command above lets Conda choose the platform runtime. If you want MKL with
+Open MPI, MS-MPI, or Intel MPI from the outset, choose one of the verified
+pre-install profiles in [Install.md](Install.md) before creating the
+environment; do not replace BLAS/MPI binaries after installing ECAT.
+
 `csi` and its runtime dependencies are required. The generated environment file
 separates dependencies shared by CSI and eqtools from package-specific entries;
 shared names remain declared by both packages so each can be installed on its
 own. ECAT does not use or install PyMC, PyTensor, or Theano. See
-[Install.md](Install.md) for the wheel and optional-feature instructions.
+[Install.md](Install.md) for the wheel and optional-feature instructions. See
+[installation and runtime troubleshooting](docs/getting_started/troubleshooting.md)
+for VPN/proxy recovery, temporary BLAS thread tests, MPI diagnostics, and
+symptom-specific recovery steps. The
+[compute runtime stack](docs/concepts/compute_runtime_stack.md) explains how
+oneAPI, oneMKL, OpenBLAS, mpi4py, Open MPI, MPICH, Intel MPI, and MS-MPI fit
+together.
 
 ### Updating an existing checkout
 
@@ -60,10 +71,12 @@ directory instead of recreating the complete environment:
 git pull
 conda activate ecat
 cd eqtools
-python -m pip install -e .
+python -m pip install .
 ```
 
-Reinstall `csi_cutde_mpiparallel` separately only when CSI changed. The full
+Maintainers who need source edits to take effect without reinstalling can use
+`python -m pip install -e .` instead. Reinstall `csi_cutde_mpiparallel`
+separately only when CSI changed. The full
 update and optional-extra commands are documented in [Install.md](Install.md).
 
 -----

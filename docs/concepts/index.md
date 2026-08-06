@@ -10,6 +10,7 @@
 | trace、top/bottom、layers、mesh 和 patch 有什么区别 | [断层几何状态](fault_geometry_states.md) |
 | `strike/dip/rake` 如何配套解释，跨 `90°` 时怎样进入 CSI | [断层走向、倾角与滑动基底约定](fault_angle_conventions.md) |
 | SAR/offset 数据的正负号和 LOS projection 怎么理解 | [SAR 投影和观测约定](sar_projection_conventions.md) |
+| oneAPI、MKL、OpenBLAS、mpi4py 和不同 MPI 实现是什么关系 | [Python 数值计算、BLAS、MPI 与 oneAPI 的层级](compute_runtime_stack.md) |
 
 ## 和其他文档层的关系
 

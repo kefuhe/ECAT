@@ -18,7 +18,12 @@ eqtools 与 CSI 可以在各自开发仓库中独立维护和验证；对外发�
 ## 安装文档的所有权
 
 `docs/getting_started/installation.md` 是 ECAT 集成层页面，必须同时说明 CSI、
-eqtools、统一依赖清单和安装脚本。它不应被包级 README 或旧环境导出覆盖。
+eqtools、统一依赖清单和安装脚本。它不应被包级 README 或机器环境导出覆盖。
+
+`docs/getting_started/troubleshooting.md` 与
+`docs/concepts/compute_runtime_stack.md`、
+`docs/developer/dependency_environment_policy.md` 也属于安装发布边界，必须与安装页
+同步，不能在各仓库保留含义不同的代理、BLAS、MPI 或线程说明。
 
 eqtools 的 workflow、example 和 reference 页面可以在独立仓库先维护，再同步到
 ECAT 顶层 `docs/`。涉及安装命令时统一使用以下语义：
@@ -26,11 +31,12 @@ ECAT 顶层 `docs/`。涉及安装命令时统一使用以下语义：
 ```bash
 # ECAT 用户先进入 eqtools 子项目；独立 eqtools 仓库中省略 cd
 cd eqtools
-python -m pip install -e .
-python -m pip install -e ".[viewer]"
+python -m pip install .
+python -m pip install ".[viewer]"
 ```
 
-这样同一个包级命令既适用于 ECAT 子目录，也适用于独立 eqtools 根目录。
+这样同一个普通包级命令既适用于 ECAT 子目录，也适用于独立 eqtools 根目录。
+维护者需要直接编辑源码时才改用 `python -m pip install -e .`。
 
 ## 推荐同步顺序
 
@@ -85,12 +91,22 @@ python scripts/generate_requirements.py --check
 
 ## 发布前检查
 
-- Python 3.10、3.11 和 3.12 仍符合包元数据声明；
+- Python 3.10完成重点回归，3.11和3.12仍符合包元数据声明并能完成基础安装检查；
 - `okada4py` 的 wheel/源码安装说明与支持平台一致；
 - CSI 与 eqtools 能在统一环境中导入；
 - mesh、SAR/InSAR、BLSE/VCE 和 SMC 基础依赖仍在 base 环境；
 - PyMC、PyTensor 和 Theano 未重新进入包元数据或统一环境清单；
-- `cd eqtools && python -m pip install -e .` 能完成增量安装；
+- `cd eqtools && python -m pip install .` 能完成普通增量安装；
+- editable安装只作为维护者开发入口；
 - extras 从 eqtools 项目根目录使用 `.[extra]` 安装；
+- 安装脚本和公共文档不持久化 BLAS线程数、不强制 MKL/OpenBLAS，也不创建永久
+  `libblas` pin；
+- 安装页保留简短默认命令，并在同一步骤给出经过 dry-run 验证、互斥的安装前
+  MKL/MPI配置，以及 VPN残留代理和 solver/channel两个高频直接替代；复杂组合再
+  链接排错页或运行栈概念页；
+- Windows的 MKL+MS-MPI、MKL+Intel MPI和 Linux/WSL的 MKL+Open MPI、
+  MKL+Intel MPI至少完成依赖 dry-run；
+- 计算运行栈页区分 oneAPI、oneMKL、Intel MPI、编译器、MPI实现和 mpi4py绑定；
+- MPI两进程检查输出 rank与 size，并检查启动器和动态库是否配套；
 - `python scripts/generate_requirements.py --check` 通过；
 - 公共文档不存在本地绝对路径、私有案例目录或失效相对链接。

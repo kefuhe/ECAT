@@ -15,7 +15,7 @@
 - `eqtools/csiExtend/docs` 可作为素材池和内部维护参考；公开用户路线以顶层 `docs/` 为唯一入口，不把内部设计、计划、审计和 changelog 原样搬进用户手册。
 - eqtools 的 workflow、example 和 reference 可以从独立开发仓库选择性同步；
   `getting_started/installation.md`、顶层导航和发布边界属于 ECAT 集成层，不能用
-  包级 README 或旧环境说明整页覆盖。
+  包级 README 或机器环境说明整页覆盖。
 - `examples/` 只放短小任务例子，使用通用文件名和占位路径；完整真实事件脚本仍放在 `casebook/` 和 ECAT-Cases。
 - `concepts/` 只解释跨页面复用的概念和对象关系，不放完整 API 字段表。
 
