@@ -1,71 +1,50 @@
-# 地表迹线预处理与倾角建模短例
+# 由地表迹线和倾角构建三角断层
 
-这个例子先用数组级工具统一 trace 方向、裁剪、端点延伸和重采样，再分别给出固定倾角和
-沿走向变化倾角的最短建模代码。
+这个示例从两列 `lon lat` 地表迹线出发，给出线性滑动反演最常用的三条可复制路线：
 
-## 输入
+| 已有信息 | 使用路线 |
+| --- | --- |
+| 一条地表迹线和一个倾角 | [单倾角平面](#single-dip) |
+| 一条地表迹线和多个倾角参考点 | [沿走向变化倾角](#multiple-dips) |
+| 需要逐个比较候选倾角 | [固定参考拓扑的倾角搜索](#fixed-topology) |
 
-- `fault_trace.txt`：两列 `lon lat`。
-- `lon0/lat0`：CSI/eqtools 局部投影原点。
-- 目标：得到干净、等间距的地表 trace，并把它作为三维顶部边界。
+如果已有非线性几何反演结果，改用
+[由非线性几何结果构建断层](fault_from_nonlinear_geometry.md)。如果倾角还随深度变化，使用
+[Fault Geometry Construction：倾角随深度变化](../reference/fault_geometry_construction.md#layered-dip)。
 
-## 最小代码
+## 公共初始化
+
+`fault_trace.txt` 至少包含两列 `lon lat`。点序决定 strike 的正方向，也会影响右手规则下的
+下倾侧，因此先画出迹线并确认首尾顺序。
 
 ```python
 import numpy as np
 from eqtools.csiExtend.BayesianAdaptiveTriangularPatches import (
     BayesianAdaptiveTriangularPatches as TriFault,
 )
-from eqtools.csiExtend.trace_ops import (
-    extend_trace,
-    orient_trace,
-    resample_trace,
-    simplify_trace,
-    trim_trace,
-)
 
-lon0, lat0 = 87.5, 28.5
-trace = np.loadtxt("fault_trace.txt")
+lon0, lat0 = 96.2, 21.1
+trace_lonlat = np.loadtxt("fault_trace.txt", ndmin=2)[:, :2]
 
-fault = TriFault("TraceFault", lon0=lon0, lat0=lat0, verbose=False)
-
-# Project lon/lat to local x/y in km before length-based operations.
-x, y = fault.ll2xy(trace[:, 0], trace[:, 1])
-trace_xy = np.column_stack((x, y))
-
-trace_xy = orient_trace(trace_xy, start="west")
-trace_xy = simplify_trace(trace_xy, method="vw", tolerance=0.2)
-trace_xy = trim_trace(trace_xy, start=2.0, end=45.0)
-trace_xy = extend_trace(trace_xy, start=5.0, end=8.0, tangent_window=3)
-trace_xy = resample_trace(trace_xy, every=1.0)
-
-lon_new, lat_new = fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
-fault.trace(lon_new, lat_new)
+fault = TriFault("MainFault", lon0=lon0, lat0=lat0, verbose=False)
+fault.top = 0.0
+fault.depth = 20.0
+fault.trace(trace_lonlat[:, 0], trace_lonlat[:, 1], utm=False)
 fault.set_top_coords_from_trace()
 ```
 
-## 选择倾角模式
+本页角度均为地理方位角：北为 `0°`、东为 `90°`，从北顺时针增加。
 
-| 已有信息 | 使用模式 |
-| --- | --- |
-| 一个倾角和一个明确下倾方向 | `generate_bottom_from_single_dip(...)` |
-| 多个沿走向倾角控制点 | `interpolate_top_dip_from_relocated_profile(...)` 后接 `generate_bottom_from_segmented_relocated_dips(...)` |
-| 倾角还随深度变化 | 不使用本短例；转到 reference 的 layered-dip 路线 |
+<a id="single-dip"></a>
 
-角度统一使用地理方位角：北为 `0°`、东为 `90°`，从北顺时针增加；strike 正点序由
-trace 点序决定。
+## A. 地表迹线 + 单倾角
 
-## A. 固定倾角
-
-如果使用单一倾角生成底边：
+给定代表性走向和物理倾角后，用右手规则计算下倾方向：
 
 ```python
-fault.top = 0.0
-fault.depth = 20.0
+representative_strike = 65.0
+dip_direction = (representative_strike + 90.0) % 360.0
 
-# Example: the ordered trace has a representative eastward strike (90°).
-reference_strike = 90.0
-dip_direction = (reference_strike + 90.0) % 360.0  # right-hand rule
 fault.generate_bottom_from_single_dip(
     dip_angle=70.0,
     dip_direction=dip_direction,
@@ -74,12 +53,15 @@ fault.generate_mesh(top_size=1.0, bottom_size=2.0, show=False, verbose=0)
 fault.initializeslip(values="depth")
 ```
 
-`dip_direction` 不会由代码自动从 trace 推导。右手规则通常使用
-`(strike + 90°) % 360°`；使用前应确认 trace 点序和实际倾向。
+`dip_direction` 不会自动从迹线推导。使用前应确认迹线点序、`representative_strike` 和实际
+下倾侧一致；若需要向 strike 左侧下倾，应直接给出正确的 `dip_direction`。
 
-## B. 沿走向变化倾角
+<a id="multiple-dips"></a>
 
-最常用的控制点数组是三列 `[lon, lat, dip]`：
+## B. 地表迹线 + 多个倾角参考点
+
+控制点使用与 fault 一致的坐标约定。下面的三列数组是 `[lon, lat, dip]`，因此必须设置
+`is_utm=False`：
 
 ```python
 dip_points = np.array([
@@ -88,7 +70,6 @@ dip_points = np.array([
     [96.45, 21.20, 72.0],
 ])
 
-fault.depth = 25.0
 dip_table = fault.interpolate_top_dip_from_relocated_profile(
     dip_points,
     is_utm=False,
@@ -96,7 +77,6 @@ dip_table = fault.interpolate_top_dip_from_relocated_profile(
     interpolation_axis="auto",
 )
 
-# Nearly straight trace: use one explicit representative strike.
 representative_strike = 65.0
 fault.generate_bottom_from_segmented_relocated_dips(
     fault_depth=fault.depth,
@@ -109,20 +89,104 @@ fault.generate_mesh(top_size=1.0, bottom_size=2.0, show=False, verbose=0)
 fault.initializeslip(values="depth")
 ```
 
-`dip_table` 包含插值后的 `lon/lat/strike/dip`，建议先检查再建 mesh。上例中的
-`user_direction_angle` 是北为 `0°`、顺时针为正的 **strike**，不是下倾方向；底边按其右手侧
-生成，`verbose=True` 会打印实际应用的统一走向。近直线但暂时没有可靠走向角时，可改用
-`use_average_strike=True, average_strike_source="pca"` 自动取 trace 的 PCA 主轴。只有明显弯曲
-且希望下倾方向随走向变化时，才改用 `use_average_strike=False`：三列 `[lon, lat, dip]` 会从
-有序 top edge 自动计算逐节点局部 strike；四列 `[lon, lat, strike, dip]` 会把用户给定的
-控制点 strike 圆周插值到顶部节点并真正用于底边计算。
+`dip_table` 包含插值后的 `lon/lat/strike/dip`，建议先检查再生成 mesh。这里的
+`user_direction_angle` 是 **strike**，不是下倾方向。近直线但没有可靠走向角时，可改为
+`average_strike_source="pca"`；只有明显弯曲且确实希望下倾方向沿迹线变化时，才使用
+`use_average_strike=False`。
 
-多倾角模式推荐把 dip 写成 `[-90°, 0°) ∪ (0°, 90°]`：正值向 strike 右手侧下倾，负值向
-左手侧下倾，`90°` 为垂直。`0°`/`180°` 会因无法投影到更深底边而被拒绝；兼容输入
-`(90°, 180°)` 会转换成 `dip - 180°`，例如 `150°` 与 `-30°` 等价。
-
-DataFrame、CSV、投影 `x/y` 控制点以及三种走向来源的完整可复制形式见
+若控制点已经是 fault 局部投影下的 `x y dip`（单位 km），应改用 `is_utm=True`。不要把
+经纬度数组和投影坐标开关混用。四列 `[lon, lat, strike, dip]`、CSV、DataFrame 和带符号倾角
+的完整约定见
 [Fault Geometry Construction：沿走向变化倾角](../reference/fault_geometry_construction.md#trace-dip-varying)。
+
+<a id="fixed-topology"></a>
+
+## C. 倾角搜索时保持参考坐标和拓扑一致
+
+若要用 BLSE 比较多个倾角，不能让每个候选角重新生成一套不同的三角形。先在参考倾角上
+建立一次网格与参数坐标映射，后续候选只变形现有拓扑：
+
+```python
+reference_dip = 70.0
+candidate_dips = [50.0, 60.0, 70.0, 80.0]
+dip_direction = 155.0
+
+mapping_num_segments = 30
+mapping_disct_z = 10
+
+fault.generate_bottom_from_single_dip(
+    dip_angle=reference_dip,
+    dip_direction=dip_direction,
+)
+fault.generate_and_deform_mesh(
+    fault.top_coords,
+    fault.bottom_coords,
+    top_size=1.0,
+    bottom_size=2.0,
+    num_segments=mapping_num_segments,
+    disct_z=mapping_disct_z,
+    remap=True,
+    show=False,
+    verbose=0,
+)
+reference_npatch = fault.numpatch
+
+for dip in candidate_dips:
+    fault.generate_bottom_from_single_dip(
+        dip_angle=dip,
+        dip_direction=dip_direction,
+    )
+    fault.generate_and_deform_mesh(
+        fault.top_coords,
+        fault.bottom_coords,
+        top_size=1.0,
+        bottom_size=2.0,
+        num_segments=mapping_num_segments,
+        disct_z=mapping_disct_z,
+        remap=False,
+        show=False,
+        verbose=0,
+    )
+    if fault.numpatch != reference_npatch:
+        raise RuntimeError("fixed-topology dip search changed patch count")
+
+    fault.initializeslip(values="depth")
+    # 在这里为当前 dip 新建 inversion，并重新组装 GF、Laplacian 和约束。
+```
+
+`remap=True` 只在参考几何上调用一次。各候选必须保持相同的迹线点序、`num_segments`、
+`disct_z` 和网格参数；每个候选都应新建 inversion 对象，因为 GF、Laplacian 和约束依赖当前
+几何。完整搜索流程见[固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md)，精确参数约定见
+[Fault Geometry Construction：固定拓扑](../reference/fault_geometry_construction.md#fixed-topology-dip-search)。
+
+## 可选：先清理和重采样迹线
+
+只有迹线需要统一方向、裁剪、端点延伸或重采样时，才在“公共初始化”之前加入：
+
+```python
+from eqtools.csiExtend.trace_ops import (
+    extend_trace,
+    orient_trace,
+    resample_trace,
+    simplify_trace,
+    trim_trace,
+)
+
+temporary_fault = TriFault("TraceProjection", lon0=lon0, lat0=lat0, verbose=False)
+x, y = temporary_fault.ll2xy(trace_lonlat[:, 0], trace_lonlat[:, 1])
+trace_xy = np.column_stack((x, y))
+
+trace_xy = orient_trace(trace_xy, start="west")
+trace_xy = simplify_trace(trace_xy, method="vw", tolerance=0.2)
+trace_xy = trim_trace(trace_xy, start=2.0, end=45.0)
+trace_xy = extend_trace(trace_xy, start=5.0, end=8.0, tangent_window=3)
+trace_xy = resample_trace(trace_xy, every=1.0)
+
+lon_new, lat_new = temporary_fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
+trace_lonlat = np.column_stack((lon_new, lat_new))
+```
+
+这些长度参数都在局部投影坐标中解释，单位为 km；示例值只是占位值，应按迹线尺度调整。
 
 ## 检查
 
@@ -132,17 +196,18 @@ from eqtools.csiExtend import print_fault_summary
 print_fault_summary(fault)
 ```
 
-重点看 trace 长度、顶部/底部深度范围、mesh 数量和平均走向/倾角；同时画出 top/bottom，
-确认底边确实位于预期倾向一侧。
+至少检查迹线首尾方向、顶部和底部深度、下倾侧、patch 数量及平均走向/倾角，并画出
+top、bottom 和 mesh。随后可按
+[反演前读取 InSAR 与 GNSS 数据](inversion_data_loading.md)准备 `geodata`，再进入
+[BLSE/VCE 线性滑动反演](../workflows/04_linear_slip_blse_vce.md)。
 
-## 何时不用这个例子
+## 何时不用本例
 
-- 如果只是要把 CSI fault trace 离散成 `xi/yi`，直接用 `fault.discretize_trace(every=...)`。
-- 如果已有 top/bottom 三维曲线，优先用 `discretize_top_coords(...)` 和 `discretize_bottom_coords(...)` 统一点数。
-- 如果是多条等深线或 slab 几何，使用 `FaultGeometryEngine` 管理 layers。
-- 如果倾角随深度而不是只沿走向变化，使用 `AdaptiveLayeredDipTriangularPatches`。
+- 已有 top/bottom 三维曲线时，优先统一两条曲线的点数后直接建 mesh。
+- 多条等深线或 slab 几何应交给 `FaultGeometryEngine` 管理 layers。
+- 倾角随深度变化时，使用 `AdaptiveLayeredDipTriangularPatches`。
 
 相关参考：
-[Fault Geometry Construction](../reference/fault_geometry_construction.md),
-[Fault Summary](../reference/fault_summary.md),
+[Fault Geometry Construction](../reference/fault_geometry_construction.md)、
+[Fault Summary](../reference/fault_summary.md)、
 [Fault Contours](../reference/fault_contours.md)。

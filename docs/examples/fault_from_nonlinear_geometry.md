@@ -113,6 +113,7 @@ tri.writePatches2File("tri_fault.gmt", add_slip="total")
 
 相关参考：
 [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md),
+[反演前读取 InSAR 与 GNSS 数据](inversion_data_loading.md),
 [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md),
 [Fault Geometry Construction](../reference/fault_geometry_construction.md),
 [Fault Summary](../reference/fault_summary.md)。

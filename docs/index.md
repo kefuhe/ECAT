@@ -19,6 +19,8 @@
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
 | 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
 | 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
+| 需要把降采样、外部 SAR 或 GNSS 读入反演 | [反演数据读入短例](examples/inversion_data_loading.md) | 按矩形/trirb、外部 SAR 或 GNSS 选择代码 |
+| 需要由非线性结果或地表迹线构建断层 | [断层构建入口](workflows/04_linear_slip_blse_vce.md#linear-inputs) | 选择非线性结果、单倾角、多倾角或固定拓扑路线 |
 | 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |
 | 需要确认字段、接口或误区 | [Reference Map](reference/index.md) | 按需查阅，不必从头顺序阅读全部 reference |
 | 需要设置跨直立倾角或核对 `strike/dip/rake` | [断层角度约定](concepts/fault_angle_conventions.md) | 先确认输入、solver geometry 和滑动基底的区别 |

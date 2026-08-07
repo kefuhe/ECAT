@@ -1,6 +1,13 @@
 # BLSE/VCE 最小脚本骨架
 
-这个例子展示固定 fault geometry 后，如何组织一个最小 BLSE/VCE 线性滑动脚本。真实案例应从 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 复制相近目录，再按自己的数据修改。
+这个例子展示固定 fault geometry 后，如何组织一个最小 BLSE/VCE 线性滑动脚本。开始前按
+手头输入准备三个部分：
+
+| 需要准备 | 可复制入口 |
+| --- | --- |
+| `fault` 来自非线性几何结果 | [非线性结果到 fault object](fault_from_nonlinear_geometry.md) |
+| `fault` 来自地表迹线和一个/多个倾角 | [地表迹线和倾角构建](fault_trace_preprocessing.md) |
+| `geodata` 来自降采样、外部 SAR 或 GNSS | [反演前读取 InSAR 与 GNSS](inversion_data_loading.md) |
 
 ## 先生成配置
 
@@ -31,26 +38,26 @@ from eqtools.csiExtend.blse_multifaults_inversion import (
     BoundLSEMultiFaultsInversion,
 )
 
-lon0, lat0 = 87.5, 28.5
+lon0, lat0 = 96.2, 21.1
 
-asc = insar("T012A", lon0=lon0, lat0=lat0, verbose=False)
-asc.read_from_varres("InSAR/downsample/T012A_ifg", triangular=False, cov=True)
+asc = insar("TrackA", lon0=lon0, lat0=lat0, verbose=False)
+asc.read_from_varres("InSAR/downsample/track_a_ifg", triangular=False, cov=True)
 
-dsc = insar("T121D", lon0=lon0, lat0=lat0, verbose=False)
-dsc.read_from_varres("InSAR/downsample/T121D_ifg", triangular=False, cov=True)
+dsc = insar("TrackB", lon0=lon0, lat0=lat0, verbose=False)
+dsc.read_from_varres("InSAR/downsample/track_b_ifg", triangular=False, cov=True)
 
 geodata = [asc, dsc]
 
 fault = TriFault("MainFault", lon0=lon0, lat0=lat0, verbose=False)
 fault.top = 0.0
-fault.depth = 8.0
+fault.depth = 20.0
 fault.generate_top_bottom_from_nonlinear_soln(
-    clon=87.40,
-    clat=28.67,
-    cdepth=1.8,
-    strike=332.0,
-    dip=52.0,
-    length=12.0,
+    clon=96.20,
+    clat=21.10,
+    cdepth=1.5,
+    strike=65.0,
+    dip=70.0,
+    length=30.0,
     top=fault.top,
     depth=fault.depth,
 )
@@ -72,6 +79,10 @@ inv.run(penalty_weight=[100.0])
 inv.returnModel()
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
+
+这段代码假定两个数据集都是普通四叉树/矩形 `.rsp`。trirb 或其他三角 `.rsp` 必须把对应调用改为
+`triangular=True`。`cov=True` 已读取完整 `.cov`，不要再调用 `buildDiagCd()`；没有 `.cov`
+时才使用 `cov=False` 并建立对角阵。
 
 ## VCE
 

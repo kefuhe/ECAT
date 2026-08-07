@@ -28,6 +28,57 @@ Bayesian 倾角后验，也不能只凭最小 RMS 代替几何合理性、粗糙
 固定拓扑的目的只是让不同倾角使用相同 patch 身份。物理坐标和 Green's functions 仍随
 倾角改变，所以不能在候选之间复用同一个 inversion 对象。
 
+## 参考网格和候选变形的核心代码
+
+下面假定 `fault.top_coords` 已由地表迹线建立。`remap=True` 只执行一次，后续所有候选
+复用完全相同的映射参数：
+
+```python
+reference_dip = 65.0
+candidate_dips = [50.0, 60.0, 70.0, 80.0]
+dip_direction = 180.0
+mapping_num_segments = 30
+mapping_disct_z = 10
+
+fault.generate_bottom_from_single_dip(reference_dip, dip_direction)
+fault.generate_and_deform_mesh(
+    fault.top_coords,
+    fault.bottom_coords,
+    top_size=1.0,
+    bottom_size=2.0,
+    num_segments=mapping_num_segments,
+    disct_z=mapping_disct_z,
+    remap=True,
+    show=False,
+    verbose=0,
+)
+reference_npatch = fault.numpatch
+
+for dip in candidate_dips:
+    fault.generate_bottom_from_single_dip(dip, dip_direction)
+    fault.generate_and_deform_mesh(
+        fault.top_coords,
+        fault.bottom_coords,
+        top_size=1.0,
+        bottom_size=2.0,
+        num_segments=mapping_num_segments,
+        disct_z=mapping_disct_z,
+        remap=False,
+        show=False,
+        verbose=0,
+    )
+    if fault.numpatch != reference_npatch:
+        raise RuntimeError("fixed-topology dip search changed patch count")
+
+    fault.initializeslip(values="depth")
+    # 为当前 dip 新建 BLSE inversion，重新组装 GF、Laplacian 和约束。
+```
+
+这里的 `num_segments/disct_z` 控制参考坐标映射，不等于最终 patch 数。改变迹线点序、网格
+参数或映射参数都会破坏候选间的一一对应。完整的断层初始化代码见
+[地表迹线和倾角构建示例](../examples/fault_trace_preprocessing.md#fixed-topology)，参数契约见
+[Fault Geometry Construction：固定拓扑](../reference/fault_geometry_construction.md#fixed-topology-dip-search)。
+
 ## 准备输入
 
 先准备：
@@ -76,8 +127,8 @@ bottom_size = 2.0
 `mainfault_reference_dip` 只用于建立共享拓扑，通常取候选范围中部或已有优选值；它不等于
 最终选定倾角。`top_size/bottom_size` 决定参考 patch 离散化，所有候选随后复用它。
 
-模板保持数据读取为顺序式代码，便于用户直接增删某一条观测。若使用 GPS、更多 InSAR
-或不同 reader，先按 [InSAR 与 GPS 数据读取](01_data_reading_insar_gps.md) 建好对象，再
+模板保持数据读取为顺序式代码，便于用户直接增删某一条观测。若使用 GNSS、更多 InSAR
+或不同 reader，先按 [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md) 建好对象，再
 保持 `geodata` 顺序与配置一致。
 
 ## 输出与判断

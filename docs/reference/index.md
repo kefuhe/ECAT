@@ -23,7 +23,7 @@ Reference 不要求按文件顺序通读。长页面保留完整字段和公式�
 
 | 页面 | 什么时候读 |
 | --- | --- |
-| [SAR 与光学观测读入](observation_data_readers.md) | 需要复制 GAMMA binary/GAMMA TIFF/HyP3/GMTSAR/optical reader 脚本，或读写标准网格和 CSI varres 时 |
+| [观测数据读入](observation_data_readers.md) | 需要复制 GAMMA/HyP3/GMTSAR/optical reader，读取 CSI varres、外部 ASCII SAR 或 GNSS ENU 时 |
 | [SAR Reader](sar_reader.md) | 需要确认 SAR/offset 产品的 reader、mode、projection、正负号和单位转换时 |
 | [Data Corrections](data_corrections.md) | 需要确认 `geodata.polys`、InSAR ramp、GPS frame transform、`poly_bounds` 或 `data_corrections` 语义时 |
 | [Downsampling App](downsampling_app.md) | 正在查 `downsample.yml` 字段、执行顺序、输出文件或兼容字段时 |

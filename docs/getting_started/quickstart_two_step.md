@@ -5,7 +5,7 @@ ECAT 教程按两步走路线组织反演阶段：
 1. **Bayesian 非线性几何反演**：估计断层几何。
 2. **BLSE/VCE 线性滑动分布反演**：固定几何，求解分布式滑动。
 
-这里的“两步走”指反演阶段。完整上手顺序是：安装环境，确认 InSAR/GPS 数据读取，必要时做 InSAR 降采样，然后进入非线性几何反演和线性滑动分布反演。
+这里的“两步走”指反演阶段。完整上手顺序是：安装环境，确认 InSAR/GNSS 数据读取，必要时做 InSAR 降采样，然后进入非线性几何反演和线性滑动分布反演。
 
 如果还不清楚为什么要分成几何搜索和线性滑动两步，先读 [标准两步走反演逻辑](../concepts/two_step_inversion.md)。如果只需要某个小任务的最小代码，例如 trace 预处理、GAMMA quick-look 或 BLSE 最小脚本，看 [Examples / 任务短例](../examples/index.md)。
 
@@ -26,10 +26,19 @@ ECAT 保留新版和 legacy 两套非线性几何入口，但职责不同：
 | 顺序 | 要做的事 | 说明 |
 | --- | --- | --- |
 | 0 | [安装与环境检查](installation.md) | 确认 `eqtools`、`csi` 和 CLI 命令可用。 |
-| 1 | [InSAR 与 GPS 数据读取](../workflows/01_data_reading_insar_gps.md) | 明确数据格式、单位、LOS 投影、误差和 `geodata` 顺序。 |
+| 1 | [InSAR 与 GNSS 数据读取](../workflows/01_data_reading_insar_gps.md) | 明确数据格式、单位、LOS 投影、误差和 `geodata` 顺序；已有反演数据可直接复制[数据读入短例](../examples/inversion_data_loading.md)。 |
 | 2 | [InSAR 降采样](../workflows/02_insar_downsampling.md) | 原始 SAR/offset 产品先转成 CSI `.txt/.rsp/.cov` 前缀；手动调参可按 [InSAR 降采样 Step1/Step2 调参](../workflows/02a_insar_downsampling_two_step.md)。非标准读入或时序复用网格看 [自定义读入 Adapter 降采样](../workflows/02b_adapter_downsampling.md)。已有点位数据可跳过。 |
 | 3 | [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md) | 估计顶边中点位置、走向、倾角、长度、宽度等几何参数。 |
 | 4 | [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md) | 固定优选几何，反演分布式滑动并做权重诊断。 |
+
+进入第 4 步时，按几何来源选择一个入口即可：
+
+| 几何来源 | 构建入口 |
+| --- | --- |
+| 第 3 步得到的紧凑非线性结果 | [由非线性结果构建矩形元或三角元](../examples/fault_from_nonlinear_geometry.md) |
+| 地表迹线和一个倾角 | [单倾角平面](../examples/fault_trace_preprocessing.md#single-dip) |
+| 地表迹线和多个倾角参考点 | [沿走向变化倾角](../examples/fault_trace_preprocessing.md#multiple-dips) |
+| 需要用 BLSE 比较多个倾角 | [固定参考拓扑](../examples/fault_trace_preprocessing.md#fixed-topology) |
 
 ## 最短可运行公开案例
 
@@ -48,6 +57,12 @@ Ridgecrest GPS+InSAR：
 cd Cases/Ridgecrest_20190706Mw7_1/Nonlinear
 mpiexec -n 4 python test_nonlinear_mag_rake.py -r
 ```
+
+这里的 `-n 4` 表示启动 4 个 MPI 进程/rank，不是把一个 Python 进程设成 4 个
+线程。第一次使用先直接运行这条默认命令，不需要预先添加
+`MKL_NUM_THREADS=1`、`OMP_NUM_THREADS=1` 等变量。跑通后需要扩大进程数或排查
+速度时，再读
+[进程、MPI Rank、线程与 CPU 亲和性](../concepts/parallel_process_rank_thread.md)。
 
 已有 HDF5 样本时，去掉 `mpiexec -n 4` 和 `-r`，可只重建摘要与图件。运行前仍应检查脚本中的相对数据路径和配置文件；案例完整说明见 [Casebook](../casebook/index.md)。
 

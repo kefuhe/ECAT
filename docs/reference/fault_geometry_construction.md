@@ -2,7 +2,7 @@
 
 本页汇总 ECAT/eqtools 中常用的断层几何构建路径。它关注“如何从已有几何信息构建可用于正演或反演的 fault object”，不替代 nonlinear geometry、BLSE/VCE、constraint、edge 或 contour 的专门页面。
 
-如果只需要最小代码，先看 [地表迹线预处理与倾角建模短例](../examples/fault_trace_preprocessing.md) 或 [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)。如果还不清楚 trace、top/bottom、layers、mesh 和 patch GMT 的区别，先读 [断层几何状态](../concepts/fault_geometry_states.md)；如果要区分紧凑非线性、固定 trace dip 和多倾角入口的不同角度协议，先读 [断层角度约定](../concepts/fault_angle_conventions.md)。
+如果只需要最小代码，先看 [地表迹线和倾角构建示例](../examples/fault_trace_preprocessing.md) 或 [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)。如果还不清楚 trace、top/bottom、layers、mesh 和 patch GMT 的区别，先读 [断层几何状态](../concepts/fault_geometry_states.md)；如果要区分紧凑非线性、固定 trace dip 和多倾角入口的不同角度协议，先读 [断层角度约定](../concepts/fault_angle_conventions.md)。
 
 ## 构建路径与阅读入口
 
@@ -16,6 +16,7 @@
 | 非线性几何反演结果 | [矩形元](#nonlinear-rect) 或 [三角元](#nonlinear-tri) | `geom`、`lon0/lat0`、`top/depth` |
 | 地表迹线和固定倾角 | [固定倾角和显式下倾方向](#trace-dip-single) | trace 文件、`dip_angle`、`dip_direction` |
 | 地表迹线和沿走向变化倾角 | [沿走向变化倾角](#trace-dip-varying) | trace 文件、`xydip` 控制点或剖面倾角 |
+| 一组候选倾角且要求 patch 一一对应 | [参考网格与固定拓扑](#fixed-topology-dip-search) | 参考倾角、候选倾角、统一的映射和网格参数 |
 | 倾角随深度变化 | [倾角随深度变化](#layered-dip) | trace、深度-倾角剖面或深度函数 |
 | 多条等深线或 slab 几何 | [多条等深线和 Slab 几何](#slab-contours) | 等深线或 Slab2 grid、`lon0/lat0`、裁剪范围 |
 | 外部 Gmsh/PyLith mesh | [外部 Mesh 和 PyLith](#external-mesh) | mesh 文件、坐标系、单位和 `z` 正负号 |
@@ -118,6 +119,7 @@ fault.discretize_top_coords(num_segments=60)
 fault.discretize_bottom_coords(num_segments=60)
 ```
 
+<a id="nonlinear-result"></a>
 <a id="nonlinear-rect"></a>
 
 ## 非线性结果到矩形元
@@ -648,6 +650,64 @@ fault.interpolate_top_dip_from_relocated_profile(
   `top_coords`/trace 点序。
 - 常规输入优先使用 `(0°, 90°]`，并通过 trace 点序控制右手侧；确需在同一正走向下表示左侧时
   使用负倾角。`(90°, 180°)` 只作兼容输入，不建议与带符号形式在同一文件中混写。
+
+<a id="fixed-topology-dip-search"></a>
+
+## 倾角搜索的参考网格与固定拓扑
+
+倾角搜索比较的是不同物理几何。如果每个候选都重新剖分，patch 数量、位置和编号也可能
+改变，拟合差异会混入离散化差异。`generate_and_deform_mesh(...)` 用一套参考参数坐标解决
+这个问题：
+
+```python
+reference_dip = 65.0
+candidate_dips = [50.0, 60.0, 70.0, 80.0]
+dip_direction = 180.0
+
+mapping_num_segments = 30
+mapping_disct_z = 10
+
+fault.generate_bottom_from_single_dip(reference_dip, dip_direction)
+fault.generate_and_deform_mesh(
+    fault.top_coords,
+    fault.bottom_coords,
+    top_size=1.0,
+    bottom_size=2.0,
+    num_segments=mapping_num_segments,
+    disct_z=mapping_disct_z,
+    remap=True,
+    show=False,
+    verbose=0,
+)
+reference_npatch = fault.numpatch
+
+for dip in candidate_dips:
+    fault.generate_bottom_from_single_dip(dip, dip_direction)
+    fault.generate_and_deform_mesh(
+        fault.top_coords,
+        fault.bottom_coords,
+        top_size=1.0,
+        bottom_size=2.0,
+        num_segments=mapping_num_segments,
+        disct_z=mapping_disct_z,
+        remap=False,
+        show=False,
+        verbose=0,
+    )
+    if fault.numpatch != reference_npatch:
+        raise RuntimeError("fixed-topology dip search changed patch count")
+```
+
+参数契约：
+
+- `remap=True` 在参考倾角上生成一次 Gmsh 网格，并建立网格顶点到规则参数坐标的映射。
+- `remap=False` 使用既有映射更新物理坐标，不重新定义 patch 身份。
+- `num_segments` 和 `disct_z` 控制参考坐标映射；它们不直接等于最终 patch 数，但候选间必须一致。
+- `top_size`、`bottom_size`、`field_size_dict`、`mesh_func`、迹线点序和顶部/底部控制点数量也应保持一致。
+- 每个候选都必须重新初始化 slip，并新建 inversion 对象；GF、Laplacian、边界与 rake 约束不能跨几何复用。
+- 至少检查 `numpatch`、`Faces` 和 patch 行顺序保持一致，再比较逐数据集 RMS/VR、粗糙度和滑动分布。
+
+可直接运行的循环结构见[固定拓扑倾角搜索工作流](../workflows/04b_blse_dip_search.md)。
 
 <a id="layered-dip"></a>
 

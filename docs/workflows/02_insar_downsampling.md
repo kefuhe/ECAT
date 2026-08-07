@@ -488,7 +488,7 @@ ECAT-Cases 中以 `covarSAR-Step1.py`、`downsampleSAR-Step2*.py` 组织的既�
 按原两步走代码复现；代码参数与当前 YAML/CLI 的逐项对应见
 [InSAR 降采样 Step1/Step2 调参](02a_insar_downsampling_two_step.md)。
 
-<a id="read-downsampled-output"></a>
+<a id="downsampled-output-files"></a>
 
 ## 7. 输出检查
 
@@ -525,10 +525,44 @@ ECAT-Cases 中以 `covarSAR-Step1.py`、`downsampleSAR-Step2*.py` 组织的既�
 - 近场梯度保留、远场足够稀疏；
 - run metadata 中 reader、mode、采集侧和字节序与配置一致。
 
+<a id="read-downsampled-output"></a>
+<a id="read-downsampled-output-for-inversion"></a>
+
+## 8. 将降采样输出读回反演
+
+`read_from_varres()` 使用共同前缀，不带扩展名。`std/data` 四叉树或矩形 `from_rsp` 输出：
+
+```python
+from csi.insar import insar
+
+sar = insar("TrackA", lon0=lon0, lat0=lat0, verbose=False)
+sar.read_from_varres(
+    "Downsample/track_ifg",
+    triangular=False,
+    cov=True,
+)
+```
+
+`trirb` 或三角 `from_rsp` 输出必须显式改为：
+
+```python
+sar.read_from_varres(
+    "Downsample/track_ifg",
+    triangular=True,
+    cov=True,
+)
+```
+
+这里不能用 `triangular=None` 让 CSI reader 自动区分三角形与矩形。若调用方不知道 `.rsp`
+类型，可先用 `read_csi_varres_result(prefix, geometry="auto")` 检查，再把
+`checked.geometry == "triangle"` 的结果传给 `triangular`。该检查接口不读取 `.cov`；完整
+协方差仍由 `read_from_varres(..., cov=True)` 载入。没有 `.cov` 时改用 `cov=False`，然后
+调用 `buildDiagCd()`；`cov=True` 后不要再用对角阵覆盖它。
+
+完整可复制代码见[反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)，精确
+列格式和自动识别边界见[观测数据读入参考](../reference/observation_data_readers.md#csi-varres)。
+
 下一步：
 
 - 非线性几何反演读取降采样数据估计紧凑断层几何；
 - 固定几何后，BLSE/VCE 线性反演分布式滑动。
-
-真实案例导航见
-[InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md)。

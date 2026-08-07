@@ -51,7 +51,7 @@ Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 
 联合反演仍然使用 CSI/ECAT 的标准数据对象。InSAR、GPS、光学或其他数据进入反演前，应先完成读取、单位、正负号、协方差和降采样检查。相关流程见：
 
-- [InSAR 与 GPS 数据读取 / Data Reading](01_data_reading_insar_gps.md)
+- [InSAR 与 GNSS 数据读取 / Data Reading](01_data_reading_insar_gps.md)
 - [InSAR 降采样 / InSAR Downsampling](02_insar_downsampling.md)
 - [降采样超级入口参考 / Downsampling App](../reference/downsampling_app.md)
 
@@ -113,6 +113,34 @@ print(snapshot["validation"])
 初始化阶段的无效 active constraint 会直接报错，并回滚整次约束更新。`SMC_FJ`
 运行中若某个样本的受约束线性求解失败，该样本只获得低似然；程序不会移除等式
 约束后重算，因此不会把约束外解混入后验。
+
+## MPI 进程与进程内线程
+
+联合反演与非线性几何 SMC 一样，以 MPI rank 分配样本。`nchains` 是粒子数，
+`chain_length` 是每阶段的链长度；二者都不等于 MPI 进程数。进程数应不大于
+`nchains`，并优先比较能整除 `nchains` 的候选值，使各 rank 工作量更均衡。
+进程、rank、线程和 affinity 的基础关系见
+[并行运行基础](../concepts/parallel_process_rank_thread.md)。
+
+两种模式的资源瓶颈不同：
+
+| 模式 | 每个样本的主要工作 | 进程数选择重点 |
+| --- | --- | --- |
+| `FULLSMC` | 直接使用样本中的滑动计算似然；几何可变时还会重建 GF | 先看 GF 重建成本，再比较 rank 并行与进程内线程 |
+| `SMC_FJ` | 每个样本都进行一次受约束线性滑动求解 | GF、协方差和求解工作区会随 rank 复制，先看峰值内存 |
+
+第一次运行先保留 MPI 和数值库默认设置，从 4 个进程开始：
+
+```bash
+mpiexec -n 4 python test_joint_smc.py
+```
+
+确认结果和 MPI rank 正常后，再用同一配置和随机设置比较 8、16 或 `nchains` 的
+其他因数。`SMC_FJ` 不应只按逻辑 CPU 数扩展：先观察小进程数下的峰值内存，确保
+增加 rank 后仍有足够内存余量。MPI 已自动 pin rank 并限制 BLAS 时，直接保留默认
+命令；只有发现过量线程或 affinity 不合理时，才把每进程 1 个 BLAS/OpenMP 线程
+作为受控对照。通用判断流程见
+[MPI 进程与 BLAS 线程相互叠加](../getting_started/troubleshooting.md#6-mpi-进程与-blas-线程相互叠加)。
 
 ## 与两步走的关系
 

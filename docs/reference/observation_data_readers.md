@@ -1,7 +1,7 @@
-# SAR 与光学观测读入参考
+# 观测数据读入参考
 
 本页集中给出可复制的 Python 读入骨架，覆盖 ECAT 当前支持的原始 SAR、offset、
-光学 GeoTIFF、标准全分辨率网格和 CSI 降采样文件。第一次只想完成降采样时，优先使用
+光学 GeoTIFF、标准全分辨率网格、CSI 降采样文件、外部 ASCII SAR 和 GNSS ENU。第一次只想完成降采样时，优先使用
 [InSAR 降采样工作流](../workflows/02_insar_downsampling.md) 和生成的 YAML；只有需要
 手动检查 reader、组合其他功能或编写自定义流程时，才复制本页脚本。
 
@@ -16,6 +16,8 @@
 | 双分量 optical offset GeoTIFF | [光学 GeoTIFF](#optical-geotiff) |
 | ECAT `.nc/.h5` 标准网格 | [标准全分辨率格式](#standard-observation-grid) |
 | CSI `.txt/.rsp/.cov` | [CSI 降采样格式](#csi-varres) |
+| 外部七列 SAR 点 | [外部 ASCII SAR](#external-ascii-sar) |
+| GNSS ENU 点 | [GNSS ENU](#gnss-enu) |
 | 外部自定义 reader | [自定义 reader 边界](#custom-reader) |
 
 字段的完整物理含义、正号和左/右视关系仍以
@@ -280,7 +282,11 @@ CSI 子类的隐藏反序列化协议。
 from csi.insar import insar
 
 sar = insar("track_a", lon0=100.0, lat0=30.0, verbose=False)
-sar.read_from_varres("downsampled/track_a_ifg", cov=True)
+sar.read_from_varres(
+    "downsampled/track_a_ifg",
+    triangular=False,
+    cov=True,
+)
 ```
 
 对应：
@@ -289,6 +295,26 @@ sar.read_from_varres("downsampled/track_a_ifg", cov=True)
 track_a_ifg.txt
 track_a_ifg.rsp
 track_a_ifg.cov
+```
+
+`triangular` 的行为是：
+
+| `.rsp` 类型 | 参数 | 自动行为 |
+| --- | --- | --- |
+| 四叉树/矩形 | `triangular=False` | 会在 legacy 10 列和 full-corner 18 列矩形布局之间判断 |
+| trirb 或其他三角形 `.rsp` | `triangular=True` | 按三角形顶点读取 |
+
+`insar.read_from_varres()` 的默认值是 `triangular=False`，不支持用 `None` 自动区分三角形与
+矩形。`cov=True` 会读取完整 `.cov`；此后不要再调用 `buildDiagCd()` 覆盖完整协方差。若没有
+`.cov`，使用：
+
+```python
+sar.read_from_varres(
+    "downsampled/track_a_ifg",
+    triangular=False,
+    cov=False,
+)
+sar.buildDiagCd()
 ```
 
 只需检查文件而不构建 CSI 对象时：
@@ -301,10 +327,75 @@ result = read_csi_varres_result(
     data_type="sar",       # optical 时改为 optical
     geometry="auto",
 )
-print(result.available_components, result.cell_count)
+print(result.geometry, result.available_components, result.cell_count)
 ```
 
-这个纯读取接口保持 `.txt/.rsp` 行序和 polygon 顶点，不读取 `.cov`，适合导出与检查。
+这个纯读取接口会从 `.rsp` 自动识别 `rectangle` 或 `triangle`，保持 `.txt/.rsp` 行序和
+polygon 顶点，但不读取 `.cov`，适合导出与检查。若还要建立 CSI 反演对象，可显式传回：
+
+```python
+sar.read_from_varres(
+    "downsampled/track_a_ifg",
+    triangular=(result.geometry == "triangle"),
+    cov=True,
+)
+```
+
+<a id="external-ascii-sar"></a>
+
+## 外部 ASCII SAR
+
+CSI `insar.read_from_ascii(...)` 的七列契约是：
+
+```text
+lon lat data err Elos Nlos Ulos
+100.10 30.10 0.012 0.004 -0.42 -0.10 0.90
+```
+
+```python
+from csi.insar import insar
+
+sar = insar("track_ascii", lon0=100.0, lat0=30.0, verbose=False)
+sar.read_from_ascii(
+    "track_ascii.txt",
+    factor=1.0,
+    header=1,
+)
+sar.buildDiagCd()
+```
+
+`data` 是标量观测，`err` 是标准差或不确定度，后三列是 ENU projection。第 4 列始终读入
+`sar.err`；若文件保存的是权重，必须先按其定义转换为标准差。`factor` 同时缩放 `data` 和
+`err`，不缩放 projection。
+
+<a id="gnss-enu"></a>
+
+## GNSS ENU
+
+CSI `gps.read_from_enu(...)` 的九列契约是：
+
+```text
+station lon lat east north up sigma_e sigma_n sigma_u
+STA001 100.10 30.10 0.012 -0.004 0.001 0.002 0.002 0.005
+```
+
+```python
+from csi.gps import gps
+
+gnss = gps("gnss", lon0=100.0, lat0=30.0, verbose=False)
+gnss.read_from_enu(
+    "gnss_enu.txt",
+    factor=1.0,
+    minerr=0.001,
+    header=1,
+    checkNaNs=True,
+)
+gnss.buildCd(direction="enu")
+```
+
+`factor` 同时缩放 ENU 观测和误差。`minerr` 只替换输入文件中等于零的误差，并在缩放之前
+按输入单位解释；例如文件单位为 mm、目标为 m 时，使用 `factor=1e-3`，同时以 mm 写
+`minerr`。若反演只使用部分方向，`buildCd(direction=...)` 和后续配置必须采用一致分量。
 
 <a id="custom-reader"></a>
 ## 自定义 reader 边界
@@ -349,11 +440,15 @@ ecat-downsample -f downsample.yml
 - GAMMA binary 的 byte order 已核实，未知时保留历史默认 `native`；
 - 左/右视只描述 acquisition geometry，不代替 raw value convention；
 - `print_input_summary()` 的 value range、projection 和有效点数合理；
+- varres 的 `triangular` 与 `.rsp` 几何一致，完整 `.cov` 没有被对角阵覆盖；
+- 外部 SAR 第 4 列是标准差而不是未经转换的权重；
+- GNSS 的 ENU 和误差列顺序、单位、`factor/minerr` 已核实；
 - 标准网格或 KMZ 导出没有被当作反演权威输入反向使用。
 
 ## 相关页面
 
 - [InSAR 降采样工作流](../workflows/02_insar_downsampling.md)
+- [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)
 - [SAR projection conventions](../concepts/sar_projection_conventions.md)
 - [SAR Reader 完整语义](sar_reader.md)
 - [Downsampling App 配置字段](downsampling_app.md)

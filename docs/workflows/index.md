@@ -27,13 +27,13 @@
 
 | 你的输入或目标 | Workflow | 完成后应得到 |
 | --- | --- | --- |
-| 已有 InSAR/GPS 点数据，或需要确认读入语义 | [01 InSAR 与 GPS 数据读取](01_data_reading_insar_gps.md) | 单位、正负号、投影和协方差都明确的数据对象 |
+| 已有 InSAR/GNSS 点数据，或需要确认读入语义 | [01 InSAR 与 GNSS 数据读取](01_data_reading_insar_gps.md) | 单位、正负号、投影和协方差都明确的数据对象 |
 | 有 GAMMA、GeoTIFF、GMTSAR、HyP3 或 offset 产品，需要生成反演点数据 | [02 InSAR 降采样](02_insar_downsampling.md) | 可供 CSI/ECAT 读取的降采样数据和协方差 |
 | 需要复现旧两步脚本，或对标准降采样分阶段检查和调参 | [02a Step1/Step2 调参](02a_insar_downsampling_two_step.md) | 旧代码到 YAML/CLI 的映射、经检查的采样网格和最终输出 |
 | 标准 reader 不适用，或需要复用时序数据的采样网格 | [02b Adapter 降采样](02b_adapter_downsampling.md) | 保持统一下游接口的自定义读入结果 |
 | 需要在原始或改正后观测上调整已有断层迹线 | [02c 交互调整断层迹线](02c_interactive_trace_editing.md) | 不改观测和参考文件的两列 `lon lat` 新迹线 |
 | 用紧凑源估计断层几何 | [03 Bayesian 非线性几何反演](03_nonlinear_geometry_bayesian.md) | 优选几何、不确定性和拟合诊断 |
-| 已有优选几何，需要求分布式滑动 | [04 BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md) | 固定几何上的滑动分布、残差和结果报告 |
+| 已有非线性结果、地表迹线+倾角或其他固定几何，需要求分布式滑动 | [04 BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md) | 固定几何上的滑动分布、残差和结果报告 |
 | 固定几何已检查，需要选择 BLSE 平滑强度 | [04a BLSE 固定几何平滑参数搜索](04a_blse_smoothing_search.md) | penalty–RMS/VR、L-curve 和逐数据集拟合表 |
 | 迹线等几何已定，需要比较一组 BLSE 倾角候选 | [04b BLSE 固定拓扑倾角搜索](04b_blse_dip_search.md) | patch 身份一致的倾角—拟合统计表和诊断图 |
 | 已完成平滑和倾角搜索，需要检查二者耦合 | [04c 倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md) | dip–penalty 二维诊断和分倾角 L-curve |

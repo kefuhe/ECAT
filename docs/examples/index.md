@@ -11,7 +11,8 @@
 
 | 任务 | 示例 | 先准备 |
 | --- | --- | --- |
-| 从地表迹线构建固定倾角或沿走向变化倾角断层 | [地表迹线预处理与倾角建模短例](fault_trace_preprocessing.md) | `lon/lat` trace、投影原点和倾角信息 |
+| 把 ECAT 降采样、外部 SAR 点或 GNSS ENU 读入反演 | [反演前读取 InSAR 与 GNSS](inversion_data_loading.md) | 数据前缀或规范文本、统一的投影原点 |
+| 从地表迹线构建单倾角、多参考点倾角或固定拓扑断层 | [地表迹线和倾角构建](fault_trace_preprocessing.md) | `lon/lat` trace、投影原点和倾角信息 |
 | 从非线性几何结果构建矩形元或三角元断层 | [非线性几何结果到 fault object](fault_from_nonlinear_geometry.md) | `clon/clat/cdepth/strike/dip/length` |
 | 用 GAMMA prefix 快速预览 SAR/LOS 数据 | [GAMMA SAR quick-look 与配置生成](gamma_sar_quicklook.md) | GAMMA prefix 文件组 |
 | 在普通 BLSE、平滑、倾角和联合敏感性脚本间选择 | [可运行脚本模板导航](script_templates.md) | 已明确当前要复现、调平滑还是检查几何 |

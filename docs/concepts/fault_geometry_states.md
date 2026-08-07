@@ -60,7 +60,7 @@ readPatchesFromFile -> fault summary -> edge/contour checks -> inversion or forw
 
 ## 继续阅读
 
-- [地表迹线预处理与倾角建模短例](../examples/fault_trace_preprocessing.md)
+- [地表迹线和倾角构建示例](../examples/fault_trace_preprocessing.md)
 - [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)
 - [Fault Geometry Construction](../reference/fault_geometry_construction.md)
 - [Fault Summary](../reference/fault_summary.md)
