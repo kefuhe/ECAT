@@ -193,7 +193,7 @@ normalization、变量和图层来源类型，可用于复核显示配置。Rast
 
 ## 当前明确限制
 
-- raster 首版只接受精确且两轴等间距的 `geographic_rectilinear` 网格；
+- raster 只接受精确且两轴等间距的 `geographic_rectilinear` 网格；
 - projected、rotated、curvilinear 和跨日界线 raster 会明确报错，不会自动插值或压成
   bounding box；
 - 不直接读取原始平台文件，不执行相位转 LOS、参考区改正、ramp 估计或反演；

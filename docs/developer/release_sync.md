@@ -24,7 +24,7 @@ eqtools、统一依赖清单和安装脚本。包级 README 只保留简要入�
 `docs/concepts/parallel_process_rank_thread.md`、
 `docs/concepts/compute_runtime_stack.md`、
 `docs/developer/dependency_environment_policy.md` 也属于安装发布边界，必须与安装页
-同步，不能在各仓库保留含义不同的代理、BLAS、MPI 或线程说明。
+同步，不能在各仓库保留含义不同的国内镜像、代理、Shell、BLAS、MPI 或线程说明。
 
 eqtools 的 workflow、example 和 reference 页面可以在独立仓库先维护，再同步到
 ECAT 顶层 `docs/`。涉及安装命令时统一使用以下语义：
@@ -105,6 +105,10 @@ python scripts/generate_requirements.py --check
 - 安装页保留简短默认命令，并在同一步骤给出经过 dry-run 验证、互斥的安装前
   MKL/MPI配置，以及 VPN残留代理和 solver/channel两个高频直接替代；复杂组合再
   链接排错页或运行栈概念页；
+- 中国大陆直连镜像与 VPN/代理故障分开说明；镜像使用 HTTPS、命令级配置，不默认
+  修改用户 `.condarc` 或 pip 全局配置，并明确不覆盖 GitHub 与离线安装；
+- 第一次出现临时环境变量的工作流同时给出 Linux/WSL Bash 与 Windows PowerShell
+  写法，不能只在深层概念页解释 Shell 差异；
 - Windows的 MKL+MS-MPI、MKL+Intel MPI和 Linux/WSL的 MKL+Open MPI、
   MKL+Intel MPI至少完成依赖 dry-run；
 - 计算运行栈页区分 oneAPI、oneMKL、Intel MPI、编译器、MPI实现和 mpi4py绑定；

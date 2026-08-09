@@ -6,6 +6,7 @@ BLAS、指定 MPI 实现或修改线程数。
 
 | 症状 | 先检查 |
 | --- | --- |
+| 官方源可以连接但下载很慢，且当前没有使用 VPN | [中国大陆直连与国内镜像](#中国大陆直连与国内镜像) |
 | 下载失败、VPN 开关后仍连不上 | [网络、VPN 与残留代理](#网络vpn-与残留代理) |
 | 已下载 metadata，但长时间停在 `Solving environment` | [渠道与求解器](#渠道与求解器) |
 | BLSE 停在 `Initializing solver object` | [BLAS 后端与线程](#5-blse-初始化blas-后端与线程) |
@@ -37,6 +38,32 @@ conda create -n ecat -c conda-forge python=3.10 \
 ```
 
 不要一开始就叠加下面所有参数。先根据停留阶段区分网络问题和依赖求解问题。
+
+### 中国大陆直连与国内镜像
+
+如果官方 conda-forge/PyPI 可以连接但下载很慢，且当前没有使用 VPN，可以选择
+命令级 USTC 镜像。完整的 Conda、pip、Linux/WSL 和 PowerShell 命令见
+[安装页的下载路径选择](installation.md#命令行和下载路径约定)。镜像属于下载源
+替换，不是 VPN/代理修复，也不会改变 Conda solver、BLAS 或 MPI 实现。
+
+使用前可以先确认镜像频道能读取当前平台的 Python 元数据：
+
+```bash
+conda search --override-channels \
+  -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge \
+  python=3.10
+```
+
+PowerShell 将上面命令写成一行。pip 的当前配置与来源可通过下面两条命令检查：
+
+```bash
+python -m pip config debug
+python -m pip config list
+```
+
+普通 ECAT 安装优先使用命令行 `--index-url` 或临时 `PIP_INDEX_URL`，不要求用户
+永久修改 `.condarc` 或 pip 全局配置。镜像缺少某个刚发布的包时，先回到官方源
+核实，不要同时使用 `--extra-index-url` 混合多个公共索引。
 
 ### 网络、VPN 与残留代理
 

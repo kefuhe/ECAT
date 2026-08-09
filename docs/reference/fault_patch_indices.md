@@ -189,7 +189,8 @@ selector:
   depth_range: [0, 30]
 ```
 
-为了降低用户理解成本，常规文档和新脚本优先使用 `trace_segment`；`trace_range` 主要作为兼容旧配置和明确两点输入的低层形式保留。
+新项目优先使用 `trace_segment`；`trace_range` 主要用于兼容旧配置或明确提供两个端点的
+低层调用。
 
 ### 组合规则
 

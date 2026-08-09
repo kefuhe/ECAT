@@ -59,7 +59,8 @@ C_i = s_i / b_i
 
 ## 基本流程
 
-第一版使用脚本 API，不把 deep proxy 配置塞进 `interseismic_config.yml`。这样做是为了先显式检查浅部到深部的几何映射，再决定是否添加硬约束。
+deep-slip loading proxy 当前通过脚本 API 配置，不是 `interseismic_config.yml` 字段。
+添加硬约束前，必须在脚本中显式建立并检查浅部到深部的几何映射。
 
 ### 只计算 coupling，不加深部约束
 

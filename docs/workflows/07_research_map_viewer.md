@@ -202,13 +202,12 @@ Viewer 始终按三层组织：
 ecat-map --catalog earthquake/events.csv
 ```
 
-该入口直接建立一个临时 ViewerProject。旧 Scattermapbox manager/strategy 网页实现
-及 `plot_earthquakes_on_map_interactive()` 已移除；下载 API 和 Matplotlib 静态绘图
-仍是独立功能。
+该入口直接建立一个临时 ViewerProject。下载 API 和 Matplotlib 静态绘图仍是独立
+功能，不会随网页查看器启动。
 
 ## 7. 当前范围
 
-首版支持六个明确的 `kind`：
+当前支持六个明确的 `kind`：
 
 - `earthquake_catalog`
 - `vector`

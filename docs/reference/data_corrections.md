@@ -1027,9 +1027,9 @@ north_corr = an0 + anX X + anY Y + anXY X Y + ...
 | SAR/InSAR/leveling | `1`, `3`, `4` |
 | GPS | `translation` |
 
-如果需要在非线性几何采样中加入 GPS `full`、`strain` 或 `eulerrotation`，应先在代码中完整镜像 CSI 的矩阵列顺序、
-参数命名、垂直分量行为和测试，再开放配置字段；不要直接把线性 BLSE 的所有字符串 transform 无差别搬进
-SMC 配置。
+非线性几何采样目前不支持 GPS `full`、`strain` 或 `eulerrotation`。不要把线性
+BLSE 的这些 transform 名称直接写入 SMC 配置；如果科学问题要求在几何采样阶段
+同时估计这些改正项，当前公开入口不适用。
 
 ## 边界和输出检查
 

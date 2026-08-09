@@ -56,7 +56,9 @@ python -m pip install -e .
    创建环境前选择 MKL/OpenBLAS 和平台 MPI；这些配置必须明确为互斥替代命令；
 3. VPN/残留代理和 solver/channel 这类高频、低风险问题可在对应安装步骤下给一条
    直接替代命令，详细原因和组合情况再链接到故障页；
-4. 其他 `--override-channels`、永久 pin、外部 MPI ABI、线程调优等复杂内容只放在
+4. 中国大陆直连镜像应作为独立下载路径，与 VPN/代理故障分开；优先提供命令级、
+   HTTPS、可恢复的 conda-forge/PyPI 替代，不默认永久修改用户配置；
+5. 其他 `--override-channels`、永久 pin、外部 MPI ABI、线程调优等复杂内容只放在
    故障排查或高级对照测试中，并说明对应症状与副作用。
 
 不要要求用户为一次正常安装永久修改 `.condarc`、代理变量、BLAS pin、MPI路径或
@@ -68,11 +70,17 @@ python -m pip install -e .
 VPN、系统代理、shell代理变量和 Conda `proxy_servers` 属于外部网络层，不是 Python
 包依赖。故障页应区分：
 
+- 官方源可访问但中国大陆直连很慢：可以改用国内镜像，不归类为 VPN 故障；
 - metadata下载前失败：优先检查网络、证书和残留代理；
 - metadata已完成而停在 solver：优先检查 solver、channel priority和 pin；
 - 只有残留代理被确认时才提供命令级 `env -u ...`；
 - 只有渠道混用被确认时才提供本次命令的 `--override-channels` 和 strict priority；
 - 不把 `ssl_verify: false` 作为常规修复。
+
+国内镜像只替换 Conda/PyPI 下载源，不承诺加速 GitHub clone、GitHub Releases、
+本地 wheel 或完全离线安装。公开主线应选择一个经过核实、同时提供 conda-forge
+与 PyPI HTTPS 服务的镜像，避免列出多组容易过期的配置。只有用户明确需要长期
+配置时才说明 `.condarc`/pip 配置文件，并要求先检查现有来源与恢复方法。
 
 安装与排错命令应尽量是命令级、可恢复的，不直接覆盖用户持久配置。
 

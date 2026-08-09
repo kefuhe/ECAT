@@ -21,6 +21,36 @@ Figure Products：
 - 可按现有流程调用 `buildsynth()`，生成 data/synth 对比所需的合成观测；
 - 保留底层绘图方法原本的返回值和文件组织。
 
+`plot_data_fits()` 使用与 BLSE/Bayesian 结果入口相同的 `buildsynth()` 契约：GPS
+使用配置中的 `vertical` 和逐数据集 `poly`，InSAR
+固定 `vertical=True`，opticorr 固定 `vertical=False`，leveling 固定
+`vertical=True`。因此统一的是绘图、格式和路径，不是反演或预测公式。
+
+共享入口支持上述全部类型，但各高层工作流仍保留自己的数据类型参与范围：BLSE
+结果入口选择 GPS、InSAR、leveling 与 cross-fault offset；Bayesian 结果入口还会执行
+opticorr 合成计算。共享绘图产品不会让某个结果入口自动处理额外的数据类型。
+
+## 图像格式与路径契约
+
+所有 Figure Product 使用同一个 `file_type` 规范：忽略前导点和大小写，例如
+`".PNG"` 会规范为 `"png"`；支持 `png/jpg/jpeg/tif/tiff/pdf/svg/eps`，不支持的
+格式会在调用 `buildsynth()` 或创建图件前报错。
+
+推荐把断层场图和数据拟合图分开放置：
+
+```text
+output/     # 断层滑动、标准差和后验图
+Modeling/   # GPS、InSAR、leveling、cross-fault offset 拟合图
+```
+
+GPS 使用 CSI `geodeticplot.savefig()` 的 prefix 接口，因此实际文件名带 `_map`：
+
+```text
+Modeling/gps_<dataset>_map.<file_type>
+```
+
+`plot_data_fits()` 返回的 GPS 路径与这个真实文件名一致。
+
 ## Data / Synth 图组
 
 完成 `run()` 和 `returnModel()` 后：
@@ -153,7 +183,8 @@ results = inv.plot_deep_slip_loading_summary(
 | 单一字段显示覆盖 | `field_plot_kwargs[field]` | `norm`、`cblabel`、字段专用 `cmap` |
 | 输出生命周期 | 顶层显式参数 | `outdir`、`file_type`、`show`、`savefig` |
 
-这一分层避免同时出现两套 `show`、`slip` 或 `result`，也让新字段只需增加逐字段显示字典，不需要新增产品类。
+同一含义的参数只应在一层设置；单一字段需要不同显示参数时，使用
+`field_plot_kwargs[field]` 覆盖公共设置。
 
 ## 返回值和诊断
 

@@ -28,3 +28,9 @@
 | [`test_BLSE_Inv_CovDiag_Checkboard_general.py`](test_BLSE_Inv_CovDiag_Checkboard_general.py) | 既有 general CovDiag checkerboard 变体，不作为新用户默认入口。 |
 
 兼容脚本不会被隐藏，但也不与当前推荐模板混在同一学习路径中。复制前先确认它使用的配置类、数据布局和输出接口是否与当前项目一致。
+
+## 发布维护入口
+
+| 文件 | 定位 |
+| --- | --- |
+| [`generate_requirements.py`](generate_requirements.py) | 从 CSI 与 eqtools 的直接依赖元数据生成或核查 ECAT 统一环境清单；普通科研用户不需要运行。 |

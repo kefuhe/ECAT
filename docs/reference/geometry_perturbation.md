@@ -127,19 +127,11 @@ faults:
 
 联合 Bayesian 运行时应根据这些标志保证样本内的几何、网格、GF、Laplacian 和面积项一致。不要为了省计算成本跳过必要更新；科研代码中几何-物理一致性优先。
 
-## Pipeline 机制
+## 组合扰动入口
 
-部分新扰动方法使用 perturbation pipeline：把“做什么扰动”拆成 stage，把“如何生成网格”拆成 mesh policy。
-
-```text
-GeometryReference
-  -> GeometryState.from_ref()
-  -> Stage list
-  -> MeshPolicy
-  -> materialize()
-```
-
-这个机制主要服务于开发和复杂组合方法。普通用户只需要选择已注册的扰动方法；开发者若要新增组合方法，再查内部 pipeline 文档。
+部分已注册方法会组合几何变换和网格策略。用户配置仍只需要填写一个已注册的
+`method` 名称；stage 或 mesh policy 不能作为独立配置项。运行前可通过
+`ecat-list-fault-perturb-methods` 或 `fault.help()` 确认可用方法和所需参数。
 
 ## 使用建议
 

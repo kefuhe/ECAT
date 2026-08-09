@@ -268,9 +268,9 @@ GeoTIFF 大图使用 nearest display overview，并在 metadata 标记为显示�
 ecat-map --catalog events.csv
 ```
 
-该入口生成临时 `ViewerProject` 并附加内置背景目录。旧
-`plot_earthquakes_on_map_interactive()`、MapLayerManager 和 strategy 交互实现已经
-移除；下载 API、CSV 字段和 Matplotlib 静态绘图 API 不受影响。
+该入口生成临时 `ViewerProject` 并附加内置背景目录。旧脚本中的
+`plot_earthquakes_on_map_interactive()` 不再提供；应改用上述 `ecat-map --catalog`
+命令。下载 API、CSV 字段和 Matplotlib 静态绘图 API 不受影响。
 
 ## 错误与当前限制
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -10,6 +11,7 @@ import numpy as np
 from .data_plot_utils import _plot_crossfaultoffset_fit, _plot_leveling_fit
 from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
 from .interseismic_fields import get_fault_by_name, get_faults_from_inversion
+from ..viztools import normalize_image_format, sci_plot_style
 
 
 def _merge_product_plot_kwargs(
@@ -92,6 +94,32 @@ def _prepare_fault_traces(faults: Sequence[Any], *, color="k", linewidth=None):
             fault.linewidth = linewidth
 
 
+def _save_geodetic_map(
+    plotter: Any,
+    stem: Path,
+    *,
+    file_type: str,
+    dpi=600,
+    bbox_inches="tight",
+) -> Path:
+    """Save a CSI geodetic map and return its real output path.
+
+    ``csi.geodeticplot.savefig`` accepts a filename prefix and appends
+    ``_map.<format>`` when only the map panel is requested.
+    """
+    stem = Path(stem)
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    plotter.savefig(
+        str(stem),
+        ftype=file_type,
+        dpi=dpi,
+        bbox_inches=bbox_inches,
+        mapaxis=None,
+        saveFig=["map"],
+    )
+    return stem.parent / f"{stem.name}_map.{file_type}"
+
+
 def _save_last_fault_plot(
     fault: Any,
     path: Path,
@@ -148,6 +176,12 @@ def plot_data_fits_product(
     remove_direction_labels=False,
     gps_kwargs=None,
     sar_kwargs=None,
+    gps_fault_color="k",
+    sar_fault_color="k",
+    fault_linewidth=2.0,
+    pdf_fonttype=None,
+    gps_fontsize=None,
+    sar_fontsize=None,
     show=True,
 ) -> dict[str, list[Path] | list[str]]:
     """Build observed/synthetic fit plots for configured geodetic datasets.
@@ -171,6 +205,7 @@ def plot_data_fits_product(
         Written paths grouped by data type, plus names skipped because their
         data type has no product implementation.
     """
+    file_type = normalize_image_format(file_type)
     target_faults = _resolve_faults(inversion, faults)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -184,20 +219,37 @@ def plot_data_fits_product(
         "skipped": [],
     }
 
-    _prepare_fault_traces(target_faults, color="k", linewidth=2.0)
+    grouped_specs: dict[str, list[Any]] = {
+        "gps": [],
+        "insar": [],
+        "opticorr": [],
+        "leveling": [],
+        "crossfaultoffset": [],
+        "other": [],
+    }
     for spec in _iter_geodata(inversion, datasets=datasets, data_types=data_types):
-        data = spec.data
-        vertical = spec.vertical
-        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-        dtype = str(getattr(data, "dtype", ""))
-        name = str(getattr(data, "name", "dataset"))
-        if dtype == "gps":
-            kwargs = {"vertical": vertical, "poly": resolved_poly}
-            if vertical is None:
-                kwargs.pop("vertical")
-            data.buildsynth(target_faults, **kwargs)
+        dtype = str(getattr(spec.data, "dtype", "")).lower()
+        grouped_specs[dtype if dtype in grouped_specs else "other"].append(spec)
+
+    gps_style = (
+        sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=gps_fontsize)
+        if pdf_fonttype is not None or gps_fontsize is not None
+        else nullcontext()
+    )
+    _prepare_fault_traces(
+        target_faults,
+        color=gps_fault_color,
+        linewidth=fault_linewidth,
+    )
+    with gps_style:
+        for spec in grouped_specs["gps"]:
+            data = spec.data
+            vertical = spec.vertical
+            resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
+            data.buildsynth(target_faults, vertical=vertical, poly=resolved_poly)
             if not plot_data:
                 continue
+            name = str(getattr(data, "name", "dataset"))
             box = [data.lon.min(), data.lon.max(), data.lat.min(), data.lat.max()]
             current_gps_kwargs = _merge_product_plot_kwargs(
                 {
@@ -213,17 +265,36 @@ def plot_data_fits_product(
                     "remove_direction_labels": remove_direction_labels,
                 },
                 gps_kwargs,
-                locked=("faults", "data"),
+                locked=("faults", "data", "show"),
                 context="plot_data_fits_product(gps)",
             )
-            data.plot(faults=target_faults, data=["data", "synth"], **current_gps_kwargs)
-            path = outdir / f"gps_{name}"
-            data.fig.savefig(str(path), ftype=file_type, dpi=600, bbox_inches="tight", mapaxis=None, saveFig=["map"])
-            written["gps"].append(path.with_suffix(f".{file_type}"))
-        elif dtype == "insar":
+            data.plot(
+                faults=target_faults,
+                data=["data", "synth"],
+                show=show,
+                **current_gps_kwargs,
+            )
+            path = _save_geodetic_map(
+                data.fig,
+                outdir / f"gps_{name}",
+                file_type=file_type,
+            )
+            written["gps"].append(path)
+
+    sar_style = (
+        sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=sar_fontsize)
+        if pdf_fonttype is not None or sar_fontsize is not None
+        else nullcontext()
+    )
+    _prepare_fault_traces(target_faults, color=sar_fault_color)
+    with sar_style:
+        for spec in grouped_specs["insar"]:
+            data = spec.data
+            resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
             data.buildsynth(target_faults, vertical=True, poly=resolved_poly)
             if not plot_data:
                 continue
+            name = str(getattr(data, "name", "dataset"))
             datamin, datamax = float(np.nanmin(data.vel)), float(np.nanmax(data.vel))
             absmax = max(abs(datamin), abs(datamax))
             data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
@@ -248,22 +319,39 @@ def plot_data_fits_product(
                 **current_sar_kwargs,
             )
             written["insar"].append(path)
-        elif dtype == "leveling":
-            data.buildsynth(target_faults, vertical=True, poly=resolved_poly)
-            if plot_data:
-                for item in ("data", "synth"):
-                    data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)
-                _plot_leveling_fit(data, save_dir=outdir, file_type=file_type, show=show)
-                written["leveling"].append(outdir / f"{name}_leveling_fit.{file_type}")
-        elif dtype == "crossfaultoffset":
-            data.buildsynth(target_faults, poly=resolved_poly)
-            if plot_data:
-                for item in ("data", "synth"):
-                    data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)
-                _plot_crossfaultoffset_fit(data, save_dir=outdir, file_type=file_type, show=show)
-                written["crossfaultoffset"].append(outdir / f"{name}_crossfault_fit.{file_type}")
-        else:
-            written["skipped"].append(name)
+
+    # Optical data currently has no standard fit-comparison product, but its
+    # synthetic field remains part of the established Bayesian result flow.
+    for spec in grouped_specs["opticorr"]:
+        data = spec.data
+        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
+        data.buildsynth(target_faults, vertical=False, poly=resolved_poly)
+        written["skipped"].append(str(getattr(data, "name", "dataset")))
+
+    for spec in grouped_specs["leveling"]:
+        data = spec.data
+        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
+        name = str(getattr(data, "name", "dataset"))
+        data.buildsynth(target_faults, vertical=True, poly=resolved_poly)
+        if plot_data:
+            for item in ("data", "synth"):
+                data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)
+            _plot_leveling_fit(data, save_dir=outdir, file_type=file_type, show=show)
+            written["leveling"].append(outdir / f"{name}_leveling_fit.{file_type}")
+
+    for spec in grouped_specs["crossfaultoffset"]:
+        data = spec.data
+        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
+        name = str(getattr(data, "name", "dataset"))
+        data.buildsynth(target_faults, poly=resolved_poly)
+        if plot_data:
+            for item in ("data", "synth"):
+                data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)
+            _plot_crossfaultoffset_fit(data, save_dir=outdir, file_type=file_type, show=show)
+            written["crossfaultoffset"].append(outdir / f"{name}_crossfault_fit.{file_type}")
+
+    for spec in grouped_specs["other"]:
+        written["skipped"].append(str(getattr(spec.data, "name", "dataset")))
     return written
 
 
@@ -307,6 +395,7 @@ def plot_fault_fields_product(
     then ``field_plot_kwargs[field]``.  Fault selection, normalized slip field,
     output lifecycle, and file type remain product-owned.
     """
+    file_type = normalize_image_format(file_type)
     outdir = Path(outdir)
     if savefig:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +449,7 @@ def plot_interseismic_summary_product(
     requested field.  Per-field dictionaries affect display only; they cannot
     replace ``field``, ``result``, ``show``, or ``savefig``.
     """
+    file_type = normalize_image_format(file_type)
     outdir = Path(outdir)
     if savefig:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +522,7 @@ def plot_deep_slip_loading_summary_product(
     then delegate each requested field to the existing plotting method.
     Scientific identity and output lifecycle arguments remain product-owned.
     """
+    file_type = normalize_image_format(file_type)
     outdir = Path(outdir)
     if savefig:
         outdir.mkdir(parents=True, exist_ok=True)

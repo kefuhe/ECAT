@@ -41,9 +41,26 @@ conda activate ecat
 # Install an okada4py wheel matching the active CPython version first.
 # If no matching release wheel is available, Install.md shows the source-build route.
 # Then run the installation script.
-./install.sh  # Linux
-# or install.bat for Windows
+./install.sh  # Linux / WSL
 ```
+
+Windows PowerShell runs the platform script as:
+
+```powershell
+.\install.bat
+```
+
+For mainland-China direct connections without a working VPN, use the
+command-scoped USTC conda-forge mirror instead of the default `conda create`
+line:
+
+```bash
+conda create -n ecat --override-channels --strict-channel-priority -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge python=3.10 --file requirements/ecat-requirements.txt
+```
+
+This mirror option is for slow Conda/PyPI downloads, not for VPN/proxy
+failures or GitHub downloads. [Install.md](Install.md) gives the corresponding
+pip, Linux/WSL, and PowerShell commands.
 
 The command above lets Conda choose the platform runtime. If you want MKL with
 Open MPI, MS-MPI, or Intel MPI from the outset, choose one of the verified

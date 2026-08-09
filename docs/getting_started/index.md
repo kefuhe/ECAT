@@ -2,8 +2,9 @@
 
 本部分负责完整 ECAT 安装、环境检查和最短可运行路线。
 
-- [安装与环境检查](installation.md)：区分首次完整安装、创建前 BLAS/MPI配置、
-  eqtools/CSI增量更新、optional extras和 MPI runtime检查。
+- [安装与环境检查](installation.md)：区分 Windows PowerShell 与 Linux/WSL，选择
+  官方源或中国大陆命令级镜像，并说明首次完整安装、创建前 BLAS/MPI 配置、
+  eqtools/CSI 增量更新、optional extras 和 MPI runtime 检查。
 - [标准两阶段最短流程](quickstart_two_step.md)：从数据准备进入 Bayesian 非线性
   几何反演，再固定几何完成 BLSE/VCE 线性滑动反演。
 - [并行运行基础](../concepts/parallel_process_rank_thread.md)：第一次遇到

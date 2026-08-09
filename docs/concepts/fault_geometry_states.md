@@ -54,7 +54,7 @@ readPatchesFromFile -> fault summary -> edge/contour checks -> inversion or forw
   top edge 自动局部 strike，或插值四列 `xydip` 中的控制点 strike；正倾角始终向最终采用的
   strike 右手侧下倾。
 - 沿走向变化倾角和随深度变化倾角是不同问题；后者需要 layered-dip 几何。
-- `fault.discretize(...)` 是 CSI legacy trace 离散接口，新代码优先用 `fault.discretize_trace(...)`。
+- `fault.discretize(...)` 是 CSI legacy trace 离散接口；新项目优先使用 `fault.discretize_trace(...)`。
 - 普通 polyline GMT 不等于 CSI patch GMT；只有后者能直接表示 fault patches。
 - top/bottom 分别按距离重采样可能导致点数不一致；需要配对建 mesh 时，优先使用相同 `num_segments`。
 

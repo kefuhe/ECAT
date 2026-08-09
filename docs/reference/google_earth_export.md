@@ -420,7 +420,7 @@ duck-type 读取：
 - 不调用 `Cmt2Dislocation()`，不解释 `CMTinfo`，不改变对象。
 
 earthquake-client CSV 的 nodal-plane 角度和 CSI `CMTinfo` 可能使用不同单位约定，因此
-首版只保留明确的目录属性，不尝试统一 beachball。
+当前只保留明确的目录属性，不尝试统一 beachball。
 
 ### 通用 vector
 
@@ -466,7 +466,7 @@ manifest 记录解析后的色限、colormap、alpha、symmetry、normalization�
 - project YAML 版本、kind、字段或路径错误；
 - 图层 id 重复、输出不是 `.kmz`、同名输出未授权覆盖。
 
-## 当前非目标
+## 当前不支持的功能
 
 - 任意 GeoTIFF/NetCDF 自动识别；
 - 原始 GAMMA/GMTSAR/HyP3 再解析；
@@ -475,4 +475,5 @@ manifest 记录解析后的色限、colormap、alpha、symmetry、normalization�
 - beachball、COLLADA 或通用 3D 模型；
 - KML/KMZ 反向导入与定量 round-trip。
 
-这些功能只有在真实案例证明需求、科学语义和测试边界都清楚后再单独扩展。
+需要上述功能时，当前导出器不适用；应使用外部 GIS/KML 工具，并保留原始科学文件
+作为权威数据源。

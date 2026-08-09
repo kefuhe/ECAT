@@ -14,6 +14,8 @@ Start from the public user manual:
 
 - [ECAT User Manual](../docs/index.md)
 - [Installation and environment checks](../docs/getting_started/installation.md)
+- [Installation and runtime troubleshooting](../docs/getting_started/troubleshooting.md)
+- [BLAS, MPI, and oneAPI runtime stack](../docs/concepts/compute_runtime_stack.md)
 - [Standard two-step quickstart](../docs/getting_started/quickstart_two_step.md)
 - [Scientific workflow map](../docs/workflows/index.md)
 - [Task-oriented examples](../docs/examples/index.md)
@@ -34,15 +36,18 @@ in [Install.md](../Install.md). To update only eqtools in an existing ECAT
 environment, run from this directory:
 
 ```bash
-python -m pip install -e .
+python -m pip install .
 ```
+
+Maintainers who need source edits to take effect without reinstalling can use
+`python -m pip install -e .` instead.
 
 Optional eqtools features are installed from the same directory:
 
 ```bash
-python -m pip install -e ".[geoexport]"
-python -m pip install -e ".[viewer]"
-python -m pip install -e ".[interaction]"
+python -m pip install ".[geoexport]"
+python -m pip install ".[viewer]"
+python -m pip install ".[interaction]"
 ```
 
 The direct runtime dependencies and optional groups are declared in
@@ -55,11 +60,13 @@ issues, use the Python environment that already contains `setuptools` and
 `wheel`:
 
 ```bash
-python -m pip install -e . --no-build-isolation
+python -m pip install . --no-build-isolation
 ```
 
 Full environment notes are in
 [Installation and environment checks](../docs/getting_started/installation.md).
+That guide distinguishes Windows PowerShell from Linux/WSL and provides
+command-scoped USTC Conda/PyPI mirrors for mainland-China direct connections.
 
 ## Cases
 

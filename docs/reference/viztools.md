@@ -40,7 +40,8 @@ with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
 | 项目脚本 | `PlotStyle.apply(...)` / `PlotStyle.reset()` | 同一脚本连续生成许多同风格图；必须成对恢复 |
 | 高级扩展 | `register_preset()`、`rcparams`、自定义 handler | 项目统一规范或新增可复用 preset；不建议为单张图使用 |
 
-`PlotStyle(...).subplots()` 是保留的兼容接口。它依赖 Matplotlib `close_event` 恢复样式，而无界面后端不保证触发该事件；新代码不要把它作为默认入口。
+`PlotStyle(...).subplots()` 是保留的兼容接口。它依赖 Matplotlib `close_event` 恢复样式，
+而无界面后端不保证触发该事件；新脚本应优先使用 `with PlotStyle(...):`。
 
 ## Preset 的职责
 
@@ -246,13 +247,12 @@ plot_netcdf_grid("los.nc", variable="los", colorbar_label="LOS displacement (m)"
 
 ## 兼容入口
 
-`eqtools.plottools`、`sci_plot_style()` 和 `set_plot_style()` 仍保留给旧脚本；它们转发到 `eqtools.viztools`。ECAT 内部新代码和新用户脚本统一从下面入口导入：
+`eqtools.plottools`、`sci_plot_style()` 和 `set_plot_style()` 仍保留给旧脚本；新建用户
+脚本统一从下面入口导入：
 
 ```python
 from eqtools.viztools import PlotStyle, Presets, save_fig
 ```
-
-不要为兼容入口复制第二套实现或文档。
 
 ## 相关页面
 

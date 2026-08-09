@@ -5,6 +5,11 @@ import shutil
 import site
 import logging
 
+
+_version_ns = {}
+with open(os.path.join(os.path.dirname(__file__), 'eqtools', '_version.py'), encoding='utf-8') as _version_file:
+    exec(_version_file.read(), _version_ns)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +33,7 @@ class CustomInstallCommand(install):
 
 setup(
     name='eqtools',
-    version='2.0.0',
+    version=_version_ns['__version__'],
     author='Kefeng He',
     author_email='kefenghe@whu.edu.cn',
     url='https://github.com/kefuhe/eqtools',

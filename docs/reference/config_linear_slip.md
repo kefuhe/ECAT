@@ -527,7 +527,7 @@ loading 由固定块体给出，可改用 `mode: loading_sign`，它会按实际
 - 震间 `blocks` 和 `fault_loading` 负责计算所有 patch 的 loading；cap/backslip selector 只控制约束，不应让未约束 patch 的构造速率变为 0。
 - 震间 `motion_sense` 不参与 loading 计算；如果 loading 符号不符合右旋/左旋预期，应检查 `blocks` 顺序和 `reference_strike`。推荐规则是 `blocks[0]` 放在 `reference_strike` 右手侧，`blocks[1]` 放在左手侧。
 - ECAT 当前震间接口是 fault 级 ordered block pair；若需要 Blocks/celeri 式 segment topology 和长断层不同段自动继承不同 block pair，建议使用专业块体模型程序或先在外部确定 segment/block 关系。
-- deep-slip loading proxy 第一版不是 YAML 配置项；它通过脚本显式检查 mapping 后再注册约束，避免把尚需案例检验的浅深几何关系过早固化到配置文件。
+- deep-slip loading proxy 当前不是 YAML 配置项；应在脚本中显式检查浅深 mapping，再注册约束。
 - 震间配置完成后可运行 `inversion.print_interseismic_preflight_report()`；它只读配置和当前约束，紧凑打印每条断层的 loading 统计、cap 数量和 hard/free overlap。
 - `alpha` 和 `penalty_weight` 是倒数关系，脚本调用时不要同时传入。
 

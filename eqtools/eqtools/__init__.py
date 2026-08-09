@@ -1,5 +1,7 @@
 from importlib import import_module
 
+from ._version import __version__
+
 
 def __getattr__(name):
     if name in {"csiExtend", "geoexport", "map_viewer"}:
@@ -9,4 +11,4 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ReadGMTLines", "csiExtend", "geoexport", "map_viewer"]
+__all__ = ["__version__", "ReadGMTLines", "csiExtend", "geoexport", "map_viewer"]

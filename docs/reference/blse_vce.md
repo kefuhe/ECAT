@@ -148,6 +148,9 @@ inv.extract_and_plot_blse_results(
     plot_faults=True,
     plot_data=True,
     data_poly="config",
+    file_type="png",
+    fault_outdir="output",
+    data_outdir="Modeling",
 )
 ```
 
@@ -155,10 +158,17 @@ inv.extract_and_plot_blse_results(
 
 `extract_and_plot_blse_results(...)` 通常会生成：
 
-- `output/*_slip.*` 类型的断层滑动图。
-- `Modeling/<DataName>_fit_comparison.pdf`。
-- GPS、InSAR 或其他数据类型的 data/synth/resid 文件。
+- `output/*_slip.<file_type>` 类型的断层滑动图。
+- `Modeling/gps_<DataName>_map.<file_type>` 类型的 GPS data/synth 图。
+- `Modeling/<DataName>_fit_comparison.<file_type>` 类型的 InSAR data/synth/residual 图。
+- `Modeling/<DataName>_leveling_fit.<file_type>` 或 cross-fault offset 拟合图。
 - 控制台中的拟合统计和断层统计。
+
+该入口生成的 GPS/InSAR 合成观测与直接调用 `plot_data_fits()` 时相同。
+`file_type` 只控制图像格式，不控制科学数据文件格式。
+GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的 `write2file()`
+或 `writeDecim2file()` 明确导出；leveling 和 cross-fault offset 的 data/synth 文本
+仍随各自拟合产品写入 `data_outdir`。
 
 断层统计由 `inv.print_faults_summary()` 使用统一的 [Fault Summary / 断层概览和统计](fault_summary.md) 接口输出。它会报告 trace 长度、patch/mesh 数、面积、深度范围、平均走向倾角、slip 统计；位移单位模型报告 Moment/Mw，速率单位模型报告 moment rate。如果只想在脚本中拿结构化结果，使用 `inv.get_faults_summary()`。
 

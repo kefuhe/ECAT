@@ -2,7 +2,6 @@ import scipy
 import numpy as np
 import copy
 import os
-import pathlib
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -14,9 +13,7 @@ from .deep_slip_loading_mixin import DeepSlipLoadingMixin
 from .interseismic_mixin import InterseismicKinematicsMixin
 from .plot_product_mixin import FigureProductMixin
 from .patch_indices import normalize_patch_indices
-from ..viztools import sci_plot_style
-from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
-from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
+from ..viztools import normalize_image_format
 
 class BoundLSEMultiFaultsInversion(
     DataCorrectionReportMixin,
@@ -892,7 +889,10 @@ class BoundLSEMultiFaultsInversion(
                                           fault_cbaxis=[0.15, 0.22, 0.15, 0.02], 
                                           data_poly="config",
                                           print_fit_statistics=True,
-                                          print_fault_statistics=True
+                                          print_fault_statistics=True,
+                                          fault_outdir='output',
+                                          data_outdir='Modeling',
+                                          show=True,
                                           ):
         """
         Extract and plot the Bayesian results.
@@ -925,10 +925,17 @@ class BoundLSEMultiFaultsInversion(
             prediction.
         print_fit_statistics: whether to print fit statistics (default is True)
         print_fault_statistics: whether to print fault statistics (default is True)
+        fault_outdir: directory for fault-field figures (default is 'output')
+        data_outdir: directory for GPS/InSAR/leveling/cross-fault figures
+            (default is 'Modeling')
+        show: whether underlying plotting methods call their interactive show
+            path (default is True)
         """
         if rank == 0:
             import cmcrameri
             from ..getcpt import get_cpt 
+
+            file_type = normalize_image_format(file_type)
     
             if slip_cmap is not None and slip_cmap.endswith('.cpt'):
                 # 'precip3_16lev_change.cpt'
@@ -942,114 +949,59 @@ class BoundLSEMultiFaultsInversion(
                 self._print_fault_statistics()
     
             if plot_faults:
-                self.plot_multifaults_slip(slip='total', cmap=cmap_slip,
-                                                drawCoastlines=False, cblabel='Slip (m)',
-                                                savefig=True, style=['notebook'], cbaxis=fault_cbaxis,
-                                                xtickpad=5, ytickpad=5, ztickpad=5,
-                                                xlabelpad=15, ylabelpad=15, zlabelpad=15,
-                                                shape=axis_shape, elevation=elevation, azimuth=azimuth,
-                                                zratio=zratio,
-                                                depth=depth_range, zticks=z_ticks, fault_expand=0.0,
-                                                plot_faultEdges=False, suffix='_slip', outdir='output', ftype=file_type,
-                                                remove_direction_labels=remove_direction_labels,
-                                                )
+                self.plot_fault_fields(
+                    fields=('total',),
+                    outdir=fault_outdir,
+                    file_type=file_type,
+                    slip_cmap=cmap_slip,
+                    show=show,
+                    drawCoastlines=False,
+                    cblabel='Slip (m)',
+                    style=['notebook'],
+                    cbaxis=fault_cbaxis,
+                    xtickpad=5,
+                    ytickpad=5,
+                    ztickpad=5,
+                    xlabelpad=15,
+                    ylabelpad=15,
+                    zlabelpad=15,
+                    shape=axis_shape,
+                    elevation=elevation,
+                    azimuth=azimuth,
+                    zratio=zratio,
+                    depth=depth_range,
+                    zticks=z_ticks,
+                    fault_expand=0.0,
+                    plot_faultEdges=False,
+                    suffix='_slip',
+                    remove_direction_labels=remove_direction_labels,
+                )
 
-            # Build the synthetic data and plot the results
-            faults = self.faults
-            cogps_vertical_list = []
-            cosar_list = []
-            coleveling_list = []
-            cocrossfault_list = []
-            for spec in get_geodata_prediction_specs(self):
-                data = spec.data
-                vertical = spec.vertical
-                resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-                if data.dtype == 'gps':
-                    cogps_vertical_list.append([data, vertical, resolved_poly])
-                elif data.dtype == 'insar':
-                    cosar_list.append([data, resolved_poly])
-                elif data.dtype == 'leveling':
-                    coleveling_list.append([data, resolved_poly])
-                elif data.dtype == 'crossfaultoffset':
-                    cocrossfault_list.append([data, resolved_poly])
-
-            # Plot GPS data
-            for fault in faults:
-                if fault.lon is None or fault.lat is None:
-                    fault.setTrace(0.1)
-                fault.color = 'k' # Set the color to black
-                fault.linewidth = 2.0 # Set the line width to 2.0
-            for cogps, vertical, resolved_poly in cogps_vertical_list:
-                cogps.buildsynth(faults, vertical=vertical, poly=resolved_poly)
-                if plot_data:
-                    box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
-                    cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], 
-                                scale=gps_scale, legendscale=gps_legendscale, color=['#e33e1c', '#2e5b99'],
-                                seacolor='lightblue', box=box, titleyoffset=1.02, title=gps_title, figsize=gps_figsize,
-                                remove_direction_labels=remove_direction_labels)
-                    cogps.fig.savefig(f'gps_{cogps.name}', ftype=file_type, dpi=600, 
-                                    bbox_inches='tight', mapaxis=None, saveFig=['map'])
-            # Plot SAR data
-            for fault in faults:
-                fault.color = 'k'
-            for cosar, resolved_poly in cosar_list:
-                cosar.buildsynth(faults, vertical=True, poly=resolved_poly)
-                if plot_data:
-                    datamin, datamax = cosar.vel.min(), cosar.vel.max()
-                    absmax = max(abs(datamin), abs(datamax))
-                    data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
-                    # for data in ['data', 'synth', 'res']:
-                    #     if data == 'res':
-                    #         cosar.res = cosar.vel - cosar.synth
-                    #         absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
-                    #         res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
-                    #         res_norm = data_norm if res_use_data_norm else res_norm
-                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=res_norm, cmap=cmap,
-                    #             cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                    #             remove_direction_labels=remove_direction_labels)
-                    #     else:
-                    #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=data_norm, cmap=cmap,
-                    #                 cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                    #                 remove_direction_labels=remove_direction_labels)
-                    #     cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
-                    #                     bbox_inches='tight', mapaxis=None)
-                    
-                    # Make directory for fit comparison plots
-                    out_modeling_dir = pathlib.Path('Modeling')
-                    out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                    cosar.plot_fit_comparison(
-                                                faults=faults,
-                                                cmap=cmap,
-                                                vmin=data_norm[0],
-                                                vmax=data_norm[1],
-                                                share_colorbar=res_use_data_norm,
-                                                cbaxis=sar_cbaxis,
-                                                save_path=out_modeling_dir / f'{cosar.name}_fit_comparison.pdf',
-                                                figsize=sar_figsize,
-                                                show=True
-                                            )
-
-            # Build synthetics and save/plot leveling data
-            for colev, resolved_poly in coleveling_list:
-                colev.buildsynth(faults, vertical=True, poly=resolved_poly)
-            if plot_data and coleveling_list:
-                out_modeling_dir = pathlib.Path('Modeling')
-                out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for colev, _resolved_poly in coleveling_list:
-                    for itype in ['data', 'synth']:
-                        colev.write2file(f'{colev.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
-                    _plot_leveling_fit(colev, save_dir=out_modeling_dir, file_type=file_type)
-            
-            # Build synthetics and save/plot cross-fault offset data
-            for cocf, resolved_poly in cocrossfault_list:
-                cocf.buildsynth(faults, poly=resolved_poly)
-            if plot_data and cocrossfault_list:
-                out_modeling_dir = pathlib.Path('Modeling')
-                out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for cocf, _resolved_poly in cocrossfault_list:
-                    for itype in ['data', 'synth']:
-                        cocf.write2file(f'{cocf.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
-                    _plot_crossfaultoffset_fit(cocf, save_dir=out_modeling_dir, file_type=file_type)
+            # The product layer preserves the established buildsynth contract:
+            # GPS(vertical, poly), InSAR(vertical=True, poly), leveling
+            # (vertical=True, poly), and cross-fault offsets(poly).
+            self.plot_data_fits(
+                data_types=("gps", "insar", "leveling", "crossfaultoffset"),
+                outdir=data_outdir,
+                file_type=file_type,
+                plot_data=plot_data,
+                data_poly=data_poly,
+                antisymmetric=antisymmetric,
+                res_use_data_norm=res_use_data_norm,
+                cmap=cmap,
+                gps_title=gps_title,
+                sar_title=sar_title,
+                gps_figsize=gps_figsize,
+                sar_figsize=sar_figsize,
+                gps_scale=gps_scale,
+                gps_legendscale=gps_legendscale,
+                sar_cbaxis=sar_cbaxis,
+                remove_direction_labels=remove_direction_labels,
+                gps_fault_color='k',
+                sar_fault_color='k',
+                fault_linewidth=2.0,
+                show=show,
+            )
 
 
 #EOF

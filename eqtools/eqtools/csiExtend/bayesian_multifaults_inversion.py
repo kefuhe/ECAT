@@ -82,8 +82,7 @@ from matplotlib.ticker import FuncFormatter, AutoLocator
 from csi import gps, insar, leveling, crossfaultoffset
 
 # Local imports - utilities and plotting
-from ..viztools import sci_plot_style
-from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
+from ..viztools import normalize_image_format, sci_plot_style
 
 # Local imports - core modules
 from .BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches as relocfault
@@ -103,7 +102,6 @@ from .multifaults_base import MyMultiFaultsInversion
 from .multifaultsolve_boundLSE import _validate_lsqlin_status
 from .source_adapters import FaultAdapter
 from .plot_product_mixin import FigureProductMixin
-from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
 from .geom_ops import InvalidFaultGeometryError
 import warnings
 from .bayesian_utils import det_of_laplace_smooth_lu, logpdf_multivariate_normal
@@ -2012,7 +2010,8 @@ class BayesianMultiFaultsInversion(
                                           map_cbaxis=None, data_poly="config", print_fit_statistics=True, print_fault_statistics=True,
                                           pdf_fonttype=None, gps_fontsize=None, sar_fontsize=None, gps_xticks=None, gps_yticks=None,
                                           sar_xticks=None, sar_yticks=None,
-                                          gps_kwargs={}, sar_kwargs={}):
+                                          gps_kwargs=None, sar_kwargs=None,
+                                          fault_outdir='output', data_outdir='Modeling', show=True):
         """
         Extract and plot the Bayesian results.
     
@@ -2058,10 +2057,20 @@ class BayesianMultiFaultsInversion(
         sar_yticks: custom y-ticks for SAR plots (default is None)
         gps_kwargs: additional keyword arguments for GPS plotting (default is empty dict)
         sar_kwargs: additional keyword arguments for SAR plotting (default is empty dict)
+        fault_outdir: directory for posterior and fault-field figures
+            (default is 'output')
+        data_outdir: directory for GPS/InSAR/leveling/cross-fault figures
+            (default is 'Modeling')
+        show: whether underlying plotting methods call their interactive show
+            path (default is True)
         """
         if rank == 0:
             import cmcrameri
             from ..getcpt import get_cpt 
+
+            file_type = normalize_image_format(file_type)
+            fault_output_path = pathlib.Path(fault_outdir)
+            fault_output_path.mkdir(parents=True, exist_ok=True)
     
             if slip_cmap is not None and slip_cmap.endswith('.cpt'):
                 # 'precip3_16lev_change.cpt'
@@ -2071,19 +2080,45 @@ class BayesianMultiFaultsInversion(
             if slip_cmap is None:
                 cmap_slip = get_cpt.get_cmap('precip3_16lev_change.cpt', method='list', N=15)
             self.load_from_h5(filename)
+
+            fault_plot_kwargs = dict(
+                drawCoastlines=False,
+                cblabel='Slip (m)',
+                style=fault_style,
+                cbaxis=fault_cbaxis,
+                xtickpad=5,
+                ytickpad=5,
+                ztickpad=5,
+                xlabelpad=15,
+                ylabelpad=15,
+                zlabelpad=15,
+                shape=axis_shape,
+                zratio=zratio,
+                elevation=elevation,
+                azimuth=azimuth,
+                depth=depth_range,
+                zticks=z_ticks,
+                fault_expand=0.0,
+                plot_faultEdges=False,
+                remove_direction_labels=remove_direction_labels,
+                cbticks=cbticks,
+                cbfontsize=cbfontsize,
+                cblinewidth=cblinewidth,
+                cb_label_side=cb_label_side,
+                map_cbaxis=map_cbaxis,
+            )
     
             if plot_std:
                 self.returnModel(model='std', print_stat=False)  # std mean
-                self.plot_multifaults_slip(slip='total', cmap=cmap_slip,
-                                                drawCoastlines=False, cblabel='Slip (m)',
-                                                savefig=True, style=fault_style, cbaxis=fault_cbaxis,
-                                                xtickpad=5, ytickpad=5, ztickpad=5,
-                                                xlabelpad=15, ylabelpad=15, zlabelpad=15,
-                                                shape=axis_shape, zratio=zratio, elevation=elevation, azimuth=azimuth,
-                                                depth=depth_range, zticks=z_ticks, fault_expand=0.0,
-                                                plot_faultEdges=False, suffix='std', remove_direction_labels=remove_direction_labels,
-                                                cbticks=cbticks, cbfontsize=cbfontsize, cblinewidth=cblinewidth, cb_label_side=cb_label_side,
-                                                map_cbaxis=map_cbaxis)
+                self.plot_fault_fields(
+                    fields=('total',),
+                    outdir=fault_output_path,
+                    file_type=file_type,
+                    slip_cmap=cmap_slip,
+                    show=show,
+                    suffix='std',
+                    **fault_plot_kwargs,
+                )
             
             # Print hyperparameters summary table
             self.returnModel(model=best_model, print_stat=print_fit_statistics)  # best model
@@ -2093,136 +2128,62 @@ class BayesianMultiFaultsInversion(
 
             if plot_sigmas:
                 self.plot_kde_matrix(plot_sigmas=True, plot_alpha=True, fill=True, save=True,
-                                        scatter=False, filename='kde_matrix_sigmas.png')
+                                        scatter=False, filename=str(
+                                            fault_output_path / f'kde_matrix_sigmas.{file_type}'
+                                        ), show=show)
 
             if plot_faults:
-                self.plot_multifaults_slip(slip='total', cmap=cmap_slip,
-                                                drawCoastlines=False, cblabel='Slip (m)',
-                                                savefig=True, style=fault_style, cbaxis=fault_cbaxis,
-                                                xtickpad=5, ytickpad=5, ztickpad=5,
-                                                xlabelpad=15, ylabelpad=15, zlabelpad=15,
-                                                shape=axis_shape, zratio=zratio, elevation=elevation, azimuth=azimuth,
-                                                depth=depth_range, zticks=z_ticks, fault_expand=0.0,
-                                                plot_faultEdges=False, suffix=best_model if isinstance(best_model, str) else 'custom',
-                                                outdir='output', ftype='pdf',
-                                                remove_direction_labels=remove_direction_labels,
-                                                cbticks=cbticks, cbfontsize=cbfontsize, cblinewidth=cblinewidth, cb_label_side=cb_label_side,
-                                                map_cbaxis=map_cbaxis)
-
-            # Build synthetic data and plot
-            faults = self.multifaults.faults
-            cogps_vertical_list = []
-            cosar_list = []
-            coopt_list = []
-            coleveling_list = []
-            cocrossfault_list = []
-            for spec in get_geodata_prediction_specs(self):
-                data = spec.data
-                vertical = spec.vertical
-                resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-                if data.dtype == 'gps':
-                    cogps_vertical_list.append([data, vertical, resolved_poly])
-                elif data.dtype == 'insar':
-                    cosar_list.append([data, resolved_poly])
-                elif data.dtype == 'opticorr':
-                    coopt_list.append([data, resolved_poly])
-                elif data.dtype == 'leveling':
-                    coleveling_list.append([data, resolved_poly])
-                elif data.dtype == 'crossfaultoffset':
-                    cocrossfault_list.append([data, resolved_poly])
+                self.plot_fault_fields(
+                    fields=('total',),
+                    outdir=fault_output_path,
+                    file_type=file_type,
+                    slip_cmap=cmap_slip,
+                    show=show,
+                    suffix=best_model if isinstance(best_model, str) else 'custom',
+                    **fault_plot_kwargs,
+                )
 
             if file_type == 'pdf':
                 pdf_fonttype = pdf_fonttype if pdf_fonttype is not None else 42  # Use Type 42 (TrueType) for better compatibility
             else:
                 pdf_fonttype = None
-            # Plot GPS data
-            with sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=gps_fontsize):
-                for fault in faults:
-                    if fault.lon is None or fault.lat is None:
-                        fault.setTrace(0.1)
-                    fault.color = 'b' # Set the color to blue
-                for cogps, vertical, resolved_poly in cogps_vertical_list:
-                    cogps.buildsynth(faults, vertical=vertical, poly=resolved_poly)
-                    if plot_data:
-                        box = [cogps.lon.min(), cogps.lon.max(), cogps.lat.min(), cogps.lat.max()]
-                        cogps.plot(faults=faults, drawCoastlines=True, data=['data', 'synth'], scale=gps_scale, 
-                                    legendscale=gps_legendscale, color=['k', 'r'],
-                                    seacolor='lightblue', box=box, titleyoffset=1.02, title=gps_title, figsize=gps_figsize,
-                                    remove_direction_labels=remove_direction_labels,
-                                    xticks=gps_xticks, yticks=gps_yticks,
-                                    **gps_kwargs)
-                        cogps.fig.savefig(f'gps_{cogps.name}', ftype=file_type, dpi=600, 
-                                        bbox_inches='tight', mapaxis=None, saveFig=['map'])
-            
-            # Plot SAR data
-            with sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=sar_fontsize):
-                for fault in faults:
-                    fault.color = 'k'
-                for cosar, resolved_poly in cosar_list:
-                    cosar.buildsynth(faults, vertical=True, poly=resolved_poly)
-                    if plot_data:
-                        datamin, datamax = cosar.vel.min(), cosar.vel.max()
-                        absmax = max(abs(datamin), abs(datamax))
-                        data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
-                        # for data in ['data', 'synth', 'res']:
-                        #     if data == 'res':
-                        #         cosar.res = cosar.vel - cosar.synth
-                        #         absmax = max(abs(cosar.res.min()), abs(cosar.res.max()))
-                        #         res_norm = [-absmax, absmax] if antisymmetric else [cosar.res.min(), cosar.res.max()]
-                        #         res_norm = data_norm if res_use_data_norm else res_norm
-                        #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=res_norm, cmap=cmap,
-                        #             cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                        #             remove_direction_labels=remove_direction_labels,
-                        #             xticks=sar_xticks, yticks=sar_yticks, **sar_kwargs)
-                        #     else:
-                        #         cosar.plot(faults=faults, data=data, seacolor='lightblue', figsize=sar_figsize, norm=data_norm, cmap=cmap,
-                        #                 cbaxis=sar_cbaxis, drawCoastlines=True, titleyoffset=1.02, title=sar_title,
-                        #                 remove_direction_labels=remove_direction_labels,
-                        #                 xticks=sar_xticks, yticks=sar_yticks, **sar_kwargs)
-                        #     cosar.fig.savefig(f'sar_{cosar.name}_{data}', ftype=file_type, dpi=600, saveFig=['map'], 
-                        #                     bbox_inches='tight', mapaxis=None)
 
-                        out_modeling_dir = pathlib.Path('Modeling')
-                        out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                        cosar.plot_fit_comparison(
-                                                    faults=faults,
-                                                    cmap=cmap,
-                                                    vmin=data_norm[0],
-                                                    vmax=data_norm[1],
-                                                    share_colorbar=res_use_data_norm,
-                                                    cbaxis=sar_cbaxis,
-                                                    save_path=out_modeling_dir / f'{cosar.name}_fit_comparison.pdf',
-                                                    figsize=sar_figsize,
-                                                    show=True
-                                                )
-                
-                # Plot Opticorr data
-                for fault in faults:
-                    fault.color = 'k'
-                for coopt, resolved_poly in coopt_list:
-                    coopt.buildsynth(faults, vertical=False, poly=resolved_poly)
+            resolved_gps_kwargs = {
+                'color': ['k', 'r'],
+                'xticks': gps_xticks,
+                'yticks': gps_yticks,
+            }
+            resolved_gps_kwargs.update(dict(gps_kwargs or {}))
 
-            # Build synthetics and save/plot leveling data
-            for colev, resolved_poly in coleveling_list:
-                colev.buildsynth(faults, vertical=True, poly=resolved_poly)
-            if plot_data and coleveling_list:
-                out_modeling_dir = pathlib.Path('Modeling')
-                out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for colev, _resolved_poly in coleveling_list:
-                    for itype in ['data', 'synth']:
-                        colev.write2file(f'{colev.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
-                    _plot_leveling_fit(colev, save_dir=out_modeling_dir, file_type=file_type)
-            
-            # Build synthetics and save/plot cross-fault offset data
-            for cocf, resolved_poly in cocrossfault_list:
-                cocf.buildsynth(faults, poly=resolved_poly)
-            if plot_data and cocrossfault_list:
-                out_modeling_dir = pathlib.Path('Modeling')
-                out_modeling_dir.mkdir(parents=True, exist_ok=True)
-                for cocf, _resolved_poly in cocrossfault_list:
-                    for itype in ['data', 'synth']:
-                        cocf.write2file(f'{cocf.name}_{itype}.txt', outDir=str(out_modeling_dir), data=itype)
-                    _plot_crossfaultoffset_fit(cocf, save_dir=out_modeling_dir, file_type=file_type)
+            # Reuse the same prediction specifications as the legacy flow.
+            # The product preserves GPS/InSAR/opticorr/leveling/cross-fault
+            # buildsynth arguments and only centralizes plotting/output.
+            self.plot_data_fits(
+                outdir=data_outdir,
+                file_type=file_type,
+                plot_data=plot_data,
+                data_poly=data_poly,
+                antisymmetric=antisymmetric,
+                res_use_data_norm=res_use_data_norm,
+                cmap=cmap,
+                gps_title=gps_title,
+                sar_title=sar_title,
+                gps_figsize=gps_figsize,
+                sar_figsize=sar_figsize,
+                gps_scale=gps_scale,
+                gps_legendscale=gps_legendscale,
+                sar_cbaxis=sar_cbaxis,
+                remove_direction_labels=remove_direction_labels,
+                gps_kwargs=resolved_gps_kwargs,
+                sar_kwargs=sar_kwargs,
+                gps_fault_color='b',
+                sar_fault_color='k',
+                fault_linewidth=None,
+                pdf_fonttype=pdf_fonttype,
+                gps_fontsize=gps_fontsize,
+                sar_fontsize=sar_fontsize,
+                show=show,
+            )
     
     def _print_hyperparameters_summary(self):
         """Print hyperparameters summary in a beautiful table format."""

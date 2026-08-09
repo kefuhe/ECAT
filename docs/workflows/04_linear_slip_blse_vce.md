@@ -147,7 +147,13 @@ inv = BoundLSEMultiFaultsInversion(
 inv.run(penalty_weight=None, alpha=[np.log10(1 / 100.0)])
 inv.returnModel(print_stat=True)
 inv.print_faults_summary()
-inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
+inv.extract_and_plot_blse_results(
+    plot_faults=True,
+    plot_data=True,
+    file_type="png",
+    fault_outdir="output",
+    data_outdir="Modeling",
+)
 ```
 
 `clon/clat/cdepth` 对应非线性几何结果中的 `lon/lat/depth`，含义是断层顶边中点三维坐标。`fault.top` 和 `fault.depth` 是线性滑动面扩展后的顶部、底部深度，不能混写。
@@ -157,16 +163,21 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 `.cov`，使用 `cov=False`，读入后再调用 `buildDiagCd()`。完整分流见
 [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)。
 
-如果一个脚本里需要反复生成多数据集拟合图、多断层滑动图或震间字段图，可以在保留上述
-`extract_and_plot_blse_results()` 主线的基础上使用上层 figure product：
+`extract_and_plot_blse_results()` 与下列调用使用相同的合成观测和绘图协议。需要选择
+部分数据集、多个滑动字段或震间字段时，可以直接调用：
 
 ```python
-inv.plot_data_fits(outdir="Modeling", file_type="pdf")
-inv.plot_fault_fields(fields=("total", "ss"), outdir="output")
+inv.plot_data_fits(outdir="Modeling", file_type="png")
+inv.plot_fault_fields(fields=("total", "ss"), outdir="output", file_type="png")
 ```
 
-这些接口复用已有 CSI/ECAT 绘图方法，只负责组织常用图件。完整参数见
+这些接口沿用与正式结果相同的 `buildsynth()` 参数，只统一图件组织、保存目录和格式；
+不会改变 Green's functions、协方差、约束、权重或 BLSE/VCE 解。完整参数见
 [Figure Products](../reference/figure_products.md)。
+
+`extract_and_plot_blse_results()` 继续处理 GPS、InSAR、leveling 和 cross-fault offset；
+Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任一结果入口原有的数据类型
+参与范围。
 
 ## 求解模式
 
@@ -190,8 +201,17 @@ inv.plot_fault_fields(fields=("total", "ss"), outdir="output")
 或批处理任务可以临时使用 `Agg`：
 
 ```bash
+# Linux / WSL / Bash
 python test_slip_inversion.py
 MPLBACKEND=Agg python test_slip_inversion.py
+```
+
+Windows PowerShell 不能使用 `名称=值 command` 的 Bash 前缀语法，应写成：
+
+```powershell
+$env:MPLBACKEND = "Agg"
+python .\test_slip_inversion.py
+Remove-Item Env:MPLBACKEND -ErrorAction SilentlyContinue
 ```
 
 这两条命令的反演模式相同。`MPLBACKEND=Agg` 只让图件保存到文件而不弹出交互窗口，

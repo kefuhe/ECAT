@@ -6,6 +6,27 @@ CPython 3.10 is the recommended and most extensively validated version;
 to create a complete environment. Use the individual package directories only
 when updating an existing installation or developing eqtools/CSI.
 
+### Shell and download-route conventions
+
+Commands marked `bash` are for Linux, WSL, and Bash. Windows-native examples
+use PowerShell. WSL has its own Linux Conda/Python installation; it does not
+share installed packages or environment variables with Windows Python.
+
+Choose one network route before installation:
+
+- use the default commands when the official sources are fast enough or a
+  working VPN/proxy is active;
+- for mainland-China direct connections without a VPN, use the command-scoped
+  USTC Conda/PyPI mirror commands below;
+- if a VPN has been disabled but stale proxy variables remain, follow the
+  proxy checks in the troubleshooting guide before choosing a source.
+
+The Conda/PyPI mirrors do not accelerate `git clone`, GitHub Releases, local
+wheel installation, or fully offline installation. Current mirror scope and
+configuration are documented by
+[USTC Anaconda](https://mirrors.ustc.edu.cn/help/anaconda.html) and
+[USTC PyPI](https://mirrors.ustc.edu.cn/help/pypi.html).
+
 ## 1. Clone ECAT and create the environment
 
 ```bash
@@ -13,6 +34,24 @@ git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
 
 conda create -n ecat -c conda-forge python=3.10 --file requirements/ecat-requirements.txt
+conda activate ecat
+```
+
+For a mainland-China direct connection where the official conda-forge channel
+is reachable but slow, replace only `conda create` with this command-scoped
+alternative. It does not modify `.condarc`:
+
+```bash
+conda create -n ecat --override-channels --strict-channel-priority \
+  -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge \
+  python=3.10 --file requirements/ecat-requirements.txt
+conda activate ecat
+```
+
+PowerShell uses the same arguments on one line:
+
+```powershell
+conda create -n ecat --override-channels --strict-channel-priority -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge python=3.10 --file requirements/ecat-requirements.txt
 conda activate ecat
 ```
 
@@ -156,6 +195,25 @@ chmod +x install.sh
 # Windows
 .\install.bat
 ```
+
+If missing pip dependencies download slowly from PyPI, pass the HTTPS mirror
+only to this installation. Linux/WSL:
+
+```bash
+PIP_INDEX_URL=https://mirrors.ustc.edu.cn/pypi/simple ./install.sh
+```
+
+Windows PowerShell:
+
+```powershell
+$env:PIP_INDEX_URL = "https://mirrors.ustc.edu.cn/pypi/simple"
+.\install.bat
+Remove-Item Env:PIP_INDEX_URL -ErrorAction SilentlyContinue
+```
+
+This setting affects pip dependency lookup only. It does not affect Conda or
+the preceding installation of a local `okada4py` wheel. ECAT does not require
+a permanent pip or `.condarc` mirror configuration for a normal installation.
 
 The scripts use the active interpreter through `python -m pip`, install CSI
 before eqtools, and verify that both packages import. They stop if the Python

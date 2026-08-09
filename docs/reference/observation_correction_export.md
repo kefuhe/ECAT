@@ -122,7 +122,7 @@ selector:
     - [-68.60, 10.70]
 ```
 
-第一版只支持 lon/lat selector。每个 correction 必须有唯一 `name`，
+selector 当前只支持 lon/lat 坐标。每个 correction 必须有唯一 `name`，
 `cycles_to_remove` 必须是整数；多个目标区域不能重叠，空区域或无法映射到当前
 分析像元时直接报错。
 
@@ -211,8 +211,8 @@ fit:
   polygon_file: reference_region.txt
 ```
 
-polygon 文件为两列 `lon lat`，相对路径按配置文件目录解析。首版只支持 lon/lat
-改正区域，不提供同义 shorthand 或 xy 区域。
+polygon 文件为两列 `lon lat`，相对路径按配置文件目录解析。区域选择只支持
+lon/lat 坐标，不提供同义 shorthand 或 xy 区域。
 
 ## 一阶平面
 

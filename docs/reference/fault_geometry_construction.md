@@ -51,7 +51,9 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 
 `fault.set_top_coords_from_trace(discretized=False)` 默认使用原始 trace；如果传入 `discretized=True`，需要先调用 `fault.discretize_trace(...)` 生成 `xi/yi`。对于需要 top/bottom 点数一一对应的 mesh，优先使用相同的 `num_segments` 离散 top 和 bottom，避免分别按 `every` 离散后点数不同。
 
-`fault.discretize(...)` 是 CSI 的 legacy trace 离散化接口，依赖 `xaxis/tol/fracstep` 等旧参数。新代码和新文档不再推荐使用它；需要地表迹线离散化时使用 `discretize_trace(...)`，需要三维边界离散化时使用 `discretize_*_coords(...)`。
+`fault.discretize(...)` 是 CSI 的 legacy trace 离散化接口，依赖 `xaxis/tol/fracstep`
+等旧参数。新项目不建议使用它；需要地表迹线离散化时使用
+`discretize_trace(...)`，需要三维边界离散化时使用 `discretize_*_coords(...)`。
 
 <a id="geometry-helpers"></a>
 
@@ -65,7 +67,7 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 | 对任意 `x/y` trace 数组做长度、重采样、延伸、裁剪或方向统一 | `trace_ops.clean_trace(...)`、`trace_length(...)`、`resample_trace(...)`、`extend_trace(...)`、`trim_trace(...)`、`orient_trace(...)` | 纯函数入口，适合在写入 fault object 前预处理。输入应是投影后的 `x/y`，单位通常为 km。 |
 | 对任意 `x/y` trace 数组简化、平滑或缓冲 | `trace_ops.simplify_trace(...)`、`smooth_trace(...)`、`buffer_trace(...)` | 适合脚本化批处理；`ecat-fault-trace-tool` 也复用同一套底层算法。 |
 | 设置、读取或保存 CSI trace | `fault.trace(...)`、`fault.file2trace(...)`、`fault.writeTrace2File(...)` | 处理两列 `lon lat` 或局部 `x y` 迹线，不表示 patch。 |
-| 地表 trace 等距离散 | `fault.discretize_trace(every=...)` | 生成 `xi/yi/loni/lati`；新代码优先用它，不再用 legacy `discretize(...)`。 |
+| 地表 trace 等距离散 | `fault.discretize_trace(every=...)` | 生成 `xi/yi/loni/lati`；新项目优先使用，不再用 legacy `discretize(...)`。 |
 | 从 trace 生成三维顶部边界 | `fault.set_top_coords_from_trace(discretized=...)` | `discretized=True` 时先运行 `discretize_trace(...)`。 |
 | top/bottom/layer 曲线加密或统一点数 | `discretize_top_coords(...)`、`discretize_bottom_coords(...)`、`discretize_layer_coords(...)` | 适合手动构建 mesh 前统一三维边界点数。 |
 | Bayesian 几何扰动前自动加密稀疏控制点 | `set_densification(...)`、`densify_edges(...)` | 由 `DensificationConfig` 控制，通常放在扰动和物理建底边之间。 |

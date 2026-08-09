@@ -195,6 +195,41 @@ python test_nonlinear_geometry_smc.py
 
 第一条命令采样，第二条命令读取已有 HDF5 样本并重新生成摘要、诊断和图件。`-r` 和非 `-r` 后处理都会触发新版收敛诊断；若 HDF5 是旧式结果且不含过程统计，诊断会自动降级。
 
+`mpiexec -n 4` 会启动 4 个 Python 进程，MPI 将它们编号为 rank 0–3；它不是设置
+4 个线程。每个 rank 内部仍可能有 MKL/OpenBLAS/OpenMP 线程。第一次运行先保留
+默认线程行为，不需要为复制案例预先添加线程变量。基本概念见
+[进程、MPI Rank、线程与 CPU 亲和性](../concepts/parallel_process_rank_thread.md)。
+
+`-n 4` 只是首次正确性检查的保守示例，不是所有电脑的最优值。MPI rank 按粒子
+分配工作；进程数不应超过 `nchains`，优先比较可以整除 `nchains` 的候选值。例如
+`nchains: 100` 可以依次比较 4、10、20 或 25 个进程，但内存、物理核心数和 MPI
+affinity 可能在更小的进程数就达到最佳速度。
+
+先记录默认命令的总耗时和内存。如果出现明显过量线程、默认 affinity 不合理或
+增加 rank 后反而变慢，再用每 rank 1 个 BLAS/OpenMP 线程作为受控对照：
+
+```bash
+MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  mpiexec -n 4 python test_nonlinear_geometry_smc.py -r
+```
+
+上面是 Linux/WSL/Bash 的命令级语法。Windows PowerShell 的等价受控对照为：
+
+```powershell
+$env:MKL_NUM_THREADS = "1"
+$env:OPENBLAS_NUM_THREADS = "1"
+$env:OMP_NUM_THREADS = "1"
+mpiexec -n 4 python .\test_nonlinear_geometry_smc.py -r
+Remove-Item Env:MKL_NUM_THREADS, Env:OPENBLAS_NUM_THREADS, Env:OMP_NUM_THREADS -ErrorAction SilentlyContinue
+```
+
+如果 MPI 实现已经为 rank 划分 CPU affinity 并限制数值库线程，应优先保留简单的
+默认命令，不必继续设置这些变量。`chain_length` 表示每个 SMC 阶段的链长度，不是进程
+数或线程数。若采样节点没有图形界面，可在命令前增加 `MPLBACKEND=Agg`；它只把
+Matplotlib 切换为非交互式文件后端，不改变采样模式、似然或数值结果。硬件判断、
+测速矩阵和 MPI × BLAS 说明见
+[安装与运行故障排查](../getting_started/troubleshooting.md#6-mpi-进程与-blas-线程相互叠加)。
+
 ## 配置概念
 
 新版 `nonlinear_geometry.yml` 通常包含以下内容。下面的 `lon`、`lat`、`depth` 分别表示断层顶边中点的经度、纬度和深度：

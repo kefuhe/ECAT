@@ -123,7 +123,7 @@ ecat-downsample -f CONFIG --edit-trace
 | `Browse` | 平移、缩放和检查，不增加或移动节点 |
 | `New trace` | 新建空 working trace，并自动进入 `Draw` |
 | `Copy reference as working` | 复制所选 reference，并自动进入 `Edit`；再点击黄色 working trace 显示编辑圆点，reference 本身不变 |
-| `Draw` | 建立一条连续 working trace；首版只允许一条活动线 |
+| `Draw` | 建立一条连续 working trace；只允许一条活动线 |
 | `Edit` | 先点击黄色 working trace 显示临时圆点，再拖动、在线段中插点或选择待删除节点 |
 | `Delete selected vertex` | 删除地图或坐标表中选中的节点；剩余节点按原顺序重新连线 |
 | `Finish drawing / Browse` | 明确结束当前绘制并回到浏览模式 |
@@ -151,7 +151,9 @@ order: longitude, latitude
 longitude storage: [-180, 180)
 ```
 
-Web Mercator 米坐标只用于 Bokeh 底图与观测显示，每次浏览器编辑后立即转换回经纬度写入 `PathDraft`。纬度超出 Web Mercator 可显示范围时明确报错。连续栅格重绘和精确点抽样都不吸附、不重投影保存结果，也不改变迹线坐标。
+Web Mercator 米坐标只用于 Bokeh 底图与观测显示，每次浏览器编辑后立即转换回经纬度
+并更新 working trace。纬度超出 Web Mercator 可显示范围时明确报错。连续栅格重绘和
+精确点抽样都不吸附、不重投影保存结果，也不改变迹线坐标。
 
 ## 输出协议
 
@@ -176,14 +178,17 @@ Web Mercator 米坐标只用于 Bokeh 底图与观测显示，每次浏览器编
 ## 状态与科学边界
 
 ```text
-authoritative reader / correction
-  -> detached read-only background
-  -> immutable reference paths
-  -> one mutable PathDraft + bounded EditHistory
-  -> explicit Save As
+观测 reader / correction
+  -> 只读观测背景和参考迹线
+  -> 一条可编辑 working trace
+  -> 显式 Save As
 ```
 
-`PathDraft` 是 working 坐标的唯一权威状态。黄色 working `MultiLine` 是浏览器几何编辑的唯一提交通道；`PolyEditTool` 的圆点 source 只是当前选中线的临时手柄，不初始化为第二份几何，也不直接写回 workspace；坐标表是派生视图。一次完成的工作线事件只产生一次历史记录。编辑历史只保存少量坐标快照，不保存观测网格、figure 或缓存。结构化二维背景保留完整只读网格并按当前视窗动态生成显示帧；80,000 点上限只用于 hover 或非结构化回退。色限始终由完整有效值计算，保存坐标与显示栅格/抽样无关。编辑器不重新解释 LOS、offset、projection、单位或正号。
+编辑器只允许一条可变的 working trace；参考迹线和观测背景始终只读。节点圆点和
+坐标表只是当前 working trace 的编辑视图，不会修改参考文件。Undo 历史只保存少量
+working 坐标快照，不复制观测网格。结构化二维背景按当前视窗生成显示帧，80,000 点
+上限只用于 hover 或非结构化显示回退；色限仍由完整有效值计算。保存坐标与显示栅格
+或抽样无关，编辑器也不会重新解释 LOS、offset、projection、单位或正号。
 
 ## 常见错误
 

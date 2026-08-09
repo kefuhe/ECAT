@@ -9,6 +9,7 @@ save_fig              : Save figure to one or more file formats
 cap_interactive_dpi   : Cap interactive figure dpi without changing saved output
 show_fig              : Show a figure after capping interactive dpi
 finish_fig            : Common save/show helper for library plotting functions
+normalize_image_format: Normalize and validate a requested image format
 """
 
 import json
@@ -18,6 +19,24 @@ from typing import Dict, Optional
 
 # Import the centralized registry
 from ._registry import _registry
+
+
+def normalize_image_format(file_type: str) -> str:
+    """Return a canonical, supported image format name.
+
+    The returned value is lowercase and has no leading dot.  Keeping this
+    validation in the plotting layer gives every high-level ECAT figure
+    product the same format contract.
+    """
+    from ._constants import KNOWN_IMAGE_FORMATS
+
+    normalized = str(file_type).strip().lower().lstrip('.')
+    if normalized not in KNOWN_IMAGE_FORMATS:
+        raise ValueError(
+            f"Unsupported file_type: {normalized}. "
+            f"Supported formats: {sorted(KNOWN_IMAGE_FORMATS)}"
+        )
+    return normalized
 
 # --------------------------------------------------------------------------
 # Column-width registry (now managed by _registry)

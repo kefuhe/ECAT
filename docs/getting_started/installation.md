@@ -8,6 +8,26 @@ ECAT 支持 64 位 Windows 和 Linux 上的 CPython 3.10、3.11 和 3.12。当�
 Conda/conda-forge 建立基础环境，再用 `python -m pip` 安装本地源码。安装时直接
 使用仓库提供的依赖清单。
 
+### 命令行和下载路径约定
+
+本文中的 `bash` 命令用于 Linux、WSL 和 Bash；Windows 原生终端默认按
+PowerShell 语法书写。WSL 使用 Linux 版 Conda/Python，与同一台电脑上的 Windows
+Conda/Python 是两个独立环境，软件包和环境变量不会自动同步。
+
+下载前先选择一种网络路径，不要叠加使用：
+
+- 官方源访问正常，或者 VPN/代理正在正常工作：使用默认命令；
+- 中国大陆无 VPN、官方 Conda/PyPI 可以访问但很慢：使用下面的命令级 USTC
+  镜像；
+- VPN 已关闭但终端仍残留失效代理：先按
+  [网络、VPN 与残留代理](troubleshooting.md#网络vpn-与残留代理) 清理当前终端。
+
+国内镜像只替换 Conda/PyPI 下载源，不会加速 `git clone`、GitHub Releases 或本地
+wheel 安装，也不能代替完全离线安装。本页优先使用 HTTPS 的 USTC conda-forge 与
+PyPI 镜像；完整配置和服务范围以
+[USTC Anaconda 帮助](https://mirrors.ustc.edu.cn/help/anaconda.html) 与
+[USTC PyPI 帮助](https://mirrors.ustc.edu.cn/help/pypi.html) 为准。
+
 ## 1. 第一次安装完整 ECAT
 
 先获取统一仓库，再从仓库根目录创建环境：
@@ -17,6 +37,23 @@ git clone https://github.com/kefuhe/ECAT.git
 cd ECAT
 
 conda create -n ecat -c conda-forge python=3.10 --file requirements/ecat-requirements.txt
+conda activate ecat
+```
+
+中国大陆无 VPN 且官方 conda-forge 下载很慢时，只把 `conda create` 替换为下面的
+一次性命令；`--override-channels` 避免混入用户已有渠道，且不会修改 `.condarc`：
+
+```bash
+conda create -n ecat --override-channels --strict-channel-priority \
+  -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge \
+  python=3.10 --file requirements/ecat-requirements.txt
+conda activate ecat
+```
+
+上面的多行形式用于 Bash/WSL。PowerShell 使用相同参数时写成一行：
+
+```powershell
+conda create -n ecat --override-channels --strict-channel-priority -c https://mirrors.ustc.edu.cn/anaconda/cloud/conda-forge python=3.10 --file requirements/ecat-requirements.txt
 conda activate ecat
 ```
 
@@ -149,6 +186,25 @@ chmod +x install.sh
 .\install.bat
 ```
 
+环境依赖尚未齐全、且 PyPI 官方源在中国大陆下载很慢时，可把同一个 USTC PyPI
+镜像仅传给本次安装脚本。Linux/WSL：
+
+```bash
+PIP_INDEX_URL=https://mirrors.ustc.edu.cn/pypi/simple ./install.sh
+```
+
+Windows PowerShell：
+
+```powershell
+$env:PIP_INDEX_URL = "https://mirrors.ustc.edu.cn/pypi/simple"
+.\install.bat
+Remove-Item Env:PIP_INDEX_URL -ErrorAction SilentlyContinue
+```
+
+`PIP_INDEX_URL` 只影响 pip 查找缺失依赖；它不参与前一步的 Conda 环境创建，也不
+影响从本地路径安装的 `okada4py` wheel。普通安装不需要永久执行
+`pip config set global.index-url ...`。
+
 脚本使用当前解释器的 `python -m pip`，先安装 CSI，再安装 eqtools，并检查两者
 能否导入。若 Python 不在 3.10--3.12 范围内，或缺少 `okada4py`，脚本会停止并
 给出提示。
@@ -168,6 +224,14 @@ python -m pip install .
 
 这会根据 `eqtools/setup.py` 检查直接依赖，只补装缺失项或调整超出兼容范围的包，
 不需要重新安装完整 ECAT 环境。
+
+更新后同时检查版本和实际导入位置，避免 WSL/Conda 仍加载另一个旧安装：
+
+```bash
+python -c "import eqtools; print(eqtools.__version__); print(eqtools.__file__)"
+```
+
+从 eqtools `2.0.1` 开始，BLSE/Bayesian 图件遵循统一的图像格式与保存路径规则。
 
 只有需要直接编辑源码并让修改立即生效的维护者，才使用 editable 安装：
 

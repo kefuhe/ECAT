@@ -28,7 +28,7 @@ penalty_weight = 100
 ```
 
 搜索模板直接使用 penalty weight，避免同时混入 `alpha`、`log10(alpha)` 和倒数三层
-解释。运行时传入 penalty weight 会覆盖本轮配置中的 alpha 初始值，但不会修改 YAML。
+解释。运行时传入 penalty weight 会覆盖当前运行读取的 alpha 初始值，但不会修改 YAML。
 
 ## 复制并修改模板
 
