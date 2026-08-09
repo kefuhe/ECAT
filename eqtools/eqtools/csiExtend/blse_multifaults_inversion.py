@@ -13,7 +13,7 @@ from .deep_slip_loading_mixin import DeepSlipLoadingMixin
 from .interseismic_mixin import InterseismicKinematicsMixin
 from .plot_product_mixin import FigureProductMixin
 from .patch_indices import normalize_patch_indices
-from ..viztools import normalize_image_format
+from ..viztools import normalize_image_format, sci_plot_style
 
 class BoundLSEMultiFaultsInversion(
     DataCorrectionReportMixin,
