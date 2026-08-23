@@ -94,6 +94,7 @@ from .raster import (
     plot_raster,
     raster_limits,
 )
+from .fault_boundary import plot_fault_boundary_diagnostics
 
 
 def register_style_directory(path):
@@ -172,6 +173,8 @@ __all__ = [
     'plot_geotiff',
     'plot_netcdf_grid',
     'raster_limits',
+    # Fault-boundary diagnostics
+    'plot_fault_boundary_diagnostics',
     # Backward-compatible wrappers
     'sci_plot_style',
     'set_plot_style',

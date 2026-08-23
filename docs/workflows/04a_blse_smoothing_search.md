@@ -2,7 +2,7 @@
 
 当数据、断层几何、网格和约束已经检查通过，但平滑强度尚未确定时，在**同一个固定几何
 模型**上扫描 penalty weight。独立模板是
-[`scripts/test_smoothing_search_BLSE.py`](../../scripts/test_smoothing_search_BLSE.py)。
+[`scripts/test_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_smoothing_search_BLSE.py)。
 
 普通 BLSE、平滑搜索和倾角搜索是不同科研任务。不要为了减少脚本数量而把它们强制合并：
 

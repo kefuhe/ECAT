@@ -125,7 +125,12 @@ def summarize_faults(
     include_moment: bool = True,
     moment_skip_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Return summaries for a collection of fault objects."""
+    """Return summaries for a collection of fault objects.
+
+    Missing optional mesh quantities remain ``None`` and are excluded from
+    aggregate totals. A source without an area concept must not prevent other
+    faults from being summarized.
+    """
     target_faults = list(faults)
     fault_summaries = [
         summarize_fault(
@@ -155,10 +160,11 @@ def summarize_faults(
         "total": {
             "fault_count": len(fault_summaries),
             "patch_count": _sum_present(
-                item.get("mesh", {}).get("patch_count") for item in fault_summaries
+                (item.get("mesh") or {}).get("patch_count")
+                for item in fault_summaries
             ),
             "area_km2": _sum_present(
-                item.get("mesh", {}).get("area", {}).get("total_km2")
+                ((item.get("mesh") or {}).get("area") or {}).get("total_km2")
                 for item in fault_summaries
             ),
             **total_moment,
@@ -491,13 +497,28 @@ def _face_count(fault: Any) -> int | None:
 
 
 def _patch_areas(fault: Any, warnings: list[str]) -> np.ndarray | None:
-    area = getattr(fault, "area", None)
-    if area is None and hasattr(fault, "compute_patch_areas"):
+    getter = getattr(fault, "get_patch_areas", None)
+    if callable(getter):
         try:
-            area = fault.compute_patch_areas()
+            area = getter()
         except Exception as exc:
-            warnings.append(f"Could not compute patch areas: {exc}")
+            warnings.append(f"Could not obtain current patch areas: {exc}")
             return None
+    else:
+        # Compatibility with CSI versions predating the current-value getter.
+        area = getattr(fault, "area", None)
+        area_is_missing = area is None
+        if not area_is_missing:
+            try:
+                area_is_missing = np.asarray(area).size == 0
+            except Exception:
+                area_is_missing = False
+        if area_is_missing and hasattr(fault, "compute_patch_areas"):
+            try:
+                area = fault.compute_patch_areas()
+            except Exception as exc:
+                warnings.append(f"Could not compute patch areas: {exc}")
+                return None
     if area is None:
         return None
     try:

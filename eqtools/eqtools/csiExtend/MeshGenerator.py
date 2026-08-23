@@ -257,6 +257,10 @@ class MeshGenerator:
         self.top_size = None
         self.bottom_size = None
         self.param_coords = None # Parameter coordinates for mapping Gmsh vertices to grid
+        # Parameters that produced param_coords.  The owner records this only
+        # after a complete mapping pass; fixed-topology deformation must not
+        # overwrite it with candidate-call arguments.
+        self.param_mapping_spec = None
 
     def set_coordinates(self, top_coords: np.ndarray, bottom_coords: np.ndarray):
         """

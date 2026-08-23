@@ -13,6 +13,7 @@
 | 覆盖字体、线宽、DPI 等参数 | [参数覆盖顺序](#参数覆盖顺序) 与 [PlotStyle 常用参数](#plotstyle-常用参数) |
 | 统一字体、公式和出版尺寸 | [字体与数学公式](#字体与数学公式) 与 [出版尺寸](#出版尺寸) |
 | 保存图件或绘制栅格 quick-look | [保存与显示](#保存与显示) 与 [二维科学栅格 quick-look](#二维科学栅格-quick-look) |
+| 检查三角断层四边、角点和命名 | [断层边界诊断](#断层边界诊断) |
 
 ## 最短推荐用法
 
@@ -244,6 +245,66 @@ plot_netcdf_grid("los.nc", variable="los", colorbar_label="LOS displacement (m)"
 - `plot_geotiff(axis="geo")` 不做重投影。缺少 CRS、使用投影 CRS、旋转/剪切 transform 或索引式坐标时会告警；应先把数据重投影到经纬度后再使用地理标签。
 
 这些入口只画已准备好的二维数据，不读取 GAMMA/GMTSAR/HyP3 物理约定，也不改变 LOS 正负号或单位。
+
+## 断层边界诊断
+
+三角断层完成四边识别后，可以用一个只读诊断图检查三维位置和四边的平面命名：
+
+```python
+from eqtools.viztools import plot_fault_boundary_diagnostics
+
+fault.find_fault_fouredge_vertices(
+    edge_method="topology",
+    gap_policy="strict",
+)
+
+fig, axes = plot_fault_boundary_diagnostics(
+    fault,
+    coordinates="xy",
+    save="fault_boundary_diagnostics.pdf",
+    show=False,
+)
+```
+
+默认包含：
+
+| panel | 用途 |
+| --- | --- |
+| `3d` | 检查 mesh、四条边、inclusive boundary faces 和 junction vertices 的三维位置 |
+| `map` | 检查平面投影、left/right 命名以及已记录的走向/投影方向 |
+| `sequence`（可选） | 按 `top -> right -> bottom -> left` 展开节点顺序和深度；横轴不是距离或真实剖面 |
+
+近直立断层的 left/right 边在平面投影中可能退化到两个端点并相互遮盖；这是投影几何，
+不等同于边界提取失败，此时应以 `3d` panel 为主进行核对。
+
+默认只包含 `3d` 和 `map`。需要核对四边节点顺序时再显式增加 `sequence`：
+
+```python
+fig, axes = plot_fault_boundary_diagnostics(
+    fault,
+    views=("3d", "map", "sequence"),
+    coordinates="lonlat",
+    show_boundary_faces=False,
+)
+```
+
+`coordinates="lonlat"` 使用现有 `fault.Vertices_ll`，不重新投影或修改 fault。平面投影视图在
+`xy` 模式下可以显示 `edge_extraction_info` 已记录的 strike/projection vectors；在 lon/lat
+模式下不会把公里方向分量错误当作经纬度增量。经纬度刻度精度根据当前跨度自动选择；
+地图比例使用中心纬度的 `cos(latitude)` 修正，并通过调整 axes box 保留紧贴数据的坐标范围，
+不会为了填满方形 panel 而人为扩大纬度范围。
+
+这个函数要求边界已经成功识别。它不会：
+
+- 调用 `find_fault_fouredge_vertices()`；
+- 自动选择 `topology`、`geometry` 或 fallback；
+- 使用 `refind=True` 重建边界；
+- 修改 mesh、边界字段、MudPy stencil、Laplacian、面积或 Bayesian 更新标记。
+
+因此 topology 提取本身失败时，应先根据异常和 `edge_extraction_info` 检查网格；当前诊断入口
+不复制一套 topology 算法去猜测失败边界。MPI 脚本中应在科学边界准备由各 rank 一致完成后，
+只在 rank 0 保存或显示图件。完整边界字段、方法和 gap policy 说明见
+[断层边界识别](fault_edges.md)。
 
 ## 兼容入口
 

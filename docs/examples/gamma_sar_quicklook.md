@@ -55,6 +55,19 @@ sar_config:
     byte_order: native
 ```
 
+需要辅助辨认闭合形变瓣或梯度时，只在 YAML 中开启 raw 等值线：
+
+```yaml
+check_plots:
+  raw:
+    contours:
+      enabled: true
+      levels: auto
+```
+
+`auto` 使用稳健数据范围；如果写成 `[-5, -2, 0, 2, 5]`，数值单位是
+`factor4plot` 后的显示单位。该层只用于 `-s` quick-look，不参与协方差或降采样。
+
 ## 三步执行
 
 ```bash

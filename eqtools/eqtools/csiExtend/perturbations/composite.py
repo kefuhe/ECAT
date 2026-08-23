@@ -1,8 +1,9 @@
-"""
-CompositePerturbationMixin — Combined perturbation methods (rotation + translation + fixed direction).
+"""Ordered combinations of offset, rotation, translation, and mesh policy.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-Migration: methods now delegate to the perturbation pipeline internally.
+Each public method declares a fixed perturbation-vector layout.  The pipeline
+applies stages in the documented order to one candidate copied from the frozen
+reference, then either publishes coordinates only or invokes the named mesh
+policy.  Composite calls never update ``GeometryReference``.
 """
 import numpy as np
 from ..bayesian_perturbation_base import track_mesh_update
@@ -14,7 +15,13 @@ class CompositePerturbationMixin:
     #-------------------------------------Perturbing geometry by translation and rotation-------------------------------------#
     @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=3,
                        description="Rotate and Translate the entire geometry.",
-                       params_info={"perturbations": "[rot_angle, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "[rot_angle, dx, dy]", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"mesh_pair": True, "fields": ("top_coords",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_RotateTransGeom(self, perturbations, pivot='midpoint', is_utm=False,
                                                      angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -29,6 +36,12 @@ class CompositePerturbationMixin:
 
         Returns:
         np.ndarray: The rotated and translated vertices.
+
+        Notes:
+        This is a rigid mesh transform. The pipeline publishes it as
+        ``change_kind='rigid'``, so existing patch areas and Laplacian values
+        remain valid while Green's functions are refreshed by the inversion
+        layer for the translated/rotated source location.
         """
         from .pipeline import (
             run_pipeline, Target, RotateStage, TranslateStage, NoMeshPolicy,
@@ -47,10 +60,29 @@ class CompositePerturbationMixin:
     #--------------------------------------Combined: FixedDir + Rotation + Translation--------------------------------------#
     @track_mesh_update(update_mesh=False, update_laplacian=False, update_area=False, expected_perturbations_count=4,
                        description="Combined Perturbation: FixedDir + Rotate + Translate (No mesh update).",
-                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"})
+                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "bottom_offset", "unit": "km"},
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomFixedDir_RotateTransGeom(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                           angle_unit='degrees', force_pivot_in_coords=False,
                                                           fixed_nodes=None, use_average_strike=True, pivot='midpoint'):
+        """Offset bottom, then rotate and translate top/bottom coordinates.
+
+        ``perturbations`` is ``[bottom_offset_km, rotation, dx_km, dy_km]``.
+        The bottom offset is applied first along the strike-normal direction;
+        rotation then uses the already-offset candidate, and translation is
+        last.  ``NoMeshPolicy`` means the caller or inversion config must
+        materialize the mesh afterwards.
+
+        ``recalculate_pivot`` is retained in this historical public signature;
+        the pipeline resolves the pivot independently for every invocation, so
+        no pivot is reused across Bayesian candidates.
+        """
         from .pipeline import (
             run_pipeline, Target, OffsetStage, RotateStage, TranslateStage,
             StrikeNormalDirection, AllNodes, ExcludeNodes, NoMeshPolicy,
@@ -73,7 +105,14 @@ class CompositePerturbationMixin:
     
     @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4,
                        description="Combined Perturbation (FixedDir+Rot+Trans) and rebuild simple mesh.",
-                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"})
+                       params_info={"perturbations": "[d_bottom, rot, dx, dy]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "bottom_offset", "unit": "km"},
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomFixedDir_RotateTransGeom_simpleMesh(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                           angle_unit='degrees', force_pivot_in_coords=False,
                                                           fixed_nodes=None, use_average_strike=True, pivot='midpoint',
@@ -106,7 +145,16 @@ class CompositePerturbationMixin:
     
     @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=6,
                        description="Complex Multi-layer Perturbation (FixedDir + Rot + Trans).",
-                       params_info={"perturbations": "[mid_offset, vert_offset, bot_offset, rot, dx, dy]"})
+                       params_info={"perturbations": "[mid_offset, vert_offset, bot_offset, rot, dx, dy]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords", "layers")},
+                       perturbation_items=(
+                           {"role": "middle_horizontal_offset", "unit": "km"},
+                           {"role": "middle_vertical_offset", "unit": "km"},
+                           {"role": "bottom_offset", "unit": "km"},
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomFixedDir_RotateTransGeom_multiLayerMesh(self, perturbations, average_direction=None, recalculate_pivot=False,
                                                               angle_unit='degrees', force_pivot_in_coords=False,
                                                               fixed_nodes=None, use_average_strike=True, pivot='midpoint',
@@ -174,7 +222,13 @@ class CompositePerturbationMixin:
     #-------------------------------Perturbing Bottom Coords by Translation and Rotation------------------------#
     @track_mesh_update(update_mesh=False, update_laplacian=False, expected_perturbations_count=3,
                        description="Rotate and Translate bottom coordinates.",
-                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"fields": ("bottom_coords",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomRotateTrans(self, perturbations, pivot='midpoint', is_utm=False,
                                   angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -201,10 +255,23 @@ class CompositePerturbationMixin:
 
     @track_mesh_update(update_mesh=True, expected_perturbations_count=3,
                        description="Rotate and Translate bottom coords, then rebuild simple mesh.",
-                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "[rot, dx, dy]", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomRotateTrans_simpleMesh(self, perturbations, pivot='midpoint', is_utm=False,
                                                         angle_unit='degrees', force_pivot_in_coords=False,
                                                         disct_z=None, bias=None, min_dz=None):
+        """Rotate and translate the frozen bottom, then rebuild a simple mesh.
+
+        ``perturbations`` is ``[rotation, dx_km, dy_km]``.  Rotation is applied
+        before translation, and the pivot is resolved from the bottom edge.
+        ``is_utm`` describes only an explicit pivot coordinate; fault edges are
+        already stored in local projected km.
+        """
         from .pipeline import (
             run_pipeline, Target, RotateStage, TranslateStage, SimpleMeshPolicy,
         )

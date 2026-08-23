@@ -164,29 +164,23 @@ for dip in candidate_dips:
 只有迹线需要统一方向、裁剪、端点延伸或重采样时，才在“公共初始化”之前加入：
 
 ```python
-from eqtools.csiExtend.trace_ops import (
-    extend_trace,
-    orient_trace,
-    resample_trace,
-    simplify_trace,
-    trim_trace,
+from eqtools.csiExtend import TracePath
+
+trace = TracePath.from_lonlat(trace_lonlat, lon0=lon0, lat0=lat0)
+prepared = (
+    trace
+    .orient(start="west")
+    .simplify(method="vw", tolerance=0.2)
+    .trim(start={"trace_distance_km": 2.0}, end={"longitude": 101.8})
+    .extend(end_km=8.0, tangent_window=3)
+    .resample(every_km=1.0)
 )
-
-temporary_fault = TriFault("TraceProjection", lon0=lon0, lat0=lat0, verbose=False)
-x, y = temporary_fault.ll2xy(trace_lonlat[:, 0], trace_lonlat[:, 1])
-trace_xy = np.column_stack((x, y))
-
-trace_xy = orient_trace(trace_xy, start="west")
-trace_xy = simplify_trace(trace_xy, method="vw", tolerance=0.2)
-trace_xy = trim_trace(trace_xy, start=2.0, end=45.0)
-trace_xy = extend_trace(trace_xy, start=5.0, end=8.0, tangent_window=3)
-trace_xy = resample_trace(trace_xy, every=1.0)
-
-lon_new, lat_new = temporary_fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
-trace_lonlat = np.column_stack((lon_new, lat_new))
+trace_lonlat = prepared.lonlat
 ```
 
-这些长度参数都在局部投影坐标中解释，单位为 km；示例值只是占位值，应按迹线尺度调整。
+这些长度参数都在局部投影坐标中解释，单位为 km；示例值只是占位值，应按迹线尺度调整。经度、
+纬度、最近点、多交点选择和命令行用法见专门的
+[断层迹线预处理短例](fault_trace_processing.md)；不要在已经生成 mesh、patch 或 GF 后替换 trace。
 
 ## 检查
 

@@ -123,14 +123,18 @@ inversion = BoundLSEMultiFaultsInversion(
 ```python
 if args.mode == "single":
     inversion.run(penalty_weight=None, alpha=[np.log10(1 / 100.0)])
-    inversion.returnModel(print_stat=False)
+    inversion.returnModel(print_fit_statistics=False)
 ```
 
 `returnModel(...)` 会把求解得到的滑动分量分发回断层对象，后续才能写出滑动图和断层面文件。
 
 ### 5. `loop` 模式：扫描平滑权重
 
-`--mode loop` 不输出最终滑动模型，而是扫描一组 penalty weight，用于检查数据拟合和模型粗糙度的权衡。本案例实际使用的是 smoothing loop；VCE 是另一种权重估计路线，见 [BLSE/VCE 参考](../reference/blse_vce.md)。
+`--mode loop` 不输出或激活最终滑动模型，而是扫描一组 penalty weight，用于检查数据拟合
+和未加权模型粗糙度的权衡。循环结束后 inversion 恢复进入 loop 前的活动状态；图中的
+preferred 点只是标记。选定权重后切换到 `single` 模式显式求解并输出结果。本案例实际使用
+的是 smoothing loop；VCE 是另一种权重估计路线，见
+[BLSE/VCE 参考](../reference/blse_vce.md)。
 
 ```python
 if args.mode == "loop":

@@ -10,6 +10,7 @@ Architecture (v2 - Mixin):
     Each Mixin provides one category of perturbation methods.
 '''
 
+import inspect
 import warnings
 
 import numpy as np
@@ -31,6 +32,7 @@ from .bayesian_perturbation_base import (
     DensificationConfig,
 )
 from .MeshGenerator import MeshGenerator
+from . import mesh_registry
 
 
 class BayesianAdaptiveTriangularPatches(
@@ -42,6 +44,21 @@ class BayesianAdaptiveTriangularPatches(
     EndpointDuttaPerturbationMixin,
     BayesianTriFaultBase,
 ):
+    """Triangular fault with immutable-reference Bayesian perturbations.
+
+    The class is the public assembly point for four distinct responsibilities:
+
+    1. build or import the current top/bottom/layer geometry;
+    2. freeze the zero-perturbation state in :class:`GeometryReference`;
+    3. apply one registered perturbation from that frozen state; and
+    4. materialize or deform a mesh when the selected method requires it.
+
+    Candidate perturbations are intentionally non-cumulative: each call reads
+    ``geometry_ref`` rather than the previous candidate.  A new ``snapshot``
+    therefore starts a new baseline and must not be taken inside an SMC/MCMC
+    proposal loop.
+    """
+
     def __init__(self, name: str, utmzone=None, ellps='WGS84', lon0=None, lat0=None, verbose=True, role='standalone', shared_info=None, **kwargs):
         BayesianTriFaultBase.__init__(self, name, utmzone=utmzone, ellps=ellps, lon0=lon0, lat0=lat0, verbose=verbose, 
                                       role=role, shared_info=shared_info, **kwargs)
@@ -75,15 +92,23 @@ class BayesianAdaptiveTriangularPatches(
         vertices = None
         faces = None
         if capture_vertices:
-            if hasattr(self, 'Vertices') and self.Vertices is not None:
+            has_vertices = hasattr(self, 'Vertices') and self.Vertices is not None
+            has_faces = hasattr(self, 'Faces') and self.Faces is not None
+            if has_vertices != has_faces:
+                raise ValueError(
+                    "snapshot(capture_vertices=True) requires current "
+                    "Vertices and Faces to be present together. The fault "
+                    "currently contains only one half of the mesh pair."
+                )
+            if has_vertices:
                 vertices = self.Vertices.copy()
-                faces = self.Faces.copy() if hasattr(self, 'Faces') and self.Faces is not None else None
+                faces = self.Faces.copy()
             else:
                 warnings.warn(
-                    "snapshot(capture_vertices=True) called but self.Vertices "
-                    "is None. Vertices will not be captured. Build the mesh "
-                    "first if you need vertex-dependent perturbations "
-                    "(direction, rotation, translation).",
+                    "snapshot(capture_vertices=True) called without a current "
+                    "mesh. The reference was created without vertices/faces; "
+                    "build the mesh first if a whole-mesh perturbation will be "
+                    "used.",
                     stacklevel=2,
                 )
 
@@ -106,6 +131,7 @@ class BayesianAdaptiveTriangularPatches(
             dip_control_points=dip_cp,
             densification=densification,
         )
+        self._mesh_reference_validation_key = None
 
         # Keep legacy attributes in sync (read-only views into the frozen ref)
 
@@ -327,12 +353,271 @@ class BayesianAdaptiveTriangularPatches(
         vertices, faces = self.mesh_generator.generate_multilayer_mesh(layers_coords, disct_z, bias)
         self.VertFace2csifault(vertices, faces)
 
+    def validate_bayesian_mesh_replay(self, method_name, replay_params=None):
+        """Validate prepared state required by one Bayesian mesh replay.
+
+        The check is deliberately separate from ordinary mesh generation.  It
+        runs once when a Bayesian target is constructed and never creates,
+        remaps, or deforms a mesh.  Mesh methods without a registered replay
+        contract need no extra prepared state and return immediately.
+
+        Parameters
+        ----------
+        method_name : str
+            Registered mesh method selected by the effective geometry update.
+        replay_params : mapping, optional
+            Parameters that the candidate path will pass to ``method_name``.
+
+        Raises
+        ------
+        ValueError
+            If the fixed-topology parametric mapping is absent, no longer
+            matches the published mesh, or was prepared with incompatible
+            mapping parameters.
+        """
+        contract = mesh_registry.get_bayesian_replay_contract(method_name)
+        if contract is None:
+            return
+        if contract.get('state') != 'prepared_parametric_mapping':
+            raise ValueError(
+                f"Mesh method '{method_name}' declares an unsupported "
+                f"Bayesian replay state {contract.get('state')!r}."
+            )
+
+        replay_params = dict(replay_params or {})
+        prepare_hint = (
+            "Prepare the baseline with generate_and_deform_mesh(..., "
+            "remap=True, bottom_norm_offset=None) before constructing the "
+            "Bayesian sampling target."
+        )
+        prefix = f"Fault '{self.name}': "
+
+        generator = getattr(self, 'mesh_generator', None)
+        if generator is None:
+            raise ValueError(prefix + "mesh_generator is unavailable. " + prepare_hint)
+
+        param_coords = getattr(generator, 'param_coords', None)
+        gmsh_verts = getattr(generator, 'gmsh_verts', None)
+        gmsh_faces = getattr(generator, 'gmsh_faces', None)
+        current_verts = getattr(self, 'Vertices', None)
+        current_faces = getattr(self, 'Faces', None)
+        if param_coords is None or len(param_coords) == 0:
+            raise ValueError(
+                prefix + "the fixed-topology parametric mapping is missing. "
+                + prepare_hint
+            )
+        if any(value is None for value in (
+                gmsh_verts, gmsh_faces, current_verts, current_faces)):
+            raise ValueError(
+                prefix + "the mapped mesh does not contain a complete "
+                "vertices/faces pair. " + prepare_hint
+            )
+
+        gmsh_verts = np.asarray(gmsh_verts)
+        gmsh_faces = np.asarray(gmsh_faces)
+        current_verts = np.asarray(current_verts)
+        current_faces = np.asarray(current_faces)
+        if (
+            gmsh_verts.ndim != 2
+            or current_verts.ndim != 2
+            or gmsh_faces.ndim != 2
+            or current_faces.ndim != 2
+            or gmsh_faces.shape[1:] != (3,)
+            or current_faces.shape[1:] != (3,)
+        ):
+            raise ValueError(
+                prefix + "the prepared mapping or published triangular mesh "
+                "has an invalid array shape. " + prepare_hint
+            )
+        if len(param_coords) != gmsh_verts.shape[0]:
+            raise ValueError(
+                prefix + "the parametric-coordinate count does not match the "
+                "stored Gmsh vertex count. " + prepare_hint
+            )
+        if current_verts.shape[0] != gmsh_verts.shape[0]:
+            raise ValueError(
+                prefix + "the published mesh vertex count no longer matches "
+                "the prepared mapping. " + prepare_hint
+            )
+        if (
+            current_faces.shape != gmsh_faces.shape
+            or not np.array_equal(
+                np.sort(current_faces, axis=1),
+                np.sort(gmsh_faces, axis=1),
+            )
+        ):
+            raise ValueError(
+                prefix + "the published face topology no longer matches the "
+                "prepared fixed-topology mapping. " + prepare_hint
+            )
+
+        last_call = self.get_last_mesh_call()
+        if not last_call or last_call.get('method') != method_name:
+            raise ValueError(
+                prefix + f"the prepared mapping is not attributable to "
+                f"'{method_name}'. " + prepare_hint
+            )
+
+        try:
+            signature = inspect.signature(getattr(self, method_name))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                prefix + f"cannot resolve the registered mesh method "
+                f"'{method_name}'."
+            ) from exc
+
+        effective = {}
+        for key in contract.get('mapping_parameter_keys', ()):
+            if key in replay_params:
+                effective[key] = replay_params[key]
+                continue
+            parameter = signature.parameters.get(key)
+            if parameter is None or parameter.default is inspect.Parameter.empty:
+                raise ValueError(
+                    prefix + f"cannot resolve replay parameter '{key}' for "
+                    f"'{method_name}'."
+                )
+            effective[key] = parameter.default
+
+        prepared = getattr(generator, 'param_mapping_spec', None)
+        if not isinstance(prepared, dict) or prepared.get('method') != method_name:
+            raise ValueError(
+                prefix + "the parametric mapping has no completed preparation "
+                "record. " + prepare_hint
+            )
+
+        def values_equal(left, right):
+            try:
+                return bool(np.array_equal(left, right, equal_nan=True))
+            except TypeError:
+                return bool(np.array_equal(left, right))
+
+        # disct_z takes precedence in MeshGenerator.generate_grid_coordinates;
+        # bias/min_dz define the mapping only when disct_z is intentionally None.
+        comparable_keys = ['num_segments', 'disct_z']
+        if effective.get('disct_z') is None:
+            comparable_keys.extend(['bias', 'min_dz'])
+        incompatible = [
+            key for key in comparable_keys
+            if key not in prepared
+            or not values_equal(effective.get(key), prepared.get(key))
+        ]
+        if incompatible:
+            details = ', '.join(
+                f"{key}: prepared={prepared.get(key)!r}, "
+                f"replay={effective.get(key)!r}"
+                for key in incompatible
+            )
+            raise ValueError(
+                prefix + "fixed-topology replay parameters do not match the "
+                f"prepared mapping ({details}). " + prepare_hint
+            )
+
+        projection = effective.get('projection')
+        if projection is not None and projection not in {'xy', 'xz', 'yz'}:
+            raise ValueError(
+                prefix + f"projection must be one of 'xy', 'xz', 'yz', or "
+                f"None; got {projection!r}."
+            )
+
+        num_segments = effective.get('num_segments')
+        disct_z = effective.get('disct_z')
+        for index, item in enumerate(param_coords):
+            if not isinstance(item, (tuple, list)) or len(item) < 7:
+                raise ValueError(
+                    prefix + f"parametric coordinate {index} does not follow "
+                    "the expected (i, k, u, v, dz, projection, rotation) "
+                    "contract. " + prepare_hint
+                )
+            i, k, _, _, _, node_projection, _ = item[:7]
+            if (
+                not isinstance(i, (int, np.integer))
+                or not isinstance(k, (int, np.integer))
+                or i < 0
+                or k < 0
+            ):
+                raise ValueError(
+                    prefix + f"parametric coordinate {index} has invalid "
+                    f"cell indices ({i!r}, {k!r}). " + prepare_hint
+                )
+            if num_segments is not None and i + 1 >= int(num_segments):
+                raise ValueError(
+                    prefix + f"parametric coordinate {index} references "
+                    f"along-strike cell {i}, outside num_segments="
+                    f"{num_segments}. " + prepare_hint
+                )
+            if disct_z is not None and k >= int(disct_z):
+                raise ValueError(
+                    prefix + f"parametric coordinate {index} references "
+                    f"down-dip cell {k}, outside disct_z={disct_z}. "
+                    + prepare_hint
+                )
+            if node_projection not in {'xy', 'xz', 'yz'}:
+                raise ValueError(
+                    prefix + f"parametric coordinate {index} has invalid "
+                    f"stored projection {node_projection!r}. " + prepare_hint
+                )
+            if projection is not None and node_projection != projection:
+                raise ValueError(
+                    prefix + f"replay projection {projection!r} overrides a "
+                    f"stored {node_projection!r} mapping at vertex {index}. "
+                    "Use projection=None to preserve each stored projection, "
+                    "or prepare the mapping with one explicit projection."
+                )
+
     def generate_and_deform_mesh(self, top_coords=None, bottom_coords=None, top_size=None, bottom_size=None, num_segments=30, 
                                  disct_z=10, rotation_angle: float = None, bottom_norm_offset=None, show=False, 
                                  verbose=0, remap=False, bias=None, min_dz=None, projection=None, 
                                  field_size_dict={'min_dx': 3, 'bias': 1.05}, mesh_func=None, tolerance=1e-6, debug_plot=False,
                                  use_current_mesh=False):
-        """Generate and deform mesh."""
+        """Create or reuse a Gmsh topology, then deform it to current edges.
+
+        This method separates *topology setup* from *candidate deformation*.
+        The first call normally uses ``remap=True`` to create the Gmsh
+        vertices/faces and their parametric mapping.  Later fixed-topology
+        candidates use ``remap=False`` and reuse that mapping while changing
+        only vertex coordinates.  ``VertFace2csifault`` publishes the final
+        pair and invalidates geometry-dependent derived products.
+
+        Parameters
+        ----------
+        top_coords, bottom_coords : ndarray, optional
+            Projected ``(x, y, depth)`` boundary coordinates.  Defaults to the
+            current fault edges.  They are ignored when
+            ``use_current_mesh=True`` because that mode is anchored to the
+            fault's current mesh state.
+        top_size, bottom_size : float, optional
+            Gmsh target sizes used only when a topology is generated.
+        num_segments, disct_z, bias, min_dz : optional
+            Resolution of the intermediate structured coordinates used to map
+            and deform the Gmsh vertices.
+        rotation_angle, projection : optional
+            Mapping controls forwarded to ``MeshGenerator``.
+        bottom_norm_offset : float, optional
+            Pre-mesh bottom-edge perturbation in km.  Any non-``None`` value
+            invokes the registered bottom-direction perturbation and therefore
+            reads ``geometry_ref``; it is not a mesh-only translation or a
+            hidden constant added to every Bayesian sample.
+        remap : bool, default False
+            Rebuild Gmsh topology and its parametric mapping.  Bayesian
+            candidate replay normally forbids this because parameter and slip
+            indexing must remain fixed.
+        use_current_mesh : bool, default False
+            Rebuild the mapping from current ``Vertices/Faces`` instead of
+            generating a new Gmsh topology.
+
+        Returns
+        -------
+        vertices, faces : tuple of ndarray
+            Published deformed vertices and their triangular connectivity.
+
+        Notes
+        -----
+        ``Faces`` row order, vertex numbering, and triangle winding are passed
+        through unchanged on the fixed-topology path.  Scientific consumers
+        such as slip vectors, Green's functions, and Laplacians rely on this
+        stable indexing.
+        """
         _user_passed_coords = top_coords is not None or bottom_coords is not None
         # Record geometry-affecting parameters for config sync
         self.record_mesh_call('generate_and_deform_mesh', {
@@ -355,6 +640,7 @@ class BayesianAdaptiveTriangularPatches(
                 stacklevel=2,
             )
 
+        topology_changed = False
         if use_current_mesh:
             if _user_passed_coords:
                 import warnings
@@ -388,9 +674,18 @@ class BayesianAdaptiveTriangularPatches(
                                                             projection=projection, 
                                                             tolerance=tolerance, 
                                                             debug_plot=debug_plot)
+            self.mesh_generator.param_mapping_spec = {
+                'method': 'generate_and_deform_mesh',
+                'num_segments': num_segments,
+                'disct_z': disct_z,
+                'bias': bias,
+                'min_dz': min_dz,
+                'projection': projection,
+            }
             
         else:
             if self.mesh_generator.param_coords is None or remap:
+                topology_changed = True
                 if bottom_norm_offset is not None:
                     self.perturb_bottom_coords_along_fixed_direction([bottom_norm_offset])
                 top_coords, bottom_coords = self.top_coords, self.bottom_coords
@@ -412,6 +707,17 @@ class BayesianAdaptiveTriangularPatches(
                                                               projection=projection, 
                                                               tolerance=tolerance, 
                                                               debug_plot=debug_plot)
+                # This is the successful mapping transaction.  Candidate
+                # replays below reuse this state and therefore do not replace
+                # its provenance with each sample's call arguments.
+                self.mesh_generator.param_mapping_spec = {
+                    'method': 'generate_and_deform_mesh',
+                    'num_segments': num_segments,
+                    'disct_z': disct_z,
+                    'bias': bias,
+                    'min_dz': min_dz,
+                    'projection': projection,
+                }
             else:
                 gmsh_verts = self.mesh_generator.gmsh_verts
                 gmsh_faces = self.mesh_generator.gmsh_faces
@@ -422,7 +728,11 @@ class BayesianAdaptiveTriangularPatches(
         new_gmsh_verts = self.mesh_generator.deform_mesh(sep_top_coords, sep_bottom_coords, disct_z=disct_z, 
                                                             bias=bias, min_dz=min_dz, projection=projection)
         
-        self.VertFace2csifault(new_gmsh_verts, gmsh_faces)
+        self.VertFace2csifault(
+            new_gmsh_verts, gmsh_faces,
+            topology_changed=topology_changed,
+            change_kind='deform',
+        )
         
         return new_gmsh_verts, gmsh_faces
     
@@ -455,8 +765,26 @@ class BayesianAdaptiveTriangularPatches(
     
     def set_edges_for_bayesian_optimization(self, segs=None, top_tolerance=0.1, bottom_tolerance=0.1, lonlat=True, depth_tolerance=0.1, buffer_depth=0.1, sort_axis=0, sort_order='ascend', use_trace=False, discretized=False,
                                                densify_num_segments=None, densify_interval=None):
-        """
-        Setup the top and bottom edges for Bayesian geometry optimization.
+        """Extract reference edges from current geometry and freeze them.
+
+        ``use_trace=True`` takes the top edge from the trace; otherwise both
+        edges are identified from current geometry.  The bottom edge is always
+        obtained from geometry.  Optional ``segs`` discretization happens
+        before ``snapshot(capture_vertices=False)`` so the frozen coordinates
+        have the same point order used by later perturbations.
+
+        ``sort_axis`` and ``sort_order`` define the positive boundary sequence
+        used by strike/dip operations.  They do not describe observation-track
+        direction.  ``densify_*`` stores a later physics/mesh densification
+        rule without changing the frozen sparse control coordinates.
+
+        ``depth_tolerance`` is retained in the historical signature but is not
+        consumed by the current implementation.  Edge selection uses
+        ``top_tolerance``, ``bottom_tolerance`` and ``buffer_depth``.
+
+        Use this convenience method only when the reference edges must be
+        extracted from existing geometry.  If authoritative top/bottom arrays
+        are already available, call ``snapshot(...)`` directly.
         """
         if use_trace:
             self.set_top_coords_from_trace(discretized=discretized)

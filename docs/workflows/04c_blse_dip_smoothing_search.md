@@ -2,7 +2,7 @@
 
 当单独平滑搜索和单独倾角搜索都已经完成，但倾角优选结果可能依赖平滑强度时，再运行
 二维敏感性分析。独立模板是
-[`scripts/test_dip_smoothing_search_BLSE.py`](../../scripts/test_dip_smoothing_search_BLSE.py)。
+[`scripts/test_dip_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_smoothing_search_BLSE.py)。
 
 这不是新手默认步骤，也不是 Bayesian 联合后验。它是在固定数据、迹线、网格拓扑、
 bounds、rake 和数据权重条件下，对一组 `dip × penalty weight` 组合逐一求解 BLSE。

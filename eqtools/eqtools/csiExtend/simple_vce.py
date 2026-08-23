@@ -1,15 +1,41 @@
 import numpy as np
 from . import lsqlin
+from .covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
+from .quadratic_objective import (
+    LeastSquaresBlock,
+    assemble_quadratic_objective,
+    assemble_residual_system,
+)
+from eqtools.csiExtend.config.parameter_groups import (
+    normalize_group_vector,
+    resolve_group_layout,
+)
+
+
+def _finite_block_array(values):
+    """Return a finite float array, copying only when repair is required.
+
+    Normal covariance whitening already produces finite arrays.  Reusing those
+    arrays avoids retaining a second ``n_obs x n_params`` copy beside the
+    prepared Gram block.  The historical ``nan_to_num`` behavior is preserved
+    for exceptional non-finite inputs without mutating the caller's array.
+    """
+    values = np.asarray(values, dtype=float)
+    if np.all(np.isfinite(values)):
+        return values
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+
 
 def simplified_vce(
-    Cd_inv, 
+    data_metrics,
     d, 
     G, 
     L, 
     bounds, 
     data_ranges=None,
     fault_ranges=None,
-    sigma_mode='single',
+    smoothing_faults=None,
+    sigma_mode='individual',
     sigma_groups=None,
     sigma_update=None,
     sigma_values=None,
@@ -37,8 +63,8 @@ def simplified_vce(
     
     Parameters:
     -----------
-    Cd_inv : array (n_obs, n_obs)
-        Inverse data covariance matrix
+    data_metrics : mapping
+        Prepared ``DataCovarianceMetric`` for each entry in ``data_ranges``.
     d : array (n_obs,)
         Observation vector
     G : array (n_obs, n_params)
@@ -54,10 +80,17 @@ def simplified_vce(
         Fault parameter ranges: {'fault1': (start, end), 'fault2': (start, end), ...}
         Used to identify which L constraints belong to which fault
         If None, assumes single fault: {'fault': (0, n_params)}
+    smoothing_faults : sequence of str, optional
+        Sources that own Laplacian rows. ``fault_ranges`` still describes the
+        complete model-column layout; this subset only controls alpha grouping.
+        If None, every entry in ``fault_ranges`` is treated as smoothable for
+        compatibility with direct low-level calls.
     sigma_mode : str
         - 'single': All datasets share one sigma
         - 'individual': Each dataset has its own sigma
         - 'grouped': Custom grouping via sigma_groups
+        Defaults to ``'individual'``, matching the public BLSE/VCE
+        configuration contract.
     sigma_groups : dict, optional
         For 'grouped' mode: {'group1': ['dataset1', 'dataset2'], 'group2': ['dataset3']}
     smooth_mode : str
@@ -77,7 +110,9 @@ def simplified_vce(
     max_iter : int
         Maximum iterations
     tol : float
-        Convergence tolerance (max difference between update factors)
+        Convergence tolerance. With no fixed effective component, convergence
+        uses the historical spread of update factors. If any effective data or
+        smoothing component is fixed, each updated factor must approach one.
     verbose : bool
         Print progress
     
@@ -85,9 +120,15 @@ def simplified_vce(
     --------
     dict with keys:
         - 'm': estimated parameters
-        - 'var_d': data variance components (σ^2)
-        - 'var_alpha': regularization variance components (σ^2)
-        - 'weights': regularization weights
+        - 'solved_sigma2_by_group': data variances used to solve ``m``
+        - 'solved_alpha2_by_group': smoothing variances used to solve ``m``
+        - 'proposed_sigma2_by_group': post-update values for a possible next
+          iteration
+        - 'proposed_alpha2_by_group': post-update values for a possible next
+          iteration
+        - 'sigma_groups'/'smooth_groups': resolved member mappings
+        - 'component_diagnostics': group-level Qw and approximate reduced Q
+        - 'convergence_mode'/'convergence_measure': stopping-rule diagnostics
         - 'converged': convergence flag
         - 'iterations': number of iterations
     """
@@ -102,38 +143,99 @@ def simplified_vce(
     # Configure data ranges
     if data_ranges is None:
         data_ranges = {'data': (0, n_obs)}
+
+    # The base whitening is independent of the estimated variance components.
+    # Compute W_k G_k and W_k d_k once, then only rescale them per iteration.
+    whitened_data = whiten_data_blocks(data_metrics, data_ranges, G, d)
     
     # Configure fault ranges
     if fault_ranges is None:
         fault_ranges = {'fault': (0, n_params)}
     
-    # 配置sigma分组
+    # Resolve membership first, then validate values in group space.  This is
+    # intentionally independent of the number of data sets or sources.
     sigma_config = _setup_sigma_groups(data_ranges, sigma_mode, sigma_groups)
     sigma_group_names = list(sigma_config.keys())
     n_sigma = len(sigma_group_names)
-    # 新增：sigma update/fixed处理
-    if sigma_update is None:
-        sigma_update = [True] * n_sigma
-    if sigma_values is None:
-        sigma_values = [1.0] * n_sigma
-    sigma_update = np.array(sigma_update, dtype=bool)
-    sigma_values = np.array(sigma_values, dtype=float)
+    sigma_update = normalize_group_vector(
+        sigma_update, sigma_group_names, value_name="sigma_update",
+        default_value=True, dtype=bool,
+    )
+    sigma_values = normalize_group_vector(
+        sigma_values, sigma_group_names, value_name="sigma_values",
+        default_value=1.0, dtype=float,
+    )
     sigma_updatable = [g for g, u in zip(sigma_group_names, sigma_update) if u]
     sigma_fixed = {g: v for g, u, v in zip(sigma_group_names, sigma_update, sigma_values) if not u}
     
-    # 配置smoothing分组
-    smooth_config = _setup_smooth_groups(fault_ranges, smooth_mode, smooth_groups)
+    smooth_config = _setup_smooth_groups(
+        fault_ranges,
+        smooth_mode,
+        smooth_groups,
+        smoothing_faults=smoothing_faults,
+    )
     smooth_group_names = list(smooth_config.keys())
     n_smooth = len(smooth_group_names)
-    # 新增：smooth update/fixed处理
-    if smooth_update is None:
-        smooth_update = [True] * n_smooth
-    if smooth_values is None:
-        smooth_values = [1.0] * n_smooth
-    smooth_update = np.array(smooth_update, dtype=bool)
-    smooth_values = np.array(smooth_values, dtype=float)
+    smooth_update = normalize_group_vector(
+        smooth_update, smooth_group_names, value_name="smooth_update",
+        default_value=True, dtype=bool,
+    )
+    smooth_values = normalize_group_vector(
+        smooth_values, smooth_group_names, value_name="smooth_values",
+        default_value=1.0, dtype=float,
+    )
     smooth_updatable = [g for g, u in zip(smooth_group_names, smooth_update) if u]
     smooth_fixed = {g: v for g, u, v in zip(smooth_group_names, smooth_update, smooth_values) if not u}
+
+    # Resolve smoothing rows once.  These rows depend only on the frozen model
+    # column layout, not on the variance components updated in the loop.  Empty
+    # groups are retained in result metadata but do not anchor convergence.
+    smooth_group_rows = {}
+    for group, faults in smooth_config.items():
+        rows = []
+        for fault in faults:
+            start_param, end_param = fault_ranges[fault]
+            rows.extend(_find_fault_constraints(L, start_param, end_param))
+        smooth_group_rows[group] = rows
+
+    # The residual blocks and their Gram/cross products are invariant across
+    # VCE iterations.  Only the group variance-component weights change.
+    data_quadratic_blocks = {
+        dataset: LeastSquaresBlock.prepare(
+            _finite_block_array(WG),
+            _finite_block_array(Wd),
+            name=f"data:{dataset}",
+        )
+        for dataset, (WG, Wd) in whitened_data.items()
+    }
+    smooth_quadratic_blocks = {}
+    for group, rows in smooth_group_rows.items():
+        if rows:
+            smooth_quadratic_blocks[group] = LeastSquaresBlock.prepare(
+                _finite_block_array(L[rows, :]),
+                name=f"smoothing:{group}",
+            )
+
+    effective_smooth_groups = {
+        group for group, rows in smooth_group_rows.items() if rows
+    }
+    effective_updatable = list(sigma_updatable) + [
+        group for group in smooth_updatable if group in effective_smooth_groups
+    ]
+    has_fixed_effective_component = (
+        any(not update for update in sigma_update)
+        or any(
+            not smooth_update[index]
+            for index, group in enumerate(smooth_group_names)
+            if group in effective_smooth_groups
+        )
+    )
+    if not effective_updatable:
+        convergence_mode = 'fixed'
+    elif has_fixed_effective_component:
+        convergence_mode = 'anchored'
+    else:
+        convergence_mode = 'relative'
     
     if verbose:
         print(f"VCE Setup: {n_obs} obs, {n_params} params, {n_reg} constraints")
@@ -157,49 +259,33 @@ def simplified_vce(
     var_alpha = {g: smooth_values[i] for i, g in enumerate(smooth_group_names)}
     
     # Iteration
+    converged = False
+    data_effective_dof = {}
+    smooth_effective_dof = {}
+    solved_sigma2_by_group = dict(var_d)
+    solved_alpha2_by_group = dict(var_alpha)
     for it in range(max_iter):
-        # Build weighted system
-        G_blocks = []
-        d_blocks = []
-        
-        # Add data blocks
-        for i, group in enumerate(sigma_group_names):
-            for dataset in sigma_config[group]:
-                start, end = data_ranges[dataset]
-                Cd_inv_sub = Cd_inv[start:end, start:end]
-                G_sub = G[start:end, :]
-                d_sub = d[start:end]
-                # Weight: sqrt(Cd_inv) / sqrt(σ^2_d) = sqrt(Cd_inv) / σ_d
-                weight = 1.0 / np.sqrt(var_d[group])
-                try:
-                    L_chol = np.linalg.cholesky(Cd_inv_sub)
-                    G_blocks.append(L_chol @ G_sub * weight)
-                    d_blocks.append(L_chol @ d_sub * weight)
-                except np.linalg.LinAlgError:
-                    sqrt_Cd_inv = np.sqrt(np.diag(Cd_inv_sub))
-                    G_blocks.append(np.diag(sqrt_Cd_inv) @ G_sub * weight)
-                    d_blocks.append(sqrt_Cd_inv * d_sub * weight)
-        
-        # Add regularization blocks for each smoothing group
-        for i, group in enumerate(smooth_group_names):
-            faults = smooth_config[group]
-            L_group_rows = []
-            for fault in faults:
-                start_param, end_param = fault_ranges[fault]
-                fault_rows = _find_fault_constraints(L, start_param, end_param)
-                L_group_rows.extend(fault_rows)
-            if L_group_rows:
-                L_group = L[L_group_rows, :]
-                n_reg_group = L_group.shape[0]
-                reg_weight = 1.0 / np.sqrt(var_alpha[group])
-                G_blocks.append(L_group * reg_weight)
-                d_blocks.append(np.zeros(n_reg_group) * reg_weight)
-        
-        # Combine all blocks
-        G_aug = np.vstack(G_blocks)
-        d_aug = np.concatenate(d_blocks)
-        G_aug = np.nan_to_num(G_aug, nan=0.0, posinf=0.0, neginf=0.0)
-        d_aug = np.nan_to_num(d_aug, nan=0.0, posinf=0.0, neginf=0.0)
+        # These are the variance components that scale the augmented system
+        # solved in this iteration. If the iteration limit is reached, the
+        # update below describes a possible next iteration, while ``m`` still
+        # belongs to this frozen pair of dictionaries.
+        solved_sigma2_by_group = dict(var_d)
+        solved_alpha2_by_group = dict(var_alpha)
+        weighted_blocks = []
+        for group in sigma_group_names:
+            weighted_blocks.extend(
+                (data_quadratic_blocks[dataset], 1.0 / var_d[group])
+                for dataset in sigma_config[group]
+            )
+        for group in smooth_group_names:
+            if group in smooth_quadratic_blocks:
+                weighted_blocks.append((
+                    smooth_quadratic_blocks[group],
+                    1.0 / var_alpha[group],
+                ))
+        N_total, q_total = assemble_quadratic_objective(
+            weighted_blocks, n_parameters=n_params
+        )
 
         # ======================================================================
         # Solve using lsqlin solver with constraints
@@ -207,8 +293,12 @@ def simplified_vce(
 
         # Solve using lsqlin solver with constraints
         opts = {'show_progress': False}
-        ret = lsqlin.lsqlin_auto(
-            G_aug, d_aug, 0,
+        ret = lsqlin.lsqlin_quadratic_auto(
+            N_total, q_total,
+            lambda: assemble_residual_system(
+                weighted_blocks, n_parameters=n_params
+            ),
+            0,
             A_ueq, b_ueq,
             Aeq, beq,
             lb, ub,
@@ -220,26 +310,9 @@ def simplified_vce(
         # Compute total normal matrix (all datasets + all regularization)
         # ======================================================================
 
-        # Compute total normal matrix (all datasets + all regularization)
-        N_d_total = np.zeros((n_params, n_params))
-        for i, group in enumerate(sigma_group_names):
-            for dataset in sigma_config[group]:
-                start, end = data_ranges[dataset]
-                Cd_inv_sub = Cd_inv[start:end, start:end]
-                G_sub = G[start:end, :]
-                N_d_total += G_sub.T @ Cd_inv_sub @ G_sub / var_d[group]
-        N_alpha_total = np.zeros((n_params, n_params))
-        for i, group in enumerate(smooth_group_names):
-            faults = smooth_config[group]
-            L_group_rows = []
-            for fault in faults:
-                start_param, end_param = fault_ranges[fault]
-                fault_rows = _find_fault_constraints(L, start_param, end_param)
-                L_group_rows.extend(fault_rows)
-            if L_group_rows:
-                L_group = L[L_group_rows, :]
-                N_alpha_total += L_group.T @ L_group / var_alpha[group]
-        N_total = N_d_total + N_alpha_total
+        # The same normal matrix solved above is also the VCE covariance
+        # matrix.  Reusing it keeps the solve and variance update metrically
+        # identical and removes a second Gram assembly.
         try:
             N_inv = np.linalg.inv(N_total)
         except np.linalg.LinAlgError:
@@ -254,55 +327,82 @@ def simplified_vce(
         update_factors_alpha = {}
         # Data variance components
         for i, group in enumerate(sigma_group_names):
-            group_residuals = []
-            group_Cd_inv = []
-            group_G = []
+            group_whitened_residuals = []
             for dataset in sigma_config[group]:
-                start, end = data_ranges[dataset]
-                pred = G[start:end, :] @ m
-                res = pred - d[start:end]
-                group_residuals.append(res)
-                group_Cd_inv.append(Cd_inv[start:end, start:end])
-                group_G.append(G[start:end, :])
-            res_combined = np.concatenate(group_residuals)
-            Cd_inv_combined = block_diag(*group_Cd_inv)
-            G_combined = np.vstack(group_G)
-            N_d_group = G_combined.T @ Cd_inv_combined @ G_combined / var_d[group]
-            dof_eff = len(res_combined) - np.trace(N_inv @ N_d_group)
+                WG_sub, Wd_sub = whitened_data[dataset]
+                group_whitened_residuals.append(WG_sub @ m - Wd_sub)
+            whitened_residual = np.concatenate(group_whitened_residuals)
+            # The group normal block is the exact sum of the per-dataset Gram
+            # matrices prepared before the VCE loop.  Rebuilding a stacked WG
+            # and multiplying it again would be algebraically identical but
+            # repeats the dominant O(n p^2) work in every iteration.
+            N_d_group = sum(
+                data_quadratic_blocks[dataset].gram
+                for dataset in sigma_config[group]
+            ) / var_d[group]
+            dof_eff = len(whitened_residual) - np.trace(N_inv @ N_d_group)
             if dof_eff <= 0:
-                dof_eff = len(res_combined) * 0.1
-            rss = res_combined.T @ Cd_inv_combined @ res_combined / var_d[group]
+                dof_eff = len(whitened_residual) * 0.1
+            data_effective_dof[group] = float(dof_eff)
+            rss = np.dot(whitened_residual, whitened_residual) / var_d[group]
             update_factors_d[group] = rss / dof_eff if sigma_update[i] else 1.0  # 固定sigma不更新
         # Smoothing variance components
         for i, group in enumerate(smooth_group_names):
-            faults = smooth_config[group]
-            L_group_rows = []
-            for fault in faults:
-                start_param, end_param = fault_ranges[fault]
-                fault_rows = _find_fault_constraints(L, start_param, end_param)
-                L_group_rows.extend(fault_rows)
+            L_group_rows = smooth_group_rows[group]
             if L_group_rows:
                 L_group = L[L_group_rows, :]
                 reg_res = L_group @ m
-                N_alpha_group = L_group.T @ L_group / var_alpha[group]
+                # Use the same immutable Gram block that contributed to the
+                # solved N_total.  This keeps the effective-DoF trace metric
+                # tied to the exact matrix used by the current VCE iteration.
+                N_alpha_group = (
+                    smooth_quadratic_blocks[group].gram / var_alpha[group]
+                )
                 dof_eff = len(reg_res) - np.trace(N_inv @ N_alpha_group)
                 if dof_eff <= 0:
                     dof_eff = len(reg_res) * 0.1
+                smooth_effective_dof[group] = float(dof_eff)
                 rss = reg_res.T @ reg_res / var_alpha[group]
                 update_factors_alpha[group] = rss / dof_eff if smooth_update[i] else 1.0
             else:
                 update_factors_alpha[group] = 1.0
-        # Check convergence
-        all_update_factors = [update_factors_d[g] for g in sigma_updatable] + [update_factors_alpha[g] for g in smooth_updatable]
-        update_factors = np.array(all_update_factors)
-        change = np.max(update_factors) - np.min(update_factors) if len(update_factors) > 0 else 0.0
+        # Check convergence.  When every effective component is updated, VCE
+        # has a common-scale freedom and only relative update factors are
+        # identifiable, so the historical spread criterion is retained.  A
+        # fixed effective component anchors the scale; then every updated
+        # factor must approach one.  In particular, one updated sigma against
+        # fixed alpha must not converge merely because its factor list has one
+        # element.
+        all_update_factors = [update_factors_d[g] for g in sigma_updatable]
+        all_update_factors.extend(
+            update_factors_alpha[g]
+            for g in smooth_updatable
+            if g in effective_smooth_groups
+        )
+        update_factors = np.asarray(all_update_factors, dtype=float)
+        if convergence_mode == 'relative':
+            change = (
+                np.max(update_factors) - np.min(update_factors)
+                if update_factors.size else 0.0
+            )
+        elif convergence_mode == 'anchored':
+            change = (
+                np.max(np.abs(update_factors - 1.0))
+                if update_factors.size else 0.0
+            )
+        else:
+            change = 0.0
         if verbose:
-            print(f"Iter {it+1}: Max difference between update factors = {change:.6f}")
+            print(
+                f"Iter {it+1}: convergence[{convergence_mode}] = "
+                f"{change:.6f}"
+            )
             for group, factor in update_factors_d.items():
                 print(f"  update_factor_d[{group}]: {factor:.6f}")
             for group, factor in update_factors_alpha.items():
                 print(f"  update_factor_alpha[{group}]: {factor:.6f}")
         if change < tol:
+            converged = True
             if verbose:
                 print(f"Converged after {it+1} iterations")
             break
@@ -314,63 +414,65 @@ def simplified_vce(
             if smooth_update[i]:
                 var_alpha[group] = var_alpha[group] * update_factors_alpha[group]
     
-    # Compute weights (regularization parameter ratios)
-    if sigma_only:
-        # No meaningful alpha — weights and var_alpha are placeholders
-        var_alpha_out = var_alpha
-        std_alpha_out = {k: np.sqrt(v) for k, v in var_alpha.items()}
-        weights_out = {}
-    else:
-        weights = {}
-        for d_group in var_d.keys():
-            weights[d_group] = {}
-            for alpha_group, alpha_var in var_alpha.items():
-                weights[d_group][alpha_group] = alpha_var / var_d[d_group]
-        # Simplify output for single smoothing case
-        if len(var_alpha) == 1:
-            var_alpha_out = list(var_alpha.values())[0]
-            std_alpha_out = np.sqrt(var_alpha_out)
-            weights_out = {group: var_alpha_out / var for group, var in var_d.items()}
-        else:
-            var_alpha_out = var_alpha
-            std_alpha_out = {k: np.sqrt(v) for k, v in var_alpha.items()}
-            weights_out = weights
+    # Final diagnostics reuse the already-whitened blocks. They do not enter
+    # the VCE update and therefore cannot change the estimated model or
+    # variance components. Effective dof is the last VCE linearization; it is
+    # exact for the converged state and explicitly reported as approximate.
+    component_diagnostics = {"data": {}, "smooth": {}}
+    for group, datasets in sigma_config.items():
+        weighted_quadratic = 0.0
+        for dataset in datasets:
+            WG_sub, Wd_sub = whitened_data[dataset]
+            residual = WG_sub @ m - Wd_sub
+            weighted_quadratic += (
+                float(np.dot(residual, residual))
+                / solved_sigma2_by_group[group]
+            )
+        dof = data_effective_dof.get(group)
+        component_diagnostics["data"][group] = {
+            "weighted_quadratic": weighted_quadratic,
+            "effective_dof": dof,
+            "reduced_weighted_misfit": (
+                None if dof is None else weighted_quadratic / dof
+            ),
+        }
 
-    # Print final results
-    if verbose:
-        print(f"\nFinal Results:")
-        for group, var in var_d.items():
-            print(f"  var_d[{group}] (σ^2): {var:.6f}")
-            print(f"  std_d[{group}] (σ): {np.sqrt(var):.6f}")
-        if sigma_only:
-            print("  var_alpha: N/A (sigma-only VCE, no smoothing)")
-        elif isinstance(var_alpha_out, dict):
-            for group, var in var_alpha_out.items():
-                print(f"  var_alpha[{group}] (σ^2): {var:.6f}")
-                print(f"  std_alpha[{group}] (σ): {np.sqrt(var):.6f}")
-        else:
-            print(f"  var_alpha (σ^2): {var_alpha_out:.6f}")
-            print(f"  std_alpha (σ): {np.sqrt(var_alpha_out):.6f}")
-        if not sigma_only:
-            print(f"\nWeights:")
-            if isinstance(weights_out, dict) and any(isinstance(v, dict) for v in weights_out.values()):
-                for d_group, weights_dict in weights_out.items():
-                    for alpha_group, weight in weights_dict.items():
-                        print(f"  weight[{d_group}][{alpha_group}]: {weight:.6f}")
-            else:
-                for group, weight in weights_out.items():
-                    print(f"  weight[{group}]: {weight:.6f}")
+    if not sigma_only:
+        for group, faults in smooth_config.items():
+            rows = smooth_group_rows[group]
+            weighted_quadratic = 0.0
+            if rows:
+                residual = L[rows, :] @ m
+                weighted_quadratic = (
+                    float(np.dot(residual, residual))
+                    / solved_alpha2_by_group[group]
+                )
+            dof = smooth_effective_dof.get(group)
+            component_diagnostics["smooth"][group] = {
+                "weighted_quadratic": weighted_quadratic,
+                "effective_dof": dof,
+                "reduced_weighted_misfit": (
+                    None if dof is None else weighted_quadratic / dof
+                ),
+            }
 
     return {
         'm': m,
-        'var_d': var_d,                    # Data variance components (σ^2)
-        'var_alpha': var_alpha_out,        # Smoothing variance components (σ^2)
-        'std_d': {k: np.sqrt(v) for k, v in var_d.items()},      # Data standard deviations
-        'std_alpha': std_alpha_out,        # Smoothing standard deviations
-        'weights': weights_out,            # Regularization weights
+        # ``solved_*`` is the only scale state scientifically associated with
+        # the returned model.  ``proposed_*`` records the update that would
+        # seed another iteration when the loop stops before convergence.
+        'solved_sigma2_by_group': solved_sigma2_by_group,
+        'solved_alpha2_by_group': solved_alpha2_by_group,
+        'proposed_sigma2_by_group': dict(var_d),
+        'proposed_alpha2_by_group': dict(var_alpha),
+        'sigma_groups': {key: list(value) for key, value in sigma_config.items()},
+        'smooth_groups': {key: list(value) for key, value in smooth_config.items()},
+        'component_diagnostics': component_diagnostics,
+        'convergence_mode': convergence_mode,
+        'convergence_measure': float(change),
         'fault_ranges': fault_ranges,      # Fault parameter ranges
         'sigma_only': sigma_only,          # True when no smoothing constraints
-        'converged': it < max_iter - 1,
+        'converged': converged,
         'iterations': it + 1
     }
 
@@ -385,92 +487,102 @@ def _find_fault_constraints(L, start_param, end_param):
     return constraint_rows
 
 
-def _setup_smooth_groups(fault_ranges, smooth_mode, smooth_groups):
-    """Setup smoothing grouping configuration."""
-    
-    faults = list(fault_ranges.keys())
-    
-    if smooth_mode == 'single':
-        return {'all': faults}
-    
-    elif smooth_mode == 'individual':
-        return {f'smooth_{fault}': [fault] for fault in faults}
-    
-    elif smooth_mode == 'grouped':
-        if smooth_groups is None:
-            raise ValueError("smooth_groups must be provided for 'grouped' mode")
-        
-        # Validate all faults are assigned
-        assigned = set()
-        for group, group_faults in smooth_groups.items():
-            for fault in group_faults:
-                if fault not in faults:
-                    raise ValueError(f"Fault '{fault}' not found in fault_ranges")
-                if fault in assigned:
-                    raise ValueError(f"Fault '{fault}' assigned to multiple groups")
-                assigned.add(fault)
-        
-        if assigned != set(faults):
-            unassigned = set(faults) - assigned
-            raise ValueError(f"Faults not assigned to any group: {unassigned}")
-        
-        return smooth_groups
-    
+def assemble_weighted_smoothing_matrix(
+    L,
+    fault_ranges,
+    smooth_groups,
+    solved_alpha2_by_group,
+):
+    """Recreate the smoothing rows used by one returned VCE model.
+
+    The VCE solver orders regularization rows by smoothing group and then by
+    fault membership.  Keeping that ordering here makes the published matrix
+    an exact representation of the objective associated with ``result['m']``;
+    it is not rebuilt later from mutable ``fault.GL`` attributes.
+    """
+    L = np.asarray(L, dtype=float)
+    if L.ndim != 2:
+        raise ValueError("L must be a two-dimensional smoothing matrix")
+    blocks = []
+    for group, faults in smooth_groups.items():
+        variance = float(solved_alpha2_by_group[group])
+        if not np.isfinite(variance) or variance <= 0.0:
+            raise ValueError(
+                f"Smoothing variance for group '{group}' must be positive"
+            )
+        rows = []
+        for fault in faults:
+            start_param, end_param = fault_ranges[fault]
+            rows.extend(_find_fault_constraints(L, start_param, end_param))
+        if rows:
+            blocks.append(L[rows, :] / np.sqrt(variance))
+    if blocks:
+        return np.vstack(blocks)
+    return np.zeros((0, L.shape[1]), dtype=float)
+
+
+def _setup_smooth_groups(
+    fault_ranges,
+    smooth_mode,
+    smooth_groups,
+    *,
+    smoothing_faults=None,
+):
+    """Set up alpha groups without changing the full model-column layout.
+
+    ``fault_ranges`` includes every source because its ranges index columns of
+    ``G`` and ``L``.  Alpha grouping is narrower: Pressure, Sbarbot, and future
+    non-Laplacian sources must remain in the model layout without being forced
+    into a smoothing group.
+    """
+
+    all_faults = list(fault_ranges)
+    if smoothing_faults is None:
+        faults = all_faults
     else:
-        raise ValueError(f"Unknown smooth_mode: {smooth_mode}")
+        faults = list(smoothing_faults)
+        if len(faults) != len(set(faults)):
+            raise ValueError("smoothing_faults contains duplicate source names")
+        unknown = set(faults) - set(all_faults)
+        if unknown:
+            raise ValueError(
+                "Smoothing sources not found in fault_ranges: "
+                + ", ".join(sorted(unknown))
+            )
+
+    if smooth_mode == 'grouped' and smooth_groups is not None:
+        unsupported = [
+            source
+            for members in smooth_groups.values()
+            for source in members
+            if source in all_faults and source not in faults
+        ]
+        if unsupported:
+            raise ValueError(
+                f"Source '{unsupported[0]}' does not support smoothing"
+            )
+
+    return resolve_group_layout(
+        faults,
+        smooth_mode,
+        smooth_groups,
+        member_label="smoothing source",
+        single_group_name="all",
+        individual_prefix="smooth_",
+    )["members_by_group"]
 
 
 def _setup_sigma_groups(data_ranges, sigma_mode, sigma_groups):
-    """Setup sigma grouping configuration."""
-    
-    datasets = list(data_ranges.keys())
-    
-    if sigma_mode == 'single':
-        return {'all': datasets}
-    
-    elif sigma_mode == 'individual':
-        return {f'group_{dataset}': [dataset] for dataset in datasets}
-    
-    elif sigma_mode == 'grouped':
-        if sigma_groups is None:
-            raise ValueError("sigma_groups must be provided for 'grouped' mode")
-        
-        # Validate all datasets are assigned
-        assigned = set()
-        for group, group_datasets in sigma_groups.items():
-            for dataset in group_datasets:
-                if dataset not in datasets:
-                    raise ValueError(f"Dataset '{dataset}' not found in data_ranges")
-                if dataset in assigned:
-                    raise ValueError(f"Dataset '{dataset}' assigned to multiple groups")
-                assigned.add(dataset)
-        
-        if assigned != set(datasets):
-            unassigned = set(datasets) - assigned
-            raise ValueError(f"Datasets not assigned to any group: {unassigned}")
-        
-        return sigma_groups
-    
-    else:
-        raise ValueError(f"Unknown sigma_mode: {sigma_mode}")
+    """Resolve the shared sigma grouping contract for VCE."""
 
-
-def block_diag(*arrays):
-    """Simple block diagonal matrix construction."""
-    if len(arrays) == 1:
-        return arrays[0]
-    
-    shapes = [a.shape for a in arrays]
-    out_shape = (sum(s[0] for s in shapes), sum(s[1] for s in shapes))
-    out = np.zeros(out_shape)
-    
-    r, c = 0, 0
-    for arr in arrays:
-        h, w = arr.shape
-        out[r:r+h, c:c+w] = arr
-        r, c = r + h, c + w
-    
-    return out
+    return resolve_group_layout(
+        list(data_ranges),
+        sigma_mode,
+        sigma_groups,
+        member_label="dataset",
+        single_group_name="all",
+        individual_prefix="group_",
+    )["members_by_group"]
 
 
 def test_multi_fault_vce():
@@ -542,10 +654,10 @@ def test_multi_fault_vce():
     d_noisy = d_clean + noise
     
     # Data covariance
-    Cd_inv = np.diag(np.concatenate([
-        np.full(100, 1/0.02**2),
-        np.full(100, 1/0.05**2),
-        np.full(100, 1/0.08**2)
+    Cd = np.diag(np.concatenate([
+        np.full(100, 0.02**2),
+        np.full(100, 0.05**2),
+        np.full(100, 0.08**2)
     ]))
     
     bounds = (-1.0, 1.0)
@@ -556,6 +668,7 @@ def test_multi_fault_vce():
         'insar2': (100, 200),
         'gps': (200, 300)
     }
+    data_metrics = prepare_block_covariance_metrics(Cd, data_ranges)
     
     print("Testing Multi-Fault VCE")
     print("=" * 40)
@@ -563,7 +676,7 @@ def test_multi_fault_vce():
     # Test 1: Single smoothing parameter for all faults
     print("\n1. Single smoothing parameter:")
     result1 = simplified_vce(
-        Cd_inv, d_noisy, G, L, bounds, 
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='single', 
@@ -573,7 +686,7 @@ def test_multi_fault_vce():
     # Test 2: Individual smoothing parameters for each fault
     print("\n2. Individual smoothing parameters:")
     result2 = simplified_vce(
-        Cd_inv, d_noisy, G, L, bounds,
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='individual',
@@ -587,7 +700,7 @@ def test_multi_fault_vce():
         'background_smooth': ['background', 'ramp']
     }
     result3 = simplified_vce(
-        Cd_inv, d_noisy, G, L, bounds,
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='grouped',

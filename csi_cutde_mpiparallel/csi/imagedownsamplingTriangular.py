@@ -8,7 +8,7 @@ import matplotlib as mpl
 import copy
 import sys
 import os
-from scipy.interpolate import griddata
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 import multiprocessing as mp
 from scipy.spatial import KDTree
 import matplotlib.path as mpath
@@ -23,6 +23,19 @@ from .opticorr import opticorr
 from .imagecovariance import imagecovariance as imcov
 from .csiutils import _split_seq
 from .imagedownsampling import imagedownsampling
+
+
+def _whiten_rows_from_diagonal_covariance(matrix, covariance_diagonal):
+    """Apply the existing diagonal-covariance whitener without dense matrices.
+
+    The operation order intentionally matches ``inv(cholesky(diag(c)).T)``:
+    first compute ``sqrt(c)``, then take its reciprocal.  Keeping that order
+    preserves the current floating-point result while avoiding three dense
+    ``N x N`` temporary matrices.
+    """
+    covariance_diagonal = np.asarray(covariance_diagonal, dtype=float)
+    row_scale = 1.0 / np.sqrt(covariance_diagonal)
+    return row_scale[:, None] * matrix
 
 
 class imagedownsamplingTriangular(imagedownsampling):
@@ -222,17 +235,31 @@ class imagedownsamplingTriangular(imagedownsampling):
         verbose : int, optional
             Verbosity level for Gmsh printing information, default is 0.
         """
-        from scipy.interpolate import griddata
-    
-        # Define the smooth width function
-        def hfun1(x, y, smoothwidths, X, Y):
-            points = np.column_stack((X, Y))
-            values = smoothwidths
-            h = griddata(points, values, (x, y), method='linear')
-            h_nearest = griddata(points, values, (x, y), method='nearest')
-            if np.isnan(h):
-                h = h_nearest
-            return h
+        mesh_size_points = np.column_stack((X, Y))
+
+        # These interpolators belong only to this remeshing stage.  X, Y and
+        # smoothwidths change after every downsampling iteration, so they must
+        # remain local and must never be reused by a later cutblocksbygmsh call.
+        # SciPy griddata(linear/nearest) constructs these same interpolators on
+        # every query; constructing each once preserves the size field while
+        # avoiding thousands of repeated Qhull/KD-tree builds.
+        linear_mesh_size = LinearNDInterpolator(
+            mesh_size_points,
+            smoothwidths,
+            fill_value=np.nan,
+            rescale=False,
+        )
+        nearest_mesh_size = NearestNDInterpolator(
+            mesh_size_points,
+            smoothwidths,
+            rescale=False,
+        )
+
+        def mesh_size_at(x, y):
+            size = linear_mesh_size((x, y))
+            if np.isnan(size):
+                size = nearest_mesh_size((x, y))
+            return float(size)
     
         # Initialize gmsh
         gmsh.initialize()
@@ -259,8 +286,7 @@ class imagedownsamplingTriangular(imagedownsampling):
     
         # Set mesh size function
         def mesh_size_callback(dim, tag, x, y, z, lc):
-            h = hfun1(x, y, smoothwidths, X, Y)
-            return float(h)
+            return mesh_size_at(x, y)
     
         gmsh.model.mesh.setSizeCallback(mesh_size_callback)
     
@@ -473,29 +499,32 @@ class imagedownsamplingTriangular(imagedownsampling):
             if self.vel_type == 'eastnorth':
                 Var = np.std(self.image.east) * np.std(self.image.north)
                 npaches = len(self.newimage.east) + len(self.newimage.north)
-                Cd = np.diag(Var * np.ones(npaches) / np.hstack((self.newimage.wgt, self.newimage.wgt)))
+                covariance_diagonal = Var * np.ones(npaches) / np.hstack(
+                    (self.newimage.wgt, self.newimage.wgt)
+                )
             elif self.vel_type == 'east':
                 Var = np.std(self.image.east) * np.std(self.image.east)
                 npaches = len(self.newimage.east)
-                Cd = np.diag(Var * np.ones(npaches) / self.newimage.wgt)
+                covariance_diagonal = Var * np.ones(npaches) / self.newimage.wgt
             elif self.vel_type == 'north':
                 Var = np.std(self.image.north) * np.std(self.image.north)
                 npaches = len(self.newimage.north)
-                Cd = np.diag(Var * np.ones(npaches) / self.newimage.wgt)
+                covariance_diagonal = Var * np.ones(npaches) / self.newimage.wgt
         if self.datatype == 'insar':
             Var = np.std(self.image.vel) * np.std(self.image.vel)
             npaches = len(self.newimage.vel)
-            Cd = np.diag(Var * np.ones(npaches) / self.newimage.wgt)
-        ch = np.linalg.cholesky(Cd)
-        Cdinv = np.linalg.inv(ch.T)
+            covariance_diagonal = Var * np.ones(npaches) / self.newimage.wgt
     
         # Ramp matrix
         Gramp = np.vstack([np.ones(npaches), x, y, x * y]).T
         nramp = 4
-    
+
         # Combine G and Gramp
-        G = np.dot(Cdinv, np.hstack([G, Gramp]))
-    
+        G = _whiten_rows_from_diagonal_covariance(
+            np.hstack([G, Gramp]),
+            covariance_diagonal,
+        )
+
         # Smoothing matrix
         smooth = smooth_factor * self.smooth
         smoothW = np.hstack([smooth, np.zeros((smooth.shape[0], nramp))])

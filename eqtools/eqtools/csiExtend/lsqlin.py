@@ -73,14 +73,20 @@ def numpy_to_cvxopt_matrix(A):
             return A
 
 def cvxopt_to_numpy_matrix(A):
+    """Convert CVXOPT/dense values without collapsing vectors to scalars.
+
+    CVXOPT represents a one-parameter solution as a ``(1, 1)`` matrix.  A
+    plain ``squeeze()`` turns that solution into a zero-dimensional array,
+    which no longer satisfies the linear-model vector contract used by the
+    BLSE, VCE, and Bayesian solvers.  Dense vector-shaped inputs therefore
+    remain at least one-dimensional; genuine two-dimensional matrices keep
+    their matrix shape.
+    """
     if A is None:
         return A
     if isinstance(A, spmatrix):
         return spmatrix_sparse_to_scipy(A)
-    elif isinstance(A, matrix):
-        return np.array(A).squeeze()
-    else:
-        return np.array(A).squeeze()
+    return np.atleast_1d(np.asarray(A).squeeze())
 
 
 def _as_vector(value, size=None, default=None):
@@ -346,6 +352,148 @@ def lsqlin_auto(C, d, reg=0, A=None, b=None, Aeq=None, beq=None,
     return robust
 
 
+def lsqlin_quadratic_auto(
+        H, q, residual_factory, reg=0, A=None, b=None, Aeq=None, beq=None,
+        lb=None, ub=None, x0=None, opts=None):
+    """Solve a prepared quadratic objective with a lazy residual fallback.
+
+    ``H`` and ``q`` define the same objective as an unmaterialized residual
+    system, ``H = C.T @ C`` and ``q = -C.T @ d``.  The callable
+    ``residual_factory`` is evaluated only when CVXOPT fails, preserving the
+    residual-form Clarabel fallback without paying its assembly cost during a
+    normal solve.
+    """
+    primary_error = None
+    primary = None
+    try:
+        primary = lsqlin_quadratic(
+            H, q, reg, A, b, Aeq, beq, lb, ub, x0, opts
+        )
+    except Exception as exc:
+        primary_error = exc
+    if primary is not None and str(primary.get('status', '')).lower() == 'optimal':
+        primary['solver'] = 'cvxopt_qp'
+        return primary
+
+    primary_status = (
+        f"exception {type(primary_error).__name__}: {primary_error}"
+        if primary_error is not None
+        else f"status {primary.get('status', 'unknown')!r}"
+    )
+    C, d = residual_factory()
+    robust = lsqlin_clarabel(
+        C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts
+    )
+    robust['fallback_reason'] = primary_status
+    if str(robust.get('status', '')).lower() not in {
+        'optimal', 'optimal_inaccurate'
+    }:
+        raise RuntimeError(
+            "Constrained least squares failed in both backends: "
+            f"CVXOPT {primary_status}; Clarabel status "
+            f"{robust.get('clarabel_status', robust.get('status'))!r}."
+        )
+    return robust
+
+
+def _solve_qp(H, q, A=None, b=None, Aeq=None, beq=None,
+              lb=None, ub=None, x0=None, opts=None):
+    """Send an already assembled quadratic objective to CVXOPT."""
+    sparse_case = sparse.issparse(A) or isinstance(A, spmatrix)
+    if isinstance(A, spmatrix):
+        A = spmatrix_sparse_to_scipy(A)
+
+    H = numpy_to_cvxopt_matrix(H)
+    q = numpy_to_cvxopt_matrix(q)
+    nvars = H.size[1]
+    if H.size[0] != nvars:
+        raise ValueError("H must be square")
+    if q.size == (1, nvars):
+        q = q.T
+    if q.size != (nvars, 1):
+        raise ValueError(f"q must contain {nvars} entries")
+
+    lb = cvxopt_to_numpy_matrix(lb)
+    ub = cvxopt_to_numpy_matrix(ub)
+    b = cvxopt_to_numpy_matrix(b)
+    if b is not None and b.size == 1:
+        b = np.array([b.item(0)])
+
+    if lb is not None:
+        if lb.size == 1:
+            lb = np.repeat(lb, nvars)
+        if sparse_case:
+            lb_A = -sparse.eye(nvars, nvars, format='coo')
+            A = sparse_None_vstack(A, lb_A)
+        else:
+            lb_A = -np.eye(nvars)
+            A = numpy_None_vstack(A, lb_A)
+        b = numpy_None_concatenate(b, -lb)
+    if ub is not None:
+        if ub.size == 1:
+            ub = np.repeat(ub, nvars)
+        if sparse_case:
+            ub_A = sparse.eye(nvars, nvars, format='coo')
+            A = sparse_None_vstack(A, ub_A)
+        else:
+            ub_A = np.eye(nvars)
+            A = numpy_None_vstack(A, ub_A)
+        b = numpy_None_concatenate(b, ub)
+
+    A = numpy_to_cvxopt_matrix(A)
+    Aeq = numpy_to_cvxopt_matrix(Aeq)
+    b = numpy_to_cvxopt_matrix(b)
+    beq = numpy_to_cvxopt_matrix(beq)
+
+    if opts is not None:
+        for key, value in opts.items():
+            solvers.options[key] = value
+    return solvers.qp(H, q, A, b, Aeq, beq, None, x0)
+
+
+def lsqlin_quadratic(H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
+                     lb=None, ub=None, x0=None, opts=None):
+    """Solve the exact quadratic form of a constrained least-squares problem.
+
+    The objective follows CVXOPT's convention,
+    ``0.5 * x.T @ H @ x + q.T @ x``.  ``reg`` preserves ``lsqlin`` semantics
+    by adding ``reg * I`` to ``H``.
+    """
+    if sparse.issparse(H):
+        H = H.copy()
+        nvars = H.shape[0]
+        if H.ndim != 2 or H.shape[1] != nvars:
+            raise ValueError("H must be square")
+        if reg > 0:
+            H = H + reg * sparse.eye(nvars, format=H.format)
+    elif isinstance(H, (matrix, spmatrix)):
+        nvars = H.size[0]
+        if H.size[1] != nvars:
+            raise ValueError("H must be square")
+        if reg > 0:
+            identity = (
+                spmatrix(1.0, range(nvars), range(nvars))
+                if isinstance(H, spmatrix)
+                else matrix(np.eye(nvars), (nvars, nvars), 'd')
+            )
+            H = H + reg * identity
+    else:
+        H = np.asarray(H, dtype=float)
+        if H.ndim != 2 or H.shape[0] != H.shape[1]:
+            raise ValueError("H must be a square two-dimensional matrix")
+        if not np.all(np.isfinite(H)):
+            raise ValueError("H must contain only finite values")
+        nvars = H.shape[0]
+        if reg > 0:
+            H = H + reg * np.eye(nvars)
+    q_array = np.asarray(cvxopt_to_numpy_matrix(q), dtype=float).reshape(-1)
+    if q_array.size != nvars or not np.all(np.isfinite(q_array)):
+        raise ValueError(f"q must contain {nvars} finite entries")
+    return _solve_qp(
+        H, q_array, A, b, Aeq, beq, lb, ub, x0, opts
+    )
+
+
 def lsqlin(C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \
         lb=None, ub=None, x0=None, opts=None):
     '''
@@ -373,72 +521,20 @@ def lsqlin(C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \
             lsqlin(C, d, 0.05, None, None, Aeq, beq) #Correct
             lsqlin(C, d, 0.05, [], [], Aeq, beq) #Wrong!
     '''
-    sparse_case = False
-    if sparse.issparse(A): #detects both np and cxopt sparse
-        sparse_case = True
-        #We need A to be scipy sparse, as I couldn't find how
-        #CVXOPT spmatrix can be vstacked
-        if isinstance(A, spmatrix):
-            A = spmatrix_sparse_to_scipy(A)
-
     C =   numpy_to_cvxopt_matrix(C)
     d =   numpy_to_cvxopt_matrix(d)
     Q = C.T * C
-    q = - d.T * C
+    q = - C.T * d
     nvars = C.size[1]
 
     if reg > 0:
-        if sparse_case:
+        if isinstance(Q, spmatrix):
             I = scipy_sparse_to_spmatrix(sparse.eye(nvars, nvars,\
                                         format='coo'))
         else:
             I = matrix(np.eye(nvars), (nvars, nvars), 'd')
         Q = Q + reg * I
-
-    lb = cvxopt_to_numpy_matrix(lb)
-    ub = cvxopt_to_numpy_matrix(ub)
-    b  = cvxopt_to_numpy_matrix(b)
-    #@ added by kfhe at 03/02/2023, avoid case where b to np.array(x)
-    if b is not None and b.size == 1:
-        b = np.array([b.item(0)])
-    #@-----------------------------------------------------------@
-
-    if lb is not None:  #Modify 'A' and 'b' to add lb inequalities
-        if lb.size == 1:
-            lb = np.repeat(lb, nvars)
-
-        if sparse_case:
-            lb_A = -sparse.eye(nvars, nvars, format='coo')
-            A = sparse_None_vstack(A, lb_A)
-        else:
-            lb_A = -np.eye(nvars)
-            A = numpy_None_vstack(A, lb_A)
-        b = numpy_None_concatenate(b, -lb)
-    if ub is not None:  #Modify 'A' and 'b' to add ub inequalities
-        if ub.size == 1:
-            ub = np.repeat(ub, nvars)
-        if sparse_case:
-            ub_A = sparse.eye(nvars, nvars, format='coo')
-            A = sparse_None_vstack(A, ub_A)
-        else:
-            ub_A = np.eye(nvars)
-            A = numpy_None_vstack(A, ub_A)
-        b = numpy_None_concatenate(b, ub)
-
-    #Convert data to CVXOPT format
-    A =   numpy_to_cvxopt_matrix(A)
-    Aeq = numpy_to_cvxopt_matrix(Aeq)
-    b =   numpy_to_cvxopt_matrix(b)
-    beq = numpy_to_cvxopt_matrix(beq)
-
-    #Set up options
-    if opts is not None:
-        for k, v in opts.items():
-            solvers.options[k] = v
-
-    #Run CVXOPT.SQP solver
-    sol = solvers.qp(Q, q.T, A, b, Aeq, beq, None, x0)
-    return sol
+    return _solve_qp(Q, q, A, b, Aeq, beq, lb, ub, x0, opts)
 
 def lsqnonneg(C, d, opts):
     '''

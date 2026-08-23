@@ -10,6 +10,7 @@
 - 已有标准 `.nc/.h5` 或 GeoTIFF：看 [独立 CLI](#独立-cli)。
 - 不确定什么会被修改：看 [状态与科学边界](#状态与科学边界)。
 - 不确定坐标或保存格式：看 [坐标协议](#坐标协议) 和 [输出协议](#输出协议)。
+- 已知经度、纬度、最近点或沿线距离，只需确定性裁剪/延长：改用 [断层迹线处理](fault_trace_processing.md)。
 
 ## 安装与职责
 
@@ -85,7 +86,8 @@ ecat-downsample -f CONFIG --edit-trace
 
 - `--edit-trace` 是检查模式，本次关闭 `-c/-d`，不自动继续协方差或降采样；
 - SAR 默认 component 为 `observation`，光学默认 `east`；
-- `fault_traces` 中启用且 `stages` 包含 `raw` 的项作为只读 reference；
+- `fault_traces` 中启用且 `stages` 包含 `raw` 的项作为只读 reference；多段文件按段展开，
+  可用 `segments` 选择显示段；
 - `--trace-output` 只设置 Save As 初值，不代表文件一定已经保存；
 - 不写回 YAML，不自动把输出替换为活动迹线；
 - `--sar-prefix` 可与 `--edit-trace` 一起用于 GAMMA 快捷读取，但不支持 `-c/-d`。
@@ -110,11 +112,15 @@ ecat-downsample -f CONFIG --edit-trace
 
 支持：
 
-- TXT/DAT/TRACE：每行至少前两列为 `lon lat`，`#` 为注释；
+- TXT/DAT/TRACE：每行至少含经纬度列，默认前两列为 `lon lat`，额外列忽略；
 - CSI/GMT 风格分段文本：`>` 开始新线段；
 - GeoJSON：`LineString` 或 `MultiLineString`，也可放在 `FeatureCollection` 中。
 
-每条 reference 在模型中不可变。`Copy reference as working` 创建坐标副本，随后编辑不会改变参考数组或源文件。
+GMT/OGR 文件可保留 `#` 元数据头和可选第三列，例如 `lon lat z`；二维迹线只读取配置指定的
+经纬度列。通过降采样配置进入时，省略 `segments` 会把所有段分别列为 reference；写
+`segments: [0, 2]` 可只加载零基索引 0 和 2。独立 CLI 的每个 `--trace` 文件同样按段展开。
+
+每条 reference 在模型中不可变。`Copy reference as working` 创建所选段的坐标副本，随后编辑不会改变参考数组或源文件。
 
 ## 交互与快捷键
 
@@ -199,7 +205,8 @@ working 坐标快照，不复制观测网格。结构化二维背景按当前视
   安装 `.[interaction]`；非结构化输入仍可回退为点显示，但结构化连续图需要受测版本。
 - “Set both --vmin and --vmax”：同时提供上下限，或两者都省略。
 - 输出已存在：更换 Save As 文件名；确认确需替换时再显式允许覆盖。
-- reference 不显示：检查文件至少有两个有限 `lon lat` 节点；降采样交接还要检查 `enabled` 和 `stages: [raw]`。
+- reference 不显示：检查每个所选段至少有两个有限经纬度节点；降采样交接还要检查
+  `enabled`、`stages: [raw]` 和零基 `segments` 是否在范围内。
 - 端口占用：独立 CLI 用 `--port` 更换端口；降采样交接关闭占用 `5006` 的旧编辑器后重试。
 
 相关页面：

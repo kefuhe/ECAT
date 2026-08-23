@@ -116,7 +116,7 @@ eqtools 在这里承担流程编排：读入、单位/符号转换、过滤、�
 | `processing_region` | SAR 或 optical 的协方差和正式降采样处理区域 | `enabled/coord_type/geometry` |
 | `covar` | 协方差估计设置 | `mask_out/function/frac/every/distmax` |
 | `downsample` | 降采样方法、计算后端和参数 | `compute`, `std`, `data`, `trirb`, `from_rsp` |
-| `fault_traces` | raw/decim 检查图叠加；`--edit-trace` 时 raw-stage 项作为只读参考 | lon/lat 文本文件 |
+| `fault_traces` | raw/decim 检查图叠加；`--edit-trace` 时 raw-stage 项作为只读参考 | TXT/DAT/GMT 或 GeoJSON 折线 |
 | `fault_models` | 可选断层模型，用于 `trirb` 计算或 GMT 网格叠加 | `generated_from_trace`, `csi_gmt` |
 
 `config_version` 用于固定当前 YAML 语义。当前版本为 `1`；已有旧配置未写该字段时会按 `1` 归一化。运行时写出的 `<outputName>_run_metadata.yml` 会记录 `config_version` 和 `compatibility.deprecated_fields`，方便后续判断案例是否仍依赖旧字段。
@@ -613,10 +613,7 @@ observation_correction:
   coefficient_mode: estimate
   fit:
     coord_type: lonlat
-    regions:
-      - kind: circle
-        center: [100.0, 20.0]
-        radius_km: 20.0
+    regions: []
     exclude_regions: []
 
 export:
@@ -640,6 +637,10 @@ export:
 
 `phase_cycle_correction` 不出现在默认模板；完整配置见下方链接。
 `observation_correction` 只支持 `offset/plane` 和 `estimate/fixed`。
+生成模板保持 `enabled: false` 且不填虚构参考坐标。`offset + estimate` 必须在
+`fit.regions` 中填写稳定零参考区；`plane + estimate` 的空 `regions` 表示使用全部有效
+观测，通常再用 `exclude_regions` 排除形变或噪声 box。命令行 `-c` 只请求协方差估计，
+不会自动启用观测改正，也不会复用 `covar.mask_out`。
 `export.observation_grid` 当前只支持规范化的 CF-NetCDF；具有可靠 affine/CRS
 的 TIFF reader 可自动附加同网格 GeoTIFF。导出不插值、不重投影，也不把二维
 经纬度压成一维轴。显式文件可使用 `.nc/.h5/.hdf5`；HDF5 扩展名要求
@@ -733,6 +734,9 @@ check_plots:
     vmax:
     symmetry: true
     cmap: cmc.roma_r
+    contours:
+      enabled: false      # 仅 structured raw 2-D 网格；默认关闭
+      levels: auto        # auto | 等值线条数 | 显式显示单位数值列表
     axis_tick_direction: out
     colorbar_orientation: auto
     colorbar_pad:
@@ -790,6 +794,7 @@ check_plots:
 | `vmin/vmax` | 显式色标范围；optical 支持 `[east, north]` |
 | `auto_percentile` | 不写 `vmin/vmax` 时的稳健中心百分比；空值继承对应 `qc.summary_percentile` |
 | `symmetry` | 自动色标是否关于 0 对称 |
+| `contours` | 仅 raw structured 2-D 网格的等值线诊断层；不修改数据、不用于 decim |
 | `cell_style` | decim 图绘制 cell polygon 或采样中心点 |
 | `axis_tick_direction` | 主图经纬度坐标轴刻度线方向，`out`、`in` 或 `inout`；默认 `out`，避免刻度线被形变图遮住 |
 | `axis_max_major_ticks` | 主图每个坐标轴最多显示的主刻度数量；默认 `5`，设为空则交给 Matplotlib/viztools 自动决定 |
@@ -811,6 +816,50 @@ check_plots:
 `0–360°` 的降采样结果；数据和输出坐标不被改写。
 
 当 `vmin/vmax` 为空时，程序使用中心百分位的稳健范围计算色标；`symmetry: true` 时取正负对称范围。命令行 `--vmin/--vmax` 仍会覆盖当前图的上下限。optical raw 和 decim 默认都在一张图中用两列显示 east/north，各分量有独立 colorbar，避免 east/north 色标范围互相遮蔽；默认 `colorbar_orientation: auto` 会为这种双列图使用横向色标，减少分量标签与另一列地图互相遮挡。主图和 colorbar 默认只显示受 `*_max_major_ticks` 限制的主刻度，次刻度默认关闭；如果论文图需要更细读数，再显式启用 `axis_minor_ticks` 或 `colorbar_minor_ticks`。
+
+### Raw 等值线诊断层
+
+`check_plots.raw.contours` 在同一幅彩色 raw quick-look 上叠加等值线，适合辅助辨认闭合形变瓣、
+空间梯度和相干结构。它消费的正是当前 raw 图已经完成观测转换、改正、有效像元屏蔽、
+`plot_stride` 和 `factor4plot` 后的二维显示数据，不会写回观测，也不会进入协方差或降采样。
+
+最短配置：
+
+```yaml
+check_plots:
+  raw:
+    contours:
+      enabled: true
+      levels: auto
+```
+
+`levels` 的含义：
+
+- `auto`：在当前 `coordrange` 内按 `auto_percentile` 和 `symmetry` 的稳健数据范围生成 7 条内部等值线；
+- 正整数，例如 `9`：按同一稳健数据范围生成指定数量的等值线；
+- 递增列表，例如 `[-5, -2, 0, 2, 5]`：使用显式等值线值，单位是 `factor4plot` 后的显示单位。
+
+自动等值线范围不读取显式 `vmin/vmax`，因此即使用户为彩色背景设置了较窄色标，等值线仍可
+提供独立的稳健结构提示。需要在最终图中显示数值或调整样式时使用：
+
+```yaml
+check_plots:
+  raw:
+    contours:
+      enabled: true
+      levels: [-5, -2, 0, 2, 5]
+      labels: true
+      color: "0.20"
+      linewidth: 0.5
+      alpha: 0.8
+```
+
+SAR 等值线表示当前 `value_space` 下的标量观测；默认是转换后的 observation，不是三维位移。
+optical east/north 双列图分别从各自分量生成自动 levels；显式列表则共同用于所选分量。
+等值线与彩色背景使用同一个 `plot_stride`，不会另行平滑或插值。输入不是至少 `2 x 2` 的
+structured 二维网格时会明确报错；不支持给散点或 decim cells 人为插值出连续等值线。
+破碎或密集的线条可能来自真实梯度，也可能来自噪声、无效区或解缠问题，需要结合原图和
+数据质量诊断判断。
 
 典型起步值：SAR 单图用 `figsize: single`，需要更高的经纬度图幅时试 `[4, 5]`；optical east/north 双列图用 `figsize: double`，高瘦图幅或横向 colorbar 较拥挤时试 `[7, 5]` 或 `[8, 5]`。`single/double/full` 会由 viztools 转成出版列宽和默认高宽比；显式 `[width, height]` 的单位是 inch，适合最终微调。`fontsize/tickfontsize/labelfontsize` 留空时，程序按最终 `figsize` 宽度自动给字号：`single` 及以下约 6 pt，`double` 及以上约 10 pt，中间线性过渡。正式论文图如果要求统一字号，可显式写定这些字段。
 
@@ -854,6 +903,18 @@ metadata 的 `_runtime.resolved_covariance_mask_out` 中。
 运行 `ecat-downsample -c` 时，eqtools 先按当前配置读入数据、执行 `data_filters`，再在 `processing_region` 内构造轻量 CSI 处理对象。之后程序创建 CSI `imagecovariance`，用 `mask_out` 排除主形变源区，并在剩余背景点上按 `frac/every/distmax/rampEst/function` 拟合经验协方差模型。SAR 写 `Covariance_estimator.cov`；optical offset 分别写 `Covariance_estimator_East.cov` 和 `Covariance_estimator_North.cov`。
 
 `Covariance_estimator*.cov` 是协方差估计器文件，不是最终反演矩阵。运行 `-d` 时，若当前目录存在对应估计器，eqtools 会把降采样后的 CSI 对象交给 CSI `buildCovarianceMatrix()`，写出 `<effective_outName>_ifg.cov`。若没有估计器，则按 `missing_policy` 读取已有矩阵、写单位阵或报错。
+
+CSI 当前 `imagecovariance` 最终矩阵采用相关项
+
+\[
+C_{ij}=\sigma^2\exp(-d_{ij}/\lambda)
+\]
+
+（`gauss` 使用对应高斯距离函数），没有额外的显式 nugget
+\(\tau^2\delta_{ij}\)。拟合器输出中的 `Sill` 用于经验曲线处理，但
+`buildCovarianceMatrix()` 只把拟合的 `Sigma`、`Lambda` 和函数类型传给矩阵构造。因此，长
+相关长度且采样点间距较小时，矩阵可能高度相关；应结合 Cholesky、条件数、白化残差和不同
+协方差假设的敏感性判断，而不能把 `Sill` 当作已经加入对角线的 nugget。
 
 对于 SAR，`.cov` 是单标量观测的矩阵；对于 optical offset，East 和 North 会分别估计，并在最终输出中组成分量块矩阵，当前配置不引入 East-North 交叉协方差。CSI 的抽样包含随机抽样步骤，重复运行 `-c` 可能有小差异；正式案例应把 `Covariance_estimator*.cov` 和 YAML 一起保留。
 
@@ -1065,8 +1126,13 @@ full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` �
 
 | 字段 | 作用 | 是否参与降采样计算 |
 | --- | --- | --- |
-| `fault_traces` | 读取 lon/lat 文本迹线，叠加到 `-s` raw quick-look 或 `-d` decim 检查图 | 否 |
+| `fault_traces` | 读取单段或多段 lon/lat 折线，叠加到 `-s` raw quick-look 或 `-d` decim 检查图 | 否 |
 | `fault_models` | 读取或生成 CSI 断层模型；可用于 `trirb`，也可把 patch edges 叠加到检查图 | 仅当 `use_for` 包含当前方法时 |
+
+`use_for` 是显式的计算角色列表，不由 `enabled` 或 `plot.stages` 推断。生成
+`--downsample-method trirb` 模板时，三角模型示例预设为 `use_for: [trirb]`；其他方法的
+模板保持 `use_for: []`。所有示例默认仍是 `enabled: false`，因此预设角色本身不会触发
+模型读取或计算。
 
 两类条目都使用列表形式。`type` 表示模型从哪里来，`geometry` 表示 patch 形状，
 两者不是同一个维度：
@@ -1082,7 +1148,7 @@ full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` �
 fault_traces:
   - enabled: true
     id: surface_trace
-    file: Fault_Trace_Menyuan.txt
+    file: Fault_Trace_Menyuan.gmt
     stages: [raw, decim]   # raw | decim | all
     marker: null           # null=只画线；改为 "x" 可标出输入迹线点
     markersize: 3.0        # marker 非 null 时生效，单位 pt
@@ -1093,13 +1159,31 @@ fault_traces:
 `markersize` 只控制符号大小，不参与读取、断层构建或降采样计算，也不会作用到
 `fault_models` 的 patch edges。
 
-`fault_traces.file` 是至少两列的文本文件，默认按 `lon lat` 读取。若列名或分隔符不同，可加：
+`fault_traces.file` 支持以下轻量折线输入：
+
+- TXT/DAT/TRACE：每个数据行至少含经度和纬度两列；
+- GMT/OGR 风格文本：`>` 开始新段，`#` 元数据行和注释忽略；
+- GeoJSON：`LineString`、`MultiLineString`、Feature 或 FeatureCollection。
+
+文本默认取前两列作为 `lon lat`。第三列及后续列可以存在，也可以逐行缺省；二维地表迹线只消费
+经纬度列，其余列明确忽略，不会把 `lon lat z` 错读成 `lat z`。若列顺序、分隔符或注释符不同，
+可加：
 
 ```yaml
-columns: [lon, lat]
+columns: [lat, lon, z]   # 本例表示第 1 列 lat、第 2 列 lon；z 不参与二维迹线
 sep: "\\s+"
 comment: "#"
 ```
+
+显示语义默认最省配置：单段照常显示；多段文件的每个 `>` 段分别成为一条 overlay/reference，
+不会跨段连线。显式 `id: surface_trace` 的多段显示标识依次为 `surface_trace.1`、
+`surface_trace.2` 等。只想显示部分段时使用零基索引：
+
+```yaml
+segments: [0, 2]   # 也可写一个整数；省略或写 all 表示全部段
+```
+
+`segments` 只属于 `fault_traces` 的显示选择，不裁剪、不重排源文件，也不参与降采样计算。
 
 从迹线生成三角断层模型，供 `trirb` 使用：
 
@@ -1110,6 +1194,7 @@ fault_models:
     type: generated_from_trace
     geometry: triangular
     trace_file: Fault_Trace_Menyuan.txt
+    # segment: 0             # 多段 GMT/GeoJSON 时必填；零基索引
     dip_angle: 82
     dip_direction: 194
     top_size: 2.0
@@ -1121,6 +1206,10 @@ fault_models:
       stages: [decim]
       mode: edges
 ```
+
+`generated_from_trace` 必须得到一条连续迹线：单段文件无需 `segment`；多段输入必须显式写
+`segment: INDEX`，否则在构建模型前报错，不会把不连续的多段静默拼接。这里使用单数
+`segment`，与显示入口可选择多段的 `segments` 有意区分。
 
 读取已有 CSI GMT patch 网格，只支持必要的 `csi_gmt` 格式：
 
@@ -1134,7 +1223,7 @@ fault_models:
     readpatchindex: true     # 段头含 3 个拓扑索引
     donotreadslip: true      # 只读几何并忽略滑动量
     gmtslip: true            # 仅 triangular；段头含 -Z... 时为 true
-    use_for: []             # 若要用于 trirb，设为 [trirb]
+    use_for: [trirb]        # 参与 TriRB；仅绘图时改为 []
     plot:
       stages: [raw, decim]
       mode: edges           # edges | trace | both
@@ -1150,8 +1239,8 @@ CSI GMT 读取字段必须与文件段头一致：
 | `increasingy` | 希望 CSI 按递增 y 方向整理矩形 patch 角点 | 仅矩形 CSI GMT；默认 `true` |
 
 三角 GMT 没有 `-Z...` 时写 `gmtslip: false`；没有三个拓扑索引时写
-`readpatchindex: false`。矩形模型不参与 `trirb`，应写 `use_for: []`，但仍可通过
-`plot.stages` 叠加到 raw/decim 检查图。
+`readpatchindex: false`。只想叠加三角模型而不参与计算时写 `use_for: []`；矩形模型不参与
+`trirb`，也必须保持 `use_for: []`，但两者仍可通过 `plot.stages` 叠加到 raw/decim 检查图。
 
 多断层或混合来源不需要额外的 `group`/`role` 层。将条目依次放入同一个列表：
 
@@ -1207,10 +1296,14 @@ downsampler；底层构造 `G_total = [G_1 G_2 ...]`，并以
 
 - `std`、`data`、`from_rsp` 不需要断层模型；入门两步走建议先用这些方法跑通。
 - `trirb` 必须至少启用一个 `geometry: triangular` 且 `use_for: [trirb]` 的 `fault_models` 条目。
-- `fault_traces` 只用于绘图，不会自动生成 `trirb` 所需模型；`marker` 只标记文本迹线的输入节点。
+- 实际请求降采样时，TriRB 角色检查发生在读取观测数据之前；若已有启用的三角模型但
+  `use_for` 为空，错误会列出相应模型 ID，并提示补充 `use_for: [trirb]`。
+- `fault_traces` 只用于绘图，不会自动生成 `trirb` 所需模型；`marker` 只标记所选迹线段的输入节点。
 - `fault_models.plot: true` 表示 raw 和 decim 两类检查图都叠加；若要精确控制，用 `plot.stages`。
 - `fault_traces` 的绘图阶段直接写在 `stages`；`fault_models` 必须写在 `plot.stages`。配置校验会拒绝放错层级的字段。
 - 同一 `fault_traces` 或 `fault_models` 列表中的显式 `id` 必须唯一，便于报告、绘图和排错。
+- 普通多段 GMT/OGR 折线属于 `fault_traces` 或 `generated_from_trace.trace_file`；CSI patch GMT 属于
+  `fault_models.type: csi_gmt`。两者虽然都使用 `>`，几何语义和 reader 不同，不互相猜测。
 - `csi_gmt` 只作为已构建 CSI patch 网格的轻量入口；不在降采样配置里扩展更多网格格式，避免维护和理解负担。
 
 ## 输出文件

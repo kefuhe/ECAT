@@ -28,11 +28,15 @@ python -m pip install -e ".[interaction]"
 fault_traces:
   - enabled: true
     id: published_trace
-    file: published_trace.txt
+    file: published_trace.gmt
     stages: [raw, decim]
-    marker:
-      enabled: false
+    # segments: [0, 2]   # 可选；省略时显示全部 GMT 段
+    marker: null
 ```
+
+两列 TXT 可继续直接使用。GMT/OGR 文件中的 `>` 段会分别成为 reference，不会被连成一条线；
+`#` 元数据和经纬度后的可选第三列会被安全忽略。通常先省略 `segments` 查看全部段，再按需要
+用零基索引筛选。进入编辑器后选择目标 reference 并复制为 working trace，一次只编辑一个段。
 
 运行：
 

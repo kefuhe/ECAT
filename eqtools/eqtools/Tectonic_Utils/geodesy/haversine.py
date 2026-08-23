@@ -5,6 +5,7 @@ Haversine formula example in Python. Original author Wayne Dyck.
 import numpy as np 
 import math
 
+
 def distance(origin, destination):
     """
     Computes the distance between origin [lat1, lon1] and destination [lat2, lon2].
@@ -31,9 +32,11 @@ def distance(origin, destination):
 
 
 def calculate_initial_compass_bearing(pointA, pointB):
-    """
+    r"""
     Calculate the bearing between two points.
-    By the formula theta = atan2(sin(delta_long).cos(lat2),cos(lat1).sin(lat2) - sin(lat1).cos(lat2).cos(\\delta_long)).
+    By the formula
+
+    .. math::   \theta = atan2(\sin(\Delta_{long})*\cos(lat_2), \cos(lat_1)*\sin(lat_2) - \sin(lat_1)*\cos(lat_2)*\cos(\Delta_{long})).
 
     :param pointA: Tuple representing (latitude, longitude) of first point, in decimal degrees
     :type pointA: array_like
@@ -42,7 +45,7 @@ def calculate_initial_compass_bearing(pointA, pointB):
     :return: bearing, in degrees CW from north
     :rtype: float
     """
-    if (type(pointA) != tuple) or (type(pointB) != tuple):
+    if ~isinstance(pointA, tuple) or ~isinstance(pointB, tuple):
         raise TypeError("Only tuples are supported as arguments")
 
     lat1 = math.radians(pointA[0])
@@ -62,6 +65,7 @@ def calculate_initial_compass_bearing(pointA, pointB):
     compass_bearing = (initial_bearing + 360) % 360
 
     return compass_bearing
+
 
 def calculate_endpoint_given_bearing(origin, bearing, angular_distance_degrees):
     """

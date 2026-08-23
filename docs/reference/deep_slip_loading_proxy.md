@@ -70,7 +70,7 @@ deep-slip loading proxy 当前通过脚本 API 配置，不是 `interseismic_con
 
 ```python
 inversion.run(...)
-inversion.returnModel(print_stat=False)
+inversion.returnModel(print_fit_statistics=False)
 
 result = inversion.calculate_deep_slip_loading_fields(
     shallow_fault="ShallowFault",

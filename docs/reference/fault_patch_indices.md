@@ -165,6 +165,8 @@ selector:
 ```
 
 所有 marker 都会先解析成 fault trace 上的真实点，再按 along-trace 区间选择 patch。
+marker 的投影、多个交点、跨日界线和最近点距离阈值与迹线预处理共用同一实现；完整语义见
+[断层迹线处理参考](fault_trace_processing.md#marker-contract)。
 
 #### 9. 沿 Trace 选段：低层/兼容写法
 

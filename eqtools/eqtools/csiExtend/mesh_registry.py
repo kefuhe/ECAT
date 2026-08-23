@@ -38,6 +38,18 @@ def get_bayesian_forbidden(method_name):
     return meta.get('bayesian_forbidden', {})
 
 
+def get_bayesian_replay_contract(method_name):
+    """Return the sampling-time state contract for a mesh method, if any.
+
+    The contract is descriptive metadata used by Bayesian preflight.  It does
+    not execute a mesh method or change its ordinary interactive behaviour.
+    """
+    meta = _MESH_METHODS.get(method_name)
+    if meta is None:
+        return None
+    return meta.get('bayesian_replay')
+
+
 def is_registered(method_name):
     return method_name in _MESH_METHODS
 
@@ -56,6 +68,16 @@ register('generate_and_deform_mesh', {
         'remap': True,
         'use_current_mesh': True,
         'bottom_norm_offset': 'not_none',
+    },
+    # Bayesian proposals must reuse the mapping prepared before target
+    # construction.  These parameters define the structured grid interpreted
+    # by the stored per-vertex parametric coordinates and therefore must stay
+    # consistent during fixed-topology replay.
+    'bayesian_replay': {
+        'state': 'prepared_parametric_mapping',
+        'mapping_parameter_keys': [
+            'num_segments', 'disct_z', 'bias', 'min_dz', 'projection',
+        ],
     },
 })
 

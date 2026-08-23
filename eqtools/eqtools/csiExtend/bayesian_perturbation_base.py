@@ -1,3 +1,24 @@
+"""Reference, registry, and cache-validity support for geometry perturbations.
+
+This module contains the infrastructure shared by all perturbation mixins:
+
+``GeometryReference``
+    Immutable zero-perturbation geometry read by every Bayesian candidate.
+``track_mesh_update``
+    Registers method contracts and records which already-materialized mesh
+    products remain valid after the method returns.
+``PerturbationBase``
+    Resolves registered methods, validates reference requirements, and exposes
+    the help/config metadata used by the inversion layer.
+``SharedFaultInfo``
+    Optional same-process storage shared by master/follower fault objects.
+
+The validity fields are postconditions, not requests to perform work.  For
+example, ``laplacian_valid=True`` means an existing Laplacian may be reused; it
+does not mean the decorator built one.  Actual recomputation remains the
+responsibility of the inversion update sequence.
+"""
+
 import copy
 import functools
 import inspect
@@ -257,30 +278,82 @@ class PerturbationRegistry:
 # =============================================================================
 def track_mesh_update(update_mesh=False, update_laplacian=False, update_area=False,
                       description="", params_info=None, expected_perturbations_count=None,
-                      bayesian_forbidden=None):
+                      bayesian_forbidden=None, reference_requirements=None,
+                      perturbation_cardinality=None, perturbation_items=None,
+                      baseline_source=None, mesh_replay_method=None):
     """
-    Decorator: Tracks the update state of the mesh/laplacian while recording
+    Decorator: Tracks whether mesh-derived values remain valid while recording
     documentation information for the registry.
 
     Args:
-        update_mesh (bool): If True, sets self.mesh_updated = True after execution.
-        update_laplacian (bool): If True, sets self.laplacian_updated = True.
-        update_area (bool): If True, sets self.area_updated = True.
+        update_mesh (bool): The method materializes a mesh for the new geometry.
+        update_laplacian (bool): A pre-existing Laplacian remains valid after
+            the method (for example, after a rigid transform).
+        update_area (bool): Pre-existing patch areas remain valid after the
+            method (for example, after a rigid transform).
         description (str): A brief description of what the perturbation does.
         params_info (dict/str): Information about expected parameters.
         expected_perturbations_count (int, optional): Validates the length of the 'perturbations' array.
         bayesian_forbidden (dict, optional): Parameters forbidden in Bayesian mode.
             Keys are parameter names, values are rules: True (exact match),
             'not_none', or 'truthy'.
+        reference_requirements (dict, optional): Structured fields/predicates
+            required before this perturbation can run.  A whole-mesh consumer
+            declares ``mesh_pair=True`` instead of treating all references as
+            if they required vertices and faces.
+        perturbation_cardinality (dict, optional): Structured dynamic length
+            contract.  Fixed-length methods normally continue to use
+            ``expected_perturbations_count``; dynamic methods use kinds such as
+            ``scalar_or_movable_nodes`` or ``scalar_or_dip_controls``.
+        perturbation_items (tuple, optional): Serializable role/unit metadata
+            for fixed-position perturbation values.
+        baseline_source (str, optional): Source of the unperturbed geometry,
+            normally ``'geometry_ref'``.  This is descriptive metadata and does
+            not change execution.
+        mesh_replay_method (str, optional): Registered mesh method used
+            internally by this perturbation.  Bayesian preflight uses the mesh
+            method's replay contract to validate prepared state once before
+            target construction; it is not executed by the registry.
     """
     def decorator(func):
         # Mount metadata for the Metaclass/Registry to read
+        if expected_perturbations_count is not None and perturbation_cardinality is not None:
+            raise TypeError(
+                "Use expected_perturbations_count for an exact contract or "
+                "perturbation_cardinality for a dynamic contract, not both."
+            )
+
+        cardinality = perturbation_cardinality
+        if expected_perturbations_count is not None:
+            cardinality = {
+                "kind": "exact",
+                "count": int(expected_perturbations_count),
+            }
+
         func._bayesian_meta = {
             "description": description,
             "params": params_info,
-            "flags": {"mesh": update_mesh, "lap": update_laplacian},
+            "flags": {
+                "mesh": update_mesh,
+                "lap": update_laplacian,
+                "area": update_area,
+            },
             "forbidden": bayesian_forbidden or {},
         }
+        if mesh_replay_method is not None:
+            func._bayesian_meta["mesh_replay_method"] = str(mesh_replay_method)
+        if any(value is not None for value in (
+                reference_requirements, cardinality,
+                perturbation_items, baseline_source)):
+            func._bayesian_meta.update({
+                "schema_version": 1,
+                "baseline_source": baseline_source or "geometry_ref",
+                "reference_requirements": reference_requirements or {},
+                "parameter_spec": {
+                    "items": tuple(perturbation_items or ()),
+                    "cardinality": cardinality,
+                },
+            })
         
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
@@ -292,18 +365,30 @@ def track_mesh_update(update_mesh=False, update_laplacian=False, update_area=Fal
             if expected_perturbations_count is not None and len(perturbations) != expected_perturbations_count:
                 raise ValueError(f"Method '{func.__name__}': Expected {expected_perturbations_count} elements in 'perturbations', but got {len(perturbations)}.")
 
-            # Reset flags before execution
-            self.mesh_updated = False
-            self.laplacian_updated = False
-            self.area_updated = False
+            # These are validity postconditions, not "work was performed"
+            # flags.  Cache presence is captured before the method because a
+            # rigid transform may preserve an existing value, but cannot make
+            # a missing value valid.
+            laplacian_was_valid = self._has_laplacian_cache()
+            area_was_valid = self._has_area_cache()
+            self.mesh_valid = False
+            self.laplacian_valid = False
+            self.area_valid = False
             
             # Execute the actual perturbation function
             result = func(self, *args, **kwargs)
             
-            # Update flags based on decorator arguments
-            if update_mesh: self.mesh_updated = True
-            if update_laplacian: self.laplacian_updated = True
-            if update_area: self.area_updated = True
+            # Static decorator declarations and runtime classification share
+            # one set of validity fields.  A method may set a field itself
+            # when validity depends on its actual displacement pattern.
+            if update_mesh:
+                self.mesh_valid = self._has_materialized_mesh()
+            if update_laplacian:
+                self.laplacian_valid = (
+                    laplacian_was_valid and self._has_laplacian_cache()
+                )
+            if update_area:
+                self.area_valid = area_was_valid and self._has_area_cache()
             
             return result
         
@@ -391,11 +476,17 @@ class PerturbationBase:
                 cls.perturbation_methods[key] = value
 
     def __init__(self):
-        self.geometry_updated = False
-        self.mesh_updated = False
-        self.laplacian_updated = False
-        self.area_updated = False
+        self.mesh_valid = False
+        self.laplacian_valid = False
+        self.area_valid = False
         self.geometry_ref = None
+        # One-entry validation memo for whole-mesh references.  CSI's
+        # fixed-topology update path replaces Vertices but deliberately keeps
+        # the Faces object, so a reference/current connectivity comparison is
+        # needed only once per frozen reference and Faces publication.  This
+        # is not a mesh revision and does not attempt to support external
+        # in-place writes to Faces.
+        self._mesh_reference_validation_key = None
         self._last_mesh_params = None
         self._last_mesh_raw_call = None
 
@@ -419,22 +510,136 @@ class PerturbationBase:
                 )
 
     def _ensure_vertices_ref(self):
-        """Lazily capture current Vertices into the geometry_ref if missing."""
+        """Return a complete frozen mesh pair, capturing it only as a pair.
+
+        This compatibility helper may lazily attach the current mesh when the
+        reference contains neither vertices nor faces.  A half reference is an
+        error: silently combining frozen vertices with current faces would make
+        face rows and patch/slip/GF indexing depend on mutation history.
+        """
         self._require_geometry_ref()
-        if self.geometry_ref.vertices is None:
-            if not hasattr(self, 'Vertices') or self.Vertices is None:
+        ref_vertices = self.geometry_ref.vertices
+        ref_faces = self.geometry_ref.faces
+        if (ref_vertices is None) != (ref_faces is None):
+            raise ValueError(
+                "geometry_ref contains an incomplete mesh reference: vertices "
+                "and faces must be captured together for whole-mesh "
+                "perturbations. Rebuild the mesh and call snapshot() again."
+            )
+        if ref_vertices is None:
+            if not self._has_materialized_mesh():
                 raise ValueError(
-                    "Cannot capture vertices reference: self.Vertices is None. "
+                    "Cannot capture mesh reference: current Vertices/Faces are "
+                    "not both available. "
                     "Build the mesh first (e.g. build_triangular_mesh or "
                     "rebuild_simple_mesh) before calling perturbations that "
-                    "require vertices (direction, rotation, translation)."
+                    "consume the whole mesh (direction, rotation, translation)."
                 )
             self.geometry_ref = self.geometry_ref.with_vertices(
                 self.Vertices.copy(), self.Faces.copy()
             )
+            self._mesh_reference_validation_key = None
+        return self._require_mesh_reference()
 
-    def is_mesh_updated(self): return self.mesh_updated
-    def is_laplacian_updated(self): return self.laplacian_updated
+    def _require_mesh_reference(self, require_current_topology=True):
+        """Validate and return the frozen ``(vertices, faces)`` mesh pair.
+
+        ``GeometryReference`` intentionally supports partial references for
+        dip/top/bottom workflows.  This guard is therefore used only by
+        whole-mesh consumers.  Validation is read-only and completes before a
+        fault mutation.  When ``require_current_topology`` is true, the current
+        mesh must retain the exact frozen face rows, vertex numbering and
+        winding; whole-mesh transforms are not implicit remeshing operations.
+        """
+        self._require_geometry_ref('vertices', 'faces')
+        vertices = np.asarray(self.geometry_ref.vertices)
+        faces = np.asarray(self.geometry_ref.faces)
+        current_faces = getattr(self, 'Faces', None)
+        validation_key = (
+            id(self.geometry_ref),
+            id(current_faces) if require_current_topology else None,
+            bool(require_current_topology),
+        )
+        needs_full_validation = (
+            self._mesh_reference_validation_key != validation_key
+        )
+
+        if needs_full_validation:
+            if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
+                raise ValueError(
+                    "geometry_ref.vertices must be a non-empty two-dimensional "
+                    "array with three columns."
+                )
+            if faces.ndim != 2 or faces.shape[1] != 3 or len(faces) == 0:
+                raise ValueError(
+                    "geometry_ref.faces must be a non-empty two-dimensional "
+                    "triangular connectivity array."
+                )
+            if not np.all(np.isfinite(vertices)):
+                raise ValueError(
+                    "geometry_ref.vertices contains non-finite coordinates."
+                )
+            if not np.issubdtype(faces.dtype, np.integer):
+                raise ValueError(
+                    "geometry_ref.faces must contain integer vertex indices."
+                )
+            if np.min(faces) < 0 or np.max(faces) >= len(vertices):
+                raise ValueError(
+                    "geometry_ref.faces contains a vertex index outside "
+                    "geometry_ref.vertices."
+                )
+        if require_current_topology:
+            current_vertices = getattr(self, 'Vertices', None)
+            if current_vertices is None or current_faces is None:
+                raise ValueError(
+                    "The current fault has no complete mesh. Whole-mesh "
+                    "perturbations require the frozen reference and current "
+                    "mesh to share one topology."
+                )
+            if np.asarray(current_vertices).shape != vertices.shape:
+                raise ValueError(
+                    "Current vertices no longer match the frozen mesh "
+                    "reference. Call snapshot() after the final remesh."
+                )
+            if needs_full_validation and not np.array_equal(
+                    np.asarray(current_faces), faces):
+                raise ValueError(
+                    "Current Faces no longer match geometry_ref.faces exactly "
+                    "(face rows, vertex numbering or winding changed). "
+                    "Whole-mesh perturbations cannot cross a remesh; call "
+                    "snapshot() after the final mesh is established."
+                )
+        if needs_full_validation:
+            self._mesh_reference_validation_key = validation_key
+        return vertices, faces
+
+    def _has_materialized_mesh(self):
+        """Return whether the fault currently owns a complete mesh."""
+        return (
+            getattr(self, 'Vertices', None) is not None
+            and getattr(self, 'Faces', None) is not None
+        )
+
+    def _has_laplacian_cache(self):
+        """Return whether a concrete source Laplacian is materialized."""
+        return getattr(self, 'GL', None) is not None
+
+    def _has_area_cache(self):
+        """Return whether non-empty patch-area values are materialized."""
+        area = getattr(self, 'area', None)
+        return area is not None and np.asarray(area).size > 0
+
+    def is_mesh_valid(self):
+        """Return whether the current fault has a usable materialized mesh."""
+        return self.mesh_valid
+
+    def is_laplacian_valid(self):
+        """Return whether the current ``GL`` still matches the geometry."""
+        return self.laplacian_valid
+
+    def is_area_valid(self):
+        """Return whether cached patch areas still match the geometry."""
+        return self.area_valid
 
     # --- Edge densification ---------------------------------------------------
     def densify_edges(self, top_only=False):
@@ -719,6 +924,10 @@ class PerturbationBase:
                 params = meta.get('params', {})
                 kwargs = meta.get('kwargs', {})
                 flags = meta.get('flags', {})
+                parameter_spec = meta.get('parameter_spec') or {}
+                cardinality = parameter_spec.get('cardinality') or {}
+                requirements = meta.get('reference_requirements') or {}
+                baseline_source = meta.get('baseline_source')
 
                 print(f"    * {method}")
                 print(f"        Description: {desc}")
@@ -727,10 +936,22 @@ class PerturbationBase:
                     print(f"        Perturbations: {params['perturbations']}")
                 elif params:
                     print(f"        Parameters: {params}")
-                # Update flags
+                if cardinality:
+                    print(
+                        "        Sample cardinality: "
+                        f"{self._format_cardinality(cardinality)}"
+                    )
+                if requirements:
+                    print(
+                        "        Reference: "
+                        f"{self._format_reference_requirements(requirements)}"
+                    )
+                elif baseline_source and baseline_source != 'geometry_ref':
+                    print(f"        Baseline source: {baseline_source}")
+                # Validity postconditions declared by the method
                 active_flags = [k for k, v in flags.items() if v] if flags else []
                 if active_flags:
-                    print(f"        Triggers update: {', '.join(active_flags)}")
+                    print(f"        Validity postconditions: {', '.join(active_flags)}")
                 # Config kwargs summary
                 if kwargs:
                     parts = []
@@ -743,6 +964,29 @@ class PerturbationBase:
             print()
         print(f"  Tip: Call help('method_name') for detailed kwargs and YAML config example.")
         print("=" * 60)
+
+    @staticmethod
+    def _format_cardinality(cardinality):
+        """Render a compact user-facing description of a sample contract."""
+        kind = cardinality.get('kind')
+        if kind == 'exact':
+            return f"exactly {cardinality.get('count')} value(s)"
+        if kind == 'scalar_or_dip_controls':
+            return "one scalar or one value per movable dip control"
+        if kind == 'scalar_or_movable_nodes':
+            field_name = cardinality.get('reference_field', 'coordinate')
+            return f"one scalar or one value per movable {field_name} node"
+        return str(kind or cardinality)
+
+    @staticmethod
+    def _format_reference_requirements(requirements):
+        """Render reference fields without exposing registry internals."""
+        parts = []
+        if requirements.get('mesh_pair'):
+            parts.append('complete vertices/faces pair')
+        fields = requirements.get('fields') or ()
+        parts.extend(f"geometry_ref.{name}" for name in fields)
+        return ', '.join(parts) if parts else 'method-specific reference'
 
     def _help_method_detail(self, method_name, info):
         """Print detailed help for a single perturbation method."""
@@ -765,6 +1009,10 @@ class PerturbationBase:
         kwargs = meta.get('kwargs', {})
         family = meta.get('family', 'Other')
         flags = meta.get('flags', {})
+        parameter_spec = meta.get('parameter_spec') or {}
+        cardinality = parameter_spec.get('cardinality') or {}
+        requirements = meta.get('reference_requirements') or {}
+        baseline_source = meta.get('baseline_source')
 
         print(f"\n{'='*60}")
         print(f"Method: {method_name_full}")
@@ -776,11 +1024,20 @@ class PerturbationBase:
             print(f"Perturbations: {params['perturbations']}")
         elif params:
             print(f"Parameters: {params}")
+        if cardinality:
+            print(f"Sample cardinality: {self._format_cardinality(cardinality)}")
+        if requirements:
+            print(
+                "Reference requirement: "
+                f"{self._format_reference_requirements(requirements)}"
+            )
+        elif baseline_source and baseline_source != 'geometry_ref':
+            print(f"Baseline source: {baseline_source}")
 
-        # Update flags
+        # Validity postconditions declared by the method
         active_flags = [k for k, v in flags.items() if v] if flags else []
         if active_flags:
-            print(f"Triggers update: {', '.join(active_flags)}")
+            print(f"Validity postconditions: {', '.join(active_flags)}")
 
         # Full kwargs listing
         if kwargs:
@@ -866,15 +1123,31 @@ SHARED_ATTRIBUTES = [
     'xf', 'yf', 'lon', 'lat', 'xi', 'yi', 'loni', 'lati', 'top', 'depth', 'z_patches',
     'top_coords', 'top_coords_ll', 'layers', 'layers_ll',
     'bottom_coords', 'bottom_coords_ll', 'Faces', 'Vertices',
-    'Vertices_ll', 'patch', 'patchll', 'area', 'GL'
+    'Vertices_ll', 'patch', 'patchll', 'area', 'GL',
+    'mesh_valid', 'area_valid', 'laplacian_valid',
 ]
 
 class SharedFaultInfo:
+    """Same-process backing store for heavy fault arrays and validity flags.
+
+    Instances are ordinary Python objects.  A master and its follower copies
+    can share one instance inside a process; separate MPI ranks still own
+    independent copies and perform no implicit cross-rank synchronization.
+    """
+
     def __init__(self):
         for attr in SHARED_ATTRIBUTES:
-            setattr(self, f"_{attr}", None)
+            default = False if attr.endswith('_valid') else None
+            setattr(self, f"_{attr}", default)
 
 def shared_property(attr_name):
+    """Create a property routed through ``self.shared_info``.
+
+    The descriptor keeps existing fault attribute names (for example
+    ``Vertices`` or ``laplacian_valid``) while changing only their storage
+    location.  It does not copy values or communicate between MPI processes.
+    """
+
     def getter(self): return getattr(self.shared_info, f"_{attr_name}")
     def setter(self, value): setattr(self.shared_info, f"_{attr_name}", value)
     return property(getter, setter)
@@ -891,15 +1164,16 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
       - PerturbationBase: For state tracking and method dispatch logic.
 
     Features:
-      - Shared memory attributes for MPI efficiency (see *MPI Shared Memory* below).
+      - Shared heavy-array storage for master/follower objects in one Python process.
       - Integrated help system via ``help()`` / ``help('method_name')``.
 
-    MPI Shared Memory
-    -----------------
-    In MPI-parallel Bayesian inversion, the fault's heavy array attributes
-    (vertices, faces, patches, laplacian, …) are stored in a single
-    ``SharedFaultInfo`` object.  All MPI processes hold a reference to the
-    **same** ``SharedFaultInfo``, so memory is shared rather than duplicated.
+    Master/follower array sharing
+    -----------------------------
+    The fault's heavy array attributes (vertices, faces, patches, Laplacian,
+    and related arrays) can be stored in one ``SharedFaultInfo`` object shared
+    by multiple fault objects **inside the same Python process**. Separate MPI
+    ranks are separate processes and therefore hold independent Python objects;
+    this class does not provide cross-rank shared memory or synchronization.
 
     The ``role`` parameter controls this mechanism:
 
@@ -919,14 +1193,12 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
     |                   | skips all geometry/mesh recomputation.      |
     +-------------------+--------------------------------------------+
 
-    Typical MPI workflow::
+    Typical same-process master/follower workflow::
 
-        # --- rank 0 (master) ---
         fault = BayesianTriFaultBase('main', role='master', ...)
         fault.set_edges_for_bayesian_optimization(...)
         fault.build_triangular_meshes(...)
 
-        # --- rank 1..N (followers) ---
         worker = fault.copy_with_shared_info('worker')
         # worker already sees the master's arrays; no rebuild needed.
 
@@ -943,9 +1215,9 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
                            no geometry sharing.
                          - ``'master'``: owns the SharedFaultInfo and is
                            responsible for computing geometry/mesh/laplacian.
-                         - ``'follower'``: reads geometry from the master's
-                           SharedFaultInfo; update flags are pre-set to ``True``
-                           so downstream code skips redundant rebuilds.
+                         - ``'follower'``: reads geometry and validity state
+                           from the master's SharedFaultInfo, so downstream
+                           code can skip only products that are actually valid.
         shared_info:     An existing ``SharedFaultInfo`` instance to attach.
 
                          - For *master*: optional — a new one is created if
@@ -984,7 +1256,7 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
         # 1. Bind shared properties to the class.
         #    This replaces normal instance attributes (Vertices, patch, area, …)
         #    with property descriptors that read/write through self.shared_info,
-        #    enabling transparent memory sharing across MPI ranks.
+        #    enabling transparent memory sharing inside one Python process.
         self._bind_shared_properties()
 
         # 2. Setup the SharedFaultInfo storage backend.
@@ -1004,19 +1276,15 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
                                                      lon0=lon0, lat0=lat0, verbose=verbose)
         PerturbationBase.__init__(self)
 
-        # 4. Follower-only post-init: attach the master's SharedFaultInfo and mark
-        #    all update flags as True so that downstream code (e.g. GF assembly)
-        #    does NOT attempt to rebuild geometry/mesh/laplacian on this rank.
+        # 4. Follower-only post-init: attach the master's SharedFaultInfo.
+        #    Mesh-derived validity is part of the same shared state as GL/area,
+        #    so it cannot drift from the cache objects it describes.
         if role == 'follower':
             self.shared_info = shared_info
             assert self.shared_info is not None, (
                 "shared_info is required for follower instances. "
                 "Pass the master's SharedFaultInfo object."
             )
-            self.geometry_updated = True
-            self.mesh_updated = True
-            self.area_updated = True
-            self.laplacian_updated = True
 
     def _bind_shared_properties(self):
         """Dynamically bind shared property descriptors to the **class**.
@@ -1075,7 +1343,8 @@ class BayesianTriFaultBase(AdaptiveLayeredDipTriangularPatches, PerturbationBase
         needed.  The returned instance has ``role='follower'`` and points to the
         **same** ``SharedFaultInfo`` as ``self``.  This means all large arrays
         (Vertices, Faces, patch, area, GL, …) are shared — not duplicated —
-        across MPI ranks.
+        across those fault objects in the current Python process.  Separate
+        MPI ranks still own independent objects and do not share this memory.
 
         The frozen ``geometry_ref`` is also shallow-copied (safe because it is
         immutable).

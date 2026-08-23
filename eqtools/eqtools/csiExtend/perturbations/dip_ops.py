@@ -171,11 +171,15 @@ def interpolate_dip_onto_coords(
         ``'auto'``, ``'x'``, ``'y'``, or ``'arc_length'``.
 
         - ``'x'`` / ``'y'``: project onto the chosen axis and interpolate 1D.
-        - ``'auto'``: PCA-select the dominant axis, then same as ``'x'``/``'y'``.
+        - ``'auto'``: PCA-select the dominant axis, then same as ``'x'``/``'y'``;
+          it never selects ``'arc_length'``.
         - ``'arc_length'``: interpolate along the cumulative arc-length of
           *target_coords*. Control points are projected onto the trace to
           determine their arc-length positions. This is more physically
-          accurate for curved faults where axis-projection distorts distances.
+          meaningful for curved faults where axis-projection distorts distance.
+          Values outside the outer control positions retain the nearest endpoint
+          dip. Controls should project to distinct positions on the intended
+          trace branch.
     verbose : bool
         Print diagnostic info.
 

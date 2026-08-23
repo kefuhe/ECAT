@@ -195,7 +195,7 @@ def _get_solution_vector(inversion: Any, solution: Optional[Sequence[float]] = N
         if not hasattr(inversion, "mpost") or inversion.mpost is None:
             raise ValueError(
                 "No current linear solution was found. Run the inversion first, "
-                "or call returnModel(..., print_stat=False) for Bayesian results, "
+                "or call returnModel(..., print_fit_statistics=False) for Bayesian results, "
                 "or pass solution explicitly."
             )
         solution = inversion.mpost

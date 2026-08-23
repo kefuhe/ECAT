@@ -773,7 +773,7 @@ result = inversion.calculate_interseismic_fields(
 )
 ```
 
-这等价于先运行 `returnModel(model="median", print_stat=False)`，再读取当前 `mpost`。如果非线性几何或 mesh 随 posterior 样本变化，不应直接平均不同样本的 patchwise coupling；应先定义固定 mesh 或投影规则。
+这等价于先运行 `returnModel(model="median", print_fit_statistics=False)`，再读取当前 `mpost`。如果非线性几何或 mesh 随 posterior 样本变化，不应直接平均不同样本的 patchwise coupling；应先定义固定 mesh 或投影规则。
 
 ## 检查清单
 

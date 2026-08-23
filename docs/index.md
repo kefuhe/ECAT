@@ -11,22 +11,37 @@
 
 ## 从这里开始
 
+### 学习和执行入口
+
 | 当前目标 | 入口 | 用法 |
 | --- | --- | --- |
 | 第一次使用 | [安装与环境检查](getting_started/installation.md) → [标准两步走路线](getting_started/quickstart_two_step.md) | 先跑通环境和标准反演主线 |
+| 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
+| 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
+| 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |
+| 需要确认字段、接口或误区 | [Reference Map](reference/index.md) | 按需查阅，不必从头顺序阅读全部 reference |
+
+### 数据、建模与结果任务
+
+| 当前目标 | 入口 | 用法 |
+| --- | --- | --- |
+| 需要把降采样、外部 SAR 或 GNSS 读入反演 | [反演数据读入短例](examples/inversion_data_loading.md) | 按矩形/trirb、外部 SAR 或 GNSS 选择代码 |
+| 需要按距离、经度、纬度或最近点裁剪和处理迹线 | [断层迹线预处理](workflows/02d_fault_trace_preprocessing.md) | 先定位 marker，再以 CLI 或 Python 生成不覆盖原文件的新迹线 |
+| 需要在观测图上调整断层迹线 | [交互调整断层迹线](workflows/02c_interactive_trace_editing.md) | 复用降采样 reader 或直接打开标准观测，另存两列经纬度迹线 |
+| 需要由非线性结果或地表迹线构建断层 | [断层构建入口](workflows/04_linear_slip_blse_vce.md#linear-inputs) | 选择非线性结果、单倾角、多倾角或固定拓扑路线 |
+| 已完成两步走，需要传播几何不确定性到滑动后验 | [联合 Bayesian workflow](workflows/05_joint_bayesian_geometry_slip.md) | 先理解冻结几何参考，再对齐样本位置、bounds、扰动和 mesh 更新 |
+| 需要统一科研图件字体、尺寸和保存 | [科研绘图短例](examples/viztools_scientific_figures.md) | 先复制常用场景，再到 Viztools reference 查高级参数 |
+
+### 运行环境与科学约定
+
+| 当前目标 | 入口 | 用法 |
+| --- | --- | --- |
 | 安装、导入或运行速度异常 | [安装与运行故障排查](getting_started/troubleshooting.md) | 按症状检查版本、wheel、MPI、BLAS 和线程数 |
 | 不清楚 `-n`、rank、进程、线程或 affinity | [并行运行基础](concepts/parallel_process_rank_thread.md) | 先理解运行单位，再决定是否需要调参 |
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
-| 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
-| 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
-| 需要把降采样、外部 SAR 或 GNSS 读入反演 | [反演数据读入短例](examples/inversion_data_loading.md) | 按矩形/trirb、外部 SAR 或 GNSS 选择代码 |
-| 需要由非线性结果或地表迹线构建断层 | [断层构建入口](workflows/04_linear_slip_blse_vce.md#linear-inputs) | 选择非线性结果、单倾角、多倾角或固定拓扑路线 |
-| 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |
-| 需要确认字段、接口或误区 | [Reference Map](reference/index.md) | 按需查阅，不必从头顺序阅读全部 reference |
 | 需要设置跨直立倾角或核对 `strike/dip/rake` | [断层角度约定](concepts/fault_angle_conventions.md) | 先确认输入、solver geometry 和滑动基底的区别 |
+| 不清楚 `d/G/Cd/H` 的行列和 GPS/optical 分量顺序 | [观测与矩阵排列合同](concepts/observation_matrix_layout.md) | 先统一观测行，再检查协方差、设计矩阵和参数列 |
 | 西半球或跨日界线区域配置 | [经度约定与区域配置](reference/longitude_regions.md) | 核对处理区域、过滤、协方差掩膜和检查图范围的等价经度匹配 |
-| 需要统一科研图件字体、尺寸和保存 | [科研绘图短例](examples/viztools_scientific_figures.md) | 先复制常用场景，再到 Viztools reference 查高级参数 |
-| 需要在观测图上调整断层迹线 | [交互调整断层迹线](workflows/02c_interactive_trace_editing.md) | 复用降采样 reader 或直接打开标准观测，另存两列经纬度迹线 |
 
 ## 工作流主线
 
@@ -56,7 +71,7 @@ BLSE/VCE 线性滑动分布反演
 
 | 文档层 | 什么时候使用 |
 | --- | --- |
-| [Concepts / 核心概念](concepts/index.md) | 理解两步走、并行运行、SAR 投影约定和断层几何状态 |
+| [Concepts / 核心概念](concepts/index.md) | 理解两步走、观测/矩阵排列、并行运行、SAR 投影约定和断层几何状态 |
 | [Examples / 任务短例](examples/index.md) | 复制一个小任务的最小代码或命令 |
 | [Casebook / 公开案例](casebook/index.md) | 对照 ECAT-Cases 中的真实事件脚本、数据和输出 |
 | [Reference / 完整参考](reference/index.md) | 查 CLI、配置、reader、约束、几何、结果解释和 API 细节 |

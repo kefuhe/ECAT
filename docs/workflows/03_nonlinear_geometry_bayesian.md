@@ -33,7 +33,7 @@ ECAT 现在保留两套非线性几何入口：
 
 | 入口 | 配置文件 | 生成命令 | 适用场景 |
 | --- | --- | --- | --- |
-| 旧版 legacy `explorefault` | `default_config.yml` | `ecat-generate-nonlinear` | 复现旧案例或继续使用旧参数组织 |
+| 旧版多断层 `exploremultifaults_smc.explorefault` | `default_config.yml` | `ecat-generate-nonlinear` | 复现旧案例或继续使用旧参数组织 |
 | 新版 `NonlinearGeometrySMCInversion` | `nonlinear_geometry.yml` | `ecat-generate-nonlinear-geometry` | 新项目推荐入口，参数注册、数据改正和诊断更清晰 |
 
 新建案例目录时，推荐先生成新版配置：
@@ -112,6 +112,7 @@ inv.extract_and_plot_bayesian_results(
     plot_sigmas=True,
     plot_data=True,
     plot_data_corrections=True,
+    print_fit_statistics=True,
 )
 
 if rank == 0:
@@ -229,6 +230,9 @@ Remove-Item Env:MKL_NUM_THREADS, Env:OPENBLAS_NUM_THREADS, Env:OMP_NUM_THREADS -
 Matplotlib 切换为非交互式文件后端，不改变采样模式、似然或数值结果。硬件判断、
 测速矩阵和 MPI × BLAS 说明见
 [安装与运行故障排查](../getting_started/troubleshooting.md#6-mpi-进程与-blas-线程相互叠加)。
+
+`Agg` 与 `--no-plot` 不是同一选择：前者让脚本已配置的图件保存但不弹窗，后者会跳过
+模板中的绘图和模型摘要后处理。
 
 ## 配置概念
 

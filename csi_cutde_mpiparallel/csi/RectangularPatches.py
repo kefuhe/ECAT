@@ -545,6 +545,8 @@ class RectangularPatches(Fault):
         for p in self.equivpatch:
             self.area.append(self.patchArea(p))
 
+        self._area_geometry_source_id = id(self.equivpatch)
+
         # all done
         return
     # ----------------------------------------------------------------------
@@ -577,12 +579,36 @@ class RectangularPatches(Fault):
     
     def compute_patch_areas(self):
         '''
-        Compute the area of all patches and store them in {area}
+        Force area computation for the current equivalent patches.
 
         added by Kefeng he at 2024/08/23
         '''
         self.area = np.array([self.patchArea(p) for p in self.equivpatch])
+        self._area_geometry_source_id = id(self.equivpatch)
         return self.area
+
+    def get_patch_areas(self):
+        """Return areas for the current rectangular patch storage.
+
+        Rectangular faults retain their structured patch implementation. The
+        cache key records the active ``equivpatch`` container so a same-size
+        geometry rebuild cannot silently reuse areas from the previous model.
+        Direct array edits are outside this getter contract. Standard builders
+        replace ``equivpatch``; the remaining historical in-place mutation
+        paths are tracked separately instead of adding a per-call mesh hash.
+        """
+        patches = self.equivpatch
+        area = getattr(self, 'area', None)
+        cache_matches = (
+            getattr(self, '_area_geometry_source_id', None) == id(patches)
+        )
+        if (
+            area is None
+            or np.asarray(area).size != len(patches)
+            or not cache_matches
+        ):
+            area = self.compute_patch_areas()
+        return np.asarray(area, dtype=float)
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
@@ -4353,6 +4379,9 @@ class RectangularPatches(Fault):
 
         # Return symmetric part to fill lower triangular part
         self.adjacencyMat = Jmat + Jmat.T
+        self._adjacency_mat_key = (
+            id(self.patch), len(self.patch), int(self.numz), patchinc,
+        )
 
         # All done
         return
@@ -4479,7 +4508,13 @@ class RectangularPatches(Fault):
         '''
 
         # Adjacency Matrix, Modified by kefenghe, @06/01/2021
-        if not hasattr(self, 'adjacencyMat') or self.adjacencyMat is None:
+        adjacency_key = (
+            id(self.patch), len(self.patch),
+            int(self.numz) if self.numz is not None else None,
+            'alongstrike',
+        )
+        if (not hasattr(self, 'adjacencyMat') or self.adjacencyMat is None
+                or getattr(self, '_adjacency_mat_key', None) != adjacency_key):
             self.computeAdjacencyMat(verbose=verbose)
         Jmat = self.adjacencyMat
         npatch = Jmat.shape[0]
@@ -4565,6 +4600,11 @@ class RectangularPatches(Fault):
             if col < nstrike - 1: add_neighbor('left', i + 1)
             
             self._distance_map.append(geo_info)
+
+        self._distance_map_key = (
+            id(self.patch), id(self.equivpatch), npatch,
+            int(nstrike), int(ndip),
+        )
             
         if verbose:
             logger.info("Adjacency cache built.")
@@ -4591,7 +4631,12 @@ class RectangularPatches(Fault):
         '''
         
         # 1. Check/Build Cache
-        if not hasattr(self, '_distance_map') or self._distance_map is None or len(self._distance_map) != len(self.patch):
+        cache_key = (
+            id(self.patch), id(self.equivpatch), len(self.patch),
+            int(nstrike), int(ndip),
+        )
+        if (not hasattr(self, '_distance_map') or self._distance_map is None
+                or getattr(self, '_distance_map_key', None) != cache_key):
             self._build_adjacency_cache(nstrike, ndip, verbose=verbose)
             
         if verbose:

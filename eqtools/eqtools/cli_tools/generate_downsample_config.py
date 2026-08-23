@@ -249,15 +249,23 @@ processing_region:
 
 def observation_correction_config_text(template="minimal"):
     advanced = """
-  # For a box, replace the circle item with:
-  #   - kind: "box"
-  #     bounds: [min_lon, max_lon, min_lat, max_lat]
-  # Polygon regions and fixed plane coefficients are documented in the reference.
+  # Replace fixed_coefficients: null with the following fixed-plane schema:
+  # fixed_coefficients:
+  #   origin: [lon, lat]
+  #   <component>:  # observation for SAR; east and north for optical
+  #     offset: 0.0
+  #     east_gradient: 0.0
+  #     north_gradient: 0.0
+  # Polygon regions and complete fixed-coefficient examples are in the reference.
 """ if template == "full" else ""
     return f"""
 # Optional deterministic preprocessing before covariance/downsampling.
-# Start with offset; use plane only after confirming a stable long-wave trend.
+# Keep enabled=false when only quick-look, covariance, or downsampling is required.
+# Common: offset + one stable far-field circle sets the zero reference.
+# Long-wave ramp: plane + all valid data, optionally excluding deformation boxes.
 # Formula: corrected = observation - correction_surface.
+# estimate: offset/plane coefficients are solved automatically.
+# fixed: leave fit regions/exclusions empty and provide fixed_coefficients explicitly.
 observation_correction:
   enabled: false
   model: "offset"               # offset | plane
@@ -266,12 +274,20 @@ observation_correction:
   report_file: "auto"           # auto = <outName>_observation_correction.yml
   fit:
     coord_type: "lonlat"
-    regions:
-      - kind: "circle"
-        center: [0.0, 0.0]      # replace with stable far-field [lon, lat]
-        radius_km: 20.0
-    exclude_regions: []
-  fixed_coefficients: null      # advanced; used only with coefficient_mode: fixed
+    regions: []                 # offset: required; plane: [] = all valid observations
+    exclude_regions: []         # plane: optional deformation/noise exclusions
+  fixed_coefficients: null      # fixed: component coefficients; plane also requires origin
+
+# Offset example - replace regions: [] above with:
+#     regions:
+#       - kind: "circle"
+#         center: [lon, lat]    # stable far-field zero-reference area
+#         radius_km: 20.0
+# Plane example - keep regions: []; replace exclude_regions: [] above with:
+#     exclude_regions:
+#       - kind: "box"
+#         bounds: [min_lon, max_lon, min_lat, max_lat]
+#         # deformation/noisy area excluded from ramp estimation
 {advanced}
 """
 
@@ -444,6 +460,12 @@ def check_plots_config_text(data_type="sar", template="minimal"):
         else "typical SAR single plot; try [4, 5] for tall maps"
     )
     full = template == "full"
+    raw_contour_advanced = """
+      labels: false               # true writes contour values in displayed units
+      color: "0.20"               # Matplotlib color for contour lines
+      linewidth: 0.5
+      alpha: 0.8
+""" if full else ""
     raw_advanced = """
     components: "auto"            # SAR: observation; optical: east+north
     layout: "auto"                # auto | single | columns
@@ -498,6 +520,10 @@ check_plots:
     vmax: null
     symmetry: true
     cmap: "cmc.roma_r"
+    contours:
+      enabled: false              # optional diagnostic layer for structured raw 2-D grids
+      levels: "auto"              # auto | integer count | increasing values in displayed units
+{raw_contour_advanced}
     axis_tick_direction: "out"    # map-axis ticks: out | in | inout
     colorbar_orientation: "auto"  # auto = vertical for single, horizontal for optical columns
     colorbar_pad: null            # null = layout default; smaller/larger moves outside colorbar
@@ -573,6 +599,12 @@ def processing_config_text(template, downsample_method, data_type="sar"):
         "trirb": "trirb is fault-aware; use std for a fault-free first test",
         "from_rsp": "from_rsp reuses an existing CSI .rsp grid; no fault geometry required",
     }[downsample_method]
+    fault_model_use_for = '["trirb"]' if downsample_method == "trirb" else "[]"
+    fault_model_use_note = (
+        "preselected for this TriRB template; enabled must also be true"
+        if downsample_method == "trirb"
+        else 'set to ["trirb"] for resolution-based downsampling'
+    )
     return f"""
 covar:
   do_covar: false          # can also be enabled with ecat-downsample -c
@@ -601,6 +633,7 @@ fault_traces:
   - enabled: false
     id: "example_trace"
     file: "../../../../Faults/example_rupture_trace.dat"
+    # segments: "all"          # optional: all | zero-based integer | integer list
     stages: ["raw", "decim"]   # raw | decim | all; display only
     marker: null                 # null = line only; set "x" to show input trace vertices
     markersize: 3.0              # used only when marker is not null
@@ -613,13 +646,14 @@ fault_models:
     type: "generated_from_trace"   # model input: build from trace | read CSI GMT
     geometry: "triangular"         # patch shape: triangular | rectangular; trirb requires triangular
     trace_file: "../../../../Faults/example_rupture_trace.dat"
+    # segment: 0                    # required only when trace_file contains multiple segments
     dip_angle: 86                  # degrees from horizontal
     dip_direction: 258             # degrees clockwise from north
     top_size: 5.0                  # top mesh target size, usually km
     bottom_size: 8.0               # bottom mesh target size, usually km
     top_depth: 0.0                 # km
     bottom_depth: 18.0             # km
-    use_for: []                    # set to ["trirb"] for resolution-based downsampling
+    use_for: {fault_model_use_for} # {fault_model_use_note}
     plot:
       stages: []                   # e.g. ["decim"] to draw patch edges
       mode: "edges"                # edges | trace | both
@@ -632,7 +666,7 @@ fault_models:
     readpatchindex: true           # true when each GMT segment header stores 3 topology indices
     donotreadslip: true            # geometry-only use: ignore any slip columns
     gmtslip: true                  # triangular only: true when the segment header contains -Z...
-    use_for: []                    # triangular GMT can use ["trirb"]
+    use_for: {fault_model_use_for} # {fault_model_use_note}
     plot:
       stages: []
       mode: "edges"
@@ -697,7 +731,9 @@ def generate_downsample_config(
         "full" includes all downsampling method configs, advanced check-plot
         layout fields, and advanced SAR convention hints.
     downsample_method : {"std", "data", "trirb", "from_rsp"}
-        Method written as downsample.method. Minimal templates include only this method's config.
+        Method written as downsample.method. Minimal templates include only
+        this method's config. TriRB templates also preselect the disabled
+        triangular examples for the ``trirb`` compute role.
     acquisition_look_side : {"right", "left"}
         Side of platform heading containing the imaged swath.
     byte_order : {"native", "little", "big"}

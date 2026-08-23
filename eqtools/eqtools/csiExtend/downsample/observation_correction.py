@@ -33,7 +33,15 @@ def _region_mask(data, grid, region, base_dir=None, label="region"):
     )
 
 
-def correction_fit_mask(data, grid, fit, base_dir=None):
+def _correction_fit_selection(data, grid, fit, model, base_dir=None):
+    """Build the model-aware fit mask and its report diagnostics.
+
+    Offset estimation needs an explicit zero-reference region.  Plane
+    estimation uses every analysis-valid observation when ``regions`` is
+    empty; explicit regions remain available when a restricted plane fit is
+    scientifically preferable.  Exclusions are applied last in both modes.
+    """
+
     if not isinstance(fit, dict):
         raise ValueError("observation_correction.fit must be a mapping.")
     coord_type = str(fit.get("coord_type", "lonlat")).replace("-", "_").lower()
@@ -41,34 +49,76 @@ def correction_fit_mask(data, grid, fit, base_dir=None):
         raise ValueError(
             "observation_correction.fit.coord_type currently supports only 'lonlat'."
         )
-    regions = fit.get("regions")
-    if not isinstance(regions, list) or not regions:
+    regions = fit.get("regions", []) or []
+    if not isinstance(regions, list):
         raise ValueError(
-            "observation_correction.fit.regions must be a non-empty list."
+            "observation_correction.fit.regions must be a list."
         )
-    selected = np.zeros(grid.shape, dtype=bool)
-    for index, region in enumerate(regions):
-        selected |= _region_mask(
-            data,
-            grid,
-            region,
-            base_dir=base_dir,
-            label=f"observation_correction.fit.regions[{index}]",
+    model = str(model).replace("-", "_").lower()
+    analysis_valid = np.asarray(grid.analysis_valid_mask, dtype=bool)
+    if regions:
+        fit_scope = "explicit_regions"
+        selected = np.zeros(grid.shape, dtype=bool)
+        for index, region in enumerate(regions):
+            selected |= _region_mask(
+                data,
+                grid,
+                region,
+                base_dir=base_dir,
+                label=f"observation_correction.fit.regions[{index}]",
+            )
+    elif model == "plane":
+        fit_scope = "all_valid"
+        selected = np.array(analysis_valid, copy=True)
+    elif model == "offset":
+        raise ValueError(
+            "observation_correction.fit.regions must contain at least one "
+            "zero-reference region for model='offset'."
         )
+    else:
+        raise ValueError(
+            f"observation_correction.model must be one of {CORRECTION_MODELS}."
+        )
+
+    selected &= analysis_valid
+    candidate_pixel_count = int(np.count_nonzero(selected))
     excludes = fit.get("exclude_regions", []) or []
     if not isinstance(excludes, list):
         raise ValueError(
             "observation_correction.fit.exclude_regions must be a list."
         )
+    excluded = np.zeros(grid.shape, dtype=bool)
     for index, region in enumerate(excludes):
-        selected &= ~_region_mask(
+        excluded |= _region_mask(
             data,
             grid,
             region,
             base_dir=base_dir,
             label=f"observation_correction.fit.exclude_regions[{index}]",
         )
-    return selected & grid.analysis_valid_mask
+    excluded_pixel_count = int(np.count_nonzero(selected & excluded))
+    selected &= ~excluded
+    details = {
+        "scope": fit_scope,
+        "analysis_valid_pixel_count": int(np.count_nonzero(analysis_valid)),
+        "candidate_pixel_count": candidate_pixel_count,
+        "excluded_pixel_count": excluded_pixel_count,
+        "pixel_count": int(np.count_nonzero(selected)),
+    }
+    return selected, details
+
+
+def correction_fit_mask(data, grid, fit, base_dir=None, model="offset"):
+    """Return the model-aware observation-correction fit mask."""
+
+    selected, _details = _correction_fit_selection(
+        data,
+        grid,
+        fit,
+        model=model,
+        base_dir=base_dir,
+    )
+    return selected
 
 
 def _finite_stats(values):
@@ -165,13 +215,13 @@ def _estimate_coefficients(data, grid, values, component, model, fit_mask):
     count = int(np.count_nonzero(valid))
     if count == 0:
         raise ValueError(
-            f"observation_correction reference regions contain no valid "
+            f"observation_correction fit selection contains no valid "
             f"{component} observations."
         )
     if count < 10:
         warnings.warn(
             f"observation_correction uses only {count} valid {component} "
-            "reference pixels; inspect the correction report.",
+            "fit pixels; inspect the correction report.",
             UserWarning,
             stacklevel=3,
         )
@@ -318,13 +368,17 @@ def apply_observation_correction(
 
     fit_mask = None
     if coefficient_mode == "estimate":
-        fit_mask = correction_fit_mask(
+        fit_mask, fit_details = _correction_fit_selection(
             data,
             grid,
             config.get("fit"),
+            model=model,
             base_dir=base_dir,
         )
-        report["reference_pixel_count"] = int(np.count_nonzero(fit_mask))
+        report["fit"] = fit_details
+        # Kept for readers of reports written before fit diagnostics were
+        # grouped explicitly under ``fit``.
+        report["reference_pixel_count"] = fit_details["pixel_count"]
 
     for component in grid.components:
         before = np.asarray(grid.display_component(component), dtype=float)
@@ -377,6 +431,15 @@ def format_observation_correction_report(report):
         f"  coefficients: {report['coefficient_mode']}",
         "  formula     : corrected = observation - correction_surface",
     ]
+    fit_details = report.get("fit")
+    if fit_details:
+        lines.extend(
+            [
+                f"  fit scope   : {fit_details['scope']}",
+                f"  fit pixels  : {fit_details['pixel_count']}",
+                f"  excluded    : {fit_details['excluded_pixel_count']}",
+            ]
+        )
     for component, details in report.get("components", {}).items():
         coefficients = details["coefficients"]
         lines.extend(

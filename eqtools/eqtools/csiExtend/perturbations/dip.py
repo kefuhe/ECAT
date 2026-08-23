@@ -1,8 +1,9 @@
-"""
-DipPerturbationMixin — Dip angle perturbation methods.
+"""Generate bottom edges from perturbed dip-control values.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-Methods now delegate to the perturbation pipeline internally.
+Direct methods accept controls at the call boundary; preset methods consume
+canonical lon/lat controls stored in ``GeometryReference``.  Both delegate the
+scientific calculation to ``DipGeneratorStage``.  The no-suffix method changes
+coordinates only, while ``*_SimpleMesh`` also rebuilds the mesh.
 """
 import numpy as np
 import warnings
@@ -12,36 +13,95 @@ from ..bayesian_perturbation_base import track_mesh_update, DipControlPoints
 class DipPerturbationMixin:
     """Mixin providing dip-angle perturbation capabilities."""
 
+    def _project_reference_dip_control_points(self):
+        """Return canonical reference dip controls in fault-local x/y (km).
+
+        ``geometry_ref.dip_control_points`` is stored in longitude/latitude by
+        the public reference setters. Pipeline stages operate in the fault's
+        local projected coordinates, so preset consumers perform this one
+        conversion internally instead of exposing another coordinate-frame
+        switch to callers.
+        """
+        self._require_geometry_ref('dip_control_points')
+        reference = self.geometry_ref.dip_control_points
+        ctrl_x, ctrl_y = self.ll2xy(reference.x, reference.y)
+        return DipControlPoints(
+            x=np.asarray(ctrl_x, dtype=np.float64),
+            y=np.asarray(ctrl_y, dtype=np.float64),
+            dip=reference.dip.copy(),
+        )
+
     #--------------------------------------Perturbing Dip--------------------------------------#
     def perturb_dips(self, x_coords, y_coords, dips,
                      perturbations, fixed_nodes=None, angle_unit='degrees',
                      discretization_interval=None, interpolation_axis='x',
                      is_utm=False, buffer_nodes=None, buffer_radius=None,
                      use_average_strike=False, average_strike_source='pca', user_direction_angle=None):
-        """
-        Apply random perturbations to dips.
+        """Generate a bottom edge from perturbed dip control points.
 
-        Parameters:
-        x_coords (np.ndarray): x coordinates.
-        y_coords (np.ndarray): y coordinates.
-        dips (np.ndarray): Reference dips. Signed and 0--180 representations
-            are accepted and converted to continuous 0--180 coordinates before
-            perturbation.
-        perturbations (np.ndarray): Additive changes in continuous 0--180 dip
-            coordinates. Scalar values broadcast to movable control points.
-        fixed_nodes (list, optional): A list of indices of fixed nodes. If provided, the function will not perturb these nodes.
-        angle_unit (str, optional): Unit of dip perturbations, 'radians' or 'degrees'. Default is 'degrees'.
-        discretization_interval (float, optional): The interval for discretization of the fault trace. Default is None.
-        interpolation_axis (str, optional): The axis for interpolation. Default is 'x'.
-        is_utm (bool, optional): Whether the coordinates are in UTM. Default is False.
-        buffer_nodes (np.ndarray, optional): Coordinates of buffer nodes. If provided, the function will interpolate these nodes after perturbing the dips.
-        buffer_radius (float, optional): Radius of the buffer. If provided, the function will interpolate these nodes after perturbing the dips.
-        use_average_strike (bool, optional): Whether to use the average strike direction. Default is False.
-        average_strike_source (str, optional): The source of the average strike direction. Default is 'pca'.
-        user_direction_angle (float, optional): User-specified direction angle. Default is None.
+        The input reference dips are first represented continuously in
+        ``(0, 180)`` and the proposal increments are added there.  The resulting
+        dips are then interpolated onto the current top edge before rebuilding
+        ``bottom_coords`` from depth and strike.
 
-        Returns:
-        np.ndarray: Perturbed coordinates.
+        Parameters
+        ----------
+        x_coords, y_coords : array-like
+            Control-point coordinates. They are interpreted as longitude and
+            latitude when ``is_utm=False`` and as fault-local projected x/y in
+            km when ``is_utm=True``.
+        dips : array-like
+            Reference dips. Signed and 0--180 representations are accepted and
+            converted to continuous 0--180 coordinates before perturbation.
+        perturbations : array-like
+            Additive dip changes. A scalar broadcasts to all movable control
+            points; otherwise the number of values must match the movable
+            controls after applying ``fixed_nodes``.
+        fixed_nodes : sequence of int, optional
+            Indices of control points whose reference dips remain fixed.
+        angle_unit : {'degrees', 'radians'}, default 'degrees'
+            Unit of ``perturbations``. Reference ``dips`` are in degrees.
+        discretization_interval : float, optional
+            Arc-length interval in km for temporarily rediscretizing the top
+            edge before dip interpolation.
+        interpolation_axis : {'auto', 'x', 'y', 'arc_length'}, default 'x'
+            One-dimensional coordinate used for dip interpolation. ``'x'`` and
+            ``'y'`` use fault-local projected easting and northing. ``'auto'``
+            uses PCA to select one of those two axes; it does not select
+            arc-length interpolation. ``'arc_length'`` projects each control
+            point onto the current top-edge polyline and interpolates by
+            cumulative distance along that polyline. It is intended for curved
+            traces that are not monotonic in x or y.
+        is_utm : bool, default False
+            Coordinate frame of ``x_coords`` and ``y_coords``. False means
+            longitude/latitude; True means fault-local projected x/y in km.
+        buffer_nodes : array-like, optional
+            Buffer-node locations in longitude/latitude. Buffer augmentation is
+            supported only when the resolved interpolation axis is ``'x'`` or
+            ``'y'``; it cannot be combined with ``'arc_length'``.
+        buffer_radius : float or array-like, optional
+            Buffer radius or per-node radii in km. Used together with
+            ``buffer_nodes``.
+        use_average_strike : bool, default False
+            Use one representative strike when projecting the bottom edge.
+        average_strike_source : {'pca', 'user'}, default 'pca'
+            Source of the representative strike.
+        user_direction_angle : float, optional
+            Representative geographic strike in degrees clockwise from North
+            when ``average_strike_source='user'``. It must follow the positive
+            top-edge direction.
+
+        Returns
+        -------
+        np.ndarray
+            Updated ``self.bottom_coords``.
+
+        Notes
+        -----
+        ``'arc_length'`` uses nearest-segment projection. Control points should
+        therefore lie near the intended top edge and map to distinct positions
+        along it. Outside the outermost controls, the nearest endpoint dip is
+        retained.
         """
         from .pipeline import (
             run_pipeline, DipGeneratorStage, NoMeshPolicy,
@@ -89,17 +149,27 @@ class DipPerturbationMixin:
 
         return self.bottom_coords
 
-    @track_mesh_update(description="Perturb dips using preset reference values (No mesh update).",
-                       params_info={"perturbations": "Array of dip changes", "fixed_nodes": "List of fixed indices"})
-    def perturb_dips_with_preset_params(self, perturbations, discretization_interval=None, interpolation_axis='x',
-                                        fixed_nodes=None, angle_unit='degrees', is_utm=False,
+    @track_mesh_update(
+                       description="Perturb dips using preset reference values (No mesh update).",
+                       params_info={"perturbations": "Scalar or one change per movable dip control", "fixed_nodes": "List of fixed indices"},
+                       reference_requirements={"fields": ("top_coords", "dip_control_points")},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_dip_controls",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "dip_change", "unit_from": "angle_unit"},))
+    def perturb_dips_with_preset_params(self, perturbations, *,
+                                        discretization_interval=None, interpolation_axis='x',
+                                        fixed_nodes=None, angle_unit='degrees',
                                         buffer_nodes=None, buffer_radius=None,
                                         use_average_strike=False, average_strike_source='pca', user_direction_angle=None):
         """Apply dip perturbations using preset control points from geometry_ref.
 
-        Reads dip control points (stored as lon/lat) from
-        ``self.geometry_ref.dip_control_points``.  Does NOT require a mesh —
-        only ``top_coords`` and dip control points must be set.
+        Reads dip control points from ``self.geometry_ref.dip_control_points``.
+        Reference setters store those points in longitude/latitude; this method
+        always converts them to fault-local projected x/y internally. It does
+        not require a mesh: only ``top_coords`` and dip control points must be
+        set.
 
         Parameters
         ----------
@@ -112,17 +182,17 @@ class DipPerturbationMixin:
         discretization_interval : float, optional
             Interval for discretizing the fault trace (UTM km).
         interpolation_axis : str, default 'x'
-            Axis along which to interpolate dips. Refers to the UTM
-            coordinate system (after internal ll2xy conversion):
-            'x' = UTM-easting, 'y' = UTM-northing.
+            One of ``'auto'``, ``'x'``, ``'y'``, or ``'arc_length'``. ``'x'``
+            and ``'y'`` refer to fault-local projected easting and northing
+            after coordinate conversion. ``'auto'`` uses PCA to choose one of
+            those axes. ``'arc_length'`` projects the controls onto the current
+            top edge and interpolates along its cumulative distance; it is the
+            preferred option for a curved trace that is not monotonic in x or
+            y. It cannot be combined with buffer augmentation.
         fixed_nodes : list, optional
             Indices of control points to hold fixed.
         angle_unit : str, default 'degrees'
             Unit of *perturbations*: 'degrees' or 'radians'.
-        is_utm : bool, default False
-            If True, stored dip control-point coords are already UTM (km)
-            and will NOT be converted via ll2xy.  Default False means they
-            are lon/lat and will be converted internally.
         buffer_nodes : np.ndarray, optional
             Extra buffer coordinates (lon/lat) appended before interpolation.
         buffer_radius : float, optional
@@ -140,38 +210,50 @@ class DipPerturbationMixin:
         np.ndarray
             Updated ``self.bottom_coords`` after dip perturbation.
         """
-        self._require_geometry_ref('dip_control_points')
-        dcp = self.geometry_ref.dip_control_points
+        dcp = self._project_reference_dip_control_points()
 
         return self.perturb_dips(
             dcp.x,
             dcp.y,
             dcp.dip,
             perturbations,
-            fixed_nodes,
-            angle_unit,
-            discretization_interval,
-            interpolation_axis,
-            is_utm,
-            buffer_nodes,
-            buffer_radius,
-            use_average_strike,
-            average_strike_source,
-            user_direction_angle
+            fixed_nodes=fixed_nodes,
+            angle_unit=angle_unit,
+            discretization_interval=discretization_interval,
+            interpolation_axis=interpolation_axis,
+            is_utm=True,
+            buffer_nodes=buffer_nodes,
+            buffer_radius=buffer_radius,
+            use_average_strike=use_average_strike,
+            average_strike_source=average_strike_source,
+            user_direction_angle=user_direction_angle,
         )
 
     @track_mesh_update(update_mesh=True,
                        description="Perturb dips using preset reference values and rebuild simple mesh.",
-                       params_info={"perturbations": "Array of dip changes", "kwargs": "Mesh generation parameters (disct_z, bias...)"})
-    def perturb_DipsPresetParams_SimpleMesh(self, perturbations, discretization_interval=None, interpolation_axis='x',
-                                            fixed_nodes=None, angle_unit='degrees', is_utm=False,
+                       params_info={"perturbations": "Scalar or one change per movable dip control", "kwargs": "Mesh generation parameters (disct_z, bias...)"},
+                       reference_requirements={"fields": ("top_coords", "dip_control_points")},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_dip_controls",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "dip_change", "unit_from": "angle_unit"},))
+    def perturb_DipsPresetParams_SimpleMesh(self, perturbations, *,
+                                            discretization_interval=None, interpolation_axis='x',
+                                            fixed_nodes=None, angle_unit='degrees',
                                             buffer_nodes=None, buffer_radius=None,
                                             disct_z=None, bias=None, min_dz=None,
                                             use_average_strike=False, average_strike_source='pca', user_direction_angle=None):
         """Perturb dips using preset control points and rebuild the mesh.
 
-        Same as :meth:`perturb_dips_with_preset_params` but also rebuilds
-        the triangular mesh via ``SimpleMeshPolicy`` after geometry update.
+        Same reference, perturbation, and interpolation contracts as
+        :meth:`perturb_dips_with_preset_params`, including automatic conversion
+        of canonical lon/lat reference controls and the
+        ``{'auto', 'x', 'y', 'arc_length'}`` choices for
+        ``interpolation_axis``. It also rebuilds the triangular mesh via
+        ``SimpleMeshPolicy`` after geometry update. In particular,
+        ``'arc_length'`` is suitable for curved top edges and cannot be combined
+        with ``buffer_nodes``/``buffer_radius``.
 
         Additional Parameters
         ---------------------
@@ -186,18 +268,7 @@ class DipPerturbationMixin:
             run_pipeline, DipGeneratorStage, SimpleMeshPolicy,
         )
 
-        self._require_geometry_ref('dip_control_points')
-        dcp = self.geometry_ref.dip_control_points
-
-        ctrl_x, ctrl_y = dcp.x, dcp.y
-        if not is_utm:
-            ctrl_x, ctrl_y = self.ll2xy(ctrl_x, ctrl_y)
-
-        pipeline_dcp = DipControlPoints(
-            x=np.asarray(ctrl_x, dtype=np.float64),
-            y=np.asarray(ctrl_y, dtype=np.float64),
-            dip=dcp.dip.copy(),
-        )
+        pipeline_dcp = self._project_reference_dip_control_points()
 
         stages = [
             DipGeneratorStage(

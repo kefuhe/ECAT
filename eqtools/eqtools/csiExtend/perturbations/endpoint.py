@@ -1,8 +1,10 @@
-"""
-EndpointDuttaPerturbationMixin — Dutta fitting and endpoint perturbation methods.
+"""Specialized endpoint and Dutta-shaped bottom-edge perturbations.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-All methods are pure move-over with zero logic changes.
+Most methods consume frozen top/bottom coordinates and optionally rebuild a
+simple mesh.  ``perturb_geometry_dutta`` is the explicit historical exception:
+it generates a mesh from current geometry rather than ``GeometryReference``.
+The distinction is recorded in registry metadata and should remain visible to
+maintainers because the two baseline semantics are not interchangeable.
 """
 import numpy as np
 from ..bayesian_perturbation_base import track_mesh_update
@@ -49,7 +51,12 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(expected_perturbations_count=2,
                        description="Perturb bottom coords using Dutta logic.",
-                       params_info={"perturbations": "[amod1, amod2]"})
+                       params_info={"perturbations": "[amod1, amod2]"},
+                       reference_requirements={"fields": ("bottom_coords",)},
+                       perturbation_items=(
+                           {"role": "amod1"},
+                           {"role": "amod2"},
+                       ))
     def perturb_bottom_coords_dutta(self, perturbations, fixed_nodes=[0, -1]):
         """
         Perturb bottom coordinates between two specific nodes.
@@ -67,7 +74,12 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, update_laplacian=False, update_area=False, expected_perturbations_count=4,
                        description="Generate Dutta mesh (Legacy Logic).",
-                       params_info={"perturbations": "[D1, D2, S1, S2]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dx": "Minimum dx"})
+                       params_info={"perturbations": "[D1, D2, S1, S2]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dx": "Minimum dx"},
+                       baseline_source="current_geometry",
+                       perturbation_items=(
+                           {"role": "D1"}, {"role": "D2"},
+                           {"role": "S1"}, {"role": "S2"},
+                       ))
     def perturb_geometry_dutta(self, perturbations, disct_z=None, bias=None, min_dx=None):
         """
         Generate a mesh for a seismic fault using the Dutta method.
@@ -93,6 +105,14 @@ class EndpointDuttaPerturbationMixin:
 
     #----------------------------------------Geometry Operations----------------------------------------------#
     def calculate_bottom_endpoints(self, top_coords=None, bottom_coords=None, depth=None, mode='both'):
+        """Intersect extended bottom-side lines with the requested depth plane.
+
+        Parameters default to current fault geometry.  ``PolygonIntersector``
+        performs its internal calculation with depth-positive-up coordinates,
+        so this adapter flips bottom z before the call and restores CSI's
+        positive-down depth on the returned start/end points.  The intersector
+        is stored on ``self`` for diagnostics.
+        """
         from ..geom_ops import PolygonIntersector
         if top_coords is None:
             top_coords = self.top_coords
@@ -110,7 +130,14 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(update_mesh=False, expected_perturbations_count=4,
                        description="Perturb endpoints and midpoint (Translate only, no mesh update).",
-                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]"})
+                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "endpoint_1_offset", "unit": "km"},
+                           {"role": "endpoint_2_offset", "unit": "km"},
+                           {"role": "midpoint_dx", "unit": "km"},
+                           {"role": "midpoint_dy", "unit": "km"},
+                       ))
     def perturb_BottomEndpointsFixedDirAndMidpointTrans(self, perturbations):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints
@@ -135,7 +162,14 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, expected_perturbations_count=4,
                        description="Perturb endpoints/midpoint and rebuild simple mesh.",
-                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"})
+                       params_info={"perturbations": "[dx1, dx2, mid_dx, mid_dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "endpoint_1_offset", "unit": "km"},
+                           {"role": "endpoint_2_offset", "unit": "km"},
+                           {"role": "midpoint_dx", "unit": "km"},
+                           {"role": "midpoint_dy", "unit": "km"},
+                       ))
     def perturb_BottomEndpointsFixedDirAndMidpointTrans_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints
@@ -152,8 +186,23 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(update_mesh=False, expected_perturbations_count=4,
                        description="Dutta Perturbation on bottom coords (No mesh update).",
-                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"})
+                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "amod1"}, {"role": "amod2"},
+                           {"role": "endpoint_1_offset", "unit": "km"},
+                           {"role": "endpoint_2_offset", "unit": "km"},
+                       ))
     def perturb_BottomEndpointsFixedDirandMidpointsDutta(self, perturbations):
+        """Apply Dutta curvature, move endpoints, then align interior points.
+
+        ``perturbations`` is ``[amod1, amod2, start_offset, end_offset]``.
+        The Dutta terms first shape interior bottom nodes between the frozen
+        endpoints.  Endpoint offsets are then applied along local fixed
+        directions.  Finally the interior is rotated/scaled into the moved
+        endpoint frame so its relative shape follows the new baseline span.
+        No mesh is built by this method.
+        """
         self._require_geometry_ref('bottom_coords', 'top_coords')
         assert self.geometry_ref.bottom_coords.shape[0] == self.geometry_ref.top_coords.shape[0], 'The number of top and bottom coordinates must be the same.'
         # Perturb middle points first using Dutta method
@@ -190,7 +239,13 @@ class EndpointDuttaPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, expected_perturbations_count=4,
                        description="Standard Dutta Perturbation with Simple Mesh generation.",
-                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"})
+                       params_info={"perturbations": "[amod1, amod2, dx_end1, dx_end2]"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "amod1"}, {"role": "amod2"},
+                           {"role": "endpoint_1_offset", "unit": "km"},
+                           {"role": "endpoint_2_offset", "unit": "km"},
+                       ))
     def perturb_BottomEndpointsFixedDirandMidpointsDutta_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Perturbs the bottom coordinates with limited horizontal movements for the endpoints

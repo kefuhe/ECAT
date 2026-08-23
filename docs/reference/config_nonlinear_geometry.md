@@ -244,7 +244,7 @@ data_corrections.datasets.<data>.parameter_bounds.<parameter>
 
 ## Sigma 参数
 
-`geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 作为初值；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 支持 `single`、`individual` 和 `grouped`。切换到 `grouped` 时不能只修改 `mode`，还必须增加 `groups`，并让每个实际 `data.name` 恰好属于一个组；完整组织方式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
+`geodata.sigmas` 控制各数据集的标准差超参数。非线性几何入口使用 `values` 作为初值；当 `log_scaled: true` 时，采样值为 `log10(sigma)`。`mode` 支持 `single`、`individual` 和 `grouped`。切换到 `grouped` 时不能只修改 `mode`，还必须增加 `groups`，并让每个实际 `data.name` 恰好属于一个组；组外遗漏、重复或未知名称都会在采样前报错。`values/update` 按参数组而非数据集数量填写，只有标量允许广播。完整组织方式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
 
 非线性几何反演不设置 `alpha`。`alpha` 是后续分布式滑动反演中的平滑尺度，放在线性滑动或滑动 Bayesian 配置中说明。
 
@@ -270,8 +270,21 @@ inv = NonlinearGeometrySMCInversion(
 
 - `lon0/lat0` 是否与数据和断层对象一致。
 - `geodata` 列表顺序是否与 YAML 中所有 geodata 列表一致。
-- 每个数据对象是否已经构建 covariance，例如 InSAR 的 `buildDiagCd()` 或读取 `.cov`。
+- 每个数据对象是否已经构建 covariance，例如 InSAR 的 `buildDiagCd()` 或读取 `.cov`；
+  新版入口会在 `setLikelihood()` 时检查它是有限、对称正定方阵，不合法时在采样前报错。
+- GPS/GNSS 的观测、模拟、frame transform 和 `Cd` 统一按 CSI 分量优先顺序排列：
+  `E(all stations), N(all stations), [U(all stations)]`。用户仍以常规
+  `(n_stations, 3)` 的 `vel_enu`/`synth` 数组工作，不需要自行 reshape 或重排。完整的
+  `d/G/Cd/H` 行列约定见
+  [观测向量、协方差与设计矩阵排列合同](../concepts/observation_matrix_layout.md)。
 - `geodata.polys` 是否符合数据类型；不支持的 transform 应直接报错，而不是回退。
+
+新版非线性几何入口在 `setLikelihood()` 时直接分解每个数据集的协方差：
+\(C=L L^\mathsf{T}\)、\(W=L^{-1}\)。候选几何的残差通过
+\(\lVert Wr/\sigma\rVert^2=r^\mathsf{T}C^{-1}r/\sigma^2\) 评分；它不进入
+BLSE/SMC-FJ 的条件线性求解，也不显式保存 \(C^{-1}\)。单位阵、对角阵和完整非对角
+协方差代表不同的观测误差模型；若为诊断而替换 `Cd`，应在结果中明确记录，而不要把
+结果差异解释为求解器自动修复了原协方差。
 
 ## Data Sources
 

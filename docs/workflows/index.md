@@ -8,10 +8,12 @@
 
 ```text
 01 数据读取
-    └─ 需要时执行 02 降采样
-             ├─ 02a Step1/Step2 调参
-             ├─ 02b 自定义 reader adapter
-             └─ 02c 交互调整断层迹线（可选）
+    ├─ 观测需要时执行 02 降采样
+    │        ├─ 02a Step1/Step2 调参
+    │        └─ 02b 自定义 reader adapter
+    └─ 地表迹线需要时执行预处理
+             ├─ 02c 在观测图上交互调整（可选）
+             └─ 02d 按 marker 确定性处理（可选）
           ↓
 03 Bayesian 非线性几何反演
           ↓
@@ -32,12 +34,13 @@
 | 需要复现旧两步脚本，或对标准降采样分阶段检查和调参 | [02a Step1/Step2 调参](02a_insar_downsampling_two_step.md) | 旧代码到 YAML/CLI 的映射、经检查的采样网格和最终输出 |
 | 标准 reader 不适用，或需要复用时序数据的采样网格 | [02b Adapter 降采样](02b_adapter_downsampling.md) | 保持统一下游接口的自定义读入结果 |
 | 需要在原始或改正后观测上调整已有断层迹线 | [02c 交互调整断层迹线](02c_interactive_trace_editing.md) | 不改观测和参考文件的两列 `lon lat` 新迹线 |
+| 已知距离、经度、纬度或最近点，需要可复现地裁剪、延长或重采样迹线 | [02d 断层迹线预处理](02d_fault_trace_preprocessing.md) | 经检查、可直接交给断层构建的新迹线和可选处理报告 |
 | 用紧凑源估计断层几何 | [03 Bayesian 非线性几何反演](03_nonlinear_geometry_bayesian.md) | 优选几何、不确定性和拟合诊断 |
 | 已有非线性结果、地表迹线+倾角或其他固定几何，需要求分布式滑动 | [04 BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md) | 固定几何上的滑动分布、残差和结果报告 |
 | 固定几何已检查，需要选择 BLSE 平滑强度 | [04a BLSE 固定几何平滑参数搜索](04a_blse_smoothing_search.md) | penalty–RMS/VR、L-curve 和逐数据集拟合表 |
 | 迹线等几何已定，需要比较一组 BLSE 倾角候选 | [04b BLSE 固定拓扑倾角搜索](04b_blse_dip_search.md) | patch 身份一致的倾角—拟合统计表和诊断图 |
 | 已完成平滑和倾角搜索，需要检查二者耦合 | [04c 倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md) | dip–penalty 二维诊断和分倾角 L-curve |
-| 已完成并检查标准两步走，明确需要联合后验 | [05 Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md) | 几何、滑动和噪声参数的联合后验 |
+| 已完成并检查标准两步走，明确需要联合后验 | [05 Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)；先理解 [几何参考](../concepts/bayesian_geometry_reference.md)，再复制 [设置短例](../examples/joint_bayesian_geometry_setup.md) | 几何、滑动和噪声参数的联合后验 |
 | 需要在 Google Earth Pro 中叠加观测、降采样单元、断层、滑动或小震 | [06 Google Earth 科研导出](06_google_earth_export.md) | 带单位、正号和显示配置记录的 KMZ 显示副本 |
 | 需要直接查看内置断层/GNSS，或在本地浏览器中叠加自己的观测和降采样单元 | [07 本地科研地图查看](07_research_map_viewer.md) | 不改科学源的本地交互研究地图 |
 

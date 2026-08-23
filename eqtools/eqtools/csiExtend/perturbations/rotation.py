@@ -1,8 +1,9 @@
-"""
-RotationPerturbationMixin — Rotation-based perturbation methods.
+"""Horizontal rotations of frozen edges, layers, or a complete mesh.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-All methods are pure move-over with zero logic changes.
+Positive angles are counterclockwise in projected x/y.  Coordinate methods
+update only their target, simple-mesh variants rebuild from edges, and the
+whole-mesh method publishes a rigid transform of the frozen mesh pair so area
+and Laplacian caches may remain valid.
 """
 import numpy as np
 from scipy.spatial import cKDTree
@@ -15,20 +16,29 @@ class RotationPerturbationMixin:
 
     #--------------------------------------Perturbing Coords by Rotation--------------------------------------#
     def calculate_pivot(self, pivot, coords, is_utm=True, force_pivot_in_coords=True):
-        """
-        Calculate the pivot point for rotation.
-    
-        Parameters:
-        pivot (str or array-like): The coordinates of the pivot point. If a string, it can be 'start' (the first point of the coordinates), 'end' (the last point of the coordinates), or 'midpoint' (the midpoint of the coordinates). If an array, it should be an array of length 2 representing the x and y coordinates of the pivot point.
-        coords (array-like): An array of coordinate points, where each point should be an array of length 2/3 representing the x and y coordinates [and z coordinate].
-        is_utm (bool, optional): If True, the pivot is in latitude and longitude coordinates and needs to be converted to UTM coordinates. Default is False.
-        force_pivot_in_coords (bool, optional): If True, the pivot point will be forced to be one of the points in coords. Default is False.
-    
-        Returns:
-        array-like: The coordinates of the pivot point, which is an array of length 2 representing the x and y coordinates.
-    
-        Raises:
-        ValueError: If pivot is a string but not 'start', 'end', or 'midpoint'.
+        """Resolve and cache a rotation pivot in local projected coordinates.
+
+        Parameters
+        ----------
+        pivot : {'start', 'end', 'midpoint'} or array-like
+            Named point derived from ``coords``, or an explicit two-component
+            coordinate.
+        coords : (n, 2+) array-like
+            Projected coordinates used for named pivots and nearest-node
+            snapping.
+        is_utm : bool, default True
+            Coordinate frame of an explicit pivot.  True means it is already
+            projected x/y in km; False means lon/lat and converts via
+            ``ll2xy``.  Named pivots ignore this flag.
+        force_pivot_in_coords : bool, default True
+            Snap the resolved pivot to the nearest row in ``coords``.
+
+        Returns
+        -------
+        ndarray, shape (2,)
+            Projected pivot, also cached as ``self.pivot`` for legacy direct
+            rotation helpers.  Pipeline stages resolve pivots per candidate
+            and do not depend on this cross-call cache.
         """
         if isinstance(pivot, str):
             if pivot == 'start':
@@ -98,9 +108,20 @@ class RotationPerturbationMixin:
 
     @track_mesh_update(expected_perturbations_count=1,
                        description="Rotate top coordinates around a pivot.",
-                       params_info={"perturbations": "Rotation angle", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "Rotation angle", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"fields": ("top_coords",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                       ))
     def perturb_top_coords_by_rotation(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                         angle_unit='degrees', force_pivot_in_coords=False):
+        """Rotate the frozen top edge and update current coordinate views.
+
+        ``pivot`` may be ``start``, ``end``, ``midpoint`` or an explicit pair.
+        For an explicit pair, ``is_utm=False`` means lon/lat input and triggers
+        conversion to the local projected frame.  This method does not rebuild
+        the mesh.
+        """
         self._require_geometry_ref('top_coords')
         self.top_coords = self.perturb_coords_by_rotation(self.geometry_ref.top_coords, perturbations, pivot, recalculate_pivot,
                                                            is_utm, angle_unit, force_pivot_in_coords)
@@ -109,9 +130,19 @@ class RotationPerturbationMixin:
 
     @track_mesh_update(expected_perturbations_count=1,
                        description="Rotate bottom coordinates around a pivot.",
-                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"fields": ("bottom_coords",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                       ))
     def perturb_bottom_coords_by_rotation(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                            angle_unit='degrees', force_pivot_in_coords=False):
+        """Rotate the frozen bottom edge without rebuilding a mesh.
+
+        Pivot and angle semantics match
+        :meth:`perturb_top_coords_by_rotation`; the current projected and
+        lon/lat bottom views are updated together.
+        """
         self._require_geometry_ref('bottom_coords')
         self.bottom_coords = self.perturb_coords_by_rotation(self.geometry_ref.bottom_coords, perturbations, pivot, recalculate_pivot,
                                                               is_utm, angle_unit, force_pivot_in_coords)
@@ -120,7 +151,11 @@ class RotationPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, expected_perturbations_count=1,
                        description="Rotate bottom coordinates and rebuild simple mesh.",
-                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "Rotation angle (degrees/radians)", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                       ))
     def perturb_BottomRotation_simpleMesh(self, perturbations, pivot='midpoint', is_utm=False, recalculate_pivot=False,
                                           angle_unit='degrees', force_pivot_in_coords=False,
                                           disct_z=None, bias=None, min_dz=None):
@@ -148,7 +183,11 @@ class RotationPerturbationMixin:
 
     @track_mesh_update(expected_perturbations_count=1,
                        description="Rotate a specific layer.",
-                       params_info={"perturbations": "Angle", "mid_layer_index": "Index"})
+                       params_info={"perturbations": "Angle", "mid_layer_index": "Index"},
+                       reference_requirements={"fields": ("layers",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                       ))
     def perturb_layer_coords_by_rotation(self, perturbations, mid_layer_index=0, pivot='midpoint', recalculate_pivot=False,
                                          is_utm=False, angle_unit='degrees', force_pivot_in_coords=False):
         """
@@ -177,7 +216,11 @@ class RotationPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1,
                        description="Rotate the entire fault geometry.",
-                       params_info={"perturbations": "Angle", "pivot": "'start'/'end'/'midpoint'"})
+                       params_info={"perturbations": "Angle", "pivot": "'start'/'end'/'midpoint'"},
+                       reference_requirements={"mesh_pair": True, "fields": ("top_coords",)},
+                       perturbation_items=(
+                           {"role": "rotation", "unit_from": "angle_unit"},
+                       ))
     def perturb_geometry_by_rotation(self, perturbations, pivot='midpoint', recalculate_pivot=False,
                                      angle_unit='degrees', force_pivot_in_coords=False, is_utm=True):
         """
@@ -200,9 +243,12 @@ class RotationPerturbationMixin:
             pivot = self.calculate_pivot(pivot, self.geometry_ref.top_coords, is_utm, force_pivot_in_coords)
 
         # Rotate the fault geometry mesh
-        self._ensure_vertices_ref()
-        vertices_rot = self.perturb_coords_by_rotation(self.geometry_ref.vertices, perturbations, pivot, False, is_utm, angle_unit)
-        self.VertFace2csifault(vertices_rot, self.Faces)
+        ref_vertices, ref_faces = self._ensure_vertices_ref()
+        vertices_rot = self.perturb_coords_by_rotation(ref_vertices, perturbations, pivot, False, is_utm, angle_unit)
+        self.VertFace2csifault(
+            vertices_rot, ref_faces,
+            topology_changed=False, change_kind='rigid',
+        )
     
         return vertices_rot
     #------------------------------------------------------------------------------------------------------------#

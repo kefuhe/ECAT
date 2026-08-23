@@ -7,59 +7,15 @@ zero-slip constraints, or post-processing decide how those ids are used.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .trace_ops import (
-    point_at_trace_distance,
-    project_points_to_trace,
-    sample_trace_distances,
-    trace_length,
+from .trace_markers import (
+    TraceMarker,
+    resolve_trace_marker as resolve_marker_on_trace,
 )
-
-
-@dataclass(frozen=True)
-class TraceMarker:
-    """A resolved point on a fault trace.
-
-    Distances are measured along the fault trace in local ``x/y`` kilometers,
-    not along longitude, latitude, or a single projected axis.
-    """
-
-    x: float
-    y: float
-    trace_distance_km: float
-    segment_index: int
-    segment_fraction: float
-    lon: float | None = None
-    lat: float | None = None
-    distance_to_trace_km: float = 0.0
-    method: str = "unknown"
-
-    @property
-    def xy(self) -> tuple[float, float]:
-        return (self.x, self.y)
-
-    @property
-    def lonlat(self) -> tuple[float, float] | None:
-        if self.lon is None or self.lat is None:
-            return None
-        return (self.lon, self.lat)
-
-    def to_dict(self) -> dict[str, float | int | str | None]:
-        return {
-            "lon": self.lon,
-            "lat": self.lat,
-            "x": self.x,
-            "y": self.y,
-            "trace_distance_km": self.trace_distance_km,
-            "segment_index": self.segment_index,
-            "segment_fraction": self.segment_fraction,
-            "distance_to_trace_km": self.distance_to_trace_km,
-            "method": self.method,
-        }
+from .trace_ops import project_points_to_trace, sample_trace_distances
 
 
 def _patch_count(fault: Any) -> int:
@@ -331,128 +287,6 @@ def _point_to_xy(fault: Any, point: Sequence[float], coord_system: str) -> tuple
     raise ValueError("coord_system must be 'lonlat' or 'xy'")
 
 
-def _xy_to_lonlat(fault: Any, x: float, y: float) -> tuple[float | None, float | None]:
-    if not hasattr(fault, "xy2ll"):
-        return None, None
-    lon, lat = fault.xy2ll(float(x), float(y))
-    return float(np.asarray(lon)), float(np.asarray(lat))
-
-
-def _make_trace_marker(
-    fault: Any,
-    *,
-    x: float,
-    y: float,
-    trace_distance_km: float,
-    segment_index: int,
-    segment_fraction: float,
-    distance_to_trace_km: float = 0.0,
-    method: str,
-) -> TraceMarker:
-    lon, lat = _xy_to_lonlat(fault, x, y)
-    return TraceMarker(
-        x=float(x),
-        y=float(y),
-        lon=lon,
-        lat=lat,
-        trace_distance_km=float(trace_distance_km),
-        segment_index=int(segment_index),
-        segment_fraction=float(segment_fraction),
-        distance_to_trace_km=float(distance_to_trace_km),
-        method=method,
-    )
-
-
-def _trace_lonlat(fault: Any, trace_xy: np.ndarray) -> np.ndarray:
-    if not hasattr(fault, "xy2ll"):
-        raise AttributeError("fault object has no xy2ll() method for longitude/latitude trace markers")
-    lon, lat = fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
-    return np.column_stack((np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)))
-
-
-def _coordinate_intersections_on_trace(
-    fault: Any,
-    trace_xy: np.ndarray,
-    *,
-    axis: str,
-    value: float,
-    atol: float = 1e-12,
-) -> list[TraceMarker]:
-    axis_key = axis.lower()
-    if axis_key in ("lon", "longitude"):
-        coord = _trace_lonlat(fault, trace_xy)[:, 0]
-        method = "longitude"
-    elif axis_key in ("lat", "latitude"):
-        coord = _trace_lonlat(fault, trace_xy)[:, 1]
-        method = "latitude"
-    elif axis_key == "x":
-        coord = trace_xy[:, 0]
-        method = "x"
-    elif axis_key == "y":
-        coord = trace_xy[:, 1]
-        method = "y"
-    else:
-        raise ValueError("axis must be longitude/lon, latitude/lat, x, or y")
-
-    s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(trace_xy[:, :2], axis=0), axis=1))]
-    target = float(value)
-    markers: list[TraceMarker] = []
-    seen: set[tuple[int, float]] = set()
-    for idx in range(trace_xy.shape[0] - 1):
-        a = float(coord[idx])
-        b = float(coord[idx + 1])
-        denom = b - a
-        if abs(denom) <= atol:
-            if abs(target - a) > atol:
-                continue
-            fractions = (0.0, 1.0)
-        else:
-            frac = (target - a) / denom
-            if frac < -atol or frac > 1.0 + atol:
-                continue
-            fractions = (float(np.clip(frac, 0.0, 1.0)),)
-
-        seg_len = s[idx + 1] - s[idx]
-        for frac in fractions:
-            key = (idx, round(frac, 12))
-            if key in seen:
-                continue
-            seen.add(key)
-            xy = trace_xy[idx] + frac * (trace_xy[idx + 1] - trace_xy[idx])
-            markers.append(
-                _make_trace_marker(
-                    fault,
-                    x=xy[0],
-                    y=xy[1],
-                    trace_distance_km=s[idx] + frac * seg_len,
-                    segment_index=idx,
-                    segment_fraction=frac,
-                    method=method,
-                )
-            )
-
-    markers.sort(key=lambda marker: marker.trace_distance_km)
-    return markers
-
-
-def _choose_marker(candidates: list[TraceMarker], *, which: Any = "first") -> TraceMarker:
-    if not candidates:
-        raise ValueError("trace marker does not intersect the fault trace")
-    if isinstance(which, (int, np.integer)):
-        idx = int(which)
-        try:
-            return candidates[idx]
-        except IndexError as exc:
-            raise IndexError(f"trace marker intersection index {idx} is out of range") from exc
-
-    key = str(which).lower()
-    if key == "first":
-        return candidates[0]
-    if key == "last":
-        return candidates[-1]
-    raise ValueError("which must be 'first', 'last', or an integer intersection index")
-
-
 def resolve_trace_marker(
     fault: Any,
     marker: Any,
@@ -460,123 +294,23 @@ def resolve_trace_marker(
     coord_system: str = "lonlat",
     use_discretized: bool = True,
 ) -> TraceMarker:
-    """Resolve a user marker to a true point on the fault trace.
+    """Resolve a marker through the shared trace-location implementation.
 
-    Supported marker forms include:
-
-    - ``{"longitude": 101.5}`` or ``{"by": "longitude", "value": 101.5}``
-    - ``{"latitude": 24.0}``
-    - ``{"trace_distance_km": 35.0}``
-    - ``{"fraction": 0.5}``
-    - ``{"point": [lon, lat], "coord_system": "lonlat"}``
-    - ``{"nearest": [lon, lat]}``
-    - a bare point sequence, interpreted in ``coord_system``.
-
-    Point-like markers are projected to the nearest point on the trace; they do
-    not snap to the nearest existing trace vertex.
+    This compatibility adapter keeps the established fault-oriented signature;
+    scripts and the fault-trace CLI can use the neutral implementation in
+    :mod:`eqtools.csiExtend.trace_markers` directly.
     """
     if isinstance(marker, TraceMarker):
         return marker
-
     trace = _trace_xy(fault, use_discretized=use_discretized)
-    if isinstance(marker, Mapping):
-        raw = dict(marker)
-        which = raw.get("which", "first")
-        by = raw.get("by")
-
-        if "trace_distance_km" in raw or by == "trace_distance_km":
-            value = raw.get("trace_distance_km", raw.get("value"))
-            point = point_at_trace_distance(trace, float(value))
-            return _make_trace_marker(
-                fault,
-                x=point["xy"][0],
-                y=point["xy"][1],
-                trace_distance_km=point["trace_distance_km"],
-                segment_index=point["segment_index"],
-                segment_fraction=point["segment_fraction"],
-                method="trace_distance_km",
-            )
-
-        if "fraction" in raw or by == "fraction":
-            value = raw.get("fraction", raw.get("value"))
-            fraction = float(value)
-            if fraction < 0.0 or fraction > 1.0:
-                raise ValueError("trace marker fraction must be in [0, 1]")
-            point = point_at_trace_distance(trace, fraction * trace_length(trace))
-            return _make_trace_marker(
-                fault,
-                x=point["xy"][0],
-                y=point["xy"][1],
-                trace_distance_km=point["trace_distance_km"],
-                segment_index=point["segment_index"],
-                segment_fraction=point["segment_fraction"],
-                method="fraction",
-            )
-
-        if "longitude" in raw or "lon" in raw or by in ("longitude", "lon"):
-            value = raw.get("longitude", raw.get("lon", raw.get("value")))
-            candidates = _coordinate_intersections_on_trace(
-                fault,
-                trace,
-                axis="longitude",
-                value=float(value),
-            )
-            return _choose_marker(candidates, which=which)
-
-        if "latitude" in raw or "lat" in raw or by in ("latitude", "lat"):
-            value = raw.get("latitude", raw.get("lat", raw.get("value")))
-            candidates = _coordinate_intersections_on_trace(
-                fault,
-                trace,
-                axis="latitude",
-                value=float(value),
-            )
-            return _choose_marker(candidates, which=which)
-
-        if "x" in raw or by == "x":
-            value = raw.get("x", raw.get("value"))
-            candidates = _coordinate_intersections_on_trace(fault, trace, axis="x", value=float(value))
-            return _choose_marker(candidates, which=which)
-
-        if "y" in raw or by == "y":
-            value = raw.get("y", raw.get("value"))
-            candidates = _coordinate_intersections_on_trace(fault, trace, axis="y", value=float(value))
-            return _choose_marker(candidates, which=which)
-
-        if "xy" in raw:
-            point = raw["xy"]
-            point_coord_system = "xy"
-        elif "lonlat" in raw:
-            point = raw["lonlat"]
-            point_coord_system = "lonlat"
-        elif "point" in raw:
-            point = raw["point"]
-            point_coord_system = raw.get("coord_system", coord_system)
-        elif "nearest" in raw:
-            point = raw["nearest"]
-            point_coord_system = raw.get("coord_system", coord_system)
-        elif by in ("point", "nearest"):
-            point = raw.get("value")
-            point_coord_system = raw.get("coord_system", coord_system)
-        else:
-            allowed = "longitude, latitude, trace_distance_km, fraction, point/nearest"
-            raise ValueError(f"trace marker mapping must define one of: {allowed}")
-    else:
-        point = marker
-        point_coord_system = coord_system
-
-    xy = np.asarray(_point_to_xy(fault, point, point_coord_system), dtype=float)
-    projection = project_points_to_trace(xy, trace)
-    projected_xy = projection["projected_xy"][0]
-    return _make_trace_marker(
-        fault,
-        x=projected_xy[0],
-        y=projected_xy[1],
-        trace_distance_km=projection["trace_distance_km"][0],
-        segment_index=projection["segment_index"][0],
-        segment_fraction=projection["segment_fraction"][0],
-        distance_to_trace_km=projection["distance_to_trace_km"][0],
-        method="nearest",
+    ll2xy = getattr(fault, "ll2xy", None)
+    xy2ll = getattr(fault, "xy2ll", None)
+    return resolve_marker_on_trace(
+        trace,
+        marker,
+        coord_system=coord_system,
+        ll2xy=ll2xy,
+        xy2ll=xy2ll,
     )
 
 

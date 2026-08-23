@@ -48,6 +48,11 @@ ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phas
 | `--downsample-method` | `std`, `data`, `trirb`, `from_rsp` | `std` | 选择降采样方法；短模板只保留对应的 `*_config` |
 | `--template` | `minimal`, `full` | `minimal` | 短模板或带高级提示的完整模板 |
 
+选择 `--downsample-method trirb` 时，模板中的三角断层示例预设
+`use_for: [trirb]`，但仍保持 `enabled: false`；填写真实模型后启用所需条目即可。其他方法
+不会预选断层计算角色。字段和多断层联合规则见
+[Downsampling App 参考](downsampling_app.md#fault_traces-与-fault_models)。
+
 无 YAML 的 GAMMA quick-look：
 
 ```bash
@@ -245,13 +250,19 @@ ecat-list-fault-perturb-methods
 
 该命令用于查看 `BayesianAdaptiveTriangularPatches` 当前可发现的 `perturb_*` 方法，主要服务于 [Bayesian 联合反演中的可扰动断层几何](geometry_perturbation.md) 和 `update_fault_geometry` 配置。
 
-处理或简化断层迹线：
+检查和处理断层迹线：
 
 ```bash
-ecat-fault-trace-tool input_trace.txt --algo vw --output trace_simplified
+ecat-fault-trace-tool inspect input_trace.txt
+ecat-fault-trace-tool locate input_trace.txt --lon 101.8
+ecat-fault-trace-tool trim input_trace.txt --end-lon 101.8 -o trace_trimmed.txt
+ecat-fault-trace-tool simplify input_trace.txt --method vw --tolerance 0.5 -o trace_simplified.txt
 ```
 
-它常用于断层几何构建前的 trace 减点或平滑。`--param` 分别控制 VW 面积阈值、RDP 距离阈值或 B-Spline 平滑因子。使用场景见 [Fault Geometry Construction](fault_geometry_construction.md)。
+新子命令支持检查、经纬度/最近点定位、方向统一、裁剪、延长、重采样、简化、平滑和 YAML
+多步处理，写文件时默认不覆盖。完整命令、marker 与 Python API 见
+[断层迹线处理参考](fault_trace_processing.md)。旧的
+`input_trace.txt --algo vw --param 0.5 --output PREFIX` 调用仍保留兼容，继续生成原有三类输出。
 
 ## Green's Function 模板工具
 

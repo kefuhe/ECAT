@@ -2,6 +2,11 @@
 
 BLSE/VCE 是非线性几何反演后的标准第二步。几何固定后，建立断层网格，组装 Green's functions，再把分布式滑动作为约束线性反问题求解。
 
+这里的“几何固定”也限定一个 inversion 对象的生命周期：如果要比较倾角、底边或其他
+几何候选，应先修改 fault 并完成 mesh，再为每个候选新建 inversion。一个候选内部可以
+复用该对象扫描平滑权重或运行 VCE；不要在对象创建后原地换 mesh 并期待 `run()` 自动刷新
+GF、Laplacian 和约束。
+
 如果只需要最小可复制脚本，先看 [BLSE/VCE 最小脚本骨架](../examples/blse_minimal_run.md)。如果还不清楚为什么标准流程要先几何、再线性滑动，先读 [标准两步走反演逻辑](../concepts/two_step_inversion.md)。
 
 <a id="linear-inputs"></a>
@@ -29,9 +34,9 @@ BLSE/VCE 是非线性几何反演后的标准第二步。几何固定后，建�
 | 如何计算 Euler/block 模式的震间 loading/backslip/coupling | [Interseismic Kinematics](../reference/interseismic_kinematics.md) | [线性滑动配置](../reference/config_linear_slip.md#震间配置) |
 | 如何用深部自由滑动作为浅部加载代理 | [Deep Slip Loading Proxy](../reference/deep_slip_loading_proxy.md) | [Fault Patch Indices](../reference/fault_patch_indices.md) |
 | sigma 和 alpha 如何解释 | [Sigmas and Alpha](../reference/sigmas_alpha.md) | [BLSE/VCE 参考](../reference/blse_vce.md) |
-| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](../../scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
-| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](../../scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
-| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](../../scripts/test_dip_smoothing_search_BLSE.py) |
+| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
+| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
+| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_smoothing_search_BLSE.py) |
 
 ## 目标
 
@@ -145,8 +150,6 @@ inv = BoundLSEMultiFaultsInversion(
 )
 
 inv.run(penalty_weight=None, alpha=[np.log10(1 / 100.0)])
-inv.returnModel(print_stat=True)
-inv.print_faults_summary()
 inv.extract_and_plot_blse_results(
     plot_faults=True,
     plot_data=True,
@@ -194,6 +197,10 @@ Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任�
 [BLSE/VCE 参考](../reference/blse_vce.md#约束检查)。
 
 第一个可运行例子建议先用固定平滑 BLSE，确认约束和输出链条正确后，再用 smoothing loop 或 VCE 做权重诊断。
+
+Smoothing loop 只返回候选表和权衡图：粗糙度统一按未加权 \(L_0\) 计算，且循环结束后
+恢复调用前的活动解。图中的 preferred 点不会自动成为最终模型；选定权重后，用固定平滑
+`run(penalty_weight=...)` 重新求解并输出滑动和残差产品。
 
 ## 运行后端与单进程线程
 

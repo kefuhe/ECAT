@@ -126,7 +126,7 @@ def main():
     inv.run(penalty_weight=None, alpha=[np.log10(1/30.0)]) 
     
     # Get result model
-    inv.returnModel(print_stat=False)
+    inv.returnModel(print_fit_statistics=False)
 
     # --------------------------------Plot Results-------------------------------------------#
     if rank == 0:

@@ -11,7 +11,7 @@ PyGMT/GMT、xarray 和 GIS 工具使用的全分辨率观测网格导出。第�
 | --- | --- |
 | 参考区归零 | [最常用配置：圆形参考区归零](#最常用配置圆形参考区归零) |
 | 已确认局部整周跳变 | [高级：给指定不连通区域修正整周](#高级给指定不连通区域修正整周) |
-| 估计或指定长波 ramp | [一阶平面](#一阶平面) / [固定系数](#固定系数) |
+| 估计或指定长波 ramp | [一阶平面](#一阶平面全场拟合与排除区) / [固定系数](#固定系数) |
 | 导出 HDF5/NetCDF 原始与改正网格 | [全分辨率标准导出](#全分辨率标准导出) |
 | 用 PyGMT 保留真实网格拓扑绘图 | [网格拓扑和 PyGMT](#网格拓扑和-pygmt) |
 
@@ -142,6 +142,23 @@ selector 当前只支持 lon/lat 坐标。每个 correction 必须有唯一 `nam
 
 ## 最常用配置：圆形参考区归零
 
+先按 `model` 和 `coefficient_mode` 确认需要填写的字段：
+
+| 组合 | `fit.regions` | `fixed_coefficients` | 用户需要提供 |
+| --- | --- | --- | --- |
+| `offset + estimate` | 至少一个稳定参考区 | `null` | 参考区；程序取参考观测中位数 |
+| `plane + estimate` | 可为空；空表示全部有效观测 | `null` | 可选排除区或显式限制区；程序自动估计截距和两个梯度 |
+| `offset + fixed` | 必须为空 | 必须填写 | 每个观测分量的 `offset` |
+| `plane + fixed` | 必须为空 | 必须填写 | `origin: [lon, lat]`，以及每个观测分量的 `offset`、`east_gradient`、`north_gradient` |
+
+SAR 的观测分量键是 `observation`；optical 必须分别填写 `east` 和 `north`。当前
+`fit.coord_type` 只接受 `lonlat`。
+
+命令行 `-c` 只请求经验协方差估计，不会自动启用观测改正。若尚未确定 offset 的稳定
+零参考区，应保持 `observation_correction.enabled: false` 或改用有明确科学目的的 plane。
+此时仍可独立使用 `covar.rampEst`。`covar.mask_out` 只用于协方差拟合，不会隐式复用为
+观测改正的 regions/exclusions，避免两个不同阶段共用含义不清的区域。
+
 ```yaml
 observation_correction:
   enabled: true
@@ -156,7 +173,7 @@ observation_correction:
         center: [-68.30, 9.40]  # [lon, lat]
         radius_km: 20.0
     exclude_regions: []
-  fixed_coefficients:
+  fixed_coefficients: null
 ```
 
 参考圆按 ECAT 当前局部投影中的 km 距离选择，不使用经纬度差近似半径。offset
@@ -214,7 +231,7 @@ fit:
 polygon 文件为两列 `lon lat`，相对路径按配置文件目录解析。区域选择只支持
 lon/lat 坐标，不提供同义 shorthand 或 xy 区域。
 
-## 一阶平面
+## 一阶平面：全场拟合与排除区
 
 确认 offset 后仍存在稳定长波趋势时：
 
@@ -225,14 +242,22 @@ observation_correction:
   coefficient_mode: estimate
   fit:
     coord_type: lonlat
-    regions:
-      - kind: box
-        bounds: [-69.1, -65.6, 8.9, 10.8]
+    regions: []                 # 空列表表示全部 analysis-valid 观测
     exclude_regions:
-      - kind: circle
-        center: [-67.8, 10.2]
-        radius_km: 50.0
+      - kind: box
+        bounds: [-68.2, -67.2, 9.7, 10.7]
+        # 排除主要形变或噪声区域
+  fixed_coefficients: null
 ```
+
+`regions: []` 时，plane 使用 reader 读入并经过 `data_filters`、可选整周修正后的全部
+`analysis_valid_mask`；观测改正发生在 `processing_region` 之前。`exclude_regions` 从这些
+候选点中扣除形变、解缠异常或明显噪声区域。若只想在明确区域内拟合，也可为 `regions`
+填写 box、circle 或 polygon；此时语义是限制拟合范围，不是 offset 的零参考区。
+
+`estimate` 模式不接受用户填写的平面系数。程序把最终拟合样本经纬度投影到局部 km 坐标，
+自动以样本中心作为 \((x_0,y_0)\)，再估计 \((b_0,b_E,b_N)\)。样本必须在东西和南北
+两个方向上都有足够展布；排除过多或显式区域近似共线时，设计矩阵秩不足并会报错。
 
 计算公式为：
 
@@ -251,8 +276,9 @@ d_{\mathrm{corrected}}(x,y)=d(x,y)-c(x,y)
 - \(x_0,y_0\) 是拟合样本中心，用于降低数值相关性；
 - `plane` 已包含 offset，不应再叠加一个 offset operation。
 
-plane 使用固定的稳健线性估计流程。报告包含系数、参考点数、rank、条件数、
-迭代次数和改正前后统计。空间退化或秩不足会报错，不会静默回退到 offset。
+plane 使用固定的稳健线性估计流程。报告记录 `all_valid/explicit_regions` 拟合来源、
+候选点数、排除点数、最终拟合点数、系数、rank、条件数、迭代次数和改正前后统计。
+空间退化或秩不足会报错，不会静默回退到 offset。
 
 ## 固定系数
 
@@ -293,6 +319,10 @@ observation_correction:
       north_gradient: 0.00037
 ```
 
+固定 plane 中，`origin` 和对应的数据分量 mapping 是必需结构。mapping 内缺省的数值
+字段按 `0.0` 处理，但建议显式写出三个系数，避免把漏填梯度误认为零梯度。SAR 使用
+`observation`；optical 使用下节所示的 `east`、`north` 两个 mapping。
+
 无论估计还是固定系数，都只使用：
 
 ```text
@@ -332,13 +362,14 @@ fixed_coefficients:
 
 - 使用 `offset` 还是 `plane`；
 - 系数来自 `estimate` 还是 `fixed`；
+- 拟合来源是 `all_valid` 还是 `explicit_regions`，以及候选、排除和最终 fit-mask 点数；
 - 每个分量的 offset、东西/南北梯度；
-- 参考区 count、mean、median、MAD、std 和范围；
+- 每个观测分量实际有限拟合样本的 count、mean、median、MAD、std 和范围；
 - 改正前后统计；
 - plane 的原点、rank、条件数和迭代次数。
 
-参考区为空、固定 plane 没有原点、region 字段混用或数据与原网格索引无法对齐时
-会直接报错。
+offset 零参考区为空、plane 最终拟合样本为空、固定 plane 没有原点、region 字段混用，
+或数据与原网格索引无法对齐时会直接报错。
 
 ## 全分辨率标准导出
 

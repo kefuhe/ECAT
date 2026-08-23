@@ -233,4 +233,5 @@ class AdaptiveRectangularPatches(planarfault):
         added by Kefeng he at 2024/08/23
         '''
         self.area = np.array([self.patchArea(p) for p in self.equivpatch])
+        self._area_geometry_source_id = id(self.equivpatch)
         return self.area

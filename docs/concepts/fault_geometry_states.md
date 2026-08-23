@@ -46,6 +46,24 @@ contours/layers -> FaultGeometryEngine -> rectangular or triangular fault
 readPatchesFromFile -> fault summary -> edge/contour checks -> inversion or forward modeling
 ```
 
+联合 Bayesian 的边界扰动通常在 top/bottom 已确定后插入一次 reference 捕获：
+
+```text
+trace/外部几何 -> final top/bottom -> GeometryReference -> 一次参数化 mesh
+                                     -> 每个样本的 GeometryState 和候选 mesh
+```
+
+只有当前 mesh 的实际边界才是基线时，才先从 mesh 提取 top/bottom；只有直接变换整个
+mesh 时，才先完成最终 mesh 并把 vertices/faces 一并冻结。`GeometryReference`、单样本
+`GeometryState` 和物化后的候选 mesh 不是新的科学文件格式，而是为了保证每个样本都从
+同一基线出发。详见
+[Bayesian 联合反演中的几何参考](bayesian_geometry_reference.md)。
+
+对 whole-mesh 方法，`Vertices/Faces` 是同一拓扑状态的原子 pair，不能用旧 reference 的
+vertices 搭配 remesh 后的 Faces。控制点驱动方法则可以只冻结 top/bottom、layers 或 dip
+controls，再由每个候选的 mesh policy 生成 mesh；两种来源都合法，但不能在一次候选中
+未经明确阶段协议互相覆盖。
+
 ## 常见误区
 
 - 不要直接在经纬度上做 trace 长度、延伸和重采样；先转成局部 `x/y` km。
@@ -66,3 +84,4 @@ readPatchesFromFile -> fault summary -> edge/contour checks -> inversion or forw
 - [Fault Summary](../reference/fault_summary.md)
 - [Fault Edges](../reference/fault_edges.md)
 - [Fault Contours](../reference/fault_contours.md)
+- [Bayesian 联合反演中的几何参考](bayesian_geometry_reference.md)

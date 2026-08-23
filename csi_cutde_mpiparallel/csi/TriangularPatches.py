@@ -143,8 +143,23 @@ class TriangularPatches(Fault):
         return self.area
     
     def compute_patch_areas(self):
+        """Force area computation for the current triangular mesh."""
         self.area = calculate_triangle_areas(self.Vertices, self.Faces)
         return self.area
+
+    def get_patch_areas(self):
+        """Return areas for the current mesh, computing them only if needed.
+
+        ``set_mesh`` and non-rigid ``update_mesh_vertices`` invalidate the
+        source-local cache by clearing ``area``. Rigid coordinate updates keep
+        it valid. This getter is the canonical current-value interface; it
+        does not introduce a second cache or alter face/patch ordering.
+        """
+        area = getattr(self, 'area', None)
+        expected = len(self.Faces)
+        if area is None or np.asarray(area).size != expected:
+            area = self.compute_patch_areas()
+        return np.asarray(area, dtype=float)
 
     # ----------------------------------------------------------------------
     def splitPatch(self, patch):
@@ -247,6 +262,135 @@ class TriangularPatches(Fault):
         return
     # ----------------------------------------------------------------------
 
+    def _clear_boundary_state(self):
+        """Invalidate topology-dependent boundary and smoothing state."""
+        for name in (
+            'edge_vertices', 'edge_vertex_indices', 'edge_triangles_indices',
+            'edge_triangle_vertex_indices', 'edge_dict', 'corner_dict',
+            'corner_vertex_indices', 'corner_vertices', 'edge_segments',
+            'edge_index_segments', 'edge_extraction_info',
+            'edge_extraction_method', '_boundary_extraction_cache_key',
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
+        self._mudpy_boundary_stencil = None
+
+    def _publish_mesh_arrays(self, vertices, faces, vertices_ll, patch, patchll,
+                             topology_changed, change_kind):
+        """Commit a validated mesh and update its dependent state once."""
+        self.Vertices = vertices
+        self.Vertices_ll = vertices_ll
+        self.Faces = faces
+        self.patch = patch
+        self.patchll = patchll
+        self.numpatch = len(patch)
+        self.top = float(np.amin(vertices[:, 2]))
+        self.depth = float(np.amax(vertices[:, 2]))
+        if hasattr(self, 'generate_z_patches'):
+            self.z_patches = self.generate_z_patches()
+        else:
+            self.z_patches = np.linspace(self.depth, 0.0, 5)
+        self.factor_depth = 1.0
+
+        if topology_changed:
+            self.adjacencyMap = None
+            self.adjacencyMap_array = None
+            self._adjacency_faces_source = None
+            self._clear_boundary_state()
+        else:
+            if hasattr(self, 'edge_vertex_indices'):
+                self.edge_vertices = {
+                    name: self.Vertices[np.asarray(indices, dtype=int)].copy()
+                    for name, indices in self.edge_vertex_indices.items()
+                }
+            if hasattr(self, 'edge_index_segments'):
+                self.edge_segments = {
+                    name: [self.Vertices[np.asarray(segment, dtype=int)].copy()
+                           for segment in segments]
+                    for name, segments in self.edge_index_segments.items()
+                }
+            if hasattr(self, 'corner_vertex_indices'):
+                self.corner_vertices = {
+                    name: self.Vertices[int(index)].copy()
+                    for name, index in self.corner_vertex_indices.items()
+                }
+
+        if change_kind != 'rigid':
+            self.area = []
+            if hasattr(self, 'GL'):
+                self.GL = None
+
+    def set_mesh(self, vertices, faces, check_order=True):
+        """Replace a triangular mesh and invalidate topology-dependent caches.
+
+        Inputs are copied and validated before publication.  Face orientation
+        correction is applied to the private copy and never mutates caller
+        arrays.  Use :meth:`update_mesh_vertices` for fixed-connectivity
+        deformation during Bayesian sampling.
+        """
+        vertices = np.array(vertices, dtype=float, copy=True)
+        faces = np.array(faces, dtype=int, copy=True)
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            raise ValueError("vertices must be a two-dimensional array with three columns.")
+        if faces.ndim != 2 or faces.shape[1] != 3:
+            raise ValueError("faces must be a two-dimensional triangular connectivity array.")
+        if len(vertices) == 0 or len(faces) == 0:
+            raise ValueError("vertices and faces must both be non-empty.")
+        if not np.all(np.isfinite(vertices)):
+            raise ValueError("vertices must contain only finite coordinates.")
+        if np.min(faces) < 0 or np.max(faces) >= len(vertices):
+            raise ValueError("faces contain a vertex index outside the vertices array.")
+        if np.any(np.apply_along_axis(lambda row: len(set(row)) != 3, 1, faces)):
+            raise ValueError("each triangular face must contain three distinct vertex indices.")
+
+        if check_order:
+            v0 = vertices[faces[:, 0]]
+            v1 = vertices[faces[:, 1]]
+            v2 = vertices[faces[:, 2]]
+            cross_z = ((v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+                       - (v1[:, 1] - v0[:, 1]) * (v2[:, 0] - v0[:, 0]))
+            swap = cross_z <= 0
+            faces[swap] = faces[swap][:, [0, 2, 1]]
+
+        lon, lat = self.xy2ll(vertices[:, 0], vertices[:, 1])
+        vertices_ll = np.column_stack((lon, lat, vertices[:, 2]))
+        patch = vertices[faces].copy()
+        patchll = [vertices_ll[face].copy() for face in faces]
+        self._publish_mesh_arrays(
+            vertices, faces, vertices_ll, patch, patchll,
+            topology_changed=True, change_kind='remesh',
+        )
+
+    def update_mesh_vertices(self, vertices, change_kind='deform'):
+        """Update coordinates while preserving face connectivity and labels.
+
+        ``change_kind='deform'`` invalidates metric-dependent area/Laplacian
+        values. ``change_kind='rigid'`` preserves them.  Adjacency, boundary
+        membership, junction IDs, and the MudPy boundary stencil are retained.
+        """
+        if change_kind not in {'deform', 'rigid'}:
+            raise ValueError("change_kind must be 'deform' or 'rigid'.")
+        if getattr(self, 'Faces', None) is None:
+            raise ValueError("Cannot update mesh vertices before faces are set.")
+        vertices = np.array(vertices, dtype=float, copy=True)
+        if vertices.shape != np.asarray(self.Vertices).shape:
+            raise ValueError(
+                "fixed-topology vertex update must preserve the vertices array shape."
+            )
+        if not np.all(np.isfinite(vertices)):
+            raise ValueError("vertices must contain only finite coordinates.")
+        faces = self.Faces
+        lon, lat = self.xy2ll(vertices[:, 0], vertices[:, 1])
+        vertices_ll = np.column_stack((lon, lat, vertices[:, 2]))
+        patch = vertices[faces].copy()
+        patchll = [vertices_ll[face].copy() for face in faces]
+        self._publish_mesh_arrays(
+            vertices, faces, vertices_ll, patch, patchll,
+            topology_changed=False, change_kind=change_kind,
+        )
+        self._adjacency_faces_source = self.Faces if self.adjacencyMap is not None else None
+    # ----------------------------------------------------------------------
+
     # ----------------------------------------------------------------------
     def setVerticesFromPatches(self):
         '''
@@ -280,12 +424,10 @@ class TriangularPatches(Fault):
         # Convert faces list to NumPy array
         faces = np.array(faces)
     
-        # Set them
-        self.Vertices = vertices
-        self.Faces = faces
-    
-        # 2 lon lat
-        self.vertices2ll()
+        # Preserve the historical vertex discovery and face-row order, then
+        # publish once through the canonical mesh owner.  check_order=False is
+        # intentional: this conversion never rewrites winding as a side effect.
+        self.set_mesh(vertices, faces, check_order=False)
     
         # All done
         return
@@ -306,10 +448,6 @@ class TriangularPatches(Fault):
         Returns:
             * None
         '''
-
-        # Initialize the lists of patches
-        self.patch = []
-        self.patchll = []
 
         # Initialize vertices and faces
         vertices = []
@@ -370,15 +508,13 @@ class TriangularPatches(Fault):
 
             for f,p in zip(fs, ps):
                 faces.append(f)
-                self.patch.append(p)
 
-        # Save
-        self.Vertices = np.array(vertices)
-        self.Faces = np.array(faces)
-
-        # Convert
-        self.vertices2ll()
-        self.patch2ll()
+        # Committed patch rows are derived from this exact vertices/faces pair
+        # so mesh, patch and slip indexing have one owner.  check_order=False
+        # preserves the historical 2/4-triangle winding and row order.
+        vertices = np.asarray(vertices, dtype=float)
+        faces = np.asarray(faces, dtype=int)
+        self.set_mesh(vertices, faces, check_order=False)
 
         # Initialize slip
         self.initializeslip()
@@ -1374,7 +1510,7 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
     def writeFourEdges2File(self, filename=None, dirname='.', top_tolerance=0.1, 
                             bottom_tolerance=0.1, method='hybrid', merge_threshold=0.02,
-                            edge_method='topology', gap_policy='clean',
+                            edge_method='topology', fallback_method=None, gap_policy='clean',
                             short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
         '''
         Write the four edges of the patches to a file.
@@ -1384,11 +1520,12 @@ class TriangularPatches(Fault):
             * dirname       : Directory where the files will be written
             * top_tolerance : Tolerance for the top edge
             * bottom_tolerance : Tolerance for the bottom edge
-            * edge_method  : Edge extraction backend ('legacy', 'topology', or 'auto').
-                             Default uses the topology backend. Use 'legacy'
-                             only to reproduce historical behavior.
+            * edge_method  : Edge extraction backend ('topology' or 'geometry').
+                             Default uses the topology backend.
+            * fallback_method : Optional explicit fallback. The only supported
+                                fallback is topology -> geometry.
             * gap_policy   : Topology gap handling ('strict', 'clean', 'diagnostic',
-                             or 'standardize') when edge_method is not 'legacy'.
+                             or 'standardize') for the topology method.
 
         Returns:
             * None
@@ -1397,7 +1534,8 @@ class TriangularPatches(Fault):
             os.makedirs(dirname)
         self.find_fault_fouredge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance,
                                            refind=True, method=method, merge_threshold=merge_threshold,
-                                           edge_method=edge_method, gap_policy=gap_policy,
+                                           edge_method=edge_method, fallback_method=fallback_method,
+                                           gap_policy=gap_policy,
                                            short_gap_points=short_gap_points,
                                            bridge_gap_points=bridge_gap_points,
                                            side_axis=side_axis)
@@ -2732,6 +2870,7 @@ class TriangularPatches(Fault):
         vertex_indices = self.Faces.astype(np.int_)
         # build the adjacency map
         self.adjacencyMap = find_adjacent_triangles(vertex_indices)
+        self._adjacency_faces_source = self.Faces
         # 灏嗕笉瑙勫垯鍒楄〃杞崲涓哄浐瀹氶暱搴︾殑鏁扮粍
         self.adjacencyMap_array = np.array([x + [-1]*(3-len(x)) for x in self.adjacencyMap], dtype=np.int_)
         if verbose:
@@ -2753,8 +2892,16 @@ class TriangularPatches(Fault):
             * Laplacian     : 2D array
         '''
         
-        if self.adjacencyMap is None or len(self.adjacencyMap) != len(self.patch):
+        if (self.adjacencyMap is None
+                or getattr(self, '_adjacency_faces_source', None) is not self.Faces):
             self.buildAdjacencyMap(verbose=verbose)
+
+        isolated = [i for i, adjacent in enumerate(self.adjacencyMap) if not adjacent]
+        if isolated:
+            raise ValueError(
+                "CSI Laplacian requires a connected multi-patch fault mesh; "
+                f"faces with no adjacent face: {isolated}."
+            )
 
         if verbose:
             self.logger.info("------------------------------------------")
@@ -2816,53 +2963,265 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
-    def find_boundary_and_corner_triangles(self, top_tolerance: float, bottom_tolerance: float):
-        '''
-        Find the triangles on the top, bottom, left and right boundaries of a mesh, as well as the corner triangles.
-        Left: In North, Right: In South if the left/right can not be determined from west/east
-
-        Args:
-            vertex_indices: A numpy array of shape (n, 3) containing the vertex indices for each triangle in the mesh.
-            vertex_coordinates: A numpy array of shape (m, 3) containing the coordinates of each vertex in the mesh.
-            top_tolerance: A float specifying the tolerance for determining the top boundary of the mesh.
-            bottom_tolerance: A float specifying the tolerance for determining the bottom boundary of the mesh.
-            remove_corner: A boolean specifying whether to remove the corner triangles from the boundary triangles.
-        '''
+    def _classify_geometry_boundary(self, top_tolerance, bottom_tolerance):
+        """Return an uncommitted geometry-classified edge/corner result."""
         from .edge_utils.mesh_edge_finder import find_boundary_and_corner_triangles
+        edge_dict, corner_dict = find_boundary_and_corner_triangles(
+            self.Faces.astype(np.int_), self.Vertices,
+            top_tolerance, bottom_tolerance,
+        )
+        return {
+            'edge_dict': {name: list(edge_dict[name]) for name in ('top', 'bottom', 'left', 'right')},
+            'corner_dict': {name: corner_dict[name] for name in (
+                'top_left', 'top_right', 'bottom_left', 'bottom_right'
+            )},
+            'method': 'geometry',
+        }
 
-        # Cache the vertices and faces arrays
-        vertex_indices = self.Faces.astype(np.int_)
-        vertex_coordinates = self.Vertices
-        # Find the boundary and corner triangles
-        boundary_triangles, corner_triangles = find_boundary_and_corner_triangles(vertex_indices, vertex_coordinates, top_tolerance, bottom_tolerance)
+    def _get_mudpy_boundary_stencil(self, top_tolerance, bottom_tolerance, force=False):
+        """Return the geometry-classified stencil used only by MudPy smoothing."""
+        cache_key = (float(top_tolerance), float(bottom_tolerance), id(self.Faces))
+        cached = getattr(self, '_mudpy_boundary_stencil', None)
+        if not force and cached is not None and cached['cache_key'] == cache_key:
+            return cached
 
-        self.edge_dict = {'top': boundary_triangles['top'],
-                            'bottom': boundary_triangles['bottom'],
-                            'left': boundary_triangles['left'],
-                            'right': boundary_triangles['right']
-                            }
-        
-        self.corner_dict = {'left_top': corner_triangles['top_left'],
-                            'right_top': corner_triangles['top_right'],
-                            'left_bottom': corner_triangles['bottom_left'],
-                            'right_bottom': corner_triangles['bottom_right']
-                            }
+        stencil = self._classify_geometry_boundary(top_tolerance, bottom_tolerance)
+        stencil['cache_key'] = cache_key
+        self._mudpy_boundary_stencil = stencil
+        return stencil
 
-        # All done
-        return
+    def find_boundary_and_corner_triangles(self, top_tolerance: float, bottom_tolerance: float):
+        """Prepare the geometry-classified boundary stencil used by MudPy.
 
-    def find_fault_edge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False,
-                                 edge_method='topology', gap_policy='clean',
-                                 short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
-        '''
-        Left: In West, Right: In East
-        '''
-        if edge_method not in ['legacy', 'topology', 'auto']:
-            raise ValueError("edge_method must be 'legacy', 'topology', or 'auto'.")
-        if edge_method in ['topology', 'auto']:
-            from .edge_utils.topology_boundary import extract_four_edges_topology
-            try:
-                result = extract_four_edges_topology(
+        This historical entry point is retained for scripts that prepare
+        smoothing explicitly.  The stencil is isolated from the general
+        four-edge result, so calling this method cannot overwrite a boundary
+        previously extracted with ``edge_method='topology'``.
+        """
+        stencil = self._get_mudpy_boundary_stencil(
+            top_tolerance, bottom_tolerance, force=True
+        )
+        if not hasattr(self, 'edge_extraction_method'):
+            self.edge_dict = copy.deepcopy(stencil['edge_dict'])
+            self.corner_dict = copy.deepcopy(stencil['corner_dict'])
+        return copy.deepcopy(stencil['edge_dict']), copy.deepcopy(stencil['corner_dict'])
+
+    @staticmethod
+    def _corner_edge_pairs():
+        return {
+            'top_left': ('top', 'left'),
+            'top_right': ('top', 'right'),
+            'bottom_left': ('bottom', 'left'),
+            'bottom_right': ('bottom', 'right'),
+        }
+
+    def _derive_boundary_corners(self, edge_vertex_indices, edge_triangles_indices):
+        from .edge_utils.topology_boundary import BoundaryExtractionError
+
+        corner_vertex_indices = {}
+        corner_vertices = {}
+        corner_dict = {}
+        for corner_name, (edge_a, edge_b) in self._corner_edge_pairs().items():
+            junctions = np.intersect1d(
+                edge_vertex_indices[edge_a], edge_vertex_indices[edge_b]
+            )
+            if junctions.size != 1:
+                raise BoundaryExtractionError(
+                    f"Corner {corner_name!r} must have exactly one junction vertex; "
+                    f"found {junctions.size}: {junctions.tolist()}."
+                )
+            junction = int(junctions[0])
+            ear_faces = np.intersect1d(
+                edge_triangles_indices[edge_a], edge_triangles_indices[edge_b]
+            )
+            if ear_faces.size > 1:
+                raise BoundaryExtractionError(
+                    f"Corner {corner_name!r} has ambiguous ear faces: {ear_faces.tolist()}."
+                )
+            corner_vertex_indices[corner_name] = junction
+            corner_vertices[corner_name] = self.Vertices[junction].copy()
+            corner_dict[corner_name] = int(ear_faces[0]) if ear_faces.size else None
+        return corner_vertex_indices, corner_vertices, corner_dict
+
+    def _extract_geometry_four_edges(self, top_tolerance, bottom_tolerance,
+                                     method='hybrid', merge_threshold=0.02):
+        """Build a complete four-edge result with the geometry classifier."""
+        from .edge_utils.mesh_edge_finder import find_left_or_right_edgeline_points
+        from .edge_utils.topology_boundary import (
+            BoundaryExtractionError, orient_strike_for_left_right,
+            principal_xy_direction,
+        )
+
+        stencil = self._classify_geometry_boundary(top_tolerance, bottom_tolerance)
+        edge_triangles_indices = {
+            name: list(stencil['edge_dict'][name])
+            for name in ('top', 'bottom', 'left', 'right')
+        }
+        for corner_name, (edge_a, edge_b) in self._corner_edge_pairs().items():
+            face = stencil['corner_dict'][corner_name]
+            if face is not None:
+                edge_triangles_indices[edge_a].append(face)
+                edge_triangles_indices[edge_b].append(face)
+        edge_triangles_indices = {
+            name: np.unique(indices).astype(int)
+            for name, indices in edge_triangles_indices.items()
+        }
+
+        top_bottom_vertices = []
+        for name in ('top', 'bottom'):
+            if edge_triangles_indices[name].size:
+                vertex_ids = np.unique(self.Faces[edge_triangles_indices[name]].ravel())
+                top_bottom_vertices.append(self.Vertices[vertex_ids])
+        if len(top_bottom_vertices) != 2:
+            raise BoundaryExtractionError(
+                "Geometry boundary classification did not produce both top and bottom edges."
+            )
+        strike = principal_xy_direction(np.vstack(top_bottom_vertices))
+        projection, naming_rule = orient_strike_for_left_right(strike)
+        side_means = {}
+        for name in ('left', 'right'):
+            indices = edge_triangles_indices[name]
+            if indices.size == 0:
+                raise BoundaryExtractionError(
+                    f"Geometry boundary classification produced an empty {name!r} edge."
+                )
+            centers = np.mean(self.Vertices[self.Faces[indices]], axis=1)
+            side_means[name] = float(np.mean(centers[:, :2] @ projection))
+        sides_swapped = side_means['left'] > side_means['right']
+        if sides_swapped:
+            edge_triangles_indices['left'], edge_triangles_indices['right'] = (
+                edge_triangles_indices['right'], edge_triangles_indices['left']
+            )
+            side_means['left'], side_means['right'] = side_means['right'], side_means['left']
+
+        left_indices, left_points = find_left_or_right_edgeline_points(
+            edge_triangles_indices['left'], self.Faces, self.Vertices, side='left'
+        )
+        right_indices, right_points = find_left_or_right_edgeline_points(
+            edge_triangles_indices['right'], self.Faces, self.Vertices, side='right'
+        )
+        top_points, top_indices = self._order_edge_vertices_from_triangles(
+            edge_triangles_indices['top'], 'top', return_indices=True,
+            method=method, merge_threshold=merge_threshold,
+        )
+        bottom_points, bottom_indices = self._order_edge_vertices_from_triangles(
+            edge_triangles_indices['bottom'], 'bottom', return_indices=True,
+            method=method, merge_threshold=merge_threshold,
+        )
+
+        def orient_horizontal(points, indices):
+            points = np.asarray(points)
+            indices = np.asarray(indices, dtype=int)
+            if points[0, :2] @ projection > points[-1, :2] @ projection:
+                return points[::-1], indices[::-1]
+            return points, indices
+
+        def orient_downward(points, indices):
+            points = np.asarray(points)
+            indices = np.asarray(indices, dtype=int)
+            if points[0, 2] > points[-1, 2]:
+                return points[::-1], indices[::-1]
+            return points, indices
+
+        top_points, top_indices = orient_horizontal(top_points, top_indices)
+        bottom_points, bottom_indices = orient_horizontal(bottom_points, bottom_indices)
+        left_points, left_indices = orient_downward(left_points, left_indices)
+        right_points, right_indices = orient_downward(right_points, right_indices)
+        edge_vertices = {
+            'top': top_points, 'bottom': bottom_points,
+            'left': left_points, 'right': right_points,
+        }
+        edge_vertex_indices = {
+            'top': top_indices, 'bottom': bottom_indices,
+            'left': left_indices, 'right': right_indices,
+        }
+        edge_triangle_vertex_indices = {
+            name: np.unique(self.Faces[indices].ravel()).astype(int)
+            for name, indices in edge_triangles_indices.items()
+        }
+        corner_vertex_indices, corner_vertices, corner_dict = self._derive_boundary_corners(
+            edge_vertex_indices, edge_triangles_indices
+        )
+        return {
+            'edge_vertices': edge_vertices,
+            'edge_vertex_indices': edge_vertex_indices,
+            'edge_triangles_indices': edge_triangles_indices,
+            'edge_triangle_vertex_indices': edge_triangle_vertex_indices,
+            'edge_dict': {name: indices.tolist() for name, indices in edge_triangles_indices.items()},
+            'corner_dict': corner_dict,
+            'corner_vertex_indices': corner_vertex_indices,
+            'corner_vertices': corner_vertices,
+            'edge_segments': {name: [points] for name, points in edge_vertices.items()},
+            'edge_index_segments': {name: [indices] for name, indices in edge_vertex_indices.items()},
+            'info': {
+                'left_right_naming_rule': naming_rule,
+                'strike_vector_xy': strike.tolist(),
+                'projection_vector_xy': projection.tolist(),
+                'side_projection_means': [side_means['left'], side_means['right']],
+                'geometry_sides_swapped': sides_swapped,
+                'corner_summary': {
+                    name: {
+                        'junction_vertex': corner_vertex_indices[name],
+                        'ear_face': corner_dict[name],
+                    }
+                    for name in self._corner_edge_pairs()
+                },
+            },
+        }
+
+    def _commit_boundary_result(self, result, requested_method, resolved_method,
+                                fallback_method=None, fallback_reason=None,
+                                cache_key=None):
+        info = copy.deepcopy(result['info'])
+        info.update({
+            'requested_method': requested_method,
+            'resolved_method': resolved_method,
+            'fallback_method': fallback_method,
+            'fallback_used': resolved_method != requested_method,
+            'fallback_reason': fallback_reason,
+        })
+        for name in (
+            'edge_vertices', 'edge_vertex_indices', 'edge_triangles_indices',
+            'edge_triangle_vertex_indices', 'edge_dict', 'corner_dict',
+            'corner_vertex_indices', 'corner_vertices', 'edge_segments',
+            'edge_index_segments',
+        ):
+            setattr(self, name, copy.deepcopy(result[name]))
+        self.edge_extraction_info = info
+        self.edge_extraction_method = resolved_method
+        self._boundary_extraction_cache_key = cache_key
+
+    def _extract_and_commit_four_edges(self, top_tolerance, bottom_tolerance,
+                                       method, merge_threshold, edge_method,
+                                       fallback_method, gap_policy,
+                                       short_gap_points, bridge_gap_points, side_axis,
+                                       refind=False):
+        from .edge_utils.topology_boundary import (
+            BoundaryExtractionError, extract_four_edges_topology,
+        )
+
+        if edge_method not in {'topology', 'geometry'}:
+            raise ValueError("edge_method must be 'topology' or 'geometry'.")
+        if fallback_method not in {None, 'geometry'}:
+            raise ValueError("fallback_method must be None or 'geometry'.")
+        if fallback_method == edge_method:
+            raise ValueError("fallback_method must differ from edge_method.")
+        if fallback_method is not None and edge_method != 'topology':
+            raise ValueError("Only topology -> geometry fallback is supported.")
+
+        cache_key = (
+            id(self.Faces), edge_method, fallback_method,
+            float(top_tolerance), float(bottom_tolerance), method,
+            float(merge_threshold), gap_policy, short_gap_points,
+            bridge_gap_points, side_axis,
+        )
+        if (not refind
+                and getattr(self, '_boundary_extraction_cache_key', None) == cache_key):
+            return
+
+        def extract(selected_method):
+            if selected_method == 'topology':
+                return extract_four_edges_topology(
                     self.Vertices, self.Faces,
                     top_tolerance=top_tolerance,
                     bottom_tolerance=bottom_tolerance,
@@ -2871,138 +3230,66 @@ class TriangularPatches(Fault):
                     short_gap_points=short_gap_points,
                     side_axis=side_axis,
                 )
-            except Exception as exc:
-                if edge_method == 'topology':
-                    raise
-                self.logger.warning(f"Topology edge extraction failed; falling back to legacy: {exc}")
-            else:
-                self.edge_vertices = result['edge_vertices']
-                self.edge_vertex_indices = result['edge_vertex_indices']
-                self.edge_triangles_indices = result['edge_triangles_indices']
-                self.edge_triangle_vertex_indices = result['edge_triangle_vertex_indices']
-                self.edge_dict = result['edge_dict']
-                self.corner_dict = result['corner_dict']
-                self.edge_segments = result['edge_segments']
-                self.edge_index_segments = result['edge_index_segments']
-                self.edge_extraction_info = result['info']
-                self.edge_extraction_method = 'topology'
-                return
+            return self._extract_geometry_four_edges(
+                top_tolerance, bottom_tolerance,
+                method=method, merge_threshold=merge_threshold,
+            )
 
-        import copy
-        # find boundary and corner triangles indexes in fault.Faces
-        if not hasattr(self, 'edge_dict') or refind:
-            self.find_boundary_and_corner_triangles(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance)
-        edge, corner = self.edge_dict,  self.corner_dict
+        fallback_reason = None
+        try:
+            result = extract(edge_method)
+            resolved_method = edge_method
+        except BoundaryExtractionError as exc:
+            if fallback_method is None:
+                raise
+            fallback_reason = str(exc)
+            result = extract(fallback_method)
+            resolved_method = fallback_method
+        result['info']['extraction_parameters'] = {
+            'top_tolerance': float(top_tolerance),
+            'bottom_tolerance': float(bottom_tolerance),
+            'ordering_method': method,
+            'merge_threshold': float(merge_threshold),
+            'gap_policy': gap_policy,
+            'short_gap_points': short_gap_points,
+            'bridge_gap_points': bridge_gap_points,
+            'side_axis': side_axis,
+        }
+        self._commit_boundary_result(
+            result, edge_method, resolved_method,
+            fallback_method=fallback_method,
+            fallback_reason=fallback_reason,
+            cache_key=cache_key,
+        )
 
-        def get_edge_and_inds(edge, edge_key, corner_key1, corner_key2):
-            # Get edge triangle indexes with corner triangle indexes added if exist
-            edge = copy.deepcopy(edge[edge_key])
-            if corner[corner_key1] is not None:
-                edge.append(corner[corner_key1])
-            if corner[corner_key2] is not None:
-                edge.append(corner[corner_key2])
-            # Get the unique edge triangle indexes in all trianles. edge is index of self.Faces
-            edge = np.unique(edge)
-            # Get the unique points indexes in edge triangles, pnt_inds is index of self.Vertices
-            pnts = self.Faces[edge]
-            pnt_inds = np.unique(np.sort(pnts.flatten()))
-            return edge, pnt_inds
+    def find_fault_edge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, refind=False,
+                                 edge_method='topology', fallback_method=None,
+                                 gap_policy='clean', short_gap_points=2,
+                                 bridge_gap_points=0, side_axis='strike',
+                                 method='hybrid', merge_threshold=0.02):
+        """Extract the four fault boundaries with a named, traceable backend.
 
-        right_edge, rpnt_inds = get_edge_and_inds(edge, 'right', 'right_top', 'right_bottom')
-        left_edge, lpnt_inds = get_edge_and_inds(edge, 'left', 'left_top', 'left_bottom')
-        top_edge, tpnt_inds = get_edge_and_inds(edge, 'top', 'left_top', 'right_top')
-        bottom_edge, bpnt_inds = get_edge_and_inds(edge, 'bottom', 'left_bottom', 'right_bottom')
+        ``topology`` is the default. ``geometry`` selects the original
+        adjacency/depth/direction classifier. Fallback is never implicit; use
+        ``fallback_method='geometry'`` when it is scientifically acceptable.
+        """
+        self._extract_and_commit_four_edges(
+            top_tolerance, bottom_tolerance, method, merge_threshold,
+            edge_method, fallback_method, gap_policy, short_gap_points,
+            bridge_gap_points, side_axis, refind=refind,
+        )
 
-        self.edge_triangles_indices = {
-            'left': left_edge, 
-            'right': right_edge, 
-            'top': top_edge, 
-            'bottom': bottom_edge}
-        self.edge_triangle_vertex_indices = {
-            'left': lpnt_inds, 
-            'right': rpnt_inds, 
-            'top': tpnt_inds, 
-            'bottom': bpnt_inds}
-        self.edge_extraction_method = 'legacy'
-        # All Done
-        return
-    
-    def find_fault_fouredge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1, 
+    def find_fault_fouredge_vertices(self, top_tolerance=0.1, bottom_tolerance=0.1,
                                      refind=False, method='hybrid', merge_threshold=0.02,
-                                     edge_method='topology', gap_policy='clean',
-                                     short_gap_points=2, bridge_gap_points=0, side_axis='strike'):
-        if edge_method not in ['legacy', 'topology', 'auto']:
-            raise ValueError("edge_method must be 'legacy', 'topology', or 'auto'.")
-        if edge_method in ['topology', 'auto']:
-            try:
-                self.find_fault_edge_vertices(
-                    top_tolerance=top_tolerance,
-                    bottom_tolerance=bottom_tolerance,
-                    refind=refind,
-                    edge_method=edge_method,
-                    gap_policy=gap_policy,
-                    short_gap_points=short_gap_points,
-                    bridge_gap_points=bridge_gap_points,
-                    side_axis=side_axis,
-                )
-            except Exception:
-                if edge_method == 'topology':
-                    raise
-            else:
-                if getattr(self, 'edge_extraction_method', None) == 'topology':
-                    return
-
-        from .edge_utils.mesh_edge_finder import find_left_or_right_edgeline_points
-        if not hasattr(self, 'edge_triangles_indices') or refind:
-            self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
-
-        left_inds, left_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['left'], self.Faces, self.Vertices, side='left')
-        right_inds, right_pnts = find_left_or_right_edgeline_points(self.edge_triangles_indices['right'], self.Faces, self.Vertices, side='right')
-    
-        top_inds = self.edge_triangle_vertex_indices['top']
-        bottom_inds = self.edge_triangle_vertex_indices['bottom']
-        top_pnts = self.Vertices[top_inds]
-        bottom_pnts = self.Vertices[bottom_inds]
-        top_depth = np.min(top_pnts[:, -1])
-        bottom_depth = np.max(bottom_pnts[:, -1])
-    
-        top_flag = np.where(np.abs(top_pnts[:, -1] - top_depth) <= top_tolerance)[0]
-        top_inds = top_inds[top_flag]
-        top_pnts = top_pnts[top_flag]
-        top_sortinds = np.argsort(top_pnts[:, 0])
-        top_inds = top_inds[top_sortinds]
-        top_pnts = top_pnts[top_sortinds]
-    
-        bottom_flag = np.where(np.abs(bottom_pnts[:, -1] - bottom_depth) <= bottom_tolerance)[0]
-        bottom_inds = bottom_inds[bottom_flag]
-        bottom_pnts = bottom_pnts[bottom_flag]
-        bottom_sortinds = np.argsort(bottom_pnts[:, 0])
-        bottom_inds = bottom_inds[bottom_sortinds]
-        bottom_pnts = bottom_pnts[bottom_sortinds]
-        
-        self.edge_vertex_indices = {
-            'top': top_inds,
-            'bottom': bottom_inds,
-            'left': left_inds, 
-            'right': right_inds
-        }
-        self.edge_vertices = {
-            'top': top_pnts,
-            'bottom': bottom_pnts,
-            'left': left_pnts, 
-            'right': right_pnts
-        }
-
-        top_edge, top_inds = self.find_ordered_edge_vertices('top', top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, return_indices=True,
-                                                              method=method, merge_threshold=merge_threshold)
-        bottom_edge, bottom_inds = self.find_ordered_edge_vertices('bottom', top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, return_indices=True,
-                                                              method=method, merge_threshold=merge_threshold)
-
-        self.edge_vertex_indices['top'] = top_inds
-        self.edge_vertex_indices['bottom'] = bottom_inds
-        self.edge_vertices['top'] = top_edge
-        self.edge_vertices['bottom'] = bottom_edge
-        self.edge_extraction_method = 'legacy'
+                                     edge_method='topology', fallback_method=None,
+                                     gap_policy='clean', short_gap_points=2,
+                                     bridge_gap_points=0, side_axis='strike'):
+        """Extract ordered top, bottom, left, and right fault boundaries."""
+        self._extract_and_commit_four_edges(
+            top_tolerance, bottom_tolerance, method, merge_threshold,
+            edge_method, fallback_method, gap_policy, short_gap_points,
+            bridge_gap_points, side_axis, refind=refind,
+        )
         return
     # ----------------------------------------------------------------------
 
@@ -3031,27 +3318,29 @@ class TriangularPatches(Fault):
         Comments: 
             * Added by kfhe at 10/16/2021
         '''
-        # Find the boundary and corner triangles if not found
-        if not hasattr(self, 'edge_dict') or self.edge_dict is None or self.corner_dict is None:
-            self.find_boundary_and_corner_triangles(top_tolerance=topscale, bottom_tolerance=bottomscale)
-        
         # Build the adjacency map if not built
-        if self.adjacencyMap is None or len(self.adjacencyMap) != len(self.patch):
+        if (self.adjacencyMap is None
+                or getattr(self, '_adjacency_faces_source', None) is not self.Faces):
             self.buildAdjacencyMap(verbose=verbose)
-            self.find_boundary_and_corner_triangles(top_tolerance=topscale, bottom_tolerance=bottomscale)
-        
-        edge_dict = self.edge_dict
-        corner_dict = self.corner_dict
+
+        stencil = self._get_mudpy_boundary_stencil(topscale, bottomscale)
+        edge_dict = stencil['edge_dict']
+        corner_dict = stencil['corner_dict']
         
         if bounds is None:
             bounds = ['free',]*4
+        if len(bounds) != 4 or any(bound.lower() not in {'free', 'locked'} for bound in bounds):
+            raise ValueError(
+                "bounds must contain four 'free'/'locked' values in "
+                "[top, bottom, left, right] order."
+            )
 
         # saved format is [top, bottom, left, right] with True/False
         bounds_mark = np.array([bound.lower() == 'free' for bound in bounds])
         # saved format is list with edge index which is free
         free_edge_tris = [edge for bound, flag in zip(bounds, ['top', 'bottom', 'left', 'right']) if bound.lower() == 'free' for edge in edge_dict[flag]]
         # saved format is {corner_index: corner_type}
-        free_corner_dict = {corner_dict[flag]: bounds_mark[idx].sum() for flag, idx in zip(['left_top', 'right_top', 'left_bottom', 'right_bottom'], [[0, 2], [0, 3], [1, 2], [1, 3]]) if corner_dict[flag] is not None}
+        free_corner_dict = {corner_dict[flag]: bounds_mark[idx].sum() for flag, idx in zip(['top_left', 'top_right', 'bottom_left', 'bottom_right'], [[0, 2], [0, 3], [1, 2], [1, 3]]) if corner_dict[flag] is not None}
 
         if verbose:
             self.logger.info("------------------------------------------")
@@ -3071,6 +3360,12 @@ class TriangularPatches(Fault):
 
         # 瀵逛簬姣忎釜patch锛岃绠楀叾閭绘帴patch鐨勬暟閲?
         adjacents_counts = np.array([len(adjacents) for adjacents in self.adjacencyMap])
+        isolated = np.flatnonzero(adjacents_counts == 0)
+        if isolated.size:
+            raise ValueError(
+                "MudPy Laplacian requires a connected multi-patch fault mesh; "
+                f"faces with no adjacent face: {isolated.tolist()}."
+            )
 
         # 瀵逛簬閭绘帴patch鏁伴噺涓?鐨刾atch锛屼娇鐢ㄥ悜閲忓寲鎿嶄綔杩涜璁＄畻
         mask = adjacents_counts == 3
@@ -3105,7 +3400,17 @@ class TriangularPatches(Fault):
         h12 = hvals[:, 0]
         h13 = h14 = h12
         sumProd = h13*h14 + h12*h14 + h12*h13
-        scale_cor = np.array([free_corner_dict[i] for i in mask.nonzero()[0] if i in free_corner_dict_keys_set])
+        one_neighbor_faces = mask.nonzero()[0]
+        missing_corner_faces = [
+            int(i) for i in one_neighbor_faces
+            if i not in free_corner_dict_keys_set
+        ]
+        if missing_corner_faces:
+            raise ValueError(
+                "Geometry boundary classification did not assign one-neighbor "
+                f"faces to a unique corner: {missing_corner_faces}."
+            )
+        scale_cor = np.array([free_corner_dict[i] for i in one_neighbor_faces])
         scale = np.where(scale_cor > 0, np.where(scale_cor == 1, sumProd/(h13*h14) * 2./3., sumProd/(h13*h14)), 1.0)
         # 鍒涘缓涓€涓箍鎾殑绱㈠紩鏁扮粍
         rows = np.arange(D.shape[0])[:, None]
@@ -4828,11 +5133,11 @@ class TriangularPatches(Fault):
         # All done
         return fault
 
-    def find_ordered_edge_vertices(self, edge='top', depth=None, buffer_depth=0.1, 
-                                   top_tolerance=0.1, bottom_tolerance=0.1, refind=True,
-                                   return_indices=False, merge_threshold=0.5, method='hybrid'):
-        """
-        Find the ordered edge vertices from the edge triangles.
+    def _order_edge_vertices_from_triangles(self, edge_triangles_indices, edge='top',
+                                            depth=None, buffer_depth=0.1,
+                                            return_indices=False,
+                                            merge_threshold=0.5, method='hybrid'):
+        """Order top or bottom vertices from an explicit face-index sequence.
     
         Parameters:
         -----------
@@ -4842,12 +5147,8 @@ class TriangularPatches(Fault):
             The depth to use for the edge. If None, uses self.top for 'top' edge and self.depth for 'bottom' edge.
         buffer_depth : float, optional
             The buffer depth to include points within the edge. Default is 0.1.
-        top_tolerance : float, optional
-            The tolerance for the top edge. Default is 0.1.
-        bottom_tolerance : float, optional
-            The tolerance for the bottom edge. Default is 0.1.
-        refind : bool, optional
-            Whether to refind the edge vertices. Default is True.
+        edge_triangles_indices : array-like
+            Face indices belonging to the selected boundary.
         return_indices : bool, optional
             Whether to return the indices of the ordered vertices. Default is False.
         merge_threshold : float, optional
@@ -4860,17 +5161,15 @@ class TriangularPatches(Fault):
         ordered_vertices : list
             List of ordered edge vertices.
         """
-        self.find_fault_edge_vertices(top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance, refind=refind)
-
         if edge not in ['top', 'bottom']:
             raise ValueError("Invalid value for edge. It should be 'top' or 'bottom'.")
     
         if depth is None:
-            self.top = np.min(self.Vertices[:, 2])
-            self.depth = np.max(self.Vertices[:, 2])
-            depth = self.top if edge == 'top' else self.depth
+            top = np.min(self.Vertices[:, 2])
+            bottom = np.max(self.Vertices[:, 2])
+            depth = top if edge == 'top' else bottom
     
-        edge_faces = self.Faces[self.edge_triangles_indices[edge]]
+        edge_faces = self.Faces[np.asarray(edge_triangles_indices, dtype=int)]
         vertices = self.Vertices[edge_faces]
     
         # Select points within depth and buffer depth
@@ -4907,7 +5206,7 @@ class TriangularPatches(Fault):
             ordered_edge_points = self.Vertices[ordered_vertices]
 
             if return_indices:
-                return ordered_edge_points, ordered_vertices
+                return ordered_edge_points, np.asarray(ordered_vertices, dtype=int)
             else:
                 return ordered_edge_points
 
@@ -4943,9 +5242,38 @@ class TriangularPatches(Fault):
         ordered_edge_points = self.Vertices[ordered_vertices]
 
         if return_indices:
-            return ordered_edge_points, ordered_vertices
+            return ordered_edge_points, np.asarray(ordered_vertices, dtype=int)
         else:
             return ordered_edge_points
+
+    def find_ordered_edge_vertices(self, edge='top', depth=None, buffer_depth=0.1,
+                                   top_tolerance=0.1, bottom_tolerance=0.1, refind=True,
+                                   return_indices=False, merge_threshold=0.5,
+                                   method='hybrid', edge_method='topology',
+                                   fallback_method=None):
+        """Find ordered vertices on the selected top or bottom boundary.
+
+        Boundary selection is explicit and is forwarded unchanged to the
+        four-edge dispatcher; it can no longer silently switch algorithms.
+        """
+        self.find_fault_edge_vertices(
+            top_tolerance=top_tolerance,
+            bottom_tolerance=bottom_tolerance,
+            refind=refind,
+            edge_method=edge_method,
+            fallback_method=fallback_method,
+            method=method,
+            merge_threshold=merge_threshold,
+        )
+        return self._order_edge_vertices_from_triangles(
+            self.edge_triangles_indices[edge],
+            edge=edge,
+            depth=depth,
+            buffer_depth=buffer_depth,
+            return_indices=return_indices,
+            merge_threshold=merge_threshold,
+            method=method,
+        )
 
     def getfaultEdgeTriangles_and_EdgeLines(self, top_tolerance=0.1, bottom_tolerance=0.1, 
                                             refind=False, method='hybrid', merge_threshold=0.5):

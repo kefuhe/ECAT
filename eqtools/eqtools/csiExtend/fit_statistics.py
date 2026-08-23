@@ -13,25 +13,27 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .data_vector_layout import gps_component_major_vector
+
 
 def data_fit_vectors(data: Any, vertical: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Return observed and synthetic vectors using existing CSI data fields.
 
-    The vectorization matches the legacy ``calculate_data_fit_metrics`` paths:
-    GPS can include ENU or only horizontal EN components; scalar datasets use
-    their native flat arrays; optical offsets concatenate east and north.
+    GPS uses the same component-major row order as CSI ``d/G/Cd``; scalar
+    datasets use their native flat arrays; optical offsets concatenate east
+    and north.
     """
     dtype = getattr(data, "dtype", None)
     if dtype == "insar":
         observed = data.vel
         synthetic = data.synth
     elif dtype == "gps":
-        if vertical:
-            observed = data.vel_enu.flatten()
-            synthetic = data.synth.flatten()
-        else:
-            observed = data.vel_enu[:, :-1].flatten()
-            synthetic = data.synth[:, :-1].flatten()
+        observed = gps_component_major_vector(
+            data.vel_enu, vertical=vertical, name=f"{data.name} GPS observations"
+        )
+        synthetic = gps_component_major_vector(
+            data.synth, vertical=vertical, name=f"{data.name} GPS synthetics"
+        )
     elif dtype in ("opticorr", "optical"):
         observed = np.hstack((data.east, data.north))
         synthetic = np.hstack((data.east_synth, data.north_synth))
@@ -74,6 +76,198 @@ def solver_fit_metrics(G: Any, m: Any, d: Any) -> dict[str, float | int]:
     return fit_metrics_from_vectors(d, predicted)
 
 
+def weighted_fit_metrics_from_residual(
+    residual: Any,
+    covariance_metric: Any,
+    *,
+    sigma: float = 1.0,
+    effective_dof: float | None = None,
+) -> dict[str, float | int | None]:
+    """Return covariance-aware residual diagnostics for one data set.
+
+    The effective covariance is ``sigma**2 * C`` and the prepared metric
+    represents ``C``.  Thus ``Qw = ||W r / sigma||**2`` is exactly
+    ``r.T @ (sigma**2 C)**-1 @ r``.  ``weighted_rms`` is
+    ``sqrt(Qw / n)`` and is dimensionless.  A reduced value is returned only
+    when the caller supplies a positive effective degree of freedom; ECAT
+    does not invent one for constrained BLSE or Bayesian models.
+    """
+    residual = np.asarray(residual, dtype=float).reshape(-1)
+    sigma = float(sigma)
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        raise ValueError("sigma must be finite and positive")
+
+    whitened = covariance_metric.whiten(residual) / sigma
+    weighted_quadratic = float(np.dot(whitened, whitened))
+    n_observations = int(residual.size)
+    weighted_rms = float(np.sqrt(weighted_quadratic / n_observations))
+
+    reduced = None
+    normalized_dof = None
+    if effective_dof is not None:
+        normalized_dof = float(effective_dof)
+        if not np.isfinite(normalized_dof) or normalized_dof <= 0.0:
+            raise ValueError("effective_dof must be finite and positive")
+        reduced = float(weighted_quadratic / normalized_dof)
+
+    base_std = getattr(covariance_metric, "marginal_rms_std", None)
+    effective_std = None if base_std is None else float(base_std) * sigma
+    return {
+        "sigma_scale": sigma,
+        "base_marginal_std": base_std,
+        "effective_marginal_std": effective_std,
+        "weighted_quadratic": weighted_quadratic,
+        "weighted_rms": weighted_rms,
+        "weighted_effective_dof": normalized_dof,
+        "reduced_weighted_misfit": reduced,
+    }
+
+
+def format_fit_statistics_table(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    model: str | None = None,
+) -> str:
+    """Format dataset fit rows as one compact console table."""
+    from tabulate import tabulate
+
+    dataset_rows = [row for row in rows if row.get("scope") == "dataset"]
+    title = "Data Fit Statistics"
+    if model is not None:
+        title += f" ({str(model).upper()} model)"
+    if not dataset_rows:
+        return f"{title}\n  No dataset rows available."
+
+    weighted = any(row.get("weighted_quadratic") is not None for row in dataset_rows)
+    headers = ["Data", "Group", "N"]
+    if weighted:
+        headers.append("Eff. std")
+    headers.extend(["RMS", "VR (%)"])
+    if weighted:
+        headers.extend(["Qw", "wRMS", "Approx. red.Q"])
+
+    table = []
+    for row in dataset_rows:
+        values = [
+            row.get("dataset", ""),
+            row.get("sigma_group", "") or "-",
+            int(row.get("n_observations", 0)),
+        ]
+        if weighted:
+            values.append(_format_optional_float(row.get("effective_marginal_std")))
+        values.extend(
+            [
+                f"{float(row['rms']):.6g}",
+                f"{float(row['vr']):.4g}",
+            ]
+        )
+        if weighted:
+            values.extend(
+                [
+                    _format_optional_float(row.get("weighted_quadratic")),
+                    _format_optional_float(row.get("weighted_rms")),
+                    _format_optional_float(row.get("reduced_weighted_misfit")),
+                ]
+            )
+        table.append(values)
+    return title + "\n" + tabulate(table, headers=headers, tablefmt="simple")
+
+
+def format_vce_component_report(result: Mapping[str, Any]) -> str:
+    """Format final VCE variance components and group diagnostics.
+
+    ``1/s`` is the row multiplier used by the augmented least-squares system;
+    ``Qw`` and ``Approx. red.Q`` are evaluated for the final reported model
+    and the explicit ``solved_*`` variance scales associated with it.
+    """
+    from tabulate import tabulate
+
+    rows = []
+    diagnostics = result.get("component_diagnostics", {})
+    sections = [
+        (
+            "data",
+            "sigma",
+            result.get("solved_sigma2_by_group", {}),
+            result.get("sigma_groups", {}),
+        )
+    ]
+    if not result.get("sigma_only", False):
+        sections.append(
+            (
+                "smooth",
+                "alpha",
+                result.get("solved_alpha2_by_group", {}),
+                result.get("smooth_groups", {}),
+            )
+        )
+    for kind, symbol, values, groups in sections:
+        if not isinstance(values, Mapping):
+            continue
+        kind_diagnostics = diagnostics.get(kind, {})
+        for group, variance in values.items():
+            variance = float(variance)
+            std = float(np.sqrt(variance))
+            members = ", ".join(str(value) for value in groups.get(group, []))
+            diag = kind_diagnostics.get(group, {})
+            rows.append(
+                [
+                    symbol,
+                    group,
+                    members or "-",
+                    f"{variance:.6g}",
+                    f"{std:.6g}",
+                    _format_log10(std),
+                    _format_reciprocal(std),
+                    _format_optional_float(diag.get("weighted_quadratic")),
+                    _format_optional_float(diag.get("reduced_weighted_misfit")),
+                ]
+            )
+
+    status = "converged" if result.get("converged") else "not converged"
+    title = f"VCE variance components ({status}, {result.get('iterations', 0)} iterations)"
+    if not rows:
+        return title + "\n  No variance components available."
+    return title + "\n" + tabulate(
+        rows,
+        headers=[
+            "Kind",
+            "Group",
+            "Members",
+            "Variance (v)",
+            "Std scale (s)",
+            "log10(s)",
+            "Row mult. (1/s)",
+            "Qw",
+            "Approx. red.Q",
+        ],
+        tablefmt="simple",
+    )
+
+
+def _format_optional_float(value: Any) -> str:
+    if value is None:
+        return "-"
+    value = float(value)
+    if not np.isfinite(value):
+        return "-"
+    return f"{value:.6g}"
+
+
+def _format_log10(value: float) -> str:
+    """Format a positive scale without producing runtime warnings."""
+    if not np.isfinite(value) or value <= 0.0:
+        return "-"
+    return f"{np.log10(value):.6g}"
+
+
+def _format_reciprocal(value: float) -> str:
+    """Format a positive row multiplier without dividing by zero."""
+    if not np.isfinite(value) or value <= 0.0:
+        return "-"
+    return f"{1.0 / value:.6g}"
+
+
 def fit_statistics_rows_to_dataframe(rows: Sequence[Mapping[str, Any]]):
     """Return a pandas DataFrame from fit-statistics rows."""
     import pandas as pd
@@ -97,9 +291,23 @@ def format_fit_statistics_report(rows: Sequence[Mapping[str, Any]], *, model: st
             details.append(f"poly={row.get('poly')}")
         details.append(f"n={row.get('n_observations')}")
         suffix = f" ({', '.join(details)})" if details else ""
-        lines.append(
-            f"  - {label}{suffix}: RMS={float(row['rms']):.6g}, VR={float(row['vr']):.4g}%"
-        )
+        metrics = [
+            f"RMS={float(row['rms']):.6g}",
+            f"VR={float(row['vr']):.4g}%",
+        ]
+        if row.get("weighted_quadratic") is not None:
+            metrics.extend(
+                [
+                    f"Qw={float(row['weighted_quadratic']):.6g}",
+                    f"wRMS={float(row['weighted_rms']):.6g}",
+                ]
+            )
+            if row.get("reduced_weighted_misfit") is not None:
+                metrics.append(
+                    "Approx.red.Q="
+                    f"{float(row['reduced_weighted_misfit']):.6g}"
+                )
+        lines.append(f"  - {label}{suffix}: " + ", ".join(metrics))
     return "\n".join(lines) + "\n"
 
 

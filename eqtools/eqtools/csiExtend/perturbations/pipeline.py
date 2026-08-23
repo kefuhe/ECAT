@@ -1,15 +1,24 @@
-"""
-Perturbation Pipeline — composable stage-based geometry perturbation engine.
+"""Composable, non-cumulative geometry perturbation pipeline.
 
 Internal module. All existing public method names, @track_mesh_update decorator,
 PerturbationRegistry, and Bayesian config YAML remain unchanged.
 
-Architecture:
+Each invocation starts from a new mutable copy of the frozen reference.  Stages
+never use the previous proposal as their baseline, which keeps sample meaning
+independent of evaluation order.  Only ``materialize`` writes the finished
+candidate back to the fault.
+
+Data flow::
+
     GeometryReference (frozen)
         -> GeometryState.from_ref()   (mutable working copy)
         -> [coordinate stages]        (OffsetStage / RotateStage / TranslateStage)
         -> MeshPolicy.apply()         (densify + mesh generation)
         -> materialize()              (write back to fault)
+
+The pipeline classifies coordinate changes as ``rigid`` or ``deform``.  CSI's
+mesh publisher remains the authority for topology comparison and derived-cache
+invalidation; stages do not edit cache flags or infer remeshing themselves.
 """
 from __future__ import annotations
 
@@ -28,7 +37,16 @@ from .angle_utils import angles_to_radians, normalize_angle_unit
 
 @dataclass
 class GeometryState:
-    """Mutable working copy of geometry, flowing through pipeline stages."""
+    """Mutable candidate state passed between pipeline stages.
+
+    Coordinate fields are copies of ``GeometryReference`` arrays.  ``dirty``
+    records which fields must be published; untouched fields are not written
+    back to the fault.  ``mesh_change_kind`` records the strongest metric
+    change seen by whole-mesh stages: rigid transforms preserve pairwise
+    distances and areas, while deformation does not.  ``meta`` carries
+    per-candidate generator outputs such as ``top_strike`` and ``top_dip``;
+    those values are not part of the frozen reference.
+    """
 
     top: np.ndarray | None = None
     bottom: np.ndarray | None = None
@@ -39,6 +57,7 @@ class GeometryState:
     densification: DensificationConfig | None = None
     meta: dict = field(default_factory=dict)
     dirty: set = field(default_factory=set)
+    mesh_change_kind: str = 'none'
 
     @classmethod
     def from_ref(cls, ref: GeometryReference) -> GeometryState:
@@ -57,17 +76,43 @@ class GeometryState:
         """Mark fields as modified by a stage."""
         self.dirty.update(fields)
 
+    def mark_mesh_change(self, change_kind):
+        """Accumulate the strongest metric change made by pipeline stages.
+
+        ``rigid`` preserves distances and areas; ``deform`` does not.  Mesh
+        topology replacement is detected centrally by ``VertFace2csifault``
+        from the final faces rather than guessed by individual stages.
+        """
+        precedence = {'none': 0, 'rigid': 1, 'deform': 2}
+        if change_kind not in precedence:
+            raise ValueError(
+                "change_kind must be 'none', 'rigid', or 'deform'; "
+                f"got {change_kind!r}"
+            )
+        if precedence[change_kind] > precedence[self.mesh_change_kind]:
+            self.mesh_change_kind = change_kind
+
 
 @dataclass(frozen=True)
 class Target:
-    """Identifies which geometry component a stage operates on."""
+    """Declarative address of a coordinate field in ``GeometryState``.
+
+    ``kind`` is one of ``top``, ``bottom``, ``vertices``, ``layer`` or
+    ``layers``.  A single ``layer`` requires ``index``; ``layers`` optionally
+    accepts ``indices`` and otherwise resolves every intermediate layer.
+    """
 
     kind: str
     index: int | None = None
     indices: tuple | None = None
 
     def resolve(self, state: GeometryState) -> list[tuple[str, int | None, np.ndarray]]:
-        """Return list of (label, index_or_none, array_ref) for this target."""
+        """Resolve to mutable array references in deterministic layer order.
+
+        Returns tuples of ``(label, layer_index_or_none, array)``.  The arrays
+        belong to the candidate state, not to ``GeometryReference``; modifying
+        them is therefore safe inside a stage.
+        """
         if self.kind == 'top':
             if state.top is None:
                 raise ValueError("Target('top') but state.top is None.")
@@ -114,6 +159,8 @@ class Target:
 # ============================================================================
 
 class NodeSelector(ABC):
+    """Strategy that selects coordinate rows affected by an offset stage."""
+
     @abstractmethod
     def select(self, coords: np.ndarray) -> np.ndarray:
         """Return boolean mask of shape (n,) for nodes to perturb."""
@@ -121,11 +168,15 @@ class NodeSelector(ABC):
 
 
 class AllNodes(NodeSelector):
+    """Select every coordinate row."""
+
     def select(self, coords):
         return np.ones(len(coords), dtype=bool)
 
 
 class IndexNodes(NodeSelector):
+    """Select only the supplied NumPy-style row indices."""
+
     def __init__(self, indices):
         self.indices = indices
 
@@ -136,7 +187,8 @@ class IndexNodes(NodeSelector):
 
 
 class ExcludeNodes(NodeSelector):
-    """Equivalent to current fixed_nodes semantics."""
+    """Select all rows except ``indices`` (the public ``fixed_nodes`` rule)."""
+
     def __init__(self, indices):
         self.indices = indices
 
@@ -147,6 +199,8 @@ class ExcludeNodes(NodeSelector):
 
 
 class MaskNodes(NodeSelector):
+    """Select rows using a caller-supplied boolean mask."""
+
     def __init__(self, mask):
         self.mask = np.asarray(mask, dtype=bool)
 
@@ -159,6 +213,8 @@ class MaskNodes(NodeSelector):
 # ============================================================================
 
 class DirectionProvider(ABC):
+    """Strategy that returns per-node Cartesian unit direction vectors."""
+
     @abstractmethod
     def compute(self, coords: np.ndarray, ctx: PipelineContext) -> np.ndarray:
         """Return (n, 2) or (n, 3) direction unit vectors."""
@@ -166,7 +222,13 @@ class DirectionProvider(ABC):
 
 
 class StrikeNormalDirection(DirectionProvider):
-    """Strike-normal direction. Delegates to calculate_perturb_direction()."""
+    """Right-hand strike-normal direction in the local projected frame.
+
+    By default the direction is derived from the frozen top edge so a bottom
+    or layer stage does not silently change direction after an earlier stage.
+    ``source`` may select the target coordinates for methods that explicitly
+    need candidate-local directions.
+    """
 
     def __init__(self, use_average: bool = True,
                  average_direction=None, angle_unit: str = 'degrees',
@@ -189,6 +251,8 @@ class StrikeNormalDirection(DirectionProvider):
 
 
 class VerticalDirection(DirectionProvider):
+    """Positive local z direction; depth sign interpretation stays with caller."""
+
     def compute(self, coords, ctx):
         n = len(coords)
         dirs = np.zeros((n, 3))
@@ -197,6 +261,8 @@ class VerticalDirection(DirectionProvider):
 
 
 class FixedAzimuthDirection(DirectionProvider):
+    """One geographic azimuth, broadcast as a local horizontal unit vector."""
+
     def __init__(self, azimuth_deg: float):
         self.azimuth_rad = np.radians(azimuth_deg)
 
@@ -207,6 +273,8 @@ class FixedAzimuthDirection(DirectionProvider):
 
 
 class CustomVectors(DirectionProvider):
+    """Return caller-provided direction vectors without normalization."""
+
     def __init__(self, vectors: np.ndarray):
         self.vectors = np.asarray(vectors, dtype=float)
 
@@ -220,7 +288,11 @@ class CustomVectors(DirectionProvider):
 
 @dataclass
 class PipelineContext:
-    """Read-only context passed to all stages."""
+    """Shared stage context: target fault, frozen reference, and angle unit.
+
+    The dataclass is treated as read-only by convention.  Mutable candidate
+    geometry belongs exclusively to ``GeometryState``.
+    """
     fault: object
     ref: GeometryReference
     angle_unit: str = 'degrees'
@@ -231,8 +303,11 @@ class PipelineContext:
 # ============================================================================
 
 class Stage(ABC):
+    """One ordered candidate transformation with no direct fault write-back."""
+
     @abstractmethod
     def apply(self, state: GeometryState, ctx: PipelineContext) -> GeometryState:
+        """Transform and return ``state``, recording dirty fields as needed."""
         ...
 
 
@@ -249,7 +324,13 @@ def _collect_dirty_labels(targets, state):
 
 @dataclass
 class OffsetStage(Stage):
-    """Offset coordinates along a direction. Replaces perturb_coords_along_fixed_direction()."""
+    """Offset selected rows along per-node direction vectors.
+
+    A scalar value broadcasts to all selected rows; otherwise the value count
+    must equal the selected-row count.  Offsets are conservatively classified
+    as deformation because node-dependent directions or fixed nodes can change
+    distances even when a single scalar was supplied.
+    """
 
     target: Target
     nodes: NodeSelector
@@ -257,6 +338,7 @@ class OffsetStage(Stage):
     values: np.ndarray
 
     def apply(self, state, ctx):
+        """Apply the offset to every array resolved by ``target``."""
         resolved = self.target.resolve(state)
         for label, idx, coords in resolved:
             mask = self.nodes.select(coords)
@@ -281,6 +363,7 @@ class OffsetStage(Stage):
                 coords[mask] += dirs[mask] * vals[:, None]
 
         state.mark_dirty(*_collect_dirty_labels([self.target], state))
+        state.mark_mesh_change('deform')
         return state
 
 
@@ -288,7 +371,12 @@ class OffsetStage(Stage):
 
 @dataclass
 class RotateStage(Stage):
-    """Rotate coordinates around a pivot. Replaces perturb_coords_by_rotation()."""
+    """Apply one horizontal rigid rotation to one or more targets.
+
+    The pivot can come from the current candidate or frozen reference.  A
+    ``pivot_key`` reuses one resolved pivot across stages in the same pipeline;
+    it never persists the pivot into the fault or across proposals.
+    """
 
     targets: list
     angle: float
@@ -300,6 +388,7 @@ class RotateStage(Stage):
     pivot_frame: str = "current"
 
     def apply(self, state, ctx):
+        """Rotate target x/y coordinates and mark a rigid metric change."""
         pivot = self._resolve_pivot(state, ctx)
         angle_rad = float(np.asarray(
             angles_to_radians(self.angle, ctx.angle_unit)
@@ -314,9 +403,11 @@ class RotateStage(Stage):
                 coords[:, :2] = np.column_stack([c_rot.real, c_rot.imag]) + pivot
 
         state.mark_dirty(*_collect_dirty_labels(self.targets, state))
+        state.mark_mesh_change('rigid')
         return state
 
     def _resolve_pivot(self, state, ctx):
+        """Resolve named or explicit pivot coordinates in local projected km."""
         if self.pivot_frame not in ("current", "reference"):
             raise ValueError(
                 f"pivot_frame must be 'current' or 'reference'; got {self.pivot_frame!r}"
@@ -358,6 +449,7 @@ class RotateStage(Stage):
         return pivot
 
     def _get_source_coords(self, state, ctx):
+        """Return the current or reference coordinates used to define pivot."""
         if self.pivot_frame == "reference":
             return _resolve_ref_coords(self.pivot_source, ctx.ref)
         return self.pivot_source.resolve(state)[0][2]
@@ -385,19 +477,21 @@ def _resolve_ref_coords(target: Target, ref: GeometryReference) -> np.ndarray:
 
 @dataclass
 class TranslateStage(Stage):
-    """Translate coordinates. Replaces perturb_coords_by_translation()."""
+    """Apply one rigid horizontal translation to one or more targets."""
 
     targets: list
     dx: float
     dy: float
 
     def apply(self, state, ctx):
+        """Add ``(dx, dy)`` in km and mark a rigid metric change."""
         delta = np.array([self.dx, self.dy])
         for target in self.targets:
             for label, idx, coords in target.resolve(state):
                 coords[:, :2] += delta
 
         state.mark_dirty(*_collect_dirty_labels(self.targets, state))
+        state.mark_mesh_change('rigid')
         return state
 
 
@@ -417,6 +511,15 @@ class DipGeneratorStage(Stage):
         2. Densify top in-state (DensificationConfig and/or discretization_interval)
         3. Interpolate dip onto densified top nodes
         4. Compute bottom = top + dip_vector * width
+
+    ``interpolation_axis`` accepts ``'auto'``, ``'x'``, ``'y'``, or
+    ``'arc_length'``. The first three operate on fault-local projected x/y;
+    ``'auto'`` PCA-selects one projected axis. ``'arc_length'`` projects control
+    points onto the current top-edge polyline and interpolates along cumulative
+    distance, which avoids x/y ordering ambiguity on curved traces. Buffer
+    augmentation requires a resolved x or y axis and is rejected for
+    ``'arc_length'`` before the candidate state is materialized back onto the
+    fault object.
 
     ``top_strike`` and ``top_dip`` written to ``state.meta`` are reference-node
     values used to generate the bottom edge.  In particular, ``top_dip`` is the
@@ -469,6 +572,12 @@ class DipGeneratorStage(Stage):
         state.mark_dirty('top')
 
     def apply(self, state, ctx):
+        """Perturb controls, interpolate dip, and regenerate candidate bottom.
+
+        The calculation operates entirely on the mutable candidate state.
+        Control-point values remain immutable, and generated strike/dip arrays
+        are stored in ``state.meta`` for publication after all stages succeed.
+        """
         from .dip_ops import (
             perturb_dip_values,
             interpolate_dip_onto_coords,
@@ -544,6 +653,7 @@ class DipGeneratorStage(Stage):
         state.meta['top_strike'] = strike
         state.meta['top_dip'] = interpolated_dip
         state.mark_dirty('top', 'bottom')
+        state.mark_mesh_change('deform')
         return state
 
 
@@ -552,8 +662,11 @@ class DipGeneratorStage(Stage):
 # ============================================================================
 
 class MeshPolicy(ABC):
+    """Final policy that either skips or materializes candidate mesh arrays."""
+
     @abstractmethod
     def apply(self, state: GeometryState, ctx: PipelineContext) -> GeometryState:
+        """Return state after the policy-specific mesh action."""
         ...
 
     def _densify(self, state, ctx):
@@ -612,13 +725,16 @@ class MeshPolicy(ABC):
 
 
 class NoMeshPolicy(MeshPolicy):
-    """Skip mesh generation."""
+    """Publish coordinate changes only; leave mesh generation to the caller."""
 
     def apply(self, state, ctx):
+        """Return the coordinate candidate unchanged."""
         return state
 
 
 class SimpleMeshPolicy(MeshPolicy):
+    """Build a simple triangular mesh from candidate top and bottom edges."""
+
     def __init__(self, disct_z=None, bias=None, min_dz=None, use_depth_only=True):
         self.disct_z = disct_z
         self.bias = bias
@@ -626,6 +742,7 @@ class SimpleMeshPolicy(MeshPolicy):
         self.use_depth_only = use_depth_only
 
     def apply(self, state, ctx):
+        """Densify aligned edges, generate vertices/faces, and mark them dirty."""
         self._densify(state, ctx)
         self._record_mesh_params(
             ctx, 'generate_simple_mesh',
@@ -640,15 +757,19 @@ class SimpleMeshPolicy(MeshPolicy):
         state.vertices = vertices
         state.faces = faces
         state.mark_dirty('vertices', 'faces')
+        state.mark_mesh_change('deform')
         return state
 
 
 class MultiLayerMeshPolicy(MeshPolicy):
+    """Build a triangular mesh through candidate intermediate layers."""
+
     def __init__(self, disct_z=None, bias=None):
         self.disct_z = disct_z
         self.bias = bias
 
     def apply(self, state, ctx):
+        """Densify aligned layers and generate the multilayer mesh pair."""
         self._densify(state, ctx)
         self._record_mesh_params(
             ctx, 'generate_simple_multilayer_mesh',
@@ -662,6 +783,7 @@ class MultiLayerMeshPolicy(MeshPolicy):
         state.vertices = vertices
         state.faces = faces
         state.mark_dirty('vertices', 'faces')
+        state.mark_mesh_change('deform')
         return state
 
 
@@ -674,6 +796,11 @@ def materialize(state: GeometryState, ctx: PipelineContext):
 
     ``top_strike``/``top_dip`` remain reference-node generator metadata.  This
     function deliberately does not relabel them as canonical patch geometry.
+
+    Coordinate setters keep projected and lon/lat views synchronized.  A dirty
+    whole mesh must provide vertices and faces together and is published only
+    through ``VertFace2csifault`` so CSI owns patch reconstruction, topology
+    comparison, and cache invalidation.
     """
     fault = ctx.fault
 
@@ -686,8 +813,24 @@ def materialize(state: GeometryState, ctx: PipelineContext):
     if 'layers' in state.dirty and state.layers is not None:
         fault.set_coords(state.layers, lonlat=False, coord_type='layer')
 
-    if 'vertices' in state.dirty and state.vertices is not None and state.faces is not None:
-        fault.VertFace2csifault(state.vertices, state.faces)
+    if 'vertices' in state.dirty:
+        if state.vertices is None or state.faces is None:
+            raise ValueError(
+                "A pipeline modified whole-mesh vertices without a complete "
+                "candidate vertices/faces pair. Capture the final mesh in "
+                "GeometryReference before using whole-mesh stages."
+            )
+        # Coordinate stages describe metric change; the mesh publisher owns
+        # topology comparison and all cache invalidation.  Unknown/custom
+        # vertex stages fall back to deform, which is scientifically safe.
+        change_kind = (
+            state.mesh_change_kind
+            if state.mesh_change_kind != 'none'
+            else 'deform'
+        )
+        fault.VertFace2csifault(
+            state.vertices, state.faces, change_kind=change_kind,
+        )
 
     if 'top_strike' in state.meta:
         fault.top_strike = state.meta['top_strike']
@@ -722,6 +865,13 @@ def run_pipeline(
     -------
     GeometryState
         Final state after all stages + mesh + materialize.
+
+    Notes
+    -----
+    A new state is copied from ``fault.geometry_ref`` on every call.  Stage
+    order matters within this call, but calls do not accumulate on the
+    previously materialized candidate.  The frozen reference is never updated
+    by this function.
     """
     ref = fault.geometry_ref
     if ref is None:

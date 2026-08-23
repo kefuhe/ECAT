@@ -38,6 +38,25 @@ class ComponentMap:
     vmax: float = None
 
 
+@dataclass(frozen=True)
+class _PreparedComponentView:
+    """One scaled and longitude-aligned component shared by all QC layers."""
+
+    name: str
+    lon: np.ndarray
+    lat: np.ndarray
+    values: np.ndarray
+    finite_mask: np.ndarray
+    visible_mask: np.ndarray
+
+    @property
+    def visible_values(self):
+        values = self.values[self.visible_mask]
+        if values.size:
+            return values
+        return self.values[self.finite_mask]
+
+
 def _needs_column_colorbar_spacing(layout, n_components, colorbar_orientation, colorbar_mode):
     if layout != "columns" or n_components <= 1:
         return False
@@ -352,28 +371,43 @@ def apply_plot_stride(lon, lat, values, stride):
     return lon[::stride], lat[::stride], values[::stride]
 
 
-def _visible_values(component, coordrange, factor4plot):
+def _prepare_component_view(component, coordrange, factor4plot):
     lon = np.asarray(component.lon, dtype=float)
     lat = np.asarray(component.lat, dtype=float)
     values = np.asarray(component.values, dtype=float) * float(factor4plot)
-    flat_lon = lon.ravel()
-    flat_lat = lat.ravel()
-    flat_values = values.ravel()
-    finite = np.isfinite(flat_lon) & np.isfinite(flat_lat) & np.isfinite(flat_values)
+    if lon.shape != lat.shape or lon.shape != values.shape:
+        raise ValueError(
+            f"component {component.name!r} longitude, latitude, and values must "
+            "have identical shapes."
+        )
+
+    longitude_reference = _coordrange_longitude_reference(coordrange)
+    if longitude_reference is not None:
+        lon = align_longitudes(lon, longitude_reference)
+
+    finite = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(values)
+    visible = np.array(finite, dtype=bool, copy=True)
     if coordrange is not None:
-        finite &= _mask_from_coordrange(flat_lon, flat_lat, coordrange)
-    if np.any(finite):
-        return flat_values[finite]
-    return flat_values[np.isfinite(flat_values)]
+        visible &= _mask_from_coordrange(lon.ravel(), lat.ravel(), coordrange).reshape(
+            lon.shape
+        )
+    return _PreparedComponentView(
+        name=str(component.name),
+        lon=lon,
+        lat=lat,
+        values=values,
+        finite_mask=finite,
+        visible_mask=visible,
+    )
 
 
 def _draw_component(
     ax,
     component,
+    prepared,
     *,
     cell_style,
     coordrange,
-    factor4plot,
     cmap,
     vmin,
     vmax,
@@ -385,22 +419,16 @@ def _draw_component(
     from matplotlib.collections import PolyCollection
     from matplotlib.colors import Normalize
 
-    lon = np.asarray(component.lon, dtype=float)
-    lat = np.asarray(component.lat, dtype=float)
-    values = np.asarray(component.values, dtype=float) * float(factor4plot)
+    lon = prepared.lon
+    lat = prepared.lat
+    values = prepared.values
     cmap = _resolve_cmap(cmap)
     norm = Normalize(vmin=vmin, vmax=vmax)
     longitude_reference = _coordrange_longitude_reference(coordrange)
-    if longitude_reference is not None:
-        lon = align_longitudes(lon, longitude_reference)
 
     if component.corners is not None and cell_style == "cells":
-        flat_lon = lon.ravel()
-        flat_lat = lat.ravel()
         flat_values = values.ravel()
-        finite = np.isfinite(flat_lon) & np.isfinite(flat_lat) & np.isfinite(flat_values)
-        if coordrange is not None:
-            finite &= _mask_from_coordrange(flat_lon, flat_lat, coordrange)
+        finite = prepared.visible_mask.ravel()
         polygons = _corners_to_polygons(component.corners)
         polygons = _align_polygon_longitudes(polygons, longitude_reference)
         if len(polygons) != flat_values.size:
@@ -426,10 +454,9 @@ def _draw_component(
     if lon.ndim == 2 and lat.ndim == 2 and values.ndim == 2:
         return ax.pcolormesh(lon, lat, values, cmap=cmap, norm=norm, shading="auto")
 
-    finite = np.isfinite(lon.ravel()) & np.isfinite(lat.ravel()) & np.isfinite(values.ravel())
-    if coordrange is not None:
-        finite &= _mask_from_coordrange(lon.ravel(), lat.ravel(), coordrange)
-    selected = finite if np.any(finite) else np.isfinite(values.ravel())
+    selected = prepared.visible_mask.ravel()
+    if not np.any(selected):
+        selected = prepared.finite_mask.ravel()
     return ax.scatter(
         lon.ravel()[selected],
         lat.ravel()[selected],
@@ -441,6 +468,124 @@ def _draw_component(
         edgecolors=edgecolor,
         alpha=alpha,
     )
+
+
+def _resolve_contour_levels(values, levels, *, percentile=99.0, symmetry=True):
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        raise ValueError("raw contours require at least one finite visible value.")
+    data_min = float(np.min(finite))
+    data_max = float(np.max(finite))
+    if data_min == data_max:
+        raise ValueError("raw contours require varying visible values.")
+
+    if isinstance(levels, str):
+        if levels.strip().lower() != "auto":
+            raise ValueError("contour levels must be 'auto', an integer, or a list.")
+        count = 7
+    elif isinstance(levels, bool):
+        raise ValueError("contour levels must be 'auto', an integer, or a list.")
+    elif isinstance(levels, int):
+        if levels < 2:
+            raise ValueError("contour level count must be at least 2.")
+        count = levels
+    else:
+        try:
+            resolved = np.asarray(levels, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "contour levels must be 'auto', an integer, or a list."
+            ) from exc
+        if resolved.ndim != 1 or resolved.size == 0:
+            raise ValueError("explicit contour levels must be a non-empty list.")
+        if not np.all(np.isfinite(resolved)):
+            raise ValueError("explicit contour levels must be finite.")
+        if np.any(np.diff(resolved) <= 0.0):
+            raise ValueError("explicit contour levels must be strictly increasing.")
+        if not np.any((resolved >= data_min) & (resolved <= data_max)):
+            raise ValueError(
+                "explicit contour levels do not intersect the visible data range."
+            )
+        return resolved
+
+    lo, hi = robust_limits(
+        finite,
+        percentile=percentile,
+        symmetry=symmetry,
+    )
+    if lo is None or hi is None or not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("automatic contour levels require finite robust limits.")
+    if float(lo) == float(hi):
+        raise ValueError("automatic contour levels require varying robust limits.")
+    return np.linspace(float(lo), float(hi), int(count) + 2)[1:-1]
+
+
+def _draw_contours(
+    ax,
+    prepared,
+    contours,
+    *,
+    percentile,
+    symmetry,
+    label_fontsize,
+):
+    if contours is None:
+        return None
+    if not isinstance(contours, dict):
+        raise ValueError("raw contours configuration must be a mapping.")
+    if not contours.get("enabled", False):
+        return None
+    if (
+        prepared.lon.ndim != 2
+        or prepared.lat.ndim != 2
+        or prepared.values.ndim != 2
+        or min(prepared.values.shape) < 2
+    ):
+        raise ValueError(
+            f"raw contours for component {prepared.name!r} require a structured "
+            "2-D grid with at least 2 x 2 values; scattered data are not interpolated."
+        )
+    if not np.all(np.isfinite(prepared.lon)) or not np.all(np.isfinite(prepared.lat)):
+        raise ValueError(
+            f"raw contours for component {prepared.name!r} require finite 2-D "
+            "longitude and latitude grids."
+        )
+
+    try:
+        levels = _resolve_contour_levels(
+            prepared.values[prepared.visible_mask],
+            contours.get("levels", "auto"),
+            percentile=percentile,
+            symmetry=symmetry,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"raw contours for component {prepared.name!r}: {exc}"
+        ) from exc
+    contour_values = np.ma.array(
+        prepared.values,
+        mask=~prepared.visible_mask,
+        copy=False,
+    )
+    contour_set = ax.contour(
+        prepared.lon,
+        prepared.lat,
+        contour_values,
+        levels=levels,
+        colors=contours.get("color", "0.20"),
+        linewidths=contours.get("linewidth", 0.5),
+        alpha=contours.get("alpha", 0.8),
+        zorder=1.5,
+    )
+    if contours.get("labels", False):
+        ax.clabel(
+            contour_set,
+            inline=True,
+            fmt="%g",
+            fontsize=label_fontsize,
+        )
+    return contour_set
 
 
 def _add_panel_colorbar(fig, ax, mappable, *, orientation, mode, loc, size,
@@ -879,6 +1024,7 @@ def plot_component_maps(
     edgecolor="black",
     alpha=1.0,
     markersize=10,
+    contours=None,
     faults=None,
     trace_color="black",
     trace_linewidth=0.5,
@@ -995,7 +1141,12 @@ def plot_component_maps(
 
         mappables = []
         for ax, component in zip(axes, components):
-            scale_values = _visible_values(component, coordrange, factor4plot)
+            prepared = _prepare_component_view(
+                component,
+                coordrange,
+                factor4plot,
+            )
+            scale_values = prepared.visible_values
             vmin, vmax = robust_limits(
                 scale_values,
                 vmin=component.vmin,
@@ -1006,9 +1157,9 @@ def plot_component_maps(
             mappable = _draw_component(
                 ax,
                 component,
+                prepared,
                 cell_style=cell_style,
                 coordrange=coordrange,
-                factor4plot=factor4plot,
                 cmap=cmap,
                 vmin=vmin,
                 vmax=vmax,
@@ -1018,6 +1169,14 @@ def plot_component_maps(
                 markersize=markersize,
             )
             mappables.append(mappable)
+            _draw_contours(
+                ax,
+                prepared,
+                contours,
+                percentile=percentile,
+                symmetry=symmetry,
+                label_fontsize=tickfontsize,
+            )
             _plot_faults(
                 ax,
                 faults,

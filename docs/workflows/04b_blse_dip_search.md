@@ -2,7 +2,7 @@
 
 当断层迹线、上下边界和其他几何已经确定，但倾角仍需要用分布式滑动反演比较时，
 可以对一组候选倾角分别运行 BLSE。ECAT 提供的标准模板是
-[`scripts/test_dip_search_BLSE.py`](../../scripts/test_dip_search_BLSE.py)。
+[`scripts/test_dip_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py)。
 
 这是一种**条件模型比较**：每个候选倾角都对应一次完整、独立的 BLSE。它不是
 Bayesian 倾角后验，也不能只凭最小 RMS 代替几何合理性、粗糙度、残差和机制检查。
@@ -127,9 +127,9 @@ bottom_size = 2.0
 `mainfault_reference_dip` 只用于建立共享拓扑，通常取候选范围中部或已有优选值；它不等于
 最终选定倾角。`top_size/bottom_size` 决定参考 patch 离散化，所有候选随后复用它。
 
-模板保持数据读取为顺序式代码，便于用户直接增删某一条观测。若使用 GNSS、更多 InSAR
-或不同 reader，先按 [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md) 建好对象，再
-保持 `geodata` 顺序与配置一致。
+若使用 GNSS、更多 InSAR 或不同 reader，先按
+[反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md) 建好对象，并保持
+`geodata` 顺序与配置一致。
 
 ## 输出与判断
 

@@ -9,23 +9,79 @@
 | 当前任务 | 模板 | 先读 |
 | --- | --- | --- |
 | 用已经选定的几何和平滑强度运行一次 BLSE | [`test_slip_inv_BLSE.py`](../../scripts/test_slip_inv_BLSE.py) 的 `--mode single` | [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md) |
-| 固定几何，只搜索平滑强度 | [`test_smoothing_search_BLSE.py`](../../scripts/test_smoothing_search_BLSE.py) | [固定几何平滑参数搜索](../workflows/04a_blse_smoothing_search.md) |
-| 固定平滑强度，只搜索倾角 | [`test_dip_search_BLSE.py`](../../scripts/test_dip_search_BLSE.py) | [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md) |
-| 已完成前两项，需要检查倾角和平滑耦合 | [`test_dip_smoothing_search_BLSE.py`](../../scripts/test_dip_smoothing_search_BLSE.py) | [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md) |
+| 固定几何，只搜索平滑强度 | [`test_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_smoothing_search_BLSE.py) | [固定几何平滑参数搜索](../workflows/04a_blse_smoothing_search.md) |
+| 固定平滑强度，只搜索倾角 | [`test_dip_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py) | [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md) |
+| 已完成前两项，需要检查倾角和平滑耦合 | [`test_dip_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_smoothing_search_BLSE.py) | [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md) |
 
 既有 `test_slip_inv_BLSE.py --mode loop` 继续保留，适合已有案例脚本直接做传统
 `simple_run_loop()`。新的 smoothing-only 模板提供更明确的候选列表、逐数据集统计和
-独立输出，二者不互相替代。
+独立输出，二者不互相替代。两种搜索都用未加权 \(L_0\) 报告 roughness；传统 loop 会
+恢复进入前的活动状态，选中候选后仍需用 `run(penalty_weight=...)` 正式求解。
 
 ## 非线性、正演和分辨率检查模板
 
 | 当前任务 | 模板 | 先读 |
 | --- | --- | --- |
 | 新项目做 Bayesian 非线性几何搜索 | [`test_nonlinear_geometry_smc.py`](../../scripts/test_nonlinear_geometry_smc.py) | [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md) |
-| 原样复现 legacy `explorefault` 案例 | [`test_nonlinear_bayesian.py`](../../scripts/test_nonlinear_bayesian.py) | [非线性几何配置](../reference/config_nonlinear_geometry.md) |
+| 原样复现旧多断层 `exploremultifaults_smc` 案例 | [`test_nonlinear_bayesian.py`](../../scripts/test_nonlinear_bayesian.py) | [非线性几何配置](../reference/config_nonlinear_geometry.md) |
 | 在规则点或自定义点计算 ENU 正演 | [`test_surface_displacement_forward.py`](../../scripts/test_surface_displacement_forward.py) | [地表位移正演](surface_forward_grid.md) |
 | 在 SAR 有效像元计算并输出 LOS | [`test_sar_los_surface_forward.py`](../../scripts/test_sar_los_surface_forward.py) | [地表位移正演参考](../reference/surface_displacement_forward.md) |
 | 检查 BLSE 空间分辨率 | [`test_BLSE_Inv_Checkboard.py`](../../scripts/test_BLSE_Inv_Checkboard.py) | [BLSE/VCE 工作流](../workflows/04_linear_slip_blse_vce.md) |
+
+## 联合 Bayesian 模板怎么选
+
+联合 Bayesian 是已经跑通两步走之后的高级路线。三份模板分别展示三类参数化实例；它们
+不是框架支持范围的固定清单，控制点数量和采样参数个数由所选扰动方法决定：
+
+| 要搜索的几何 | 脚本 | 配套配置 |
+| --- | --- | --- |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset.yml) + [`bottom_offset_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
+| 多个倾角参考点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls.yml) + [`three_dip_controls_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation.yml) + [`custom_perturbation_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
+
+初学者可以复制成套文件；熟练用户也可先运行 `ecat-generate-config` 和
+`ecat-generate-boundary`，再对照模板修改生成文件。CLI 生成的是当前版本的完整配置，
+配套文件则把一个具体场景的 Python、参数顺序和 bounds 对齐。
+
+### 复制模板
+
+Linux 或 WSL 的 Bash：
+
+```bash
+cp <eqtools-checkout>/scripts/test_joint_bayesian_bottom_offset.py my_case/
+cp <eqtools-checkout>/scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
+cp <eqtools-checkout>/scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item <eqtools-checkout>\scripts\test_joint_bayesian_bottom_offset.py my_case/
+Copy-Item <eqtools-checkout>\scripts\configs\joint_bayesian\bottom_offset.yml my_case/default_config.yml
+Copy-Item <eqtools-checkout>\scripts\configs\joint_bayesian\bottom_offset_bounds.yml my_case/bounds_config.yml
+```
+
+进入案例目录后，各系统使用同样的运行命令：
+
+```bash
+python test_joint_bayesian_bottom_offset.py --check-only
+mpiexec -n 4 python test_joint_bayesian_bottom_offset.py --run
+python test_joint_bayesian_bottom_offset.py
+```
+
+这些是完整的可编辑起点，不是附带真实观测数据的一键演示。`--check-only` 仍会
+读取数据、构建 fault/reference/mesh 和 inversion，只跳过采样与绘图；因此必须先替换数据
+路径、迹线、投影中心和配置占位值。
+
+如果环境只提供 `python3` 或 MPI 发行版只提供 `mpirun`，分别替换命令中的 `python`
+或 `mpiexec` 即可；这不是脚本或配置格式的差异。
+
+模板使用 `pathlib` 从脚本位置解析相对路径，不要求 Windows 盘符或 POSIX 绝对路径。当前
+公开支持的平台和环境要求以[安装说明](../getting_started/installation.md)为准。
+
+联合模板的默认结果分为 `output/` 和 `Modeling/`：前者保存几何改正、联合 KDE、拟合统计、
+fault/slip GMT 与标准滑动图，后者保存数据拟合图和 InSAR data/synth/resid 文本。模板末尾
+另给可选的 `plot_multifaults_slip(...)` 调用，便于修改发表图的视角、范围和色标。
 
 降采样通常不需要复制 Python：先用 `ecat-generate-downsample` 生成 YAML，再运行 `ecat-downsample`。完整命令见 [InSAR 降采样](../workflows/02_insar_downsampling.md)。`scripts/process_data_downsampling.py` 只是在源码树中调用同一 CLI 的薄入口。
 
@@ -61,6 +117,10 @@
 `fault_name` 必须匹配配置 source 名，`geodata` 必须匹配配置数据顺序。模板中的文件路径
 只是占位符，不能不检查就用于正式案例。
 
+联合 Bayesian 模板中的 `lon0/lat0` 同时服务数据和断层，应保持为同一共享定义。修改案例时，
+还要一起核对 geodata 顺序、迹线与断层物理参数、reference 建立时机和 initial mesh 参数，
+避免坐标参考、配置 source 名或采样基线彼此错位。
+
 <a id="loop-statistics"></a>
 
 ## 循环中怎样获取统计信息
@@ -75,7 +135,9 @@ inversion.run(
     verbose=False,
 )
 
-roughness, solver_rms, solver_vr = inversion.returnModel(print_stat=False)
+roughness, solver_rms, solver_vr = inversion.returnModel(
+    print_fit_statistics=False
+)
 
 fit_rows = inversion.collect_fit_statistics(
     model=f"penalty_{penalty_weight:g}",
@@ -100,9 +162,8 @@ fit_df = inversion.fit_statistics_to_dataframe(fit_rows)
   rows 和独立计算的 `global_solver_vector` row；
 - `fit_statistics_to_dataframe()` 只把已经获得的 rows 转成表格，不重新求解或重建模型。
 
-公开搜索模板为便于直接阅读，默认把一个候选写成一行、把各数据集统计展开为列。模板不会
-限制用户只能搜索某几个参数；当实验维度或数据集会变化时，可把循环变量附加到每个
-statistics row，改用更便于扩展的长表：
+当前搜索模板把各数据集统计展开为宽表。当实验维度或数据集会变化时，可把循环变量附加到
+每个 statistics row，改用更便于扩展的长表：
 
 ```python
 all_rows.extend(

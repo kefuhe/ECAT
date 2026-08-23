@@ -96,3 +96,27 @@ save_fig(fig, "result", fmts=["pdf", "png"], dpi=600)
 ```
 
 论文线图优先检查 PDF/SVG；PNG 适合快速预览和汇报材料。
+
+## 7. 检查三角断层边界
+
+先完成边界识别，再绘制只读诊断图：
+
+```python
+from eqtools.viztools import plot_fault_boundary_diagnostics
+
+fault.find_fault_fouredge_vertices(
+    edge_method="topology",
+    gap_policy="strict",
+)
+
+fig, axes = plot_fault_boundary_diagnostics(
+    fault,
+    save="fault_boundary_diagnostics.png",
+    show=False,
+)
+```
+
+默认两幅图分别用于检查三维边界位置和 left/right 平面命名。需要检查四边节点顺序时，
+可增加 `views=("3d", "map", "sequence")`；`sequence` 横轴只是排序位置，不是距离或真实
+剖面。该函数不会重新识别边界或修改断层、Laplacian 和反演状态。参数与 MPI 使用边界见
+[Viztools 参考](../reference/viztools.md#断层边界诊断)。

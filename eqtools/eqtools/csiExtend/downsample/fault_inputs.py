@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..trace_io import read_trace_segments
+
 
 def _entries(section):
     if section is None:
@@ -43,23 +45,53 @@ def _resolve_path(path, base_dir=None):
     return Path(base_dir) / path
 
 
-def read_trace_file(entry, base_dir=None):
+def _trace_segments_for_entry(entry, base_dir=None):
     file_path = _resolve_path(entry["file"], base_dir=base_dir)
-    columns = entry.get("columns", ["lon", "lat"])
-    if len(columns) < 2:
-        raise ValueError("fault_traces columns must contain at least lon and lat.")
-    data = pd.read_csv(
+    return file_path, read_trace_segments(
         file_path,
-        names=list(columns),
-        sep=entry.get("sep", r"\s+"),
+        columns=entry.get("columns"),
+        sep=entry.get("sep"),
         comment=entry.get("comment", "#"),
-        engine="python",
     )
-    if "lon" not in data or "lat" not in data:
-        data = data.rename(columns={columns[0]: "lon", columns[1]: "lat"})
-    data = data[["lon", "lat"]].astype(float)
-    data.attrs["id"] = entry.get("id", file_path.stem)
+
+
+def _segment_indices(selection, segment_count, *, label):
+    if selection is None or selection == "all":
+        return list(range(segment_count))
+    if isinstance(selection, bool):
+        raise ValueError(f"{label} must be 'all', an integer, or a list of integers.")
+    if isinstance(selection, int):
+        indices = [selection]
+    elif isinstance(selection, (list, tuple)):
+        indices = list(selection)
+        if not indices:
+            raise ValueError(f"{label} must not be empty.")
+    else:
+        raise ValueError(f"{label} must be 'all', an integer, or a list of integers.")
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in indices):
+        raise ValueError(f"{label} must contain only integer segment indices.")
+    if any(index < 0 or index >= segment_count for index in indices):
+        raise IndexError(
+            f"{label} selects a segment outside the available range "
+            f"0..{segment_count - 1}."
+        )
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"{label} must not contain duplicate segment indices.")
+    return indices
+
+
+def _trace_frame(entry, file_path, segment, *, segment_index, segment_count):
+    data = pd.DataFrame(segment.coordinates, columns=["lon", "lat"])
+    base_id = str(entry.get("id") or file_path.stem)
+    data.attrs["id"] = (
+        base_id if segment_count == 1 else f"{base_id}.{segment_index + 1}"
+    )
     data.attrs["source_file"] = str(file_path)
+    data.attrs["source_trace_id"] = base_id
+    data.attrs["source_segment_index"] = int(segment_index)
+    data.attrs["source_segment_count"] = int(segment_count)
+    if segment.name:
+        data.attrs["source_segment_name"] = segment.name
     marker = entry.get("marker")
     if marker is not None:
         markersize = entry.get("markersize")
@@ -68,12 +100,55 @@ def read_trace_file(entry, base_dir=None):
     return data
 
 
+def read_trace_file(entry, base_dir=None):
+    """Read one trace for computation, requiring a selector for multipart input."""
+    file_path, segments = _trace_segments_for_entry(entry, base_dir=base_dir)
+    selection = entry.get("segment")
+    if selection is None:
+        if len(segments) != 1:
+            raise ValueError(
+                f"trace {file_path} contains {len(segments)} segments; set segment "
+                "to the zero-based segment index required for computation."
+            )
+        segment_index = 0
+    else:
+        if isinstance(selection, bool) or not isinstance(selection, int):
+            raise ValueError("segment must be a zero-based non-negative integer.")
+        segment_index = _segment_indices(
+            selection,
+            len(segments),
+            label="segment",
+        )[0]
+    return _trace_frame(
+        entry,
+        file_path,
+        segments[segment_index],
+        segment_index=segment_index,
+        segment_count=len(segments),
+    )
+
+
 def load_fault_traces(config, base_dir=None, stage=None):
     traces = []
     for entry in _enabled_entries(config.get("fault_traces")):
         if stage is not None and not _stage_enabled(entry, stage):
             continue
-        traces.append(read_trace_file(entry, base_dir=base_dir))
+        file_path, segments = _trace_segments_for_entry(entry, base_dir=base_dir)
+        indices = _segment_indices(
+            entry.get("segments", "all"),
+            len(segments),
+            label=f"fault_traces[{entry.get('id', file_path.stem)!r}].segments",
+        )
+        traces.extend(
+            _trace_frame(
+                entry,
+                file_path,
+                segments[index],
+                segment_index=index,
+                segment_count=len(segments),
+            )
+            for index in indices
+        )
     return traces
 
 
@@ -98,6 +173,7 @@ def build_generated_fault_model(entry, lon0, lat0, triangular_cls, base_dir=None
         "comment": entry.get("comment", "#"),
         "sep": entry.get("sep", r"\s+"),
         "id": entry.get("id"),
+        "segment": entry.get("segment"),
     }
     trace = read_trace_file(trace_entry, base_dir=base_dir)
     fault = triangular_cls(entry.get("id", "Triangular Fault"), lon0=lon0, lat0=lat0, verbose=True)
@@ -172,16 +248,52 @@ def load_fault_model(entry, lon0, lat0, triangular_cls, rectangular_cls=None, ba
     raise ValueError("fault_models.type must be 'generated_from_trace' or 'csi_gmt'.")
 
 
-def load_fault_models_for_compute(config, method, lon0, lat0, triangular_cls, rectangular_cls=None, base_dir=None):
+def select_fault_model_entries_for_compute(config, method):
+    """Select enabled compute entries and enforce the required TriRB role."""
     method = str(method).replace("-", "_").lower()
-    models = []
-    for entry in _enabled_entries(config.get("fault_models")):
-        use_for = {str(item).replace("-", "_").lower() for item in _as_list(entry.get("use_for"))}
+    enabled_entries = _enabled_entries(config.get("fault_models"))
+    selected = []
+    for entry in enabled_entries:
+        use_for = {
+            str(item).replace("-", "_").lower()
+            for item in _as_list(entry.get("use_for"))
+        }
         if method not in use_for:
             continue
-        geometry = _fault_geometry(entry)
-        if method == "trirb" and geometry != "triangular":
-            raise ValueError("downsample.method='trirb' supports only triangular fault_models.")
+        if method == "trirb" and _fault_geometry(entry) != "triangular":
+            raise ValueError(
+                "downsample.method='trirb' supports only triangular fault_models."
+            )
+        selected.append(entry)
+
+    if method == "trirb" and not selected:
+        candidates = [
+            str(
+                entry.get("id")
+                or entry.get("file")
+                or entry.get("trace_file")
+                or "<unnamed>"
+            )
+            for entry in enabled_entries
+            if _fault_geometry(entry) == "triangular"
+        ]
+        if candidates:
+            raise ValueError(
+                "downsample.method='trirb' found enabled triangular fault_models "
+                "but none selects the TriRB compute role: "
+                f"{', '.join(candidates)}. Add use_for: [trirb] to each model "
+                "that should participate."
+            )
+        raise ValueError(
+            "downsample.method='trirb' requires at least one enabled triangular "
+            "fault_model with use_for: [trirb]."
+        )
+    return selected
+
+
+def load_fault_models_for_compute(config, method, lon0, lat0, triangular_cls, rectangular_cls=None, base_dir=None):
+    models = []
+    for entry in select_fault_model_entries_for_compute(config, method):
         models.append(
             load_fault_model(
                 entry,

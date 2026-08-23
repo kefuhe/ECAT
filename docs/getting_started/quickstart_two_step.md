@@ -36,6 +36,7 @@ ECAT 保留新版和 legacy 两套非线性几何入口，但职责不同：
 | 几何来源 | 构建入口 |
 | --- | --- |
 | 第 3 步得到的紧凑非线性结果 | [由非线性结果构建矩形元或三角元](../examples/fault_from_nonlinear_geometry.md) |
+| 地表迹线需要先裁剪、延长、统一方向或重采样 | [断层迹线预处理](../workflows/02d_fault_trace_preprocessing.md) |
 | 地表迹线和一个倾角 | [单倾角平面](../examples/fault_trace_preprocessing.md#single-dip) |
 | 地表迹线和多个倾角参考点 | [沿走向变化倾角](../examples/fault_trace_preprocessing.md#multiple-dips) |
 | 需要用 BLSE 比较多个倾角 | [固定参考拓扑](../examples/fault_trace_preprocessing.md#fixed-topology) |
@@ -195,7 +196,6 @@ inv = BoundLSEMultiFaultsInversion(
     bounds_config="bounds_config.yml",
 )
 
-inv.run_simple_vce()
-inv.returnModel()
+inv.run_simple_vce(report="compact")
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```

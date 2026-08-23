@@ -150,7 +150,12 @@ class LinearInversionConfig(CommonConfigBase):
         # Build list of smoothing-capable source names via adapter class method
         self._smoothing_faultnames = self._get_smoothing_faultnames()
 
-        self.set_alpha_faults(alphaFaults)
+        # Only an explicit constructor override is normalized here.  Calling
+        # set_alpha_faults(None) would materialize the default single group and
+        # shadow a named ``alpha.groups`` mapping loaded from YAML before the
+        # canonical parser sees it.
+        if alphaFaults is not None:
+            self.set_alpha_faults(alphaFaults)
 
         # [New] Parse DES configuration from kwargs
         des = getattr(self, 'des', None)

@@ -34,9 +34,11 @@ right:  top -> bottom
 | `edge_vertex_indices` | 每条边上的顶点索引。 |
 | `edge_triangles_indices` | 每条边对应的三角单元索引。边界零滑约束通常依赖这个字段。 |
 | `edge_triangle_vertex_indices` | 每条边对应三角单元涉及的顶点索引。 |
-| `edge_dict` | 底层边界三角形字典，保留给兼容接口和内部工具使用。 |
-| `corner_dict` | 角点三角形字典，保留给兼容接口和内部工具使用。 |
-| `edge_extraction_info` | topology 后端的诊断信息，包括边界 component、run summary、gap summary、left/right 投影方向等。 |
+| `corner_vertex_indices` | 四个命名角点的唯一 junction vertex 索引。 |
+| `corner_vertices` | 当前网格中四个 junction vertex 的坐标。 |
+| `corner_dict` | 每个角可选的 ear face 索引；没有专属 ear face 时为 `None`。它不表示角点不存在。 |
+| `edge_extraction_method` | 实际成功的方法：`topology` 或 `geometry`。 |
+| `edge_extraction_info` | 请求/实际方法、显式回退、边界 component、gap 和 left/right 命名等诊断。 |
 
 如果线性滑动反演配置中使用 `zero_edge_slip(...)`，断层对象必须先完成边界识别并具有 `edge_triangles_indices`。
 
@@ -53,7 +55,7 @@ right:  top -> bottom
 3. 每次顶点坐标更新后，用缓存的 indices 更新 `edge_vertices`，约束和统计继续使用同一套边界拓扑。
 4. 只有网格拓扑改变时，才重新运行 `find_fault_fouredge_vertices(..., refind=True)`。
 
-需要重新发现边界的情况包括：重新 gmsh 剖分、`remap=True`、三角形 `Faces` 改变、顶点编号重排、patch 增删、裁剪/合并/拆分断层段、重采样或修补网格。自动流程中可以用 `Faces.shape`、顶点数和 `Faces` 内容签名做缓存有效性检查；一旦签名变化，就应丢弃旧边界缓存并重新识别。
+需要重新发现边界的情况包括：重新 gmsh 剖分、`remap=True`、三角形 `Faces` 改变、顶点编号重排、patch 增删、裁剪/合并/拆分断层段、重采样或修补网格。标准 mesh 更新入口会区分完整 mesh replacement 和固定连接关系的 vertex update，并据此失效或保留派生状态；不要绕过入口原地改写 `Faces[:]`。
 
 这个约定对边界零滑很重要：`zero_edge_slip(...)` 实际使用的是 `edge_triangles_indices`。在拓扑保持的几何反演中，边界三角形集合不变，因此不需要因为每个样本的坐标变化而重新计算边界三角形。反复重算不仅浪费时间，还可能因为浅部离群点、gap 清理或容差变化，让不同样本使用了不一致的边界定义。
 
@@ -73,7 +75,8 @@ topology 方法基于三角网格外边界环：
 3. 按 `top_tolerance` 和 `bottom_tolerance` 标记 `top/bottom/side`。
 4. 只把连接 `top` 和 `bottom` 的 `side` run 作为真实左右边。
 5. 用 top/bottom 的主方向投影命名 `left/right`。
-6. 写入与旧接口兼容的 `edge_vertices`、`edge_triangles_indices` 等字段。
+6. 校验四个 junction vertex，并在存在时记录每角唯一的 ear face。
+7. 原子写入 `edge_vertices`、`edge_triangles_indices` 和来源信息等字段。
 
 示例：
 
@@ -96,19 +99,72 @@ fault.writeFourEdges2File(
 )
 ```
 
-历史方法仍然保留，用于复现旧结果或排查差异：
+### 绘图确认
+
+边界提取成功后，建议在设置边界零滑约束或开始批量反演前做一次只读诊断：
 
 ```python
-fault.find_fault_fouredge_vertices(edge_method="legacy")
+from eqtools.viztools import plot_fault_boundary_diagnostics
+
+plot_fault_boundary_diagnostics(
+    fault,
+    coordinates="xy",
+    save="fault_boundary_diagnostics.pdf",
+    show=False,
+)
 ```
 
-过渡期如果需要 topology 失败后自动回退旧方法，可以使用：
+默认诊断图显示三维四边和平面 left/right 命名；可选 `sequence` panel 仅用于核对四边
+节点排序，不代表距离剖面。该函数只消费当前
+`edge_*`、`corner_*` 和 provenance 字段，不重新提取边界，不触发 fallback，也不修改
+MudPy、Laplacian 或 Bayesian 状态。图件参数见
+[Viztools 断层边界诊断](viztools.md#断层边界诊断)。
+
+原有的邻接、深度和方向几何分类算法以正式名称 `geometry` 保留：
 
 ```python
-fault.find_fault_fouredge_vertices(edge_method="auto")
+fault.find_fault_fouredge_vertices(edge_method="geometry")
 ```
 
-`auto` 适合兼容旧案例，但正式反演前更建议显式使用 `topology` 或显式使用 `legacy`，避免 silent fallback 让结果来源不清楚。
+默认不会自动回退。只有在工作流明确接受两种算法时，才显式写出回退关系：
+
+```python
+fault.find_fault_fouredge_vertices(
+    edge_method="topology",
+    fallback_method="geometry",
+)
+```
+
+发生回退后，`edge_extraction_info` 会记录请求方法、实际方法和 topology 失败原因。`edge_method` 只接受上述两个正式名称；其他值会立即报错。
+
+## 角点、ear face 与面邻接
+
+角点首先由两条相邻边界的唯一 junction vertex 定义，不由某个三角形定义。某个 junction 附近可能由两个普通边界三角形分别承担两条边，因此 `corner_dict[corner]` 可以是 `None`；这在不规则断层网格中是正常状态。
+
+不要把“没有 ear face”和“三角形没有相邻面”混为一谈：
+
+| 三角形位置 | 正常的 edge-adjacent 面数 |
+| --- | ---: |
+| 内部面 | 3 |
+| 普通边界面 | 2 |
+| 同时拥有两条相邻边界边的 ear face | 1 |
+| 孤立或断裂碎片 | 0，正常多 patch 断层网格不允许 |
+
+因此，`corner_dict` 为 `None` 不会妨碍四边提取或平滑；但 0 邻接 face 会作为断连/退化 mesh 明确失败。
+
+## 与 MudPy 平滑的状态隔离
+
+四边输出与 MudPy Laplacian 使用不同的派生状态。`topology` 或 `geometry` 四边识别服务于输出、约束、统计和绘图；MudPy 在内部维护自己的 geometry-classified boundary stencil，以保持既有 Laplacian 数学和边界权重。
+
+因此，以下调用顺序必须得到相同的 MudPy Laplacian：
+
+```text
+buildLaplacian_mudpy -> find_fault_fouredge_vertices
+find_fault_fouredge_vertices -> buildLaplacian_mudpy
+writeFourEdges2File -> buildLaplacian_mudpy
+```
+
+用户不再需要为了防止四边输出影响平滑而手工重复调用 `find_boundary_and_corner_triangles()`。
 
 ## gap_policy
 

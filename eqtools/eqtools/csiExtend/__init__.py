@@ -231,6 +231,16 @@ _LAZY_EXPORTS = {
     ),
     "trace_length": (".trace_ops", "trace_length"),
     "trim_trace": (".trace_ops", "trim_trace"),
+    "TraceMarker": (".trace_markers", "TraceMarker"),
+    "resolve_trace_markers": (".trace_markers", "resolve_trace_markers"),
+    "TraceOperation": (".trace_processing", "TraceOperation"),
+    "TracePath": (".trace_processing", "TracePath"),
+    "TraceProjection": (".trace_processing", "TraceProjection"),
+    "process_trace": (".trace_processing", "process_trace"),
+    "TraceSegment": (".trace_io", "TraceSegment"),
+    "read_trace": (".trace_io", "read_trace"),
+    "read_trace_segments": (".trace_io", "read_trace_segments"),
+    "write_trace": (".trace_io", "write_trace"),
 }
 
 

@@ -98,6 +98,27 @@ if __name__ == '__main__':
     # for sardata in insardata:
     #     sardata.reject_pixels_fault(1.0, trifaults_list)
 
+    # ---------------------------------Plot Fault Boundary Diagnostics---------------------------------------------#
+    if verbose:
+        # fault_em1.plot()
+
+        from eqtools.viztools import plot_fault_boundary_diagnostics
+
+        for ifault in trifaults_list:
+            ifault.find_fault_fouredge_vertices(
+                top_tolerance=0.1,
+                bottom_tolerance=0.1,
+                edge_method="topology",
+                gap_policy="clean",
+            )
+
+            plot_fault_boundary_diagnostics(
+                ifault,
+                coordinates="lonlat",
+                save=f"fault_{ifault.name}_boundary_diagnostics.pdf",
+                show=True,
+            )
+
     # --------------------------Build MultiFaults BLSE Inversion-------------------#
     # Way 1
     # from eqtools.csiExtend.bayesian_config import BoundLSEInversionConfig as BoundLSEConfig
@@ -116,7 +137,7 @@ if __name__ == '__main__':
                                              config='default_config_BLSE_CovDiag.yml', bounds_config='bounds_config.yml')
     if args.mode == 'single':
         inversion.run(penalty_weight=None, alpha=[np.log10(1/100.0)])
-        inversion.returnModel(print_stat=False)
+        inversion.returnModel(print_fit_statistics=False)
 
     elif args.mode == 'loop':
         # ---------------------------------Loop Penalty Weight---------------------------------------------#
@@ -125,6 +146,8 @@ if __name__ == '__main__':
         #     alpha = [np.log10(1.0/ipenalty)]
         #     print(f'penalty_weight: {ipenalty:.1f},', end=' ')
         #     inversion.run(penalty_weight=None, alpha=alpha)
+        # Diagnostic only: roughness uses unweighted L0 and the pre-loop model
+        # is restored. Re-run --mode single with the selected weight to export.
         inversion.simple_run_loop(penalty_weight, preferred_penalty_weight=10.0, output_file='run_loop_covdiag.dat', verbose=True)
 
     if args.mode == 'single':

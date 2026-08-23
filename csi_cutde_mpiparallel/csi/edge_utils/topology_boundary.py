@@ -13,13 +13,26 @@ import numpy as np
 EDGE_NAMES = ("top", "bottom", "left", "right")
 
 
+class BoundaryExtractionError(ValueError):
+    """Raised when a mesh cannot produce a valid four-edge boundary."""
+
+
 def extract_topology_boundary_loop(vertices, faces):
     """Return an ordered boundary loop and boundary-edge metadata.
 
     Boundary edges are undirected triangle edges that occur exactly once. The
-    current implementation expects the largest boundary component to be a
+    current implementation requires exactly one boundary component forming a
     closed manifold loop where every boundary node has degree 2.
     """
+    vertices = np.asarray(vertices, dtype=float)
+    faces = np.asarray(faces, dtype=int)
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("faces must be a two-dimensional triangular connectivity array.")
+    if len(faces) < 2:
+        raise BoundaryExtractionError(
+            "A fault boundary requires a connected mesh with at least two triangles."
+        )
+
     edge_count = Counter()
     edge_faces = defaultdict(list)
     for itri, tri in enumerate(np.asarray(faces, dtype=int)):
@@ -34,8 +47,13 @@ def extract_topology_boundary_loop(vertices, faces):
         graph[i].append(j)
         graph[j].append(i)
 
+    non_manifold_edges = [edge for edge, count in edge_count.items() if count > 2]
+    if non_manifold_edges:
+        raise BoundaryExtractionError(
+            f"Non-manifold triangular mesh: {len(non_manifold_edges)} edges belong to more than two faces."
+        )
     if not graph:
-        raise ValueError("No boundary edges found in triangular mesh.")
+        raise BoundaryExtractionError("No boundary edges found in triangular mesh.")
 
     components = []
     visited = set()
@@ -55,6 +73,24 @@ def extract_topology_boundary_loop(vertices, faces):
         components.append(component)
 
     components = sorted(components, key=len, reverse=True)
+    if len(components) != 1:
+        raise BoundaryExtractionError(
+            "Fault boundary must contain exactly one connected component; "
+            f"found {len(components)} components with node counts "
+            f"{[len(component) for component in components]}."
+        )
+
+    face_adjacency_counts = np.zeros(len(faces), dtype=int)
+    for incident_faces in edge_faces.values():
+        if len(incident_faces) == 2:
+            face_adjacency_counts[incident_faces] += 1
+    isolated_faces = np.flatnonzero(face_adjacency_counts == 0)
+    if isolated_faces.size:
+        raise BoundaryExtractionError(
+            "Disconnected or degenerate fault mesh contains faces with no edge-adjacent face: "
+            f"{isolated_faces.tolist()}."
+        )
+
     boundary_nodes = set(components[0])
     bad_degrees = {
         node: len(graph[node])
@@ -62,7 +98,9 @@ def extract_topology_boundary_loop(vertices, faces):
         if len(graph[node]) != 2
     }
     if bad_degrees:
-        raise ValueError(f"Boundary is not a closed manifold loop. Bad node degrees: {bad_degrees}")
+        raise BoundaryExtractionError(
+            f"Boundary is not a closed manifold loop. Bad node degrees: {bad_degrees}"
+        )
 
     start = min(boundary_nodes, key=lambda node: (vertices[node, 2], vertices[node, 0], vertices[node, 1]))
     neighbors = sorted(graph[start], key=lambda node: (vertices[node, 2], vertices[node, 0], vertices[node, 1]))
@@ -79,7 +117,7 @@ def extract_topology_boundary_loop(vertices, faces):
         candidates = graph[current]
         next_node = candidates[0] if candidates[0] != previous else candidates[1]
         if len(loop) > len(boundary_nodes) + 1:
-            raise ValueError("Boundary loop ordering did not close as expected.")
+            raise BoundaryExtractionError("Boundary loop ordering did not close as expected.")
 
     info = {
         "boundary_edge_count": len(boundary_edges),
@@ -340,7 +378,7 @@ def extract_four_edges_topology(
         if len(true_side_runs) != 2:
             strict_errors.append(f"true side run count is {len(true_side_runs)}, expected 2")
         if strict_errors:
-            raise ValueError("Strict boundary extraction failed: " + "; ".join(strict_errors))
+            raise BoundaryExtractionError("Strict boundary extraction failed: " + "; ".join(strict_errors))
 
     if gap_policy == "clean":
         clean_errors = []
@@ -353,10 +391,10 @@ def extract_four_edges_topology(
                     f"larger than short_gap_points={short_gap_points}"
                 )
         if clean_errors:
-            raise ValueError("Clean boundary extraction failed: " + "; ".join(clean_errors))
+            raise BoundaryExtractionError("Clean boundary extraction failed: " + "; ".join(clean_errors))
 
     if not top_runs or not bottom_runs or len(true_side_runs) != 2:
-        raise ValueError(
+        raise BoundaryExtractionError(
             f"Cannot split boundary loop into four edges: "
             f"top={len(top_runs)}, bottom={len(bottom_runs)}, true_side={len(true_side_runs)}, "
             f"other_side={[(item['kind'], item['point_count']) for item in nontrue_side_runs]}"
@@ -468,12 +506,40 @@ def extract_four_edges_topology(
         for edge_name in EDGE_NAMES
     }
     edge_dict = {edge_name: edge_triangles_indices[edge_name].tolist() for edge_name in EDGE_NAMES}
-    corner_dict = {
-        "left_top": None,
-        "right_top": None,
-        "left_bottom": None,
-        "right_bottom": None,
+    corner_pairs = {
+        "top_left": ("top", "left"),
+        "top_right": ("top", "right"),
+        "bottom_left": ("bottom", "left"),
+        "bottom_right": ("bottom", "right"),
     }
+    corner_vertex_indices = {}
+    corner_vertices = {}
+    corner_dict = {}
+    corner_summary = {}
+    for corner_name, (edge_a, edge_b) in corner_pairs.items():
+        junctions = np.intersect1d(
+            edge_vertex_indices[edge_a], edge_vertex_indices[edge_b]
+        )
+        if junctions.size != 1:
+            raise BoundaryExtractionError(
+                f"Corner {corner_name!r} must have exactly one junction vertex; "
+                f"found {junctions.size}: {junctions.tolist()}."
+            )
+        junction = int(junctions[0])
+        ear_faces = np.intersect1d(
+            edge_triangles_indices[edge_a], edge_triangles_indices[edge_b]
+        )
+        if ear_faces.size > 1:
+            raise BoundaryExtractionError(
+                f"Corner {corner_name!r} has ambiguous ear faces: {ear_faces.tolist()}."
+            )
+        corner_vertex_indices[corner_name] = junction
+        corner_vertices[corner_name] = vertices[junction].copy()
+        corner_dict[corner_name] = int(ear_faces[0]) if ear_faces.size else None
+        corner_summary[corner_name] = {
+            "junction_vertex": junction,
+            "ear_face": corner_dict[corner_name],
+        }
 
     info = {
         **loop_info,
@@ -520,6 +586,7 @@ def extract_four_edges_topology(
         "short_side_gap_candidates": short_gap_candidates,
         "bridge_gap_points": bridge_gap_points,
         "edge_segment_counts": {edge_name: len(edge_segments[edge_name]) for edge_name in EDGE_NAMES},
+        "corner_summary": corner_summary,
     }
 
     return {
@@ -529,6 +596,8 @@ def extract_four_edges_topology(
         "edge_triangle_vertex_indices": edge_triangle_vertex_indices,
         "edge_dict": edge_dict,
         "corner_dict": corner_dict,
+        "corner_vertex_indices": corner_vertex_indices,
+        "corner_vertices": corner_vertices,
         "edge_segments": edge_segments,
         "edge_index_segments": edge_index_segments,
         "info": info,

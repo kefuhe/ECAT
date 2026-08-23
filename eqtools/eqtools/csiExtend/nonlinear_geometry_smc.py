@@ -2,8 +2,24 @@
 
 This module is intentionally separate from ``exploremultifaults_smc``.  It
 keeps the same CSI forward-model path and the same SMC sampler, but parameter
-bookkeeping is handled by explicit ``ParameterSpec`` records instead of the old
-``param_keys`` / ``param_index`` layout.
+bookkeeping is handled by explicit :class:`ParameterSpec` records instead of
+the old ``param_keys`` / ``param_index`` layout.
+
+The numerical flow is deliberately linear to read:
+
+``config -> parameter registry -> likelihood snapshot -> Predict(theta)``
+``-> Gaussian score -> SMC -> returnModel() -> fit statistics``.
+
+For dataset ``k``, :meth:`NonlinearGeometrySMCInversion.Predict` constructs
+
+``g_k(theta) = g_fault,k(theta) + H_k c_k(theta)``
+
+and the likelihood evaluates ``r_k = g_k(theta) - d_k`` with covariance
+``sigma_k**2 * C_k``.  ``LikelihoodEntry.dobs`` and its covariance metric are
+immutable inputs prepared before sampling; the CSI ``data.synth`` field is the
+mutable prediction for the most recently evaluated or activated model.  This
+separation is important: reporting reads the same corrected prediction as the
+likelihood without applying the correction a second time.
 """
 
 from __future__ import annotations
@@ -29,13 +45,23 @@ except Exception:  # pragma: no cover - optional runtime dependency
 from csi import SourceInv, planarfault
 
 from .config.nonlinear_geometry_config import NonlinearGeometryConfig
+from .covariance_utils import (
+    DataCovarianceMetric,
+    gaussian_log_likelihood,
+    prepare_covariance_metric,
+)
 from .data_corrections import (
     assign_parameter_slices,
     build_correction_design_matrix,
     correction_coefficients_from_theta,
 )
+from .data_vector_layout import (
+    gps_component_major_vector,
+    write_data_synthetic_vector,
+)
 from .fault_angle_conventions import canonicalize_compact_fault_angles
 from .logging_utils.mpi_logging import ensure_default_logging
+from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 from .smc_mpi_nonlinear import SMC_samples_parallel_mpi_nonlinear
 from .smc_convergence import evaluate_smc_convergence, write_convergence_report
 
@@ -43,21 +69,27 @@ logger = logging.getLogger(__name__)
 
 
 @njit
-def logpdf_multivariate_normal(x, mean, inv_cov, logdet):
-    norm_const = -0.5 * logdet
-    x_mu = np.subtract(x, mean)
-    solution = np.dot(inv_cov, x_mu)
-    result = -0.5 * np.dot(x_mu, solution) + norm_const
-    return result
+def compute_data_log_likelihood(
+    simulations, observations, whitener, sigma, log_cov_det
+):
+    """Return the Gaussian data term, omitting only the constant ``n log(2pi)``.
 
-
-@njit
-def compute_data_log_likelihood(simulations, observations, inv_cov, log_cov_det):
-    return logpdf_multivariate_normal(observations, simulations, inv_cov, log_cov_det)
+    ``whitener.T @ whitener`` equals ``C**-1``.  Therefore the quadratic term
+    is ``r.T @ (sigma**2 C)**-1 @ r`` and the determinant term is
+    ``logdet(C) + n * log(sigma**2)``.  ``residual.size`` is NumPy's scalar
+    element-count attribute, not a function call.
+    """
+    residual = np.subtract(simulations, observations)
+    whitened_residual = np.dot(whitener, residual) / sigma
+    scaled_logdet = log_cov_det + residual.size * np.log(sigma ** 2)
+    return -0.5 * (
+        np.dot(whitened_residual, whitened_residual) + scaled_logdet
+    )
 
 
 @njit
 def compute_log_prior(samples, lb, ub):
+    """Return the uniform-box log prior used by the SMC target."""
     if np.any((samples < lb) | (samples > ub)):
         return -np.inf
     return 0.0
@@ -94,13 +126,27 @@ class ParameterSpec:
 class LikelihoodEntry:
     data: Any
     dobs: np.ndarray
-    cd_inv: np.ndarray
-    log_cd_det: float
+    covariance_metric: DataCovarianceMetric
     vertical: bool
 
 
-class NonlinearGeometrySMCInversion(SourceInv):
-    """SMC nonlinear geometry inversion with explicit parameter registry."""
+class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
+    """SMC nonlinear geometry inversion with explicit state ownership.
+
+    The class owns five connected layers:
+
+    1. normalized configuration and a stable sampled-parameter registry;
+    2. one frozen observation/covariance likelihood entry per dataset;
+    3. candidate fault geometry, Green functions, slip, and data correction;
+    4. MPI SMC sampling and convergence diagnostics;
+    5. activation, prediction, reporting, and export of one posterior model.
+
+    Geometry and CSI data objects are reused in place for performance.  A
+    candidate is nevertheless defined entirely by ``theta``: every prediction
+    rebuilds the base synthetic before adding ``H @ coefficients``.  Result
+    statistics are valid only after :meth:`returnModel` activates the requested
+    representative model.
+    """
 
     config_class = NonlinearGeometryConfig
 
@@ -119,6 +165,14 @@ class NonlinearGeometrySMCInversion(SourceInv):
         geodata=None,
         parallel_rank=None,
     ):
+        """Initialize configuration, fault objects, and parameter layout.
+
+        Sampling and likelihood factorization are intentionally deferred to
+        :meth:`setLikelihood`, :meth:`setPriors`, and :meth:`walk`.  ``geodata``
+        may override the YAML objects, while ``fixed_params`` augments the
+        normalized fixed-parameter mapping.  User-facing logging is restricted
+        to rank 0; every MPI rank builds the same numerical state locally.
+        """
         self.parallel_rank = (
             parallel_rank if parallel_rank is not None else MPI.COMM_WORLD.Get_rank()
         )
@@ -157,6 +211,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
 
     @staticmethod
     def _read_lon_lat_0(config_file, lon0, lat0):
+        """Fill a missing projection origin from ``lon_lat_0`` in YAML."""
         if config_file is None:
             return lon0, lat0
         with open(config_file, "r", encoding="utf-8") as f:
@@ -178,6 +233,13 @@ class NonlinearGeometrySMCInversion(SourceInv):
         mode=None,
         num_faults=None,
     ):
+        """Normalize config, create CSI faults, and build one parameter registry.
+
+        This is the only initialization path that joins fault parameters,
+        optional data-correction coefficients, and optional sigma parameters
+        into the sampled vector.  Later code consumes their recorded indices;
+        it must not infer a second ordering from dictionaries.
+        """
         self.config = self.config_class(
             config_file,
             geodata=geodata,
@@ -290,6 +352,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         }
 
     def _build_parameter_registry(self):
+        """Assign stable indices to fault, correction, and sigma parameters."""
         self._validate_fault_angle_config()
         self.parameter_specs: List[ParameterSpec] = []
         self.parameter_index: Dict[str, int] = {}
@@ -558,12 +621,15 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return float(pm_func.rvs())
 
     def parameter_names(self):
+        """Return canonical sampled names in exact ``theta`` column order."""
         return [spec.name for spec in self.parameter_specs]
 
     def parameter_display_names(self):
+        """Return user-facing labels without changing parameter identity."""
         return [spec.label for spec in self.parameter_specs]
 
     def parameter_bounds(self):
+        """Return lower/upper arrays aligned one-to-one with ``theta``."""
         lb = []
         ub = []
         for spec in self.parameter_specs:
@@ -574,8 +640,20 @@ class NonlinearGeometrySMCInversion(SourceInv):
             ub.append(float(lower) + float(scale))
         return np.asarray(lb, dtype=float), np.asarray(ub, dtype=float)
 
+    # ------------------------------------------------------------------
+    # Observation layout, forward prediction, and Gaussian likelihood
+    # ------------------------------------------------------------------
+
     def setLikelihood(self, datas=None, verticals=None):
-        """Build likelihood entries from geodetic data covariance matrices."""
+        """Freeze observation vectors and factor each base covariance once.
+
+        Observation rows, covariance rows, correction-design rows, and later
+        synthetic rows must have identical order.  GPS uses CSI's
+        component-major ``E(all), N(all), [U(all)]`` convention.  Only ``dobs``
+        is frozen here; candidate predictions continue to update ``data.synth``.
+        Cholesky-derived whiteners and log determinants are reused by every SMC
+        candidate, avoiding explicit precision matrices and repeated factors.
+        """
         self.datas = list(datas if datas is not None else self.geodata["data"])
         if verticals is None:
             verticals = self.geodata.get("verticals", [True] * len(self.datas))
@@ -586,31 +664,43 @@ class NonlinearGeometrySMCInversion(SourceInv):
         self.verticals = list(verticals)
 
         self.Likelihoods: List[LikelihoodEntry] = []
+        self.data_covariance_metrics = {}
         for data, vertical in zip(self.datas, self.verticals):
             if not hasattr(data, "Cd"):
                 raise ValueError(f"No data covariance for data set {data.name}")
             dobs = self._observation_vector(data, vertical)
-            cd = np.asarray(data.Cd, dtype=float)
-            cd_inv = np.linalg.inv(cd)
-            sign, logdet = np.linalg.slogdet(cd)
-            log_cd_det = float(sign * logdet)
+            # Factor once while preparing the likelihood. Candidate
+            # evaluations reuse W/logdet and never form a precision matrix.
+            covariance_metric = prepare_covariance_metric(
+                data.Cd,
+                name=f"covariance for data set '{data.name}'",
+            )
+            if covariance_metric.size != np.asarray(dobs).size:
+                raise ValueError(
+                    f"{data.name}: covariance size {covariance_metric.size} "
+                    f"does not match observation length {np.asarray(dobs).size}"
+                )
             self.Likelihoods.append(
                 LikelihoodEntry(
                     data=data,
                     dobs=np.asarray(dobs, dtype=float).reshape(-1),
-                    cd_inv=cd_inv,
-                    log_cd_det=log_cd_det,
+                    covariance_metric=covariance_metric,
                     vertical=bool(vertical),
                 )
             )
+            self.data_covariance_metrics[data.name] = covariance_metric
         return None
 
     @staticmethod
     def _observation_vector(data, vertical=True):
+        """Vectorize one observation using the likelihood row convention."""
         dtype = str(data.dtype).lower()
         if dtype == "gps":
-            vel = np.asarray(data.vel_enu)
-            return vel.flatten() if vertical else vel[:, :-1].flatten()
+            return gps_component_major_vector(
+                data.vel_enu,
+                vertical=vertical,
+                name=f"{data.name} GPS observations",
+            )
         if dtype in {"insar", "leveling"}:
             return np.asarray(data.vel).reshape(-1)
         if dtype == "crossfaultoffset":
@@ -618,6 +708,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         raise ValueError(f"Unsupported data type: {data.dtype}")
 
     def build_fault_params(self, theta, fault_name):
+        """Merge sampled and fixed values for one fault without reordering."""
         theta = np.asarray(theta, dtype=float)
         params = {
             spec.local_name: float(theta[spec.index])
@@ -635,7 +726,29 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return params
 
     def Predict(self, theta, data, vertical=True, faultnames=None, updatepatch=True):
-        """Predict one data set and apply its configured data correction."""
+        """Build the complete prediction for one dataset and candidate.
+
+        The method first materializes the requested faults and their Green
+        functions, asks CSI ``buildsynth`` for the fault-only prediction, then
+        adds the configured correction exactly once:
+
+        ``simulation = fault_synthetic + H_correction @ coefficients``.
+
+        The returned vector and the value written back to ``data.synth`` are
+        identical.  Repeated calls do not accumulate corrections because
+        ``buildsynth`` replaces the base synthetic before the addition.  The
+        additive form is equivalent to fitting the fault model to
+        ``observation - H @ coefficients``; no observed data are mutated.
+
+        ``updatepatch`` is a performance flag only.  It may reuse geometry
+        already built for the same ``theta`` across datasets, but every active
+        fault still rebuilds its dataset-specific Green functions.
+
+        Calling this low-level method directly overwrites the mutable CSI
+        synthetic for ``data``.  Activate a representative again with
+        :meth:`returnModel`, or request ``rebuild_synth=True`` from the fit
+        collector, before reporting a different previously active model.
+        """
         theta = np.asarray(theta, dtype=float)
         faultnames = self._normalize_faultnames(faultnames)
         faults_for_data = []
@@ -670,6 +783,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return simulation
 
     def _normalize_faultnames(self, faultnames):
+        """Return validated fault names for one dataset in caller order."""
         if faultnames is None:
             return list(self.faultnames)
         if isinstance(faultnames, str):
@@ -689,6 +803,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         vertical,
         updatepatch,
     ):
+        """Materialize one fault candidate and its Green functions for data."""
         params = self.build_fault_params(theta, fault_name)
         lon = params["lon"]
         lat = params["lat"]
@@ -720,6 +835,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         fault.slip[:, 1] = dipslip
 
     def _slip_components(self, params):
+        """Convert the configured slip parameterization to strike/dip slip."""
         if self.mode == "ss_ds":
             return params["strikeslip"], params["dipslip"]
         slip = params["slip"]
@@ -728,10 +844,14 @@ class NonlinearGeometrySMCInversion(SourceInv):
 
     @staticmethod
     def _synthetic_vector(data, vertical=True):
+        """Read the current CSI synthetic in likelihood row order."""
         dtype = str(data.dtype).lower()
         if dtype == "gps":
-            synth = np.asarray(data.synth)
-            return synth.flatten() if vertical else synth[:, :-1].flatten()
+            return gps_component_major_vector(
+                data.synth,
+                vertical=vertical,
+                name=f"{data.name} GPS synthetics",
+            )
         if dtype in {"insar", "leveling"}:
             return np.asarray(data.synth).reshape(-1)
         if dtype == "crossfaultoffset":
@@ -742,26 +862,21 @@ class NonlinearGeometrySMCInversion(SourceInv):
 
     @staticmethod
     def _write_synthetic_vector(data, vector, vertical=True):
-        dtype = str(data.dtype).lower()
-        vector = np.asarray(vector, dtype=float).reshape(-1)
-        if dtype == "gps":
-            synth = np.asarray(data.synth, dtype=float).copy()
-            if vertical:
-                data.synth = vector.reshape(synth.shape)
-            else:
-                synth[:, :-1] = vector.reshape(synth[:, :-1].shape)
-                data.synth = synth
-            return
-        if dtype in {"insar", "leveling"}:
-            data.synth = vector.reshape(np.asarray(data.synth).shape)
-            return
-        if dtype == "crossfaultoffset":
-            data.synth = vector.reshape(np.asarray(data.synth).shape)
-            data.synth_vector = vector
-            return
-        raise ValueError(f"Unsupported data type: {data.dtype}")
+        """Publish a corrected vector back to CSI without changing row order."""
+        write_data_synthetic_vector(
+            data,
+            vector,
+            vertical=vertical,
+        )
 
     def _data_correction_vector(self, theta, data, vertical=True):
+        """Return ``H @ c`` for one dataset, or ``None`` when disabled.
+
+        ``build_correction_design_matrix`` owns transform column semantics and
+        row alignment; ``correction_coefficients_from_theta`` owns sampled vs.
+        fixed coefficient lookup.  Keeping those responsibilities separate
+        prevents reporting and likelihood code from inventing another layout.
+        """
         spec = self.data_correction_specs_by_name.get(data.name)
         if spec is None:
             return None
@@ -774,6 +889,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return design_matrix.dot(coefficients)
 
     def _dataset_sigmas_from_theta(self, theta):
+        """Map grouped sigma parameters to positive physical dataset scales."""
         values = np.asarray(self.sigmas["values"], dtype=float).copy()
         for spec in self.sigma_parameter_specs:
             sigma_param_index = spec.metadata["sigma_param_index"]
@@ -785,6 +901,14 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return np.asarray(sigmas, dtype=float)
 
     def make_target(self, updatepatches=None, dataFaults=None):
+        """Create the SMC log-posterior closure for the current likelihoods.
+
+        Each candidate is checked against uniform bounds, mapped to physical
+        dataset sigmas, forwarded through :meth:`Predict`, and scored with its
+        matching frozen observation, whitener, and base-covariance logdet.
+        Dataset terms are summed because their covariance blocks are modeled as
+        independent.  The omitted ``n log(2pi)`` constant is candidate-invariant.
+        """
         if not hasattr(self, "Priors"):
             self.setPriors()
         if not hasattr(self, "Likelihoods"):
@@ -802,6 +926,8 @@ class NonlinearGeometrySMCInversion(SourceInv):
 
             log_likelihood = 0.0
             sigmas = self._dataset_sigmas_from_theta(samples)
+            if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+                return -np.inf
             for i, entry in enumerate(self.Likelihoods):
                 simulations = self.Predict(
                     samples,
@@ -810,20 +936,17 @@ class NonlinearGeometrySMCInversion(SourceInv):
                     faultnames=dataFaults[i],
                     updatepatch=updatepatches[i],
                 )
-                isigma2 = sigmas[i] ** 2
-                cd_inv_sigma = np.divide(entry.cd_inv, isigma2)
-                log_cd_det_sigma = entry.log_cd_det + np.log(isigma2) * len(entry.dobs)
-                log_likelihood += compute_data_log_likelihood(
-                    simulations,
-                    entry.dobs,
-                    cd_inv_sigma,
-                    log_cd_det_sigma,
+                log_likelihood += gaussian_log_likelihood(
+                    np.subtract(simulations, entry.dobs),
+                    entry.covariance_metric,
+                    sigmas[i],
                 )
             return log_prior + log_likelihood
 
         return target
 
     def _resolved_data_faults(self, dataFaults=None):
+        """Resolve and validate the fault subset contributing to each dataset."""
         if dataFaults is None:
             dataFaults = self.dataFaults
         if dataFaults is None:
@@ -833,6 +956,13 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return [self._normalize_faultnames(item) for item in dataFaults]
 
     def _resolved_updatepatches(self, updatepatches, dataFaults):
+        """Choose the first dataset that must materialize each fault geometry.
+
+        Geometry depends on ``theta`` but not on the observing dataset.  Once a
+        fault has been built for a candidate, later datasets may reuse its patch
+        while still rebuilding their own Green functions.  This avoids repeated
+        geometry work without carrying geometry across different candidates.
+        """
         if updatepatches is not None:
             if len(updatepatches) != len(dataFaults):
                 raise ValueError("Length of updatepatches must match number of data sets")
@@ -848,6 +978,10 @@ class NonlinearGeometrySMCInversion(SourceInv):
         if not any(updatepatches) and updatepatches:
             updatepatches[0] = True
         return updatepatches
+
+    # ------------------------------------------------------------------
+    # MPI SMC execution and convergence diagnostics
+    # ------------------------------------------------------------------
 
     def walk(
         self,
@@ -867,6 +1001,13 @@ class NonlinearGeometrySMCInversion(SourceInv):
         diagnose_detail=False,
         convergence_report_file=None,
     ):
+        """Run MPI SMC and publish final samples on rank 0.
+
+        The target is created once per run.  MPI ranks evaluate candidates with
+        rank-local CSI objects; no mutable ``data.synth`` state is shared across
+        processes.  Only rank 0 stores the returned sampler, writes HDF5, and
+        optionally emits convergence diagnostics.
+        """
         nchains = nchains if nchains is not None else self.nchains
         chain_length = chain_length if chain_length is not None else self.chain_length
         self.dataFaults = dataFaults or self.dataFaults
@@ -914,6 +1055,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return None
 
     def evaluate_convergence(self, **kwargs):
+        """Evaluate saved samples against the registered parameter bounds."""
         if not hasattr(self, "sampler"):
             raise ValueError("No sampler results available")
         lb, ub = self.parameter_bounds()
@@ -2167,7 +2309,30 @@ class NonlinearGeometrySMCInversion(SourceInv):
             text += f", +{len(unique) - max_items} more"
         return text
 
-    def returnModel(self, model="median", print_stats=True):
+    # ------------------------------------------------------------------
+    # Posterior model activation, reporting, plotting, and persistence
+    # ------------------------------------------------------------------
+
+    def returnModel(
+        self,
+        model="median",
+        print_stats=True,
+        *,
+        print_fit_statistics=None,
+    ):
+        """Activate one representative model and optionally print its results.
+
+        ``print_fit_statistics`` is the canonical spelling shared by inversion
+        result APIs.  ``print_stats`` remains accepted for existing scripts.
+
+        For a predictive representative (mean, median, MAP, or one sample), the
+        same :meth:`Predict` path used by the likelihood rebuilds corrected
+        synthetics before the model is marked active.  The posterior standard
+        deviation is descriptive rather than predictive, so it does not become
+        an active fit model.
+        """
+        if print_fit_statistics is not None:
+            print_stats = bool(print_fit_statistics)
         theta = self._select_model_vector(model)
         self.model = theta
         faults = self._faults_from_theta(theta, build_geometry=model not in {"STD", "std", "Std"})
@@ -2197,12 +2362,16 @@ class NonlinearGeometrySMCInversion(SourceInv):
                     faultnames=dataFaults[i],
                     updatepatch=True,
                 )
+            self._active_result_model = model
             if print_stats:
                 self.calculate_and_print_fit_statistics(model=model)
                 self.print_mcmc_parameter_positions(print_table=True)
+        else:
+            self._active_result_model = None
         return faults
 
     def _select_model_vector(self, model):
+        """Resolve a named posterior representative or explicit sample index."""
         if not hasattr(self, "sampler"):
             raise ValueError("No sampler results available")
         samples = np.asarray(self.sampler["allsamples"])
@@ -2221,6 +2390,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         raise ValueError(f"Unknown model type: {model}")
 
     def _faults_from_theta(self, theta, *, build_geometry=True):
+        """Materialize fault geometry and slip from one complete parameter vector."""
         faults = []
         for fault_name in self.faultnames:
             fault = self.faults[fault_name]
@@ -2250,6 +2420,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return faults
 
     def _data_correction_values(self, theta):
+        """Return canonical correction coefficients for model reporting."""
         values = {}
         for spec in self.data_correction_specs:
             coeffs = correction_coefficients_from_theta(spec, theta)
@@ -2259,42 +2430,32 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return values
 
     def _sigma_values(self, theta):
+        """Return physical sigma scales keyed by dataset name."""
         dataset_sigmas = self._dataset_sigmas_from_theta(theta)
         return {
             data.name: float(dataset_sigmas[i])
             for i, data in enumerate(self.geodata.get("data", []))
         }
 
-    def calculate_data_fit_metrics(self, data, vertical=True):
-        observed = self._observation_vector(data, vertical)
-        synthetic = self._synthetic_vector(data, vertical)
-        residuals = synthetic - observed
-        rms = float(np.sqrt(np.mean(residuals**2)))
-        ss_res = float(np.sum(residuals**2))
-        ss_tot = float(np.sum(observed**2))
-        vr = (1.0 - ss_res / ss_tot) * 100.0 if ss_tot != 0 else 0.0
-        return rms, vr
+    def _fit_dataset_sigmas(self):
+        """Return the physical sigma used by the active likelihood per dataset."""
+        values = self._dataset_sigmas_from_theta(self.model)
+        return {
+            data.name: float(values[index])
+            for index, data in enumerate(self.datas)
+        }
 
-    def calculate_and_print_fit_statistics(self, model="median"):
-        if not hasattr(self, "model_dict") or model not in self.model_dict:
-            self.returnModel(model=model, print_stats=False)
-
-        print("\n" + "=" * 60)
-        print(f"Data Fit Statistics ({str(model).upper()} model)")
-        print("=" * 60)
-        total_rms = 0.0
-        total_vr = 0.0
-        count = 0
-        for data, vertical in zip(self.datas, self.verticals):
-            rms, vr = self.calculate_data_fit_metrics(data, vertical)
-            print(f"{data.name:<15} | RMS: {rms:8.4f} | VR: {vr:6.2f}%")
-            total_rms += rms
-            total_vr += vr
-            count += 1
-        if count:
-            print("-" * 60)
-            print(f"{'Average':<15} | RMS: {total_rms / count:8.4f} | VR: {total_vr / count:6.2f}%")
-        print("=" * 60)
+    def _rebuild_active_fit_synthetics(self):
+        """Repeat prediction for the active vector without selecting a model."""
+        data_faults = self._resolved_data_faults(self.dataFaults)
+        for index, (data, vertical) in enumerate(zip(self.datas, self.verticals)):
+            self.Predict(
+                self.model,
+                data,
+                vertical=vertical,
+                faultnames=data_faults[index],
+                updatepatch=True,
+            )
 
     def save_model_to_file(
         self,
@@ -2308,7 +2469,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         if filename is None:
             filename = f"model_results_{model}.txt"
         if recalculate or not hasattr(self, "model_dict") or model not in self.model_dict:
-            self.returnModel(model=model, print_stats=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         model_entry = self.model_dict[model]
         lines = self._format_model_summary(model, model_entry)
@@ -2999,12 +3160,14 @@ class NonlinearGeometrySMCInversion(SourceInv):
         diagnose_detail=False,
         convergence_report_file=None,
         force_diagnose=False,
+        print_fit_statistics=True,
     ):
         """Load samples, plot posterior summaries, and rebuild a selected model.
 
         This is a compatibility entry for old example scripts.  It keeps the
         old high-level workflow name, while using the new parameter registry
-        and plotting helpers internally.
+        and plotting helpers internally. ``print_fit_statistics`` controls the
+        single structured data-fit table printed after model activation.
         """
         if rank != 0:
             return None
@@ -3072,13 +3235,16 @@ class NonlinearGeometrySMCInversion(SourceInv):
         if not hasattr(self, "Likelihoods"):
             self.setLikelihood()
 
-        faults = self.returnModel(model=model, print_stats=False)
+        faults = self.returnModel(
+            model=model,
+            print_fit_statistics=False,
+        )
         self.save_model_to_file(
             f"model_results_{model}.txt",
             model=model,
             output_to_screen=True,
         )
-        if hasattr(self, "datas") and hasattr(self, "verticals"):
+        if print_fit_statistics and hasattr(self, "datas") and hasattr(self, "verticals"):
             self.calculate_and_print_fit_statistics(model=model)
 
         grouped_data = self._group_data_by_type()
@@ -3253,6 +3419,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
             _plot_crossfaultoffset_fit(cfdata, save_dir=str(out_dir), file_type="png", show=show)
 
     def print_mcmc_parameter_positions(self, print_table=True):
+        """Report canonical sample/file indices and their display labels."""
         rows = [
             [
                 spec.group,
@@ -3282,6 +3449,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return dict(estimated)
 
     def data_correction_label_map(self):
+        """Map canonical correction names to optional display-only labels."""
         return {
             spec.name: spec.label
             for spec in self.parameter_groups.get("data_corrections", [])
@@ -3330,6 +3498,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
         return plot_fault_parameter_trends(self, **kwargs)
 
     def save2h5(self, filename, datasets=None):
+        """Persist rank-0 sampler arrays without changing stored row order."""
         if h5py is None:
             self.logger.warning("h5py is not available; samples were not saved")
             return
@@ -3363,6 +3532,7 @@ class NonlinearGeometrySMCInversion(SourceInv):
             f.create_dataset("upper_bounds", data=ub)
 
     def load_samples_from_h5(self, filename, datasets=None):
+        """Load sampler arrays into the canonical result dictionary."""
         if h5py is None:
             self.logger.warning("h5py is not available; samples were not loaded")
             return

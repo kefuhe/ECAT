@@ -168,6 +168,8 @@ geodata:
 
 `log_scaled: true` 时，`initial_value: -2.0` 表示实际 sigma 为 `10 ** -2`。完整分组规则见 [Sigmas 和 Alpha](sigmas_alpha.md)。
 
+`update` 和 `initial_value` 按 sigma 参数组填写，而不是始终按数据集填写：`single` 长度为 1，`individual` 长度等于数据集数，`grouped` 长度等于组数。只有标量会自动广播；列表和字典必须完整、无未知名称。
+
 ## Alpha
 
 `alpha` 控制 Laplacian 平滑尺度。在线性求解中通常使用：
@@ -197,6 +199,8 @@ inv.run(penalty_weight=[100.0])
 ```
 
 二者不要同时传入；代码会直接报错。
+
+Alpha 只对支持 Laplacian 的 source 建组。`single` 在多断层中仍只需要一个值；`individual` 才是一条可平滑 source 一个值；`grouped` 按用户定义组数填写。Pressure 等非平滑 source 保留在线性模型列中，但不应写入 alpha 分组。
 
 ## Green's Functions 和 Laplacian
 

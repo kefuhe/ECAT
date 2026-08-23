@@ -1,7 +1,7 @@
 """Template: compute dense ENU surface displacement from one or more faults.
 
-This script is intentionally written in a flat, case-editable style.  For a
-new case, usually only the "User-editable parameters" block needs changes.
+This is a case-editable template. For a new case, usually only the
+"User-editable parameters" block needs changes.
 
 Typical uses:
 1. Compute a regular lon/lat box grid from one or more fault slip models.
@@ -149,4 +149,3 @@ if __name__ == "__main__":
             include_by_fault=INCLUDE_BY_FAULT,
         )
         print(f"Saved: {out_txt}")
-

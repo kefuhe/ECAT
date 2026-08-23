@@ -316,6 +316,9 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                     
                 if update_Cd and hasattr(self.faults[0], 'Cd'):
                     self.Cd = self.faults[0].Cd
+                    # The covariance source changed, so refresh the prepared
+                    # per-data metrics once before the next linear solve.
+                    self.prepare_data_covariance_metrics()
             
             if self.verbose:
                 logger.info(f"    [System] Global vectors updated. d shape: {self.d.shape}")

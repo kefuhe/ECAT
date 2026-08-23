@@ -139,6 +139,8 @@ sar_config:
       incidence: off_20250101_20250113.inc
 ```
 
+<a id="byte_order"></a>
+
 ### `byte_order`
 
 | 值 | 含义 |
@@ -342,6 +344,8 @@ projection direction 必须和 axis 匹配：
 若 azimuth observation 只提供 LOS projection，reader 可以结合
 `acquisition_look_side` 推导 heading；反向从纯 azimuth projection 推导 LOS
 不可能，因为缺少 incidence。
+
+<a id="print_input_summary"></a>
 
 ## `print_input_summary()`
 

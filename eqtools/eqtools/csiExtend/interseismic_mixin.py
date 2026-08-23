@@ -62,7 +62,7 @@ class InterseismicKinematicsMixin:
     Host classes are expected to provide fault objects through ``_get_faults()``
     or ``faults``/``multifaults.faults``, plus a current linear solution in
     ``mpost``.  Bayesian host classes can pass ``model=...`` to first call
-    ``returnModel(model=..., print_stat=False)``.
+    ``returnModel(model=..., print_fit_statistics=False)``.
     """
 
     def calculate_interseismic_fields(
@@ -92,7 +92,7 @@ class InterseismicKinematicsMixin:
             as ``ss`` and ``ds`` are accepted.
         model : str or array-like, optional
             For Bayesian inversion objects, call ``returnModel(model=model,
-            print_stat=False)`` before extracting the current solution.  Typical
+            print_fit_statistics=False)`` before extracting the current solution.  Typical
             values are ``"median"``, ``"mean"`` and ``"MAP"``.
         store : bool, default True
             Store the result in ``self.interseismic_results`` and attach common
@@ -107,7 +107,7 @@ class InterseismicKinematicsMixin:
         if model is not None:
             if not hasattr(self, "returnModel"):
                 raise ValueError("model=... is only supported on objects with returnModel()")
-            self.returnModel(model=model, print_stat=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         result = _calculate_interseismic_fields(
             self,
@@ -264,7 +264,7 @@ class InterseismicKinematicsMixin:
         if model is not None:
             if not hasattr(self, "returnModel"):
                 raise ValueError("model=... is only supported on objects with returnModel()")
-            self.returnModel(model=model, print_stat=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         return _resolve_interseismic_loading_pairs(
             self,
@@ -604,7 +604,7 @@ class InterseismicKinematicsMixin:
         if model is not None:
             if not hasattr(self, "returnModel"):
                 raise ValueError("model=... is only supported on objects with returnModel()")
-            self.returnModel(model=model, print_stat=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         component = normalize_slip_component(slip_component)
         if component == "total":
@@ -753,7 +753,7 @@ class InterseismicKinematicsMixin:
         if model is not None:
             if not hasattr(self, "returnModel"):
                 raise ValueError("model=... is only supported on objects with returnModel()")
-            self.returnModel(model=model, print_stat=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         component = normalize_slip_component(slip_component)
         if component == "total":

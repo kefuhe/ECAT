@@ -1,7 +1,7 @@
 """Template script for the new nonlinear geometry SMC inversion.
 
-This script keeps the same flat, case-editable style as the legacy
-``scripts/test_nonlinear_bayesian.py`` example, but uses
+This case-editable template follows the legacy
+``scripts/test_nonlinear_bayesian.py`` workflow, but uses
 ``NonlinearGeometrySMCInversion`` and the new ``nonlinear_geometry.yml``
 configuration.
 

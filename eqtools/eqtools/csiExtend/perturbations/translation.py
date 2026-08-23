@@ -1,8 +1,8 @@
-"""
-TranslationPerturbationMixin — Translation-based perturbation methods.
+"""Projected horizontal translations for fault coordinates and meshes.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-All methods are pure move-over with zero logic changes.
+All translation values are ``(dx, dy)`` in km.  Edge/layer methods update
+coordinates only, mesh-owning variants rebuild, and whole-mesh translation is
+a rigid operation that preserves patch areas and Laplacian values.
 """
 import numpy as np
 from ..bayesian_perturbation_base import track_mesh_update
@@ -31,7 +31,12 @@ class TranslationPerturbationMixin:
     
     @track_mesh_update(expected_perturbations_count=2,
                        description="Translate top coordinates.",
-                       params_info={"perturbations": "[dx, dy]"})
+                       params_info={"perturbations": "[dx, dy]"},
+                       reference_requirements={"fields": ("top_coords",)},
+                       perturbation_items=(
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_top_coords_by_translation(self, perturbations):
         """
         Apply a global translation to the top coordinates.
@@ -49,7 +54,12 @@ class TranslationPerturbationMixin:
 
     @track_mesh_update(expected_perturbations_count=2,
                        description="Translate bottom coordinates.",
-                       params_info={"perturbations": "[dx, dy]"})
+                       params_info={"perturbations": "[dx, dy]"},
+                       reference_requirements={"fields": ("bottom_coords",)},
+                       perturbation_items=(
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_bottom_coords_by_translation(self, perturbations):
         """
         Apply a global translation to the bottom coordinates.
@@ -67,7 +77,12 @@ class TranslationPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, expected_perturbations_count=2,
                        description="Translate bottom coordinates and rebuild simple mesh.",
-                       params_info={"perturbations": "[dx, dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"})
+                       params_info={"perturbations": "[dx, dy]", "disct_z": "Discretization in z", "bias": "Bias value", "min_dz": "Minimum dz"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_items=(
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_BottomTrans_simpleMesh(self, perturbations, disct_z=None, bias=None, min_dz=None):
         """
         Apply a global translation to the bottom coordinates and update the simple mesh.
@@ -85,7 +100,12 @@ class TranslationPerturbationMixin:
     
     @track_mesh_update(expected_perturbations_count=2,
                        description="Translate a specific layer.",
-                       params_info={"perturbations": "[dx, dy]", "mid_layer_index": "int"})
+                       params_info={"perturbations": "[dx, dy]", "mid_layer_index": "int"},
+                       reference_requirements={"fields": ("layers",)},
+                       perturbation_items=(
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_layer_coords_by_translation(self, perturbations, mid_layer_index=0):
         """
         Apply a global translation to the coordinates of a specific layer.
@@ -107,7 +127,12 @@ class TranslationPerturbationMixin:
     
     @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=2,
                        description="Translate the entire fault geometry.",
-                       params_info={"perturbations": "[dx, dy]"})
+                       params_info={"perturbations": "[dx, dy]"},
+                       reference_requirements={"mesh_pair": True},
+                       perturbation_items=(
+                           {"role": "dx", "unit": "km"},
+                           {"role": "dy", "unit": "km"},
+                       ))
     def perturb_geometry_by_translation(self, perturbations):
         """
         Apply a global translation to all coordinates.
@@ -119,9 +144,12 @@ class TranslationPerturbationMixin:
         np.ndarray: Translated vertices.
         """
         # Translate the fault geometry mesh
-        self._ensure_vertices_ref()
-        vertices_trans = self.perturb_coords_by_translation(self.geometry_ref.vertices, perturbations)
-        self.VertFace2csifault(vertices_trans, self.Faces)
+        ref_vertices, ref_faces = self._ensure_vertices_ref()
+        vertices_trans = self.perturb_coords_by_translation(ref_vertices, perturbations)
+        self.VertFace2csifault(
+            vertices_trans, ref_faces,
+            topology_changed=False, change_kind='rigid',
+        )
     
         return vertices_trans
     #---------------------------------------------------------------------------------------------------------------#

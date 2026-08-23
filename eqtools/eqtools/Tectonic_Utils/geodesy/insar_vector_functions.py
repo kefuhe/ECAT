@@ -230,9 +230,14 @@ def flight_incidence_angles2look_vector_leftlook(flight_angle, incidence_angle):
 
 
 def def3D_into_LOS(U_e, U_n, U_u, flight_angle, incidence_angle, look_direction='right'):
-    """
+    r"""
     Fialko, 2001, equation to project relative deformation into the LOS.
-    Dlos = [U_n sin(phi) - U_e cos(phi)]*sin(lamda) + U_u cos(lamda).
+
+    .. math:: d_{los} = [U_n \sin(\phi) - U_e \cos(\phi)]*\sin(\lambda) + U_u \cos(\lambda).
+
+    where
+    lambda = incidence angle,
+    phi = flight heading, and
     [U_e, U_n, U_u] are the east, north, and up components of the deformation.
 
     :param U_e: east component of deformation
@@ -243,7 +248,7 @@ def def3D_into_LOS(U_e, U_n, U_u, flight_angle, incidence_angle, look_direction=
     :type U_u: float
     :param flight_angle: azimuth of satellite heading vector in degrees, CW from north
     :type flight_angle: float
-    :param incidence_angle: local incidence angle at the reflector (usually angle from the vertical), in degrees
+    :param incidence_angle: local incidence angle at the reflector (angle from the vertical), in degrees
     :type incidence_angle: float
     :param look_direction: 'left' or 'right' (default 'right')
     :type look_direction: string

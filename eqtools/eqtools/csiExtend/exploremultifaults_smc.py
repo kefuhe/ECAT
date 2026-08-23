@@ -43,19 +43,29 @@ import glob
 import os
 
 from .fault_angle_conventions import canonicalize_compact_fault_angles
+from .covariance_utils import gaussian_log_likelihood, prepare_covariance_metric
+from .data_vector_layout import (
+    gps_component_major_vector,
+    write_data_synthetic_vector,
+)
+from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 
 @njit
-def logpdf_multivariate_normal(x, mean, inv_cov, logdet):
-    norm_const = -0.5 * logdet
-    x_mu = np.subtract(x, mean)
-    solution = np.dot(inv_cov, x_mu)
-    result = -0.5 * np.dot(x_mu, solution) + norm_const
-    return result
+def compute_data_log_likelihood(
+    simulations, observations, whitener, sigma, log_cov_det
+):
+    """Evaluate the normalized Gaussian term used by the legacy SMC API.
 
-@njit
-def compute_data_log_likelihood(simulations, observations, inv_cov, log_cov_det):
-    data_log_likelihood = logpdf_multivariate_normal(observations, simulations, inv_cov, log_cov_det)
-    return data_log_likelihood
+    The left-whitener represents the base covariance ``C``; ``sigma`` scales
+    it to ``sigma**2 * C``.  The base log determinant is consequently augmented
+    by ``n * log(sigma**2)`` exactly once.
+    """
+    residual = np.subtract(simulations, observations)
+    whitened_residual = np.dot(whitener, residual) / sigma
+    scaled_logdet = log_cov_det + residual.size * np.log(sigma ** 2)
+    return -0.5 * (
+        np.dot(whitened_residual, whitened_residual) + scaled_logdet
+    )
 
 @njit
 def compute_log_prior(samples, lb, ub):
@@ -70,7 +80,7 @@ NT2 = namedtuple('NT2', 'allsamples postval beta stage covsmpl resmpl')
 
 
 # Class explorefault
-class explorefault(SourceInv):
+class explorefault(NonlinearFitStatisticsMixin, SourceInv):
     '''
     Creates an object that will solve for the best fault details. The fault has only one patch and is embedded in an elastic medium.
 
@@ -473,16 +483,23 @@ class explorefault(SourceInv):
             self.sigmas_index = [len(self.Priors)+i for i in range(self.config.sigmas['updatable_params'])] # ?
             self.sigmas_keys = ['sigma_{}'.format(i) for i in range(self.config.sigmas['updatable_params'])]
             self.sigmas_keys_alias = []
-            datanames = [data.name for data in self.geodata.get('data', [])]
-            updatable_datanames = [datanames[i] for i in range(len(datanames)) if self._sigma_update_mask[i]]
-            for i in range(self.config.sigmas['updatable_params']):
-                if self.config.sigmas['mode'] == 'single':
-                    self.sigmas_keys_alias.append('sigma_all')
-                elif self.config.sigmas['mode'] == 'individual':
-                    self.sigmas_keys_alias.append(f'sigma_{updatable_datanames[i]}')
-                elif self.config.sigmas['mode'] == 'grouped':
-                    group_keys = list(self.config.sigmas['groups'].keys())
-                    self.sigmas_keys_alias.append(f'sigma_{group_keys[i]}')
+            layout = self.config.sigmas.get('group_layout')
+            if layout is not None:
+                sampled_groups = [
+                    name for name, should_update in zip(
+                        layout['group_names'], layout['update_by_group']
+                    ) if should_update
+                ]
+                for group_name in sampled_groups:
+                    members = layout['members_by_group'][group_name]
+                    label = (
+                        members[0]
+                        if layout['mode'] == 'individual' else group_name
+                    )
+                    self.sigmas_keys_alias.append(f'sigma_{label}')
+            else:
+                # Compatibility for externally supplied pre-contract configs.
+                self.sigmas_keys_alias = self.sigmas_keys.copy()
             for i in range(self.config.sigmas['updatable_params']): # range(ndatas)
                 self.param_keys['sigmas'].append(i)
                 self.param_index['sigmas'].append(len(self.Priors)+i)
@@ -533,8 +550,12 @@ class explorefault(SourceInv):
         self.datas = datas if datas else self.geodata['data']
         self.verticals = verticals if verticals else self.geodata.get('verticals', [True]*len(self.datas))
     
-        # List of likelihoods
+        # Legacy list layout is kept for downstream index-based code:
+        # [data, observation_vector, covariance_metric, logdet_view, vertical].
+        # The metric is now the active consumer; logdet_view preserves the
+        # historical diagnostic slot and is not a second statistical state.
         self.Likelihoods = []
+        self.data_covariance_metrics = {}
     
         # Create a likelihood function for each of the data set
         for data, vertical in zip(self.datas, self.verticals):
@@ -542,10 +563,11 @@ class explorefault(SourceInv):
             # Get the data type
             if data.dtype=='gps':
                 # Get data
-                if vertical:
-                    dobs = data.vel_enu.flatten()
-                else:
-                    dobs = data.vel_enu[:,:-1].flatten()
+                dobs = gps_component_major_vector(
+                    data.vel_enu,
+                    vertical=vertical,
+                    name=f"{data.name} GPS observations",
+                )
             elif data.dtype=='insar':
                 # Get data
                 dobs = data.vel
@@ -557,21 +579,38 @@ class explorefault(SourceInv):
             # Make sure Cd exists
             assert hasattr(data, 'Cd'), \
                     'No data covariance for data set {}'.format(data.name)
-            Cd = data.Cd
-            Cd_inv = np.linalg.inv(Cd)
-            # Cd_det = np.linalg.det(Cd)
-            # logCd_det = np.log(Cd_det)
-            # logCd_det = np.log(np.linalg.det(Cd))
-            sign, logdet = np.linalg.slogdet(Cd)
-            logCd_det = sign * logdet
-            ilike = [dobs, Cd_inv, logCd_det]
-            # Save the likelihood function
-            self.Likelihoods.append([data]+ [il.astype(np.float64) for il in ilike] + [vertical])
+            metric = prepare_covariance_metric(
+                data.Cd,
+                name=f"covariance for data set '{data.name}'",
+            )
+            if metric.size != np.asarray(dobs).size:
+                raise ValueError(
+                    f"{data.name}: covariance size {metric.size} does not "
+                    f"match observation length {np.asarray(dobs).size}"
+                )
+            self.Likelihoods.append([
+                data,
+                np.asarray(dobs, dtype=np.float64),
+                metric,
+                metric.logdet,
+                vertical,
+            ])
+            self.data_covariance_metrics[data.name] = metric
     
         # All done 
         return
 
     def Predict(self, theta, data, vertical=True, faultnames=None, updatepatch=True):
+        """Build one legacy prediction, including its scalar reference offset.
+
+        This compatibility path supports the historical InSAR/leveling
+        ``refnumber`` offset.  New offset/ramp or GPS-translation configurations
+        should use the registry-based nonlinear API and its explicit design
+        matrix contract.  The corrected vector is returned to the likelihood.
+        Normal :meth:`returnModel` publishes the equivalent corrected state;
+        the optional fit-statistics rebuild captures and publishes this return
+        value directly.
+        """
         if hasattr(data, 'refnumber'):
             reference = theta[data.refnumber]
         else:
@@ -623,10 +662,11 @@ class explorefault(SourceInv):
     
         # check data type 
         if data.dtype=='gps':
-            if vertical: 
-                return data.synth.flatten()
-            else:
-                return data.synth[:,:-1].flatten()
+            return gps_component_major_vector(
+                data.synth,
+                vertical=vertical,
+                name=f"{data.name} GPS synthetics",
+            )
         elif data.dtype=='insar':
             return data.synth.flatten()+reference
         elif data.dtype == 'leveling':
@@ -638,6 +678,7 @@ class explorefault(SourceInv):
         return
     
     def make_target(self, updatepatches=None, dataFaults=None):
+        """Create the legacy SMC target from matched data and covariance rows."""
         # Extract lb and ub from self.Priors
         self.lb = np.array([prior.args[0] for prior in self.Priors])
         self.ub = np.array([prior.args[0] + prior.args[1] for prior in self.Priors])
@@ -674,15 +715,18 @@ class explorefault(SourceInv):
                     sigmas[self._sigma_update_indices] = samples[self.sigmas_index][self._sigma_update_positions]
                 # If log_scaled, convert sigmas to log scale
                 sigmas = np.power(10, np.array(sigmas)) if self.sigmas['log_scaled'] else np.array(sigmas)
-                for i, (data, dobs, Cd_inv, logCd_det, vertical) in enumerate(self.Likelihoods):
+                if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+                    return -np.inf
+                for i, (data, dobs, metric, _logdet, vertical) in enumerate(self.Likelihoods):
                     # Determine the faults to use for this dataset
                     currentFaults = self.faultnames if dataFaults[i] is None else dataFaults[i]
                     simulations = self.Predict(samples, data, vertical=vertical, 
                                                faultnames=currentFaults, updatepatch=updatepatches[i])
-                    isigma2 = sigmas[i]**2
-                    Cd_inv_sigma = np.divide(Cd_inv, isigma2)
-                    logCd_det_sigma = logCd_det + np.log(isigma2)*len(dobs)
-                    log_likelihood += compute_data_log_likelihood(simulations, dobs, Cd_inv_sigma, logCd_det_sigma)
+                    log_likelihood += gaussian_log_likelihood(
+                        np.subtract(simulations, dobs),
+                        metric,
+                        sigmas[i],
+                    )
                 return log_prior + log_likelihood
         return target
     
@@ -741,19 +785,30 @@ class explorefault(SourceInv):
         # All done
         return
 
-    def returnModel(self, model='median', print_stats=True):
+    def returnModel(
+        self,
+        model='median',
+        print_stats=True,
+        *,
+        print_fit_statistics=None,
+    ):
         '''
         Returns a list of faults corresponding to the desired model.
         (Standard Mode: Geometry is directly taken from MCMC samples)
     
         Kwargs:
             * model             : 'mean', 'median', 'std', 'MAP', integer, or dict
-            * print_stats       : Whether to print fit statistics and parameter table
+            * print_fit_statistics: Canonical switch for fit statistics and
+              the parameter table. ``print_stats`` remains a compatibility
+              spelling for existing scripts.
     
         Returns:
             * list of fault instances
         '''
         import numpy as np
+
+        if print_fit_statistics is not None:
+            print_stats = bool(print_fit_statistics)
 
         # 1. Retrieve sampled values (Standard Logic)
         if model in ('Mean', 'mean'):
@@ -865,6 +920,8 @@ class explorefault(SourceInv):
             
             for cocf in cocrossfault_list:
                 cocf.buildsynth(faults)
+
+            self._active_result_model = model
             
             # =================================================================
             # Printing logic: Fit Stats + detailed parameter table (with aliases)
@@ -909,104 +966,50 @@ class explorefault(SourceInv):
                     for row in display_data:
                         print(f"{row[0]} {row[1]}: {row[2]}")
 
+        else:
+            self._active_result_model = None
+
 
         return faults
 
-    def calculate_data_fit_metrics(self, data, vertical=True):
+    def _fit_dataset_sigmas(self):
+        """Return the physical sigma values used by the active likelihood."""
+        values = self._sigma_initial.astype(np.float64, copy=True)
+        if self._sigma_update_flag:
+            sampled = np.asarray(self.model, dtype=float)[self.sigmas_index]
+            values[self._sigma_update_indices] = sampled[
+                self._sigma_update_positions
+            ]
+        if self.sigmas.get('log_scaled', False):
+            values = np.power(10.0, values)
+        return {
+            data.name: float(values[index])
+            for index, data in enumerate(self.datas)
+        }
+
+    def _rebuild_active_fit_synthetics(self):
+        """Rebuild and publish the complete prediction for the active vector.
+
+        Legacy :meth:`Predict` returns the scalar reference correction without
+        mutating ``data.synth``.  Capturing and publishing that return value is
+        therefore required for ``rebuild_synth=True`` statistics to describe
+        the same prediction that the likelihood scores.
         """
-        Calculate RMS and VR for different data types.
-        
-        Parameters:
-        -----------
-        data : csi data object
-            GPS, InSAR, or optical correlation data object
-        vertical : bool
-            Whether to include vertical component (for GPS data)
-            
-        Returns:
-        --------
-        tuple : (rms, vr)
-            Root Mean Square error and Variance Reduction percentage
-        """
-        if data.dtype == 'insar':
-            observed = data.vel
-            synthetic = data.synth
-        elif data.dtype == 'gps':
-            if vertical:
-                observed = data.vel_enu.flatten()  # Flatten all components
-                synthetic = data.synth.flatten()
-            else:
-                observed = data.vel_enu[:, :-1].flatten()  # Only E-N components
-                synthetic = data.synth[:, :-1].flatten()
-        elif data.dtype in ('opticorr', 'optical'):
-            observed = np.hstack((data.east, data.north))
-            synthetic = np.hstack((data.east_synth, data.north_synth))
-        elif data.dtype == 'leveling':
-            observed = data.vel
-            synthetic = data.synth
-        elif data.dtype == 'crossfaultoffset':
-            observed = data.data_vector
-            synthetic = data.synth_vector
-        else:
-            raise ValueError(f"Unsupported data type: {data.dtype}")
-        
-        # Calculate RMS
-        residuals = synthetic - observed
-        rms = np.sqrt(np.mean(residuals**2))
-        
-        # Calculate Variance Reduction
-        ss_res = np.sum(residuals**2)  # Sum of squares of residuals
-        ss_tot = np.sum(observed**2)   # Total sum of squares
-        vr = (1 - ss_res / ss_tot) * 100 if ss_tot != 0 else 0.0
-        
-        return rms, vr
-    
-    def calculate_and_print_fit_statistics(self, model='median'):
-        """
-        Calculate and print fit statistics for all datasets.
-        
-        Parameters:
-        -----------
-        model : str
-            Model type to use ('median', 'mean', 'MAP', etc.)
-        """
-        # Ensure we have the model
-        if model not in self.model_dict:
-            faults = self.returnModel(model=model, print_stats=False)
-        
-        print("\n" + "="*60)
-        print(f"Data Fit Statistics ({model.upper()} model)")
-        print("="*60)
-        
-        # Build synthetics for all data
-        cogps_vertical_list = []
-        cosar_list = []
-        for data, vertical in zip(self.datas, self.verticals):
-            if data.dtype == 'gps':
-                cogps_vertical_list.append([data, vertical])
-            elif data.dtype == 'insar':
-                cosar_list.append(data)
-        
-        # Calculate and print statistics
-        total_rms = 0
-        total_vr = 0
-        data_count = 0
-        
-        for data, vertical in zip(self.datas, self.verticals):
-            try:
-                rms, vr = self.calculate_data_fit_metrics(data, vertical)
-                print(f"{data.name:<15} | RMS: {rms:8.4f} | VR: {vr:6.2f}%")
-                total_rms += rms
-                total_vr += vr
-                data_count += 1
-            except Exception as e:
-                self.logger.warning(f"Error calculating fit metrics for {data.name}: {str(e)}")
-        
-        if data_count > 0:
-            print("-"*60)
-            print(f"{'Average':<15} | RMS: {total_rms/data_count:8.4f} | VR: {total_vr/data_count:6.2f}%")
-        
-        print("="*60)
+        for data, vertical, faultnames in zip(
+            self.datas, self.verticals, self.dataFaults
+        ):
+            simulation = self.Predict(
+                self.model,
+                data,
+                vertical=vertical,
+                faultnames=faultnames,
+                updatepatch=True,
+            )
+            write_data_synthetic_vector(
+                data,
+                simulation,
+                vertical=vertical,
+            )
     
     def save_model_to_file(self, filename=None, model='median', recalculate=False, output_to_screen=True,
                            include_std=True, include_samples=True, decimal_places=6, file_format='txt'):
@@ -1038,10 +1041,10 @@ class explorefault(SourceInv):
     
         # Ensure we have the required models
         if model != 'std' and (not hasattr(self, 'model_dict') or 'std' not in self.model_dict):
-            self.returnModel(model='std', print_stats=False)
+            self.returnModel(model='std', print_fit_statistics=False)
     
         if recalculate or model not in self.model_dict:
-            self.returnModel(model=model, print_stats=False)
+            self.returnModel(model=model, print_fit_statistics=False)
     
         # Get the samples for the specified model
         if model in ('mean', 'Mean'):
@@ -1633,7 +1636,8 @@ class explorefault(SourceInv):
                                         plot_faults=True, plot_sigmas=True, plot_data=True,
                                         antisymmetric=True, res_use_data_norm=True, cmap='jet',
                                         model='median', fault_figsize=(7.5, 6.5), sigmas_figsize=(2.625, 2.625),
-                                        save_data=True, sar_corner=None):
+                                        save_data=True, sar_corner=None,
+                                        print_fit_statistics=True):
         """
         Extract and plot the Bayesian results.
 
@@ -1651,6 +1655,7 @@ class explorefault(SourceInv):
         sigmas_figsize: figure size for sigmas KDE plots (default is A4 size (2.625, 2.625))
         save_data: whether to save the data to a file (default is True)
         sar_corner (None, 'tri', 'quad'): sar corner type (default is None)
+        print_fit_statistics: whether to print the structured fit table
         """
         if model == 'std':
             plot_data = False
@@ -1676,9 +1681,13 @@ class explorefault(SourceInv):
                                     hspace=0.05, wspace=0.05)
             
             # Save the model results
-            faults = self.returnModel(model=model, print_stats=False)
+            faults = self.returnModel(
+                model=model,
+                print_fit_statistics=False,
+            )
             self.save_model_to_file(f'model_results_{model}.txt', model=model, output_to_screen=True)
-            self.calculate_and_print_fit_statistics(model=model)
+            if print_fit_statistics:
+                self.calculate_and_print_fit_statistics(model=model)
 
             # Build synthetics for GPS and SAR data
             cogps_vertical_list = []

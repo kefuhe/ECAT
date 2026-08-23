@@ -12,9 +12,13 @@ ecat-downsample -f downsample.yml --edit-trace --trace-output adjusted_trace.txt
 fault_traces:
   - enabled: true
     id: published_trace
-    file: published_trace.txt
+    file: published_trace.gmt
     stages: [raw]
+    # segments: [0, 2]   # 可选；省略时每个 > 段都成为 reference
 ```
+
+普通两列 TXT、含可选第三列的 GMT/OGR 文本，以及 GeoJSON 线都可作为 reference。多段默认全部
+展开；若只需一部分，用零基 `segments` 选择。
 
 关闭编辑器并保存后，把输出明确写回后续配置：
 

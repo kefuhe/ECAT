@@ -15,6 +15,14 @@ import numpy as np
 class SourceAdapter(ABC):
     """Abstract base class for source adapters."""
 
+    _COMMON_RESULT_STATE_ATTRIBUTES = (
+        'mpost',
+        'custom',
+        'polysol',
+        'polysolindex',
+    )
+    _RESULT_STATE_ATTRIBUTES = ()
+
     def __init__(self, source, **kwargs):
         self.source = source
 
@@ -94,10 +102,30 @@ class SourceAdapter(ABC):
         """Write solved parameters back onto the source object."""
         ...
 
+    @classmethod
+    def get_result_state_attributes(cls):
+        """Return fields mutated when one linear result is distributed.
+
+        Diagnostic transactions use this small source-owned contract to
+        restore a previously active model without copying geometry, Green's
+        functions, covariance, or mesh state.  New adapters that publish
+        additional result fields extend ``_RESULT_STATE_ATTRIBUTES``.
+        """
+        return cls._COMMON_RESULT_STATE_ATTRIBUTES + cls._RESULT_STATE_ATTRIBUTES
+
     # ── Area / volume ──────────────────────────────────────────────────
 
+    def get_patch_areas(self):
+        """Return areas for the current source geometry, or *None*.
+
+        The base implementation represents sources without a fault-patch area
+        concept. Fault adapters override this method and delegate cache
+        ownership to CSI.
+        """
+        return None
+
     def compute_patch_areas(self):
-        """Return area array (for moment computation) or *None*."""
+        """Force area computation when supported, or return *None*."""
         return None
 
     # ── Initial assembly helpers ───────────────────────────────────────
@@ -180,6 +208,7 @@ class SourceAdapter(ABC):
 class FaultAdapter(SourceAdapter):
     """Adapter for CSI Fault objects (rectangular / triangular patches)."""
 
+    _RESULT_STATE_ATTRIBUTES = ('slip', 'coupling', 'index_parameter')
     _DEFAULT_SLIPDIR = 'sd'
     _SLIPDIR_ORDER = 'sdtc'
     _CHAR_TO_NAME = {'s': 'strikeslip', 'd': 'dipslip',
@@ -343,6 +372,14 @@ class FaultAdapter(SourceAdapter):
             st = se
 
     # ── Area ───────────────────────────────────────────────────────────
+
+    def get_patch_areas(self):
+        """Return areas corresponding to the source's current geometry."""
+        getter = getattr(self.source, 'get_patch_areas', None)
+        if callable(getter):
+            return getter()
+        # Compatibility with CSI versions predating the current-value getter.
+        return self.source.compute_patch_areas()
 
     def compute_patch_areas(self):
         return self.source.compute_patch_areas()
@@ -543,6 +580,15 @@ class FaultAdapter(SourceAdapter):
 class PressureAdapter(SourceAdapter):
     """Adapter for CSI Pressure objects (Mogi, Yang, CDM, pCDM)."""
 
+    _RESULT_STATE_ATTRIBUTES = (
+        'deltapressure',
+        'DVx',
+        'DVy',
+        'DVz',
+        'DVtot',
+        'deltaopening',
+    )
+
     @property
     def source_type(self):
         return 'Pressure'
@@ -693,6 +739,7 @@ class PressureAdapter(SourceAdapter):
 class SbarbotAdapter(SourceAdapter):
     """Adapter for CSI Sbarbot objects (strain volumes)."""
 
+    _RESULT_STATE_ATTRIBUTES = ('strain',)
     _DEFAULT_STRAIN_COMPONENTS = ['eps11', 'eps12', 'eps13', 'eps22', 'eps23', 'eps33']
 
     def __init__(self, source, strain_components=None):

@@ -1,5 +1,6 @@
 # import the necessary libraries
 import warnings
+from contextlib import contextmanager
 
 from csi import multifaultsolve
 import copy
@@ -13,6 +14,7 @@ from . import lsqlin
 from ..viztools import sci_plot_style, DegreeFormatter
 from .fault_analysis_mixin import FaultAnalysisMixin
 from .constraint_manager_blse import ConstraintManagerBLSE
+from .covariance_utils import prepare_block_covariance_metrics
 from .source_adapters import make_adapter
 
 # Plot
@@ -115,8 +117,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Build source adapters
         self.adapters = {fault.name: make_adapter(fault) for fault in faults}
 
-        # Calculate the covariance matrix and the inverse of the covariance matrix
-        self.calculate_Icovd_chol()
+        # Prepare one covariance metric per data set. This is intentionally
+        # done once; solver iterations only reuse the resulting whiteners.
+        self.prepare_data_covariance_metrics()
         self.calculate_slip_and_poly_positions()
 
         # Configure DES Logger
@@ -185,13 +188,188 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             total += num_source_params + num_poly_samples
         return total
     
-    def calculate_Icovd_chol(self):
-        '''
-        Calculate the Cholesky decomposition of the inverse of the covariance matrix.
-        '''
-        Icovd = np.linalg.inv(self.Cd)
-        self.Icovd_chol = np.linalg.cholesky(Icovd)
-        return
+    def _build_data_ranges(self):
+        """Return the canonical observation-row range for each data set."""
+        ranges = {}
+        start = 0
+        for data_name in self.faults[0].datanames:
+            end = start + np.asarray(self.faults[0].d[data_name]).shape[0]
+            ranges[data_name] = (start, end)
+            start = end
+        return ranges
+
+    def prepare_data_covariance_metrics(self):
+        """Factor each covariance block directly and cache its metric.
+
+        ``self.Cd`` is assembled block-diagonally by CSI. Cross-data terms are
+        rejected because BLSE/VCE assign independent weights or variance
+        components to the named data sets and cannot represent such terms.
+        """
+        self.data_ranges = self._build_data_ranges()
+        self.data_covariance_metrics = prepare_block_covariance_metrics(
+            self.Cd,
+            self.data_ranges,
+        )
+        return self.data_covariance_metrics
+
+    def _normalize_data_weights(self, data_weight):
+        """Return one multiplicative whitening weight per data set."""
+        n_data = len(self.data_ranges)
+        if isinstance(data_weight, (int, float)):
+            return np.full(n_data, float(data_weight))
+        if isinstance(data_weight, (list, np.ndarray)):
+            weights = np.asarray(data_weight, dtype=float).reshape(-1)
+            if weights.size != n_data:
+                raise ValueError(
+                    "The length of data_weight must equal the number of data sets."
+                )
+            return weights
+        raise ValueError("data_weight must be a scalar or a list of scalars.")
+
+    def _whiten_data_system(self, G, d, data_weight=1.0):
+        """Whiten ``G`` and ``d`` blockwise without a global dense operator."""
+        if not hasattr(self, "data_covariance_metrics"):
+            self.prepare_data_covariance_metrics()
+        weights = self._normalize_data_weights(data_weight)
+        G_blocks = []
+        d_blocks = []
+        for weight, (data_name, (start, end)) in zip(
+            weights, self.data_ranges.items()
+        ):
+            metric = self.data_covariance_metrics[data_name]
+            G_blocks.append(metric.whiten(G[start:end, :]) * weight)
+            d_blocks.append(metric.whiten(d[start:end]) * weight)
+        return np.vstack(G_blocks), np.concatenate(d_blocks)
+
+    @contextmanager
+    def _blse_quadratic_scan_context(self):
+        """Provide one call-local cache for a fixed-geometry BLSE scan.
+
+        The cache is intentionally scoped to :meth:`simple_run_loop`.  It is
+        never retained across independent ``run()`` calls, where users may
+        legitimately have changed geometry, Green's functions, covariance, or
+        smoothing.  Nested diagnostic transactions restore the outer context.
+        """
+        sentinel = object()
+        previous = getattr(self, '_blse_quadratic_scan_cache', sentinel)
+        self._blse_quadratic_scan_cache = {}
+        try:
+            yield self._blse_quadratic_scan_cache
+        finally:
+            if previous is sentinel:
+                delattr(self, '_blse_quadratic_scan_cache')
+            else:
+                self._blse_quadratic_scan_cache = previous
+
+    def _prepare_data_quadratic(self, G, d, data_weight=1.0):
+        """Accumulate the exact BLSE data contribution without stacking rows.
+
+        ``data_weight`` is the multiplicative residual-row weight used by the
+        public BLSE API.  It therefore enters the normal matrix and right-hand
+        side quadratically.  Scaling both ``WG`` and ``Wd`` before their Gram
+        and cross products preserves that convention for signed or zero legacy
+        weights as well as the normal positive ``1 / sigma`` case.
+        """
+        if not hasattr(self, 'data_covariance_metrics'):
+            self.prepare_data_covariance_metrics()
+        weights = self._normalize_data_weights(data_weight)
+        G = np.asarray(G, dtype=float)
+        d = np.asarray(d, dtype=float).reshape(-1)
+        n_parameters = G.shape[1]
+        H_data = np.zeros((n_parameters, n_parameters), dtype=float)
+        q_data = np.zeros(n_parameters, dtype=float)
+        for weight, (data_name, (start, end)) in zip(
+            weights, self.data_ranges.items()
+        ):
+            metric = self.data_covariance_metrics[data_name]
+            WG = metric.whiten(G[start:end, :]) * weight
+            Wd = metric.whiten(d[start:end]) * weight
+            H_data += WG.T @ WG
+            q_data -= WG.T @ Wd
+        return H_data, q_data
+
+    def _data_quadratic_for_solve(self, G, d, data_weight, *, cache=False):
+        """Return current data ``H, q``, optionally reusing a scan-local copy."""
+        scan_cache = (
+            getattr(self, '_blse_quadratic_scan_cache', None)
+            if cache else None
+        )
+        weights = self._normalize_data_weights(data_weight)
+        cache_matches = (
+            scan_cache is not None
+            and scan_cache.get('G_object') is G
+            and scan_cache.get('d_object') is d
+            and np.array_equal(scan_cache.get('data_weights'), weights)
+        )
+        if cache_matches:
+            return (
+                scan_cache['H_data'].copy(),
+                scan_cache['q_data'].copy(),
+            )
+
+        H_data, q_data = self._prepare_data_quadratic(G, d, weights)
+        if scan_cache is not None:
+            scan_cache.update({
+                'G_object': G,
+                'd_object': d,
+                'data_weights': weights.copy(),
+                'H_data': H_data.copy(),
+                'q_data': q_data.copy(),
+            })
+        return H_data, q_data
+
+    def _assemble_blse_quadratic(
+            self, G, d, smoothing_matrix, data_weight,
+            *, use_scan_cache=False, penalty_weight=None):
+        """Build the same ``H, q`` as the materialized BLSE residual system."""
+        H, q = self._data_quadratic_for_solve(
+            G, d, data_weight, cache=use_scan_cache,
+        )
+        smoothing_matrix = np.asarray(smoothing_matrix, dtype=float)
+        if smoothing_matrix.ndim != 2 or smoothing_matrix.shape[1] != H.shape[0]:
+            raise ValueError(
+                "smoothing_matrix must be two-dimensional and match the "
+                "assembled model-column layout"
+            )
+        if smoothing_matrix.shape[0] == 0:
+            return H, q
+
+        scan_cache = (
+            getattr(self, '_blse_quadratic_scan_cache', None)
+            if use_scan_cache else None
+        )
+        base = None if scan_cache is None else scan_cache.get(
+            'base_smoothing_matrix'
+        )
+        weights = np.asarray(penalty_weight, dtype=float).reshape(-1)
+        uniform_weight = (
+            weights.size > 0
+            and np.all(weights == weights[0])
+            and np.isfinite(weights[0])
+        )
+        can_reuse_smoothing = (
+            base is not None
+            and uniform_weight
+            and np.asarray(base).shape == smoothing_matrix.shape
+        )
+        if can_reuse_smoothing:
+            if 'S_base' not in scan_cache:
+                base = np.asarray(base, dtype=float)
+                scan_cache['S_base'] = base.T @ base
+            H += float(weights[0]) ** 2 * scan_cache['S_base']
+        else:
+            H += smoothing_matrix.T @ smoothing_matrix
+        return H, q
+
+    def _assemble_blse_residual_system(
+            self, G, d, smoothing_matrix, data_weight):
+        """Materialize the exact BLSE residual form for the rare fallback."""
+        G_data, d_data = self._whiten_data_system(G, d, data_weight)
+        smoothing_matrix = np.asarray(smoothing_matrix, dtype=float)
+        return (
+            np.vstack((G_data, smoothing_matrix)),
+            np.hstack((d_data, np.zeros(smoothing_matrix.shape[0]))),
+        )
 
     def calculate_slip_and_poly_positions(self):
         """
@@ -776,9 +954,16 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                                 verbose=False, extra_parameters=None,
                                 iterations=1000, tolerance=None, maxfun=100000, des_enabled=None,
                                 validate_constraints=True):
-        '''
-        Enhanced constrained least squares solution with unified constraint management.
-        '''
+        """Solve the constrained, covariance-whitened BLSE system.
+
+        ``smoothing_matrix`` is a complete matrix in assembled model-column
+        coordinates.  It is mutually exclusive with ``smoothing_constraints``.
+        When ECAT constructs the Laplacian, every source retains its model
+        columns, but only adapters that support smoothing contribute rows.
+        ``self.G_lap_base`` records the unweighted rows and ``self.G_lap`` the
+        rows multiplied by ``penalty_weight``; neither is reconstructed during
+        result reporting.
+        """
         self.constraint_manager._require_activation_flags_reconciled(
             "BLSE constrained least squares"
         )
@@ -821,19 +1006,14 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
         # Nd = d.shape[0]
         Np = G.shape[1]
-        Ns = 0
-        Ns_st = []
-        Ns_se = []
-        # build Laplace
-        for fault in faults:
-            Ns_st.append(Ns)
-            adapter = self.adapters[fault.name]
-            Ns += adapter.get_n_source_params()
-            Ns_se.append(Ns)
-        G_lap = np.zeros((Ns, Np))
-        d_lap = np.zeros((Ns, ))
 
         # ----------------------------Smoothing matrix-----------------------------#
+        if smoothing_matrix is not None and smoothing_constraints is not None:
+            raise ValueError(
+                "Provide either smoothing_matrix or smoothing_constraints, "
+                "not both. Their precedence would otherwise be ambiguous."
+            )
+
         if smoothing_matrix is None:
             if isinstance(penalty_weight, (int, float)):
                 penalty_weight = np.ones(len(faults)) * penalty_weight
@@ -842,58 +1022,88 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             else:
                 raise ValueError("penalty_weight should be a scalar or a list of scalars.")
 
-            # Handle smoothing constraints
-            faultnames = [ifault.name for ifault in faults]
+            # Only smoothing-capable sources own Laplacian rows.  All sources
+            # still retain their columns in the full model layout.  Avoiding
+            # zero-row placeholders is mathematically neutral for the solve,
+            # but keeps roughness diagnostics and matrix dimensions truthful.
+            smoothing_faults = [
+                fault.name
+                for fault in faults
+                if self.adapters[fault.name].supports_smoothing()
+            ]
             if smoothing_constraints is not None:
                 if isinstance(smoothing_constraints, tuple) and len(smoothing_constraints) == 4:
-                    smoothing_constraints = {fault_name: smoothing_constraints for fault_name in faultnames}
+                    smoothing_constraints = {
+                        fault_name: smoothing_constraints
+                        for fault_name in smoothing_faults
+                    }
                 elif isinstance(smoothing_constraints, dict):
-                    assert all(fault_name in smoothing_constraints for fault_name in faultnames), "All fault names must be in smoothing_constraints."
+                    missing = set(smoothing_faults) - set(smoothing_constraints)
+                    if missing:
+                        raise ValueError(
+                            "smoothing_constraints is missing smoothing-capable "
+                            "sources: " + ", ".join(sorted(missing))
+                        )
+                    smoothing_constraints = dict(smoothing_constraints)
                 else:
                     raise ValueError("smoothing_constraints should be a 4-tuple or a dictionary with fault names as keys and 4-tuples as values.")
+            else:
+                smoothing_constraints = {
+                    fault_name: (None, None, None, None)
+                    for fault_name in smoothing_faults
+                }
 
-            smoothing_constraints = [smoothing_constraints[ifaultname] for ifaultname in faultnames]
-            for ii, (fault, ipenalty_weight, ismoothing_constraints) in enumerate(zip(faults, penalty_weight, smoothing_constraints)):
+            base_blocks = []
+            weighted_blocks = []
+            for fault, ipenalty_weight in zip(faults, penalty_weight):
                 st = self.fault_indexes[fault.name][0]
                 adapter = self.adapters[fault.name]
-                if adapter.supports_smoothing():
-                    if fault.patchType in ('rectangle'):
-                        lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
-                    else:
-                        lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
-                    lap_sd = blkdiag(lap, lap)
-                    Nsd = len(adapter.get_param_names())
-                    # TODO: The following code is not clear, need to be modified
-                    if Nsd == 1:
-                        lap_sd = lap
-                    se = st + Nsd*lap.shape[0]
-                    G_lap[Ns_st[ii]:Ns_se[ii], st:se] = lap_sd * ipenalty_weight
+                if not adapter.supports_smoothing():
+                    continue
+
+                lap = fault.buildLaplacian(
+                    method=method,
+                    bounds=smoothing_constraints[fault.name],
+                )
+                n_components = len(adapter.get_param_names())
+                if n_components == 1:
+                    lap_sd = lap
+                else:
+                    lap_sd = blkdiag(*([lap] * n_components))
+                lap_sd = np.asarray(lap_sd, dtype=float)
+                se = st + lap_sd.shape[1]
+                if se > Np:
+                    raise ValueError(
+                        f"Laplacian columns for '{fault.name}' exceed the "
+                        "assembled model layout"
+                    )
+                block = np.zeros((lap_sd.shape[0], Np), dtype=float)
+                block[:, st:se] = lap_sd
+                base_blocks.append(block)
+                weighted_blocks.append(block * float(ipenalty_weight))
+
+            G_lap_base = (
+                np.vstack(base_blocks)
+                if base_blocks
+                else np.zeros((0, Np), dtype=float)
+            )
+            G_lap = (
+                np.vstack(weighted_blocks)
+                if weighted_blocks
+                else np.zeros((0, Np), dtype=float)
+            )
         else:
             G_lap = smoothing_matrix
-            d_lap = np.zeros((G_lap.shape[0], ))
+            G_lap_base = None
         self.G_lap = G_lap
+        # The base matrix is available only when this method constructed the
+        # Laplacian. A caller-provided matrix may already contain arbitrary row
+        # scaling, so inferring an unscaled matrix here would be unsafe.
+        self.G_lap_base = G_lap_base
 
         # ----------------------------Data weight-----------------------------#
-        if isinstance(data_weight, (int, float)):
-            data_weight = np.ones(d.shape[0]) * data_weight
-        elif isinstance(data_weight, (list, np.ndarray)):
-            assert len(data_weight) == len(self.faults[0].datanames), "The length of data_weight should be equal to the number of data sets."
-            data_weight = np.array(data_weight)
-        else:
-            raise ValueError("data_weight should be a scalar or a list of scalars.")
-        
-        Icovd_chol = self.Icovd_chol.copy()
-        st = 0
-        ed = 0
-        datanames = self.faults[0].datanames
-        for idataname, iwgt in zip(datanames, data_weight):
-            idata = self.faults[0].d[idataname]
-            ed = st + idata.shape[0]
-            Icovd_chol[st:ed, st:ed] *= iwgt
-            st = ed
-
-        W = Icovd_chol
-        self.dataweight = W
+        # Whitening is applied after any DES column transformation, so each
+        # selected design matrix is multiplied only once.
 
         # ----------------------------Set constraints using constraint manager-----------------------------#
         # Get constraints from constraint manager
@@ -939,9 +1149,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             # Apply DES scaling to get G_prime
             G_prime = des_result['G_prime']
             
-            # Now construct the augmented system with DES-scaled matrices
-            d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
-            G2I = np.vstack((np.dot(W, G_prime), des_result['D_prime']))
+            # DES changes parameter columns only.  The exact transformed
+            # matrices feed the same quadratic objective that the historical
+            # augmented residual system would have produced.
+            G_quadratic = G_prime
+            D_quadratic = des_result['D_prime']
             
             # Update constraints with DES-transformed versions
             A_ueq_prime = des_result.get('A_ineq_prime', A_ueq)
@@ -958,19 +1170,41 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                 print(f"DES applied: {len(des_result['fault_indices'])} fault parameters scaled")
                 print(f"Scaling factor range: [{des_result['scale_factors'].min():.3f}, {des_result['scale_factors'].max():.3f}]")
         else:
-            # No DES transformation - use original matrices
-            d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
-            G2I = np.vstack((np.dot(W, G), G_lap))
+            # No DES transformation - retain the original parameter columns.
+            G_quadratic = G
+            D_quadratic = G_lap
             
             A_ueq_prime, b_ueq_prime = A_ueq, b_ueq
             Aeq_prime, beq_prime = Aeq_final, beq_final
             lb_prime, ub_prime = lb, ub
 
         # ----------------------------Inverse using lsqlin-----------------------------#
-        # Compute using lsqlin
+        # CVXOPT's historical lsqlin path immediately converted the augmented
+        # residual matrix into H=A.T@A and q=-A.T@b.  Accumulate those exact
+        # terms blockwise so the normal path does not materialize or copy A.
+        # A scan-local cache is used only by simple_run_loop and only without
+        # DES; independent run() calls always rebuild from current state.
+        use_scan_cache = (
+            not use_des
+            and getattr(self, '_blse_quadratic_scan_cache', None) is not None
+        )
+        H, q = self._assemble_blse_quadratic(
+            G_quadratic,
+            d,
+            D_quadratic,
+            data_weight,
+            use_scan_cache=use_scan_cache,
+            penalty_weight=penalty_weight,
+        )
+
+        def residual_factory():
+            return self._assemble_blse_residual_system(
+                G_quadratic, d, D_quadratic, data_weight,
+            )
+
         opts = {'show_progress': False}
-        ret = lsqlin.lsqlin_auto(
-            G2I, d2I, 0,
+        ret = lsqlin.lsqlin_quadratic_auto(
+            H, q, residual_factory, 0,
             A_ueq_prime, b_ueq_prime,
             Aeq_prime, beq_prime,
             lb_prime, ub_prime,
@@ -1029,9 +1263,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         Parameters
         ----------
         smoothing_matrix : array, optional
-            Pre-computed smoothing matrix (if None, will build Laplacian)
+            Pre-computed smoothing matrix. Mutually exclusive with
+            ``smoothing_constraints``.
         smoothing_constraints : tuple or dict, optional
-            Smoothing constraints for Laplacian construction
+            Smoothing constraints for Laplacian construction. Mutually
+            exclusive with ``smoothing_matrix``.
         method : str
             Method for building Laplacian ('mudpy')
         verbose : bool
@@ -1063,15 +1299,29 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         -------
         dict with keys:
             - 'm': estimated parameters
-            - 'var_d': data variance components
-            - 'var_alpha': regularization variance components
-            - 'weights': final weight ratios
+            - 'solved_sigma2_by_group': data variances used by ``m``
+            - 'solved_alpha2_by_group': smoothing variances used by ``m``
+            - 'proposed_sigma2_by_group': possible next-iteration values
+            - 'proposed_alpha2_by_group': possible next-iteration values
             - 'converged': convergence flag
             - 'iterations': number of iterations
+            - 'smoothing_matrix': unscaled smoothing matrix in original model coordinates
+            - 'model_smoothing_matrix': the same rows with the returned model's 1/alpha multipliers
+            - 'smoothing_provenance': construction method, constraints and DES context
+              (``provided_matrix``, ``built_from_constraints``, or
+              ``fault_laplacian``)
         """
         self.constraint_manager._require_activation_flags_reconciled(
             "BLSE/VCE"
         )
+
+        matrix_was_provided = smoothing_matrix is not None
+        constraints_were_provided = smoothing_constraints is not None
+        if matrix_was_provided and constraints_were_provided:
+            raise ValueError(
+                "Provide either smoothing_matrix or smoothing_constraints, "
+                "not both. Their precedence would otherwise be ambiguous."
+            )
 
         # Validate constraints using constraint manager
         if validate_constraints:
@@ -1089,7 +1339,10 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Ensure constraints are synced
         self.constraint_manager.sync_to_solver()
 
-        from .simple_vce import simplified_vce
+        from .simple_vce import (
+            assemble_weighted_smoothing_matrix,
+            simplified_vce,
+        )
         from .des_utils import apply_des_transformation, recover_sf_with_poly
 
         use_des = des_enabled if des_enabled is not None else self.des_enabled
@@ -1106,8 +1359,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # Get basic matrices
         G = self.G
         d = self.d
-        Cd_inv = np.linalg.inv(self.Cd)
-        # Icovd_chol = np.linalg.cholesky(Cd_inv)
+        if not hasattr(self, "data_covariance_metrics"):
+            self.prepare_data_covariance_metrics()
 
         # Set bounds
         lb = self.constraint_manager.lb
@@ -1115,66 +1368,89 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if lb is None or ub is None or any(np.isnan(lb)) or any(np.isnan(ub)):
             raise ValueError("Set bounds first with update_bounds()")
 
-        # Setup data ranges
-        data_ranges = {}
-        start = 0
-        for dataname in self.faults[0].datanames:
-            idata = self.faults[0].d[dataname]
-            end = start + idata.shape[0]
-            data_ranges[dataname] = (start, end)
-            start = end
+        # Reuse the same row-layout contract that prepared the covariance
+        # metrics; VCE must not reconstruct a second interpretation of G/d.
+        data_ranges = dict(self.data_ranges)
 
         # Setup fault ranges
         fault_ranges = {}
         for fault in self.faults:
             start, end = self.slip_positions[fault.name]
             fault_ranges[fault.name] = (start, end)
+        smoothing_faults = [
+            fault.name
+            for fault in self.faults
+            if (
+                fault.name not in self.adapters
+                or self.adapters[fault.name].supports_smoothing()
+            )
+        ]
 
         # Build smoothing matrix if not provided
         if smoothing_matrix is None:
             if verbose:
                 print("Building smoothing matrix...")
 
-            faults = self.faults
             Np = G.shape[1]
-            Ns = 0
-            Ns_st = []
-            Ns_se = []
-
-            for fault in faults:
-                Ns_st.append(Ns)
-                adapter = self.adapters[fault.name]
-                Ns += adapter.get_n_source_params()
-                Ns_se.append(Ns)
-
-            G_lap = np.zeros((Ns, Np))
-
-            faultnames = [ifault.name for ifault in faults]
+            smoothing_blocks = []
             if smoothing_constraints is not None:
                 if isinstance(smoothing_constraints, (tuple, list)) and len(smoothing_constraints) == 4:
-                    smoothing_constraints = {fault_name: smoothing_constraints for fault_name in faultnames}
+                    smoothing_constraints = {
+                        fault_name: tuple(smoothing_constraints)
+                        for fault_name in smoothing_faults
+                    }
                 elif isinstance(smoothing_constraints, dict):
-                    assert all(fault_name in smoothing_constraints for fault_name in faultnames), \
-                        "All fault names must be in smoothing_constraints"
+                    missing = set(smoothing_faults) - set(smoothing_constraints)
+                    if missing:
+                        raise ValueError(
+                            "smoothing_constraints is missing smoothing-capable "
+                            "sources: " + ", ".join(sorted(missing))
+                        )
+                    smoothing_constraints = dict(smoothing_constraints)
+                else:
+                    raise ValueError(
+                        "smoothing_constraints must be a 4-tuple or a mapping"
+                    )
             else:
-                smoothing_constraints = {fault_name: (None, None, None, None) for fault_name in faultnames}
+                smoothing_constraints = {
+                    fault_name: (None, None, None, None)
+                    for fault_name in smoothing_faults
+                }
 
-            for ii, fault in enumerate(faults):
-                st = self.fault_indexes[fault.name][0]
-                ismoothing_constraints = smoothing_constraints[fault.name]
+            for fault in self.faults:
                 adapter = self.adapters[fault.name]
+                if not adapter.supports_smoothing():
+                    continue
+                ismoothing_constraints = smoothing_constraints[fault.name]
+                lap = fault.buildLaplacian(
+                    method=method,
+                    bounds=ismoothing_constraints,
+                )
+                from scipy.linalg import block_diag as blkdiag
+                lap_sd = blkdiag(lap, lap)
+                n_components = len(adapter.get_param_names())
+                if n_components == 1:
+                    lap_sd = lap
+                elif n_components > 2:
+                    lap_sd = blkdiag(*([lap] * n_components))
 
-                if adapter.supports_smoothing():
-                    lap = fault.buildLaplacian(method=method, bounds=ismoothing_constraints)
-                    from scipy.linalg import block_diag as blkdiag
-                    lap_sd = blkdiag(lap, lap)
-                    Nsd = len(adapter.get_param_names())
-                    if Nsd == 1:
-                        lap_sd = lap
-                    se = st + Nsd * lap.shape[0]
-                    G_lap[Ns_st[ii]:Ns_se[ii], st:se] = lap_sd
+                lap_sd = np.asarray(lap_sd, dtype=float)
+                st = self.fault_indexes[fault.name][0]
+                se = st + lap_sd.shape[1]
+                if se > Np:
+                    raise ValueError(
+                        f"Laplacian columns for '{fault.name}' exceed the "
+                        "assembled model layout"
+                    )
+                block = np.zeros((lap_sd.shape[0], Np), dtype=float)
+                block[:, st:se] = lap_sd
+                smoothing_blocks.append(block)
 
-            smoothing_matrix = G_lap
+            smoothing_matrix = (
+                np.vstack(smoothing_blocks)
+                if smoothing_blocks
+                else np.zeros((0, Np), dtype=float)
+            )
 
             if verbose:
                 print(f"Smoothing matrix built: {smoothing_matrix.shape}")
@@ -1227,13 +1503,14 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             print(f"Running Simple VCE with lsqlin solver (max_iter={max_iter}, tol={tol})...")
 
         vce_result = simplified_vce(
-            Cd_inv=Cd_inv,
+            data_metrics=self.data_covariance_metrics,
             d=d,
             G=G_vce,
             L=L_vce,
             bounds=(lb_vce, ub_vce),
             data_ranges=data_ranges,
             fault_ranges=fault_ranges_vce,
+            smoothing_faults=smoothing_faults,
             sigma_mode=sigma_mode,
             sigma_groups=sigma_groups,
             sigma_update=sigma_update,
@@ -1263,6 +1540,37 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
 
             vce_result['m'] = m_recovered
 
+        # Publish the exact regularization state associated with the returned
+        # model.  ``smoothing_matrix`` is the unscaled matrix in original model
+        # coordinates; ``model_smoothing_matrix`` includes the final 1/alpha
+        # row multipliers.  High-level result code must consume this state
+        # instead of rebuilding it from mutable fault.GL caches.
+        vce_result['smoothing_matrix'] = smoothing_matrix
+        vce_result['model_smoothing_matrix'] = assemble_weighted_smoothing_matrix(
+            smoothing_matrix,
+            fault_ranges,
+            vce_result['smooth_groups'],
+            vce_result['solved_alpha2_by_group'],
+        )
+        vce_result['smoothing_provenance'] = {
+            'source': (
+                'provided_matrix'
+                if matrix_was_provided
+                else (
+                    'built_from_constraints'
+                    if constraints_were_provided
+                    else 'fault_laplacian'
+                )
+            ),
+            'method': None if matrix_was_provided else method,
+            'constraints': (
+                smoothing_constraints if constraints_were_provided else None
+            ),
+            'smoothing_sources': list(smoothing_faults),
+            'des_enabled': bool(use_des),
+            'coordinate_space': 'original_model',
+        }
+
         # Store results
         self.mpost = vce_result['m']
         self.vce_result = vce_result
@@ -1280,34 +1588,6 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         if verbose:
             print(f"VCE completed in {vce_result['iterations']} iterations")
             print(f"Converged: {vce_result['converged']}")
-
-            if isinstance(vce_result['var_d'], dict):
-                for group, var in vce_result['var_d'].items():
-                    print(f"Data variance [{group}]: {var:.6f}")
-            else:
-                print(f"Data variance: {vce_result['var_d']:.6f}")
-
-            if isinstance(vce_result['var_alpha'], dict):
-                for group, var in vce_result['var_alpha'].items():
-                    print(f"Regularization variance [{group}]: {var:.6f}")
-            else:
-                print(f"Regularization variance: {vce_result['var_alpha']:.6f}")
-
-            if 'weights' in vce_result:
-                print(f"\nFinal weights:")
-                weights = vce_result['weights']
-                if isinstance(weights, dict):
-                    if any(isinstance(v, dict) for v in weights.values()):
-                        for d_group, w_dict in weights.items():
-                            for alpha_group, weight in w_dict.items():
-                                print(f"  weight[{d_group}][{alpha_group}]: {weight:.6f}")
-                    else:
-                        for group, weight in weights.items():
-                            print(f"  weight[{group}]: {weight:.6f}")
-                else:
-                    print(f"  weight: {weights:.6f}")
-
-            print("="*60)
 
         return vce_result
     # ----------------------------------------------------------------------
@@ -1412,30 +1692,13 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         G_lap2I = G_lap
     
         # ----------------------------Data weight-----------------------------#
-        if isinstance(data_weight, (int, float)):
-            data_weight = np.ones(d.shape[0]) * data_weight
-        elif isinstance(data_weight, (list, np.ndarray)):
-            assert len(data_weight) == len(self.faults[0].datanames), "The length of data_weight should be equal to the number of data sets."
-            data_weight = np.array(data_weight)
-        else:
-            raise ValueError("data_weight should be a scalar or a list of scalars.")
-        # Icovd = np.linalg.inv(Cd)
-        # Icovd_chol = np.linalg.cholesky(Icovd)
-        Icovd_chol = self.Icovd_chol
-        st = 0
-        ed = 0
-        datanames = self.faults[0].datanames
-        for idataname, iwgt in zip(datanames, data_weight):
-            idata = self.faults[0].d[idataname]
-            ed = st + idata.shape[0]
-            Icovd_chol[st:ed, st:ed] *= iwgt
-            st = ed
-    
-        W = Icovd_chol
-        self.dataweight = W
-        d2I = np.vstack((np.dot(W, d)[:, None], d_lap[:, None])).flatten()
-    
-        G2I = np.vstack((np.dot(W, G), G_lap2I))
+        G_data_whitened, d_data_whitened = self._whiten_data_system(
+            G,
+            d,
+            data_weight,
+        )
+        d2I = np.hstack((d_data_whitened, d_lap))
+        G2I = np.vstack((G_data_whitened, G_lap2I))
     
         # ----------------------------Inverse using fnnls-----------------------------#
         # Get bounds from constraint manager

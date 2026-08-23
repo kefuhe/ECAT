@@ -30,6 +30,7 @@ from eqtools.csiExtend.downsample.fault_inputs import (
     load_fault_models_for_compute,
     load_fault_traces,
     load_plot_fault_overlays,
+    select_fault_model_entries_for_compute,
 )
 from eqtools.csiExtend.downsample.grid_template import (
     apply_rsp_grid_template,
@@ -1301,6 +1302,7 @@ def plot_sar_quicklook(data, config, selected_faults, args):
         dpi=plot_config.get("dpi", 300),
         style_context=plot_config.get("style_context", "science"),
         fontsize=plot_config.get("fontsize"),
+        contours=plot_config.get("contours"),
         faults=selected_faults,
         trace_color=plot_config.get("trace_color", "black"),
         trace_linewidth=plot_config.get("trace_linewidth", 0.5),
@@ -2830,6 +2832,7 @@ def plot_optical_quicklook(data, config, selected_faults, out_name, args):
         dpi=raw_plot.get("dpi", 300),
         style_context=raw_plot.get("style_context", "science"),
         fontsize=raw_plot.get("fontsize"),
+        contours=raw_plot.get("contours"),
         faults=selected_faults,
         trace_color=raw_plot.get("trace_color", "black"),
         trace_linewidth=raw_plot.get("trace_linewidth", 0.5),
@@ -3067,6 +3070,11 @@ def prepare_run(args):
         raise ValueError("--workers must be a positive integer.")
     config["_workers"] = getattr(args, "workers", None)
     steps = resolve_run_steps(args, config)
+    if steps["do_downsample"]:
+        select_fault_model_entries_for_compute(
+            config,
+            config.get("downsample", {}).get("method"),
+        )
     if steps["edit_trace"] and (
         (getattr(args, "vmin", None) is None)
         != (getattr(args, "vmax", None) is None)

@@ -520,7 +520,7 @@ class DeepSlipLoadingMixin:
             deep loading.
         model : str or array-like, optional
             For Bayesian inversion objects, call ``returnModel(model=model,
-            print_stat=False)`` before extracting fields.
+            print_fit_statistics=False)`` before extracting fields.
         store : bool, default True
             Store results on ``self.deep_slip_loading_results`` and attach
             namespaced fields to the shallow fault.
@@ -536,7 +536,7 @@ class DeepSlipLoadingMixin:
         if model is not None:
             if not hasattr(self, "returnModel"):
                 raise ValueError("model=... is only supported on objects with returnModel()")
-            self.returnModel(model=model, print_stat=False)
+            self.returnModel(model=model, print_fit_statistics=False)
 
         if shallow_selector is not None and field_shallow_selector == "all":
             field_shallow_selector = shallow_selector

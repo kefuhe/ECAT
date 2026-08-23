@@ -1,8 +1,18 @@
-"""Data correction specifications for nonlinear geometry SMC.
+"""Data-correction specifications for nonlinear geometry SMC.
 
-This module keeps nuisance correction parameters separate from fault geometry
-parameters while preserving the same transform semantics users know from the
-linear BLSE/Bayesian ``geodata.polys`` setting.
+For each dataset, the nonlinear prediction is assembled as
+
+``synthetic_total = synthetic_fault + H_correction @ coefficients``.
+
+This module owns ``H_correction`` and the corresponding coefficient metadata;
+it does not change the fault-geometry parameters.  Every design-matrix row must
+therefore follow the same observation layout as the synthetic vector and the
+dataset covariance.  In particular, CSI GPS rows are component-major:
+``E(all stations), N(all stations), [U(all stations)]``.
+
+The correction names and transform semantics remain consistent with the
+linear BLSE/Bayesian ``geodata.polys`` setting, while the nonlinear layer keeps
+their priors, fixed values, and sampled-parameter slices explicit.
 """
 
 from __future__ import annotations
@@ -166,7 +176,37 @@ def build_correction_design_matrix(
     *,
     vertical: bool = True,
 ) -> np.ndarray:
-    """Build the correction design matrix for one dataset."""
+    """Build ``H_correction`` for one dataset and active component set.
+
+    Parameters
+    ----------
+    data : object
+        CSI geodetic dataset providing ``dtype`` and
+        ``getTransformEstimator()``.  GPS datasets also provide station data
+        through ``vel_enu`` or ``x`` and must already have the CSI
+        ``obs_per_station`` state established by the Green-function setup.
+    transform : object
+        CSI transform selector, such as ``1``, ``3``, or ``4`` for scalar
+        datasets and ``"translation"`` for nonlinear GPS corrections.
+    vertical : bool, default True
+        Whether the inversion data vector includes the GPS Up component.
+        This option does not reorder rows: GPS output remains
+        ``E(all), N(all), [U(all)]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Design matrix whose rows match the active observation, synthetic, and
+        covariance rows, and whose columns match
+        :func:`canonical_correction_parameter_names` exactly.
+
+    Notes
+    -----
+    CSI may return an ENU GPS translation estimator even when the current
+    inversion uses only EN.  The GPS alignment helper removes the inactive Up
+    rows and the structurally zero Up-translation column; it never converts
+    CSI's component-major rows to station-major order.
+    """
     names = canonical_correction_parameter_names(data, transform, vertical=vertical)
     if not names:
         return np.zeros((0, 0), dtype=float)
@@ -178,30 +218,37 @@ def build_correction_design_matrix(
             f"{getattr(data, 'name', '<unnamed>')}: getTransformEstimator returned None "
             f"for transform={transform!r}"
         )
-    matrix = np.asarray(estimator, dtype=float)
-    if matrix.ndim != 2:
+    design_matrix = np.asarray(estimator, dtype=float)
+    if design_matrix.ndim != 2:
         raise ValueError(
             f"{getattr(data, 'name', '<unnamed>')}: correction estimator must be 2D, "
-            f"got shape {matrix.shape}"
+            f"got shape {design_matrix.shape}"
         )
 
     if dtype == "gps":
-        matrix = _reorder_gps_estimator_to_vel_enu_flatten_order(
+        design_matrix = _align_gps_estimator_to_active_components(
             data,
-            matrix,
+            design_matrix,
             vertical=vertical,
-            n_columns=len(names),
+            n_active_parameters=len(names),
         )
 
-    if matrix.shape[1] != len(names):
+    if design_matrix.shape[1] != len(names):
         raise ValueError(
             f"{getattr(data, 'name', '<unnamed>')}: transform={transform!r} produced "
-            f"{matrix.shape[1]} columns, but canonical names are {names}"
+            f"{design_matrix.shape[1]} columns, but canonical names are {names}"
         )
-    return matrix
+    return design_matrix
 
 
 def _call_data_transform_estimator(data: Any, transform: Any) -> Any:
+    """Call a CSI transform estimator across supported keyword signatures.
+
+    Current CSI estimators accept both normalization flags, while older or
+    data-type-specific implementations may accept only one of them or only the
+    transform selector.  The returned object is the raw estimator; row and
+    column alignment is handled by :func:`build_correction_design_matrix`.
+    """
     data_name = getattr(data, "name", "<unnamed>")
     if not hasattr(data, "getTransformEstimator"):
         raise ValueError(
@@ -226,51 +273,77 @@ def _call_data_transform_estimator(data: Any, transform: Any) -> Any:
             return data.getTransformEstimator(transform)
 
 
-def _reorder_gps_estimator_to_vel_enu_flatten_order(
+def _align_gps_estimator_to_active_components(
     data: Any,
-    matrix: np.ndarray,
+    raw_estimator: np.ndarray,
     *,
     vertical: bool,
-    n_columns: int,
+    n_active_parameters: int,
 ) -> np.ndarray:
-    """Convert CSI GPS transform rows to ``vel_enu.flatten()`` row order."""
+    """Align a CSI GPS estimator with the active data rows and parameters.
+
+    Parameters
+    ----------
+    data : object
+        CSI GPS dataset used to determine ``n_stations``.
+    raw_estimator : numpy.ndarray
+        Matrix returned by ``data.getTransformEstimator()``.  Its rows already
+        follow CSI component-major order: ``E(all)``, ``N(all)``, then
+        optionally ``U(all)``.  Columns represent transform parameters.
+    vertical : bool
+        Retain ENU observation rows when true; retain only EN rows when false.
+    n_active_parameters : int
+        Number of normalized correction parameters used by this inversion.
+        GPS translation uses three parameters for ENU and two for EN.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``H_correction`` aligned with the active observation vector.  For
+        ``n_stations = N``, GPS translation returns shape ``(3N, 3)`` for ENU
+        or ``(2N, 2)`` for EN.
+
+    Notes
+    -----
+    This function selects active component rows; it never reorders them.  An
+    inactive parameter column may be removed only when it is zero on every
+    retained row, preventing a future CSI estimator change from being silently
+    discarded.
+    """
     n_stations = _gps_station_count(data)
-    has_vertical = matrix.shape[0] == n_stations * 3
-    if matrix.shape[0] not in {n_stations * 2, n_stations * 3, n_stations}:
+    if raw_estimator.shape[0] not in {
+        n_stations * 2,
+        n_stations * 3,
+        n_stations,
+    }:
         raise ValueError(
             f"{getattr(data, 'name', '<unnamed>')}: unexpected GPS estimator row count "
-            f"{matrix.shape[0]} for {n_stations} stations"
+            f"{raw_estimator.shape[0]} for {n_stations} stations"
         )
 
-    if matrix.shape[0] == n_stations:
-        reordered = matrix
-    elif vertical and has_vertical:
-        order = np.column_stack(
-            [
-                np.arange(n_stations),
-                np.arange(n_stations, 2 * n_stations),
-                np.arange(2 * n_stations, 3 * n_stations),
-            ]
-        ).reshape(-1)
-        reordered = matrix[order, :]
-    else:
-        order = np.column_stack(
-            [
-                np.arange(n_stations),
-                np.arange(n_stations, 2 * n_stations),
-            ]
-        ).reshape(-1)
-        reordered = matrix[order, :]
+    if vertical and raw_estimator.shape[0] == n_stations * 2:
+        raise ValueError(
+            f"{getattr(data, 'name', '<unnamed>')}: vertical GPS correction "
+            "requires an estimator with ENU rows"
+        )
 
-    if reordered.shape[1] > n_columns:
-        extra = reordered[:, n_columns:]
-        if np.any(np.abs(extra) > 0):
+    active_design_matrix = raw_estimator
+    if not vertical and raw_estimator.shape[0] == n_stations * 3:
+        # Horizontal inversion retains the first two component blocks.  CSI
+        # already orders these rows as E(all) followed by N(all).
+        active_design_matrix = raw_estimator[: 2 * n_stations, :]
+
+    if active_design_matrix.shape[1] > n_active_parameters:
+        inactive_parameter_columns = active_design_matrix[:, n_active_parameters:]
+        if np.any(np.abs(inactive_parameter_columns) > 0):
             raise ValueError(
                 f"{getattr(data, 'name', '<unnamed>')}: cannot drop non-zero GPS "
                 "correction estimator columns"
             )
-        reordered = reordered[:, :n_columns]
-    return reordered
+        # For horizontal translation this removes the Up-offset column only
+        # after proving that it contributes nothing to the retained EN rows.
+        active_design_matrix = active_design_matrix[:, :n_active_parameters]
+    return active_design_matrix
 
 
 def _gps_station_count(data: Any) -> int:

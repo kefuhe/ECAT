@@ -10,6 +10,7 @@ import numpy as np
 from scipy.sparse import csr_matrix, block_diag
 
 # import internal modules
+from .covariance_utils import prepare_covariance_metric
 from .multifaultsolve_boundLSE import multifaultsolve_boundLSE as multifaultsolve
 
 
@@ -34,9 +35,14 @@ class MyMultiFaultsInversion(multifaultsolve):
         def func(fault):
             try:
                 method = getattr(fault, method_name)
-                method(*args, **kwargs)  # Call the method with the specified arguments
-            except AttributeError:
-                raise ValueError(f"Fault object has no method named '{method_name}'")
+            except AttributeError as exc:
+                raise ValueError(
+                    f"Fault object has no method named '{method_name}'"
+                ) from exc
+            # Keep method-body AttributeError exceptions intact.  Recasting
+            # them as lookup failures hides the real scientific-state error
+            # and its traceback during preflight or candidate evaluation.
+            method(*args, **kwargs)
 
         self._apply_to_faults(func, fault_names)
 
@@ -51,6 +57,27 @@ class MyMultiFaultsInversion(multifaultsolve):
         method = kwargs.pop('method', method)
         # Update the mesh of the specified faults
         self.update_fault(method, fault_names=fault_names, verbose=verbose, show=show, **kwargs)
+        targets = (
+            self.faults_dict.values() if fault_names is None
+            else (
+                self.faults_dict[name]
+                for name in fault_names
+                if name in self.faults_dict
+            )
+        )
+        for fault in targets:
+            if hasattr(fault, 'mesh_valid'):
+                fault.mesh_valid = (
+                    getattr(fault, 'Vertices', None) is not None
+                    and getattr(fault, 'Faces', None) is not None
+                )
+            if hasattr(fault, 'laplacian_valid'):
+                fault.laplacian_valid = getattr(fault, 'GL', None) is not None
+            if hasattr(fault, 'area_valid'):
+                area = getattr(fault, 'area', None)
+                fault.area_valid = (
+                    area is not None and np.asarray(area).size > 0
+                )
 
     def update_GFs(self, geodata=None, verticals=None, fault_names=None, dataFaults=None, method=None, options=None):
         """
@@ -101,34 +128,57 @@ class MyMultiFaultsInversion(multifaultsolve):
         def func(fault):
             adapter = self.adapters[fault.name]
             if not adapter.supports_smoothing():
+                if hasattr(fault, 'laplacian_valid'):
+                    fault.laplacian_valid = False
                 return
             
             # Build Laplacian matrix using adapter
             fault.GL = adapter.build_laplacian(method=method, bounds=bounds, 
                                                topscale=topscale, bottomscale=bottomscale)
             self.GLs[fault.name] = fault.GL
+            if hasattr(fault, 'laplacian_valid'):
+                fault.laplacian_valid = fault.GL is not None
 
         self._apply_to_faults(func, fault_names)
     
-    def compute_data_inv_covs_and_logdets(self, geodata):
-        inv_covs = {}
-        chol_decomps = {}  # Store the Cholesky decomposition of the inverse covariance matrix
-        logdets = {}
+    def compute_data_covariance_metrics(self, geodata):
+        """Prepare one reusable covariance metric per named data set.
+
+        Each metric is derived directly from that data set's covariance and
+        contains ``W`` and ``log(det(C))``. No full precision matrix or global
+        block-diagonal whitener is formed.
+        """
+        metrics = {}
         if not self.faults:
             raise ValueError("No faults available.")
-        for idataname, idata in zip(self.faults[0].datanames, geodata):
+        datanames = list(self.faults[0].datanames)
+        geodata = list(geodata)
+        if len(set(datanames)) != len(datanames):
+            raise ValueError("Data names must be unique.")
+        if len(geodata) != len(datanames):
+            raise ValueError(
+                f"Expected {len(datanames)} data sets, got {len(geodata)}"
+            )
+        for idataname, idata in zip(datanames, geodata):
             if idata.name != idataname:
-                raise ValueError(f"Data name mismatch: expected {idataname}, got {idata.name}")
-            inv_cov = np.linalg.inv(idata.Cd)
-            chol_decomp = np.linalg.cholesky(inv_cov)  # Compute the Cholesky decomposition of the inverse covariance matrix
-            det = np.linalg.slogdet(idata.Cd)[1]
-            inv_covs[idataname] = inv_cov
-            chol_decomps[idataname] = chol_decomp  # Store the Cholesky decomposition of the inverse covariance matrix
-            logdets[idataname] = det
-        return inv_covs, chol_decomps, logdets  # Return the inverse covariance matrices, Cholesky decompositions, and log determinants
+                raise ValueError(
+                    f"Data name mismatch: expected {idataname}, got {idata.name}"
+                )
+            metrics[idataname] = prepare_covariance_metric(
+                idata.Cd,
+                name=f"covariance for data set '{idataname}'",
+            )
+            expected_size = np.asarray(self.faults[0].d[idataname]).shape[0]
+            if metrics[idataname].size != expected_size:
+                raise ValueError(
+                    f"{idataname}: covariance size "
+                    f"{metrics[idataname].size} does not match observation "
+                    f"length {expected_size}"
+                )
+        return metrics
 
     def compute_fault_areas(self, fault_names=None):
-        # Compute the areas of the patches of the specified faults
+        """Force area computation and update the compatibility snapshot."""
         if not hasattr(self, 'patch_areas') or self.patch_areas is None:
             self.patch_areas = {}
 
@@ -137,9 +187,31 @@ class MyMultiFaultsInversion(multifaultsolve):
             areas = adapter.compute_patch_areas()
             if areas is not None:
                 self.patch_areas[fault.name] = areas
+            if hasattr(fault, 'area_valid'):
+                fault.area_valid = areas is not None and np.asarray(areas).size > 0
 
         self._apply_to_faults(func, fault_names)
         return self.patch_areas
+
+    def get_fault_areas(self, fault_names=None):
+        """Return a call-local snapshot of current source areas.
+
+        CSI owns each source cache. This aggregator deliberately does not
+        retain a second candidate cache: fixed geometries are reused by the
+        source getter, while deformed geometries are recomputed only after CSI
+        invalidates their source-local cache.
+        """
+        current_areas = {}
+
+        def func(fault):
+            areas = self.adapters[fault.name].get_patch_areas()
+            if areas is not None:
+                current_areas[fault.name] = areas
+            if hasattr(fault, 'area_valid'):
+                fault.area_valid = areas is not None and np.asarray(areas).size > 0
+
+        self._apply_to_faults(func, fault_names)
+        return current_areas
 
 
 if __name__ == "__main__":

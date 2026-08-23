@@ -2,7 +2,13 @@
 
 本页汇总 ECAT/eqtools 中常用的断层几何构建路径。它关注“如何从已有几何信息构建可用于正演或反演的 fault object”，不替代 nonlinear geometry、BLSE/VCE、constraint、edge 或 contour 的专门页面。
 
-如果只需要最小代码，先看 [地表迹线和倾角构建示例](../examples/fault_trace_preprocessing.md) 或 [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)。如果还不清楚 trace、top/bottom、layers、mesh 和 patch GMT 的区别，先读 [断层几何状态](../concepts/fault_geometry_states.md)；如果要区分紧凑非线性、固定 trace dip 和多倾角入口的不同角度协议，先读 [断层角度约定](../concepts/fault_angle_conventions.md)。
+如果输入迹线还需要裁剪、延长、统一方向或重采样，先看
+[断层迹线预处理](../workflows/02d_fault_trace_preprocessing.md)。构建 fault object 的最小代码见
+[地表迹线和倾角构建示例](../examples/fault_trace_preprocessing.md) 或
+[非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)。如果还不清楚
+trace、top/bottom、layers、mesh 和 patch GMT 的区别，先读
+[断层几何状态](../concepts/fault_geometry_states.md)；如果要区分紧凑非线性、固定 trace dip 和
+多倾角入口的不同角度协议，先读 [断层角度约定](../concepts/fault_angle_conventions.md)。
 
 ## 构建路径与阅读入口
 
@@ -63,8 +69,9 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 
 | 需求 | 推荐入口 | 说明 |
 | --- | --- | --- |
-| 简化或平滑过密 trace | `ecat-fault-trace-tool` | 支持 `vw`、`rdp` 和 `bspline`；输出简化 trace、分段参数和对比图。 |
-| 对任意 `x/y` trace 数组做长度、重采样、延伸、裁剪或方向统一 | `trace_ops.clean_trace(...)`、`trace_length(...)`、`resample_trace(...)`、`extend_trace(...)`、`trim_trace(...)`、`orient_trace(...)` | 纯函数入口，适合在写入 fault object 前预处理。输入应是投影后的 `x/y`，单位通常为 km。 |
+| 检查、定位、裁剪、延长、重采样、简化或平滑 trace 文件 | `ecat-fault-trace-tool` | 新子命令输出一条明确的新迹线；完整参数见 [断层迹线处理参考](fault_trace_processing.md)。 |
+| 在 Python 中有序处理经纬度 trace | `TracePath` | 不可变高层接口，统一投影、marker、操作历史和坐标转换。 |
+| 对任意 `x/y` trace 数组做长度、重采样、延伸、裁剪或方向统一 | `trace_ops.clean_trace(...)`、`trace_length(...)`、`resample_trace(...)`、`extend_trace(...)`、`trim_trace(...)`、`orient_trace(...)` | 纯函数数值内核，输入应是投影后的 `x/y`，单位通常为 km。 |
 | 对任意 `x/y` trace 数组简化、平滑或缓冲 | `trace_ops.simplify_trace(...)`、`smooth_trace(...)`、`buffer_trace(...)` | 适合脚本化批处理；`ecat-fault-trace-tool` 也复用同一套底层算法。 |
 | 设置、读取或保存 CSI trace | `fault.trace(...)`、`fault.file2trace(...)`、`fault.writeTrace2File(...)` | 处理两列 `lon lat` 或局部 `x y` 迹线，不表示 patch。 |
 | 地表 trace 等距离散 | `fault.discretize_trace(every=...)` | 生成 `xi/yi/loni/lati`；新项目优先使用，不再用 legacy `discretize(...)`。 |
@@ -80,31 +87,30 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 常见 trace 预处理命令：
 
 ```bash
-ecat-fault-trace-tool input_trace.txt --algo vw --param 0.5 --output trace_simplified
+ecat-fault-trace-tool trim input_trace.txt \
+  --end-lon 101.8 \
+  -o trace_trimmed.txt
 ```
 
-它会写出 `trace_simplified_trace.txt`，可直接作为后续 `fault.trace(...)` 或 `fault.file2trace(...)` 的输入。`vw` 通常适合自然断层迹线减点；`rdp` 适合保留折线拐角；`bspline` 适合平滑噪声较强的 trace。
-
-如果要在脚本中批量控制 trace 的方向、裁剪、端点延伸和采样间隔，优先用 `trace_ops` 纯函数。注意不要直接在经纬度上做长度和距离操作，先转成局部投影 `x/y`：
+如果要在脚本中批量控制方向、裁剪、端点延伸和采样间隔，优先使用 `TracePath`。它负责投影和
+marker 解析，底层仍复用 `trace_ops` 纯函数：
 
 ```python
-import numpy as np
-from eqtools.csiExtend.trace_ops import (
-    extend_trace,
-    orient_trace,
-    resample_trace,
-    trim_trace,
-)
+from eqtools.csiExtend import TracePath
 
-x, y = fault.ll2xy(lon, lat)
-trace_xy = np.column_stack((x, y))
-trace_xy = orient_trace(trace_xy, start="west")
-trace_xy = trim_trace(trace_xy, start=2.0, end=45.0)
-trace_xy = extend_trace(trace_xy, start=5.0, end=8.0, tangent_window=3)
-trace_xy = resample_trace(trace_xy, every=1.0)
-lon_new, lat_new = fault.xy2ll(trace_xy[:, 0], trace_xy[:, 1])
-fault.trace(lon_new, lat_new)
+trace = TracePath.from_lonlat(trace_lonlat, projection=fault)
+prepared = (
+    trace
+    .orient(start="west")
+    .trim(end={"longitude": 101.8})
+    .extend(end_km=8.0, tangent_window=3)
+    .resample(every_km=1.0)
+)
+fault.trace(prepared.lonlat[:, 0], prepared.lonlat[:, 1])
 ```
+
+`TracePath` 只借用 fault 的投影，不修改 fault。处理必须发生在 top/bottom、mesh、patch 和 GF 构建前；
+完整 marker、I/O、YAML 和底层函数语义见 [断层迹线处理参考](fault_trace_processing.md)。
 
 如果只是要把已有 trace 加密到固定间隔：
 

@@ -23,7 +23,9 @@ from .fit_statistics import (
     fit_metrics_from_vectors,
     fit_statistics_rows_to_dataframe,
     format_fit_statistics_report,
+    format_fit_statistics_table,
     solver_fit_metrics,
+    weighted_fit_metrics_from_residual,
     write_fit_statistics_report_files,
 )
 
@@ -342,7 +344,16 @@ class FaultAnalysisMixin:
                     total_slip = np.abs(ifault.slip[:, 0]) * slip_factor
                 
                 # Calculate seismic moment: Mo = μ * A * D
-                patch_areas = getattr(ifault, 'area', ifault.compute_patch_areas())
+                area_getter = getattr(ifault, 'get_patch_areas', None)
+                if callable(area_getter):
+                    patch_areas = area_getter()
+                else:
+                    # Compatibility with CSI versions predating the
+                    # current-value getter. Keep the branch explicit so
+                    # ``compute_patch_areas`` is not evaluated eagerly.
+                    patch_areas = getattr(ifault, 'area', None)
+                    if patch_areas is None or np.asarray(patch_areas).size == 0:
+                        patch_areas = ifault.compute_patch_areas()
                 areas = np.array(patch_areas) * 1e6  # Convert km^2 to m^2
                 moment = np.sum(mu * areas * total_slip)
                 
@@ -578,6 +589,7 @@ class FaultAnalysisMixin:
         include_dataset=True,
         include_global=True,
         include_dataset_average=False,
+        include_weighted=False,
         rebuild_synth=True,
         faults=None,
     ):
@@ -586,10 +598,16 @@ class FaultAnalysisMixin:
         Dataset rows reuse the legacy ``calculate_data_fit_metrics`` vector
         definitions.  The global solver row, when available, is computed from
         the assembled solver vector, e.g. ``G @ mpost - d`` for BLSE.
+
+        When ``include_weighted`` is true and the active inversion exposes a
+        prepared covariance metric plus the sigma scale used for each data
+        set, dataset rows also contain ``Qw`` and whitened RMS diagnostics.
+        Collection never refactorizes covariance or changes the active model.
         """
         rows = []
         data_objects, verticals, polys = self._get_fit_geodata_config()
         target_faults = self._select_faults(faults)
+        weight_context = self._fit_weight_context() if include_weighted else None
 
         if include_dataset:
             for data, vertical, config_poly in zip(data_objects, verticals, polys):
@@ -598,6 +616,31 @@ class FaultAnalysisMixin:
                     data.buildsynth(target_faults, direction="sd", poly=resolved_poly, vertical=vertical)
                 observed, synthetic = data_fit_vectors(data, vertical=vertical)
                 metrics = fit_metrics_from_vectors(observed, synthetic)
+                weighted = {}
+                sigma_group = None
+                if weight_context is not None:
+                    data_name = getattr(data, "name", None)
+                    metric = weight_context["metrics"].get(data_name)
+                    sigma = weight_context["sigmas"].get(data_name)
+                    sigma_group = weight_context["groups"].get(data_name)
+                    if metric is not None and sigma is not None:
+                        group_members = weight_context["group_members"].get(
+                            sigma_group, []
+                        )
+                        effective_dof = None
+                        # VCE effective degrees of freedom belong to a group.
+                        # They are attached to a dataset row only when the
+                        # group contains that dataset alone.
+                        if len(group_members) == 1:
+                            effective_dof = weight_context["group_dofs"].get(
+                                sigma_group
+                            )
+                        weighted = weighted_fit_metrics_from_residual(
+                            synthetic - observed,
+                            metric,
+                            sigma=sigma,
+                            effective_dof=effective_dof,
+                        )
                 rows.append(
                     {
                         "scope": "dataset",
@@ -606,7 +649,9 @@ class FaultAnalysisMixin:
                         "data_type": getattr(data, "dtype", None),
                         "vertical": bool(vertical),
                         "poly": resolved_poly,
+                        "sigma_group": sigma_group,
                         **metrics,
+                        **weighted,
                     }
                 )
 
@@ -635,6 +680,44 @@ class FaultAnalysisMixin:
                 rows.append(global_row)
 
         return rows
+
+    def _fit_weight_context(self):
+        """Return the active, report-only covariance/sigma mapping.
+
+        Solvers publish this context only after a concrete model has been
+        activated.  Absence means that raw RMS/VR remain available but a
+        covariance-aware report would risk using stale or guessed weights.
+        """
+        metrics = getattr(self, "data_covariance_metrics", None)
+        sigmas = getattr(self, "current_data_sigmas", None)
+        if not isinstance(metrics, Mapping) or not isinstance(sigmas, Mapping):
+            return None
+        groups = getattr(self, "current_data_sigma_groups", {})
+        group_members = getattr(self, "current_data_sigma_group_members", {})
+        group_dofs = getattr(self, "current_data_effective_dof", {})
+        return {
+            "metrics": metrics,
+            "sigmas": sigmas,
+            "groups": groups if isinstance(groups, Mapping) else {},
+            "group_members": (
+                group_members if isinstance(group_members, Mapping) else {}
+            ),
+            "group_dofs": group_dofs if isinstance(group_dofs, Mapping) else {},
+        }
+
+    def _clear_fit_weight_context(self):
+        """Invalidate report-only weights before activating another result.
+
+        Covariance factors remain reusable scientific state.  Sigma/group/dof
+        mappings, however, describe one concrete active model and must not
+        survive a new solve, a data reassembly, or activation of a nonphysical
+        posterior ``std`` summary.
+        """
+        self.current_data_sigmas = {}
+        self.current_data_weights = {}
+        self.current_data_sigma_groups = {}
+        self.current_data_sigma_group_members = {}
+        self.current_data_effective_dof = {}
 
     def _collect_global_solver_fit_statistics(self, *, model="median"):
         """Return the assembled solver-vector fit row when dimensions match."""
@@ -692,6 +775,7 @@ class FaultAnalysisMixin:
         include_dataset=True,
         include_global=True,
         include_dataset_average=False,
+        include_weighted=False,
         rebuild_synth=True,
         basename="fit_statistics",
         formats=("txt", "tsv"),
@@ -704,6 +788,7 @@ class FaultAnalysisMixin:
                 include_dataset=include_dataset,
                 include_global=include_global,
                 include_dataset_average=include_dataset_average,
+                include_weighted=include_weighted,
                 rebuild_synth=rebuild_synth,
             )
         return write_fit_statistics_report_files(rows, outdir, basename=basename, formats=formats, model=model)
@@ -717,21 +802,15 @@ class FaultAnalysisMixin:
         model : str
             Model type to use ('median', 'mean', 'MAP', etc.) or BLSE for BLSE model.
         """
-        print("\n" + "="*70)
-        print(f"Data Fit Statistics ({model.upper()} model)")
-        print("="*70)
-
         rows = self.collect_fit_statistics(
             model=model,
             data_poly="config",
             include_dataset=True,
             include_global=False,
+            include_weighted=True,
             rebuild_synth=True,
         )
-        for row in rows:
-            print(f"{row['dataset']:<15} | RMS: {row['rms']:8.4f} | VR: {row['vr']:6.2f}%")
-    
-        print("="*70)
+        print("\n" + format_fit_statistics_table(rows, model=model))
 
     def plot_multifaults_slip(self, faults=None, figsize=(None, None), slip='total', 
                              cmap='precip3_16lev_change.cpt', norm=None, show=True, savefig=False, 

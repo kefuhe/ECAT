@@ -1,11 +1,31 @@
+import copy
 import yaml
 import logging
+from dataclasses import dataclass
 
 # Setup module-level logger
 logger = logging.getLogger(__name__)
 # Load csi and its extensions
 from .linear_config import LinearInversionConfig
 from ..multifaults_base import MyMultiFaultsInversion
+
+
+@dataclass(frozen=True)
+class ResolvedGeometryUpdate:
+    """Frozen envelope describing one enabled geometry update.
+
+    Resolution is deliberately side-effect free: it identifies the real fault
+    method, its final kwargs, sample slice and additive registry contract before
+    the sampler is allowed to execute a proposal.
+    """
+
+    fault_name: str
+    fault_instance: object
+    method_name: str
+    bound_method: object
+    method_kwargs: object
+    sample_slice: tuple
+    registry_contract: object
 
 
 _BAYESIAN_SAMPLING_MODE_ALIASES = {
@@ -234,6 +254,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         validity based on the actual Python objects being used.
         """
         # 1. Local Import
+        import inspect
         from ..bayesian_perturbation_base import PerturbationRegistry
 
         # 2. Check if YAML config exists
@@ -245,31 +266,58 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Based on csi/multifaults logic, it usually has a list of faults.
         fault_instance_map = {f.name:f for f in self.multifaults.faults}
 
-        # 4. Iterate through YAML configuration
+        resolved_updates = []
+
+        # 4. Resolve and validate each enabled geometry configuration.
         for fault_name, fault_config in self.faults.items():
             
             # Skip defaults template
-            if fault_name == 'defaults': continue
-            if fault_name not in self.multifaults.faultnames: continue
-            if not isinstance(fault_config, dict): continue
+            if fault_name == 'defaults':
+                continue
+            if fault_name not in self.multifaults.faultnames:
+                continue
+            if not isinstance(fault_config, dict):
+                continue
 
             # Check if geometry update is enabled
             geom_config = fault_config.get('geometry', {})
+            if not isinstance(geom_config, dict):
+                raise ValueError(
+                    f"Fault '{fault_name}': 'geometry' must be a mapping."
+                )
             if not geom_config.get('update', False):
                 continue
 
-            # Parse the nested method parameter structure
-            method_params = fault_config.get('method_parameters', {})
-            if not method_params: continue
+            # An enabled entry must resolve to one executable method.  Missing
+            # structure is not deferred to the first MPI proposal.
+            method_params = fault_config.get('method_parameters')
+            if not isinstance(method_params, dict):
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.update=true requires "
+                    "'method_parameters' to be a mapping."
+                )
 
-            update_geom_params = method_params.get('update_fault_geometry', {})
-            if not update_geom_params: continue
+            update_geom_params = method_params.get('update_fault_geometry')
+            if not isinstance(update_geom_params, dict):
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.update=true requires "
+                    "'method_parameters.update_fault_geometry' to be a mapping."
+                )
 
             method_name = update_geom_params.get('method')
-            if not method_name: continue
+            if not isinstance(method_name, str) or not method_name.strip():
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.update=true requires a "
+                    "non-empty 'method_parameters.update_fault_geometry.method'."
+                )
 
             # 5. Retrieve the Actual Fault Instance
             fault_instance = fault_instance_map.get(fault_name)
+            if fault_instance is None:
+                raise ValueError(
+                    f"Fault '{fault_name}': no instantiated fault object is "
+                    "available for geometry preflight."
+                )
 
             # 6. Query Registry using the REAL INSTANCE
             # This automatically handles inheritance (MRO) via get_help(instance)
@@ -297,9 +345,279 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
-                
+
+            # The sampler supplies ``perturbations`` separately. Everything
+            # else in update_fault_geometry must be a declared method keyword.
+            # Validating from the registry keeps this check aligned with the
+            # real bound method signature and fails before MPI sampling starts.
+            try:
+                bound_method = getattr(fault_instance, method_name)
+            except AttributeError as exc:
+                raise ValueError(
+                    f"Fault '{fault_name}': registered geometry method "
+                    f"'{method_name}' is missing from the instantiated object."
+                ) from exc
+            method_signature = inspect.signature(bound_method)
+            accepts_arbitrary_kwargs = any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in method_signature.parameters.values()
+            )
+            valid_kwargs = {
+                name
+                for name, param in method_signature.parameters.items()
+                if name not in {'self', 'perturbations'}
+                and param.kind in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+            }
+            provided_kwargs = set(update_geom_params.keys()) - {'method'}
+            unknown_kwargs = (
+                [] if accepts_arbitrary_kwargs
+                else sorted(provided_kwargs - valid_kwargs)
+            )
+            if unknown_kwargs:
+                valid_list = sorted(valid_kwargs)
+                error_msg = (
+                    f"Fault '{fault_name}': geometry method '{method_name}' "
+                    f"does not accept config parameter(s) {unknown_kwargs}. "
+                    f"Valid method parameters are {valid_list}. "
+                    "The sampler supplies 'perturbations' automatically."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            sample_positions = geom_config.get('sample_positions', [0, 0])
+            if (
+                not isinstance(sample_positions, list)
+                or len(sample_positions) != 2
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in sample_positions
+                )
+            ):
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.sample_positions must "
+                    f"contain two integer indices, got {sample_positions!r}."
+                )
+            start, end = sample_positions
+            if start > end:
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.sample_positions start "
+                    f"({start}) cannot exceed end ({end})."
+                )
+            method_kwargs = {
+                key: value for key, value in update_geom_params.items()
+                if key != 'method'
+            }
+            registry_contract = PerturbationRegistry.get_meta(
+                fault_instance, method_name
+            ) or {}
+            resolved = ResolvedGeometryUpdate(
+                fault_name=fault_name,
+                fault_instance=fault_instance,
+                method_name=method_name,
+                bound_method=bound_method,
+                # Independent copies keep the preflight record detached from
+                # later config edits without introducing an unpickleable
+                # MappingProxyType into the MPI/config object graph.
+                method_kwargs=copy.deepcopy(method_kwargs),
+                sample_slice=(start, end),
+                registry_contract=copy.deepcopy(registry_contract),
+            )
+            self._validate_geometry_update_contract(resolved)
+            resolved_updates.append(resolved)
+
             if self.verbose:
                 logger.info(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
+
+        self._resolved_geometry_updates = tuple(resolved_updates)
+
+    @staticmethod
+    def _validate_geometry_update_contract(resolved):
+        """Validate additive reference and cardinality metadata without mutation."""
+        contract = resolved.registry_contract
+        if contract.get('schema_version') is None:
+            return
+
+        fault = resolved.fault_instance
+        requirements = contract.get('reference_requirements') or {}
+        reference = getattr(fault, 'geometry_ref', None)
+        if requirements:
+            if reference is None:
+                raise ValueError(
+                    f"Fault '{resolved.fault_name}': geometry method "
+                    f"'{resolved.method_name}' requires GeometryReference. "
+                    "Create the reference after the baseline geometry is ready."
+                )
+            if requirements.get('mesh_pair'):
+                require_pair = getattr(fault, '_require_mesh_reference', None)
+                if require_pair is None:
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': geometry method "
+                        f"'{resolved.method_name}' declares a whole-mesh "
+                        "reference, but the fault has no mesh-reference guard."
+                    )
+                require_pair()
+            for field_name in requirements.get('fields', ()):
+                if getattr(reference, field_name, None) is None:
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': geometry method "
+                        f"'{resolved.method_name}' requires "
+                        f"geometry_ref.{field_name}."
+                    )
+
+        parameter_spec = contract.get('parameter_spec') or {}
+        cardinality = parameter_spec.get('cardinality')
+        if not cardinality:
+            return
+        start, end = resolved.sample_slice
+        sample_count = end - start
+        kind = cardinality.get('kind')
+        if kind == 'exact':
+            expected = cardinality.get('count')
+            if sample_count != expected:
+                raise ValueError(
+                    f"Fault '{resolved.fault_name}': geometry method "
+                    f"'{resolved.method_name}' requires exactly {expected} "
+                    f"perturbation value(s), but sample_positions "
+                    f"{list(resolved.sample_slice)} supplies {sample_count}."
+                )
+            return
+
+        if kind not in {
+                'scalar_or_movable_nodes', 'scalar_or_dip_controls'}:
+            # Additive schemas from plugins remain forward compatible.  An
+            # unknown future cardinality is enforced by that method at runtime.
+            return
+
+        if reference is None:
+            return
+        if kind == 'scalar_or_dip_controls':
+            controls = getattr(reference, 'dip_control_points', None)
+            if controls is None:
+                return
+            total_count = len(controls.dip)
+        else:
+            field_name = cardinality.get('reference_field')
+            coords = getattr(reference, field_name, None)
+            if coords is None:
+                return
+            if field_name == 'layers':
+                index_name = cardinality.get(
+                    'reference_index_parameter', 'mid_layer_index'
+                )
+                layer_index = resolved.method_kwargs.get(index_name, 0)
+                if not isinstance(layer_index, int) or isinstance(layer_index, bool):
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': '{index_name}' must "
+                        "be an integer for dynamic cardinality validation."
+                    )
+                # The implementation indexes the layer tuple directly, so
+                # preserve normal Python negative layer indices.  This is
+                # distinct from fixed_nodes, whose current membership-based
+                # semantics intentionally do not reinterpret -1.
+                if layer_index < -len(coords) or layer_index >= len(coords):
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': '{index_name}' "
+                        f"{layer_index} is outside geometry_ref.layers."
+                    )
+                coords = coords[layer_index]
+            total_count = len(coords)
+
+        fixed_name = cardinality.get('fixed_nodes_parameter', 'fixed_nodes')
+        fixed_nodes = resolved.method_kwargs.get(fixed_name) or ()
+        # Match current scientific method semantics: only indices that compare
+        # equal to 0..N-1 are fixed.  Negative-index reinterpretation is not
+        # introduced by preflight.
+        movable_count = sum(
+            index not in fixed_nodes for index in range(total_count)
+        )
+        # A scalar remains a convenient broadcast form.  The exact movable
+        # count is also legal, including zero when every node/control is
+        # fixed; both underlying perturbation implementations intentionally
+        # treat that empty vector as a no-op.  This keeps preflight from
+        # narrowing legitimate selector-based workflows.
+        allowed = {1, movable_count}
+        if sample_count not in allowed:
+            allowed_text = ' or '.join(str(value) for value in sorted(allowed))
+            raise ValueError(
+                f"Fault '{resolved.fault_name}': geometry method "
+                f"'{resolved.method_name}' accepts a scalar or one value per "
+                f"movable element ({movable_count}); sample_positions "
+                f"{list(resolved.sample_slice)} supplies {sample_count}. "
+                f"Expected {allowed_text}."
+            )
+
+    def validate_sampling_ready(self):
+        """Validate state consumed by Bayesian candidates without mutation.
+
+        This is the final preflight used by target construction.  It refreshes
+        the resolved perturbation envelope from the current configuration and
+        validates only mesh methods that declare a sampling-time replay
+        contract.  It does not generate geometry, rebuild a mesh, or enter the
+        per-candidate execution path.
+        """
+        self._validate_perturbation_config()
+        self._validate_mesh_replay_readiness()
+
+    def _validate_mesh_replay_readiness(self):
+        """Check fixed-topology replay mappings for effective mesh paths."""
+        import inspect
+        from .. import mesh_registry as _mesh_registry
+
+        for resolved in getattr(self, '_resolved_geometry_updates', ()):
+            fault_config = self.faults[resolved.fault_name]
+            geometry_config = fault_config.get('geometry', {})
+            if geometry_config.get('follows'):
+                # Followers consume their master's shared materialized state;
+                # only the master executes the geometry/mesh replay.
+                continue
+
+            contract = resolved.registry_contract or {}
+            flags = contract.get('flags') or {}
+            method_parameters = fault_config.get('method_parameters', {})
+            if flags.get('mesh'):
+                mesh_method = contract.get('mesh_replay_method')
+                # Internal mesh wrappers may intentionally choose defaults
+                # that differ from the underlying mesh method.  Resolve the
+                # wrapper's real signature defaults before applying YAML
+                # overrides instead of guessing from the method suffix.
+                replay_params = {
+                    key: value
+                    for key, value in (contract.get('kwargs') or {}).items()
+                    if value is not inspect.Parameter.empty
+                }
+                replay_params.update(resolved.method_kwargs)
+            else:
+                mesh_config = method_parameters.get('update_mesh', {})
+                mesh_method = (
+                    mesh_config.get('method')
+                    if isinstance(mesh_config, dict) else None
+                )
+                replay_params = {
+                    key: value for key, value in mesh_config.items()
+                    if key != 'method'
+                } if isinstance(mesh_config, dict) else {}
+
+            if not mesh_method:
+                continue
+            if _mesh_registry.get_bayesian_replay_contract(mesh_method) is None:
+                continue
+
+            validator = getattr(
+                resolved.fault_instance,
+                'validate_bayesian_mesh_replay',
+                None,
+            )
+            if not callable(validator):
+                raise ValueError(
+                    f"Fault '{resolved.fault_name}': mesh method "
+                    f"'{mesh_method}' requires Bayesian replay preflight, "
+                    "but the fault class does not implement "
+                    "validate_bayesian_mesh_replay()."
+                )
+            validator(mesh_method, replay_params)
 
     def _normalize_mesh_config(self):
         """
@@ -309,9 +627,9 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         1. geometry.update=false + explicit update_mesh → warn, skip rest
         2. Validate update_fault_geometry kwargs against perturb method's forbidden
         3. Always validate update_mesh forbidden + spelling if the section exists
-        4. mesh_updated=True + explicit update_mesh → warn (ignored at runtime)
-        5. mesh_updated=False + explicit unregistered method → ValueError
-        6. mesh_updated=False + inherited/missing unregistered → try get_mesh_params()
+        4. mesh_valid=True + explicit update_mesh → warn (ignored at runtime)
+        5. mesh_valid=False + explicit unregistered method → ValueError
+        6. mesh_valid=False + inherited/missing unregistered → try get_mesh_params()
         7. Auto-filled update_mesh also gets forbidden + spelling check
         """
         import warnings
@@ -362,7 +680,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                             fault_name, 'update_fault_geometry', param, value, rule
                         )
 
-            mesh_updated_flag = (
+            mesh_valid_flag = (
                 perturb_meta['flags']['mesh'] if perturb_meta else False
             )
 
@@ -376,8 +694,8 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     fault_name, mesh_config, mesh_method, _mesh_registry
                 )
 
-            # --- mesh_updated=True: warn if explicit, then done ---
-            if mesh_updated_flag:
+            # --- mesh_valid=True: warn if explicit, then done ---
+            if mesh_valid_flag:
                 if mesh_method and mesh_origin == 'explicit':
                     warnings.warn(
                         f"[{fault_name}] perturbation method '{perturb_method}' already "
@@ -386,7 +704,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     )
                 continue
 
-            # --- mesh_updated=False: need a valid update_mesh ---
+            # --- mesh_valid=False: need a valid update_mesh ---
             if mesh_method and _mesh_registry.is_registered(mesh_method):
                 continue
 
@@ -405,7 +723,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             )
             if not auto_params:
                 raise ValueError(
-                    f"[{fault_name}] mesh_updated=False but no valid "
+                    f"[{fault_name}] mesh_valid=False but no valid "
                     f"update_mesh config and get_mesh_params() returned None."
                 )
 
@@ -624,7 +942,12 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     raise ValueError(msg)
                 
                 start, end = sample_positions
-                if not isinstance(start, int) or not isinstance(end, int):
+                if (
+                    not isinstance(start, int)
+                    or isinstance(start, bool)
+                    or not isinstance(end, int)
+                    or isinstance(end, bool)
+                ):
                     msg = f"Fault '{fault_name}': sample_positions must contain integers, got {sample_positions}"
                     logger.error(msg)
                     raise ValueError(msg)

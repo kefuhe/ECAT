@@ -51,6 +51,7 @@ import time
 import glob
 import logging
 from collections import namedtuple
+from dataclasses import dataclass
 from typing import List
 
 # Third-party scientific computing imports
@@ -91,6 +92,7 @@ from .config.bayesian_config import (
     BayesianMultiFaultsInversionConfig,
     normalize_bayesian_sampling_mode,
 )
+from .config.parameter_groups import attach_group_parameters, resolve_group_layout
 from .fault_analysis_mixin import FaultAnalysisMixin
 from .data_correction_constraints import DataCorrectionConstraintMixin
 from .data_correction_report_mixin import DataCorrectionReportMixin
@@ -103,8 +105,15 @@ from .multifaultsolve_boundLSE import _validate_lsqlin_status
 from .source_adapters import FaultAdapter
 from .plot_product_mixin import FigureProductMixin
 from .geom_ops import InvalidFaultGeometryError
+from .covariance_utils import gaussian_log_likelihood
+from .quadratic_objective import (
+    LeastSquaresBlock,
+    assemble_quadratic_objective,
+    gaussian_curvature_log_term,
+    weighted_residual_quadratic,
+)
 import warnings
-from .bayesian_utils import det_of_laplace_smooth_lu, logpdf_multivariate_normal
+from .bayesian_utils import det_of_laplace_smooth_lu
 from . import lsqlin
 
 _INVALID_CONSTRAINED_SOLVE_LOGLIKE = -9999999.0
@@ -147,11 +156,20 @@ def compute_magnitude_log_prior(slip_components, moment_magnitude_threshold,
 
 @njit
 def compute_data_log_likelihood(G: ndarray, samples: ndarray, observations: ndarray, 
-                                inv_cov: ndarray, log_cov_det: float) -> float:
+                                whitener: ndarray, sigma: float,
+                                log_cov_det: float) -> float:
+    """Evaluate a Gaussian data term from a left-whitener.
+
+    ``whitener.T @ whitener`` is the precision represented by this score.
+    Keeping the solve and score in whitened space prevents a second explicit
+    precision representation from drifting out of alignment.
+    """
     simulations = np.dot(G, samples)
-    data_log_likelihood = logpdf_multivariate_normal(observations, simulations, 
-                                                     inv_cov, log_cov_det)
-    return data_log_likelihood
+    residual = np.subtract(simulations, observations)
+    whitened_residual = np.dot(whitener, residual) / sigma
+    return -0.5 * (
+        np.dot(whitened_residual, whitened_residual) + log_cov_det
+    )
 
 @njit
 def compute_smooth_log_likelihood(GL: ndarray, samples: ndarray, alpha: ndarray) -> float:
@@ -196,20 +214,32 @@ def compute_smooth_log_likelihood_csr(GL: csr_matrix, samples: ndarray, alpha: f
     return smooth_log_likelihood
 
 @njit
-def compute_log_posterior(samples: ndarray, G: ndarray, observations: ndarray, lb, ub, 
-                          inv_cov: ndarray, log_cov_det: float, alpha: float, GL: csr_matrix) -> float:
+def compute_log_posterior(
+    samples, Gs, observations, lb, ub, whiteners, log_dets, sigmas, alpha, GL
+):
     log_prior = compute_log_prior(samples, lb, ub)
     if log_prior == -np.inf:
         return -np.inf
     else:
-        data_log_likelihood = compute_data_log_likelihood(G, samples, observations, inv_cov, log_cov_det)
+        data_log_likelihood = 0.0
+        for index in range(len(Gs)):
+            data_log_likelihood += compute_data_log_likelihood(
+                Gs[index],
+                samples,
+                observations[index],
+                whiteners[index],
+                sigmas[index],
+                log_dets[index] + len(observations[index]) * np.log(sigmas[index] ** 2),
+            )
         smooth_log_likelihood = compute_smooth_log_likelihood(GL, samples, alpha)
         return log_prior + data_log_likelihood + smooth_log_likelihood
     
 @njit
-def compute_magnitude_log_posterior(samples: ndarray, G: ndarray, observations: ndarray, lb, ub, 
-                                    inv_cov: ndarray, log_cov_det: float, moment_magnitude_threshold, 
-                                    patch_areas, shear_modulus, magnitude_tolerance, sigma: float, alpha: float, GL: csr_matrix) -> float:
+def compute_magnitude_log_posterior(
+    samples, Gs, observations, lb, ub, moment_magnitude_threshold,
+    patch_areas, shear_modulus, magnitude_tolerance, whiteners, log_dets,
+    sigmas, alpha, GL,
+):
     log_prior = compute_log_prior(samples, lb, ub)
     if log_prior == -np.inf:
         return -np.inf
@@ -219,30 +249,49 @@ def compute_magnitude_log_posterior(samples: ndarray, G: ndarray, observations: 
         if log_magnitude_prior == -np.inf:
             return -np.inf
         else:
-            data_log_likelihood = compute_data_log_likelihood(G, samples, observations, inv_cov, log_cov_det)
+            data_log_likelihood = 0.0
+            for index in range(len(Gs)):
+                data_log_likelihood += compute_data_log_likelihood(
+                    Gs[index],
+                    samples,
+                    observations[index],
+                    whiteners[index],
+                    sigmas[index],
+                    log_dets[index]
+                    + len(observations[index]) * np.log(sigmas[index] ** 2),
+                )
             smooth_log_likelihood = compute_smooth_log_likelihood(GL, samples, alpha)
             return log_prior + log_magnitude_prior + data_log_likelihood + smooth_log_likelihood
 
 def make_target_for_sampler(Gs: List[ndarray], observations: List[ndarray], lb, ub, 
-                            inv_covs: List[ndarray], log_dets: List[float], sigmas: List[float], alpha: float, GL: csr_matrix):
+                            whiteners: List[ndarray], log_dets: List[float], sigmas: List[float], alpha: float, GL: csr_matrix):
     @njit
     def target(samples):
-        return compute_log_posterior(samples, Gs, observations, lb, ub, inv_covs, log_dets, sigmas, alpha, GL)
+        return compute_log_posterior(samples, Gs, observations, lb, ub, whiteners, log_dets, sigmas, alpha, GL)
     return target
 
 def make_magnitude_target_for_sampler(Gs: List[ndarray], observations: List[ndarray], lb, ub, moment_magnitude_threshold, 
                                       patch_areas, shear_modulus, magnitude_tolerance, 
-                                      inv_covs: List[ndarray], log_dets: List[float], sigmas: List[float], alpha: float, GL: csr_matrix):
+                                      whiteners: List[ndarray], log_dets: List[float], sigmas: List[float], alpha: float, GL: csr_matrix):
     def target(samples):
         return compute_magnitude_log_posterior(samples, Gs, observations, lb, ub, moment_magnitude_threshold, 
                                                patch_areas, shear_modulus, magnitude_tolerance, 
-                                               inv_covs, log_dets, sigmas, alpha, GL)
+                                               whiteners, log_dets, sigmas, alpha, GL)
     return target
 
 
 NT1 = namedtuple('NT1', 'N Neff target LB UB')
 # tuple object for the samples
 NT2 = namedtuple('NT2', 'allsamples postval beta stage covsmpl resmpl')
+
+
+@dataclass(frozen=True)
+class _SMCFJQuadraticWorkspace:
+    """Candidate-independent residual blocks for one fixed geometry state."""
+
+    G_combined: np.ndarray
+    data_blocks: tuple
+    smoothing_blocks: tuple
 
 
 class BayesianMultiFaultsInversion(
@@ -273,43 +322,213 @@ class BayesianMultiFaultsInversion(
 
     def update_config(self, config):
         self.config = config
-        # Initialize sigma values
-        self._sigma_update_mask = self.config.sigmas['update'][self.config.sigmas['dataset_param_indices']] # mask for which sigmas to update
-        self._sigma_initial = self.config.sigmas['initial_value'][self.config.sigmas['dataset_param_indices']] # initial sigma values
+        # Expand normalized group-space sigma state to ordered data-set space.
+        # Sampling still allocates one value per updatable group.
+        sigma_layout = self.config.sigmas.get('group_layout')
+        if sigma_layout is None:
+            sigma_mode = self.config.sigmas.get('mode', 'individual')
+            sigma_layout = attach_group_parameters(
+                resolve_group_layout(
+                    [data.name for data in self.config.geodata['data']],
+                    sigma_mode,
+                    self.config.sigmas.get('groups')
+                    if sigma_mode == 'grouped' else None,
+                    member_label='dataset',
+                    single_group_name='all',
+                    individual_prefix='group_',
+                ),
+                values=self.config.sigmas.get('initial_value', 0.0),
+                update=self.config.sigmas.get('update', True),
+                value_name='sigma initial_value',
+                default_value=0.0,
+            )
+        sigma_member_indices = sigma_layout['member_param_indices']
+        self._sigma_update_mask = sigma_layout['update_by_group'][sigma_member_indices]
+        self._sigma_initial = sigma_layout['values_by_group'][sigma_member_indices]
         self._sigma_update_indices = np.where(self._sigma_update_mask)[0] # indices of sigma to be updated
-        self._sigma_update_positions = self.config.sigmas['updatable_param_indices'][self.config.sigmas['dataset_param_indices']] # positions of sigma to be updated in the full parameter vector
+        self._sigma_update_positions = sigma_layout['sample_index_by_group'][sigma_member_indices]
         self._sigma_update_positions = self._sigma_update_positions[self._sigma_update_indices]
         self._sigma_update_flag = np.any(self._sigma_update_mask) # whether any sigma is to be updated
         
-        # Initialize alpha values
-        # NOTE on fault_param_indices and non-smoothing sources:
-        # fault_param_indices maps *every* source (including non-smoothing ones
-        # like Pressure/Sbarbot) to an alpha parameter group.  Non-smoothing
-        # sources are auto-assigned to group 0 by parse_alpha_config.
-        #
-        # This means _alpha_update_mask may include non-smoothing sources that
-        # inherit group 0's update flag.  Consequently _alpha_update_flag can be
-        # True even when non-smoothing sources are present.  This is intentional
-        # and harmless for two reasons:
-        #   1. _alpha_update_flag only controls whether position space is
-        #      allocated for alpha in the sampling vector.  The allocated size
-        #      comes from 'updatable_params' (number of *parameter groups*),
-        #      not the number of sources, so no extra parameters are created.
-        #   2. At likelihood-computation time, alpha values are filtered through
-        #      _smoothing_alpha_faults_index (built in _calculate_parameters),
-        #      which excludes all non-smoothing sources.
-        # When *all* sources are non-smoothing, parse_alpha_config returns
-        # enabled=False with update=[False], so _alpha_update_flag is False and
-        # the entire alpha path is skipped.
-        self._alpha_update_mask = self.config.alpha['update'][self.config.alpha['fault_param_indices']] # mask for which alphas to update
-        self._alpha_initial = self.config.alpha['initial_value'][self.config.alpha['fault_param_indices']] # initial alpha values
+        # Alpha's canonical member space contains only smoothing-capable
+        # sources.  Materialize a full-source boundary array for downstream
+        # indexing, leaving non-smoothing sources neutral and non-updatable.
+        alpha_layout = self.config.alpha.get('group_layout')
+        source_names = list(self.config.faultnames)
+        if alpha_layout is None:
+            configured_smoothing = getattr(
+                self.config, '_smoothing_faultnames', None
+            )
+            smoothing_names = (
+                list(configured_smoothing)
+                if isinstance(configured_smoothing, (list, tuple))
+                else source_names.copy()
+            )
+            alpha_mode = self.config.alpha.get('mode', 'single')
+            alpha_groups = None
+            if alpha_mode == 'grouped':
+                alpha_groups = self.config.alpha.get('groups')
+                if alpha_groups is None:
+                    alpha_groups = {
+                        f'Event_{index}': members
+                        for index, members in enumerate(
+                            self.config.alpha.get('faults', [])
+                        )
+                    }
+            alpha_layout = attach_group_parameters(
+                resolve_group_layout(
+                    smoothing_names,
+                    alpha_mode,
+                    alpha_groups,
+                    member_label='smoothing source',
+                    single_group_name='all',
+                    individual_prefix='smooth_',
+                ),
+                values=self.config.alpha.get('initial_value', 0.0),
+                update=self.config.alpha.get('update', True),
+                value_name='alpha initial_value',
+                default_value=0.0,
+            )
+        self._alpha_update_mask = np.zeros(len(source_names), dtype=bool)
+        self._alpha_initial = np.zeros(len(source_names), dtype=float)
+        alpha_positions = np.full(len(source_names), -1, dtype=int)
+        group_index = {
+            name: index for index, name in enumerate(alpha_layout['group_names'])
+        }
+        for member_name in alpha_layout['member_names']:
+            source_index = source_names.index(member_name)
+            parameter_index = group_index[alpha_layout['member_to_group'][member_name]]
+            self._alpha_update_mask[source_index] = alpha_layout['update_by_group'][parameter_index]
+            self._alpha_initial[source_index] = alpha_layout['values_by_group'][parameter_index]
+            alpha_positions[source_index] = alpha_layout['sample_index_by_group'][parameter_index]
         self._alpha_update_indices = np.where(self._alpha_update_mask)[0] # indices of alpha to be updated
-        self._alpha_update_positions = self.config.alpha['updatable_param_indices'][self.config.alpha['fault_param_indices']] # positions of alpha to be updated in the full parameter vector
+        self._alpha_update_positions = alpha_positions
         self._alpha_update_positions = self._alpha_update_positions[self._alpha_update_indices]
         self._alpha_update_flag = np.any(self._alpha_update_mask) # whether any alpha is to be updated
 
         self._update_faults()
         self._calculate_parameters()
+
+    def _dataset_sigmas_from_samples(self, samples):
+        """Resolve one physical sigma scale per data set from a sample.
+
+        This is the single layout adapter shared by likelihood evaluation and
+        final-model reporting. Fixed groups retain their configured values;
+        sampled groups overwrite only their mapped dataset positions.
+        """
+        sigmas = self._sigma_initial.astype(np.float64, copy=True)
+        if self.sigmas_position is not None and len(self._sigma_update_indices) > 0:
+            sampled = np.asarray(samples, dtype=float)[
+                self.sigmas_position[0]:self.sigmas_position[1]
+            ]
+            sigmas[self._sigma_update_indices] = sampled[
+                self._sigma_update_positions
+            ]
+        if self.config.sigmas.get('log_scaled', True):
+            sigmas = np.power(10.0, sigmas)
+        return np.asarray(sigmas, dtype=float)
+
+    def _source_alphas_from_samples(self, samples):
+        """Resolve one physical alpha scale per configured source.
+
+        The full-source array is an internal indexing boundary.  Sources
+        without a Laplacian retain a neutral placeholder here and are removed
+        by :meth:`_smoothing_alphas_from_samples`; they never acquire a
+        smoothing parameter.  Fixed groups retain their configured values and
+        sampled groups overwrite only their mapped source positions.
+        """
+        alphas = self._alpha_initial.astype(np.float64, copy=True)
+        if self.alpha_position is not None and len(self._alpha_update_indices) > 0:
+            sampled = np.asarray(samples, dtype=float)[
+                self.alpha_position[0]:self.alpha_position[1]
+            ]
+            alphas[self._alpha_update_indices] = sampled[
+                self._alpha_update_positions
+            ]
+        if self.config.alpha.get('log_scaled', True):
+            alphas = np.power(10.0, alphas)
+        return np.asarray(alphas, dtype=float)
+
+    def _smoothing_alphas_from_samples(self, samples):
+        """Return physical alpha values in smoothing-source order only."""
+        if not self.config.alpha_enabled:
+            return np.array([], dtype=float)
+        return self._source_alphas_from_samples(samples)[
+            self._smoothing_alpha_faults_index
+        ]
+
+    def _publish_fit_sigma_context(self, samples):
+        """Publish report-only sigma/group metadata for an active model."""
+        sigmas = self._dataset_sigmas_from_samples(samples)
+        mode = self.config.sigmas.get('mode', 'individual')
+        groups = self.config.sigmas.get('groups')
+        if mode == 'single':
+            group_members = {'all': list(self.datanames)}
+        elif mode == 'individual':
+            group_members = {
+                f'group_{name}': [name] for name in self.datanames
+            }
+        elif mode == 'grouped':
+            group_members = {
+                str(name): list(members) for name, members in groups.items()
+            }
+        else:
+            raise ValueError(f"Unknown sigmas mode: {mode}")
+
+        self.current_data_sigmas = dict(zip(self.datanames, sigmas))
+        self.current_data_weights = {
+            name: 1.0 / sigma
+            for name, sigma in self.current_data_sigmas.items()
+        }
+        self.current_data_sigma_group_members = group_members
+        self.current_data_sigma_groups = {
+            member: group
+            for group, members in group_members.items()
+            for member in members
+        }
+        self.current_data_effective_dof = {}
+
+    def _publish_fit_hyperparameter_context(self, samples):
+        """Publish complete physical sigma/alpha values for one active model.
+
+        ``self.model`` remains in sampler space.  These result attributes are
+        deliberately name-keyed and physical so fixed groups, sampled groups,
+        log scaling, and grouped membership cannot be confused by consumers.
+        """
+        self._publish_fit_sigma_context(samples)
+
+        smoothing_names = [
+            self.multifaults.faults[index].name
+            for index in self._smoothing_alpha_faults_index
+        ]
+        smoothing_alphas = self._smoothing_alphas_from_samples(samples)
+        self.current_smoothing_alphas = dict(
+            zip(smoothing_names, smoothing_alphas)
+        )
+        self.current_smoothing_weights = {
+            name: 1.0 / alpha
+            for name, alpha in self.current_smoothing_alphas.items()
+        }
+
+        layout = self.config.alpha.get('group_layout', {})
+        members_by_group = layout.get('members_by_group', {})
+        self.current_alpha_group_members = {
+            str(group): list(members)
+            for group, members in members_by_group.items()
+        }
+        self.current_alpha_group_values = {
+            group: self.current_smoothing_alphas[members[0]]
+            for group, members in self.current_alpha_group_members.items()
+            if members
+        }
+
+    def _clear_bayesian_hyperparameter_context(self):
+        """Invalidate physical hyperparameters before activating a model."""
+        self._clear_fit_weight_context()
+        self.current_smoothing_alphas = {}
+        self.current_smoothing_weights = {}
+        self.current_alpha_group_members = {}
+        self.current_alpha_group_values = {}
 
     def _update_faults(self):
         # Update the faults based on the configuration parameters and method parameters for each fault 
@@ -329,7 +548,9 @@ class BayesianMultiFaultsInversion(
 
     def _calculate_parameters(self):
         self.Gs = {fault.name: fault.Gassembled for fault in self.multifaults.faults}
-        self.inv_covs, self.chol_decomps, self.logdets = self.multifaults.compute_data_inv_covs_and_logdets(self.geodata)
+        self.data_covariance_metrics = (
+            self.multifaults.compute_data_covariance_metrics(self.geodata)
+        )
         self.patch_areas = self.multifaults.compute_fault_areas()
         self.GLs = self.multifaults.GLs
         # Filter out sources without GL (Pressure/Sbarbot) to avoid AttributeError
@@ -1341,8 +1562,23 @@ class BayesianMultiFaultsInversion(
         
         return final
     
-    def returnModel(self, model='mean', recal_target=False, print_stat=True):
+    def returnModel(
+        self,
+        model='mean',
+        recal_target=False,
+        print_stat=True,
+        *,
+        print_fit_statistics=None,
+    ):
+        """Activate one posterior representative and distribute its results.
+
+        ``print_fit_statistics`` is the canonical result-API spelling;
+        ``print_stat`` remains accepted for existing scripts.
+        """
         from scipy.stats import gaussian_kde
+        if print_fit_statistics is not None:
+            print_stat = bool(print_fit_statistics)
+        self._clear_bayesian_hyperparameter_context()
         if recal_target or not hasattr(self, 'target'):
             if self.config.bayesian_sampling_mode == 'SMC_FJ':
                 self.target = self.make_smc_fj_target_for_parallel(log_enabled=False)
@@ -1505,13 +1741,12 @@ class BayesianMultiFaultsInversion(
         if self._sigma_update_flag:
             sigmas_start, sigmas_end = self.sigmas_position
             print(f"Sigmas position: [{sigmas_start}, {sigmas_end}]")
-            self.sigmas = specs[sigmas_start: sigmas_end].tolist()
         if self._alpha_update_flag:
             alpha_start, alpha_end = self.alpha_position
             print(f"Alpha position: [{alpha_start}, {alpha_end}]")
-            self.alpha = specs[alpha_start: alpha_end] # .item()
         
         if (not isinstance(model, str)) or (model not in ('std', 'STD', 'Std')):
+            self._publish_fit_hyperparameter_context(specs)
             # Predict the data and print the RMS and VR
             # Caluculate RMS and VR for the solution and print the results
             rms = np.sqrt(np.mean((np.dot(self.G_combined, mpost_tmp) - self.observations)**2))
@@ -2011,7 +2246,8 @@ class BayesianMultiFaultsInversion(
                                           pdf_fonttype=None, gps_fontsize=None, sar_fontsize=None, gps_xticks=None, gps_yticks=None,
                                           sar_xticks=None, sar_yticks=None,
                                           gps_kwargs=None, sar_kwargs=None,
-                                          fault_outdir='output', data_outdir='Modeling', show=True):
+                                          fault_outdir='output', data_outdir='Modeling', show=True,
+                                          model=None):
         """
         Extract and plot the Bayesian results.
     
@@ -2029,6 +2265,8 @@ class BayesianMultiFaultsInversion(
         depth_range: depth range for the plot (default is None)
         z_ticks: z-axis ticks for the plot (default is None)
         best_model: the best model to use for plotting (default is 'median')
+        model: canonical alias for ``best_model``. New scripts should use this
+            spelling; ``best_model`` remains accepted for existing scripts.
         gps_title: whether to show title for GPS data plots (default is True)
         sar_title: whether to show title for SAR data plots (default is True)
         sar_cbaxis: colorbar axis position for SAR data plots (default is [0.1, 0.15, 0.35, 0.04])
@@ -2064,6 +2302,8 @@ class BayesianMultiFaultsInversion(
         show: whether underlying plotting methods call their interactive show
             path (default is True)
         """
+        if model is not None:
+            best_model = model
         if rank == 0:
             import cmcrameri
             from ..getcpt import get_cpt 
@@ -2109,7 +2349,7 @@ class BayesianMultiFaultsInversion(
             )
     
             if plot_std:
-                self.returnModel(model='std', print_stat=False)  # std mean
+                self.returnModel(model='std', print_fit_statistics=False)  # std mean
                 self.plot_fault_fields(
                     fields=('total',),
                     outdir=fault_output_path,
@@ -2121,7 +2361,10 @@ class BayesianMultiFaultsInversion(
                 )
             
             # Print hyperparameters summary table
-            self.returnModel(model=best_model, print_stat=print_fit_statistics)  # best model
+            self.returnModel(
+                model=best_model,
+                print_fit_statistics=print_fit_statistics,
+            )  # best model
             self._print_hyperparameters_summary()
             if print_fault_statistics:
                 self._print_fault_statistics()
@@ -2308,7 +2551,12 @@ class BayesianMultiFaultsInversion(
             self._print_detailed_hyperparameters_info(datanames_updated)
 
     def _print_detailed_hyperparameters_info(self, datanames_updated):
-        """Print detailed hyperparameters information."""
+        """Print sampler-space parameters and physical active-model scales.
+
+        Values in ``self.model`` may be logarithmic.  Physical sigma/alpha
+        values must therefore come from the same fixed/update/log-scale
+        adapters as the likelihood, rather than applying ``10**`` here.
+        """
         print("\n" + "="*80)
         print("Detailed Hyperparameters Information")
         print("="*80)
@@ -2318,14 +2566,24 @@ class BayesianMultiFaultsInversion(
         print('Hyper-parameters: [', ', '.join(f'{x:.7g}' for x in self.model[:hyper_samples_start]), ']', sep='')
         print('STD Hyper-parameters: [', ', '.join(f'{x:.7g}' for x in self.sampler.allsamples.std(axis=0)[:hyper_samples_start]), ']', sep='')
     
-        # Calculate and print sigma information
+        # Calculate and print sigma information.  Resolve by data name instead
+        # of zipping filtered lists so reordered data cannot mislabel a scale.
         if datanames_updated:
-            sigma_scales = np.power(10, self.model[self.sigmas_position[0]:self.sigmas_position[1]])
-            data_weights = 1.0/sigma_scales
+            sigma_by_name = dict(zip(
+                self.datanames,
+                self._dataset_sigmas_from_samples(self.model),
+            ))
+            data_by_name = {data.name: data for data in self.geodata}
+            sigma_scales = np.array(
+                [sigma_by_name[name] for name in datanames_updated],
+                dtype=float,
+            )
+            data_weights = 1.0 / sigma_scales
             post_sigmas = {}
             prior_sigmas = {}
         
-            for k, (iname, idata) in enumerate(zip(datanames_updated, [d for d, update in zip(self.geodata, self.config.geodata['sigmas']['update']) if update])):
+            for k, iname in enumerate(datanames_updated):
+                idata = data_by_name[iname]
                 isigma_mean = np.mean(np.sqrt(idata.Cd.diagonal()))
                 prior_sigmas[iname] = isigma_mean
                 post_sigmas[iname] = sigma_scales[k] * isigma_mean
@@ -2335,9 +2593,26 @@ class BayesianMultiFaultsInversion(
             print('Posterior sigmas for each data: [', ', '.join(f'{post_sigmas[iname]:.7g}' for iname in datanames_updated), ']', sep='')
             print('Data weights: [', ', '.join(f'{x:.7g}' for x in data_weights), ']', sep='')
 
-        if self.alpha_position and self.model[self.alpha_position[0]:self.alpha_position[1]].size > 0:
-            penalty_weight = 1.0/np.power(10, self.model[self.alpha_position[0]:self.alpha_position[1]])
-            print('Penalty weights: [', ', '.join(f'{x:.7g}' for x in penalty_weight), ']', sep='')
+        group_values = getattr(self, 'current_alpha_group_values', {})
+        if group_values:
+            alpha_layout = self.config.alpha.get('group_layout', {})
+            group_names = alpha_layout.get('group_names', [])
+            update_by_group = alpha_layout.get('update_by_group', [])
+            active_groups = [
+                name
+                for name, update in zip(group_names, update_by_group)
+                if update
+            ]
+            penalty_weights = [1.0 / group_values[name] for name in active_groups]
+            print(
+                'Penalty weights: [',
+                ', '.join(
+                    f'{name}={value:.7g}'
+                    for name, value in zip(active_groups, penalty_weights)
+                ),
+                ']',
+                sep='',
+            )
         print("="*80)
 
     def save2h5(self, samples, filename):
@@ -2834,14 +3109,19 @@ class BayesianMultiFaultsInversion(
     def compute_magnitude_log_prior(self, samples, decay_rate=0.1):
         moment_magnitude_threshold = self.moment_magnitude_threshold
         magnitude_tolerance = self.magnitude_tolerance
-    
+
+        # ``self.patch_areas`` is a baseline/compatibility snapshot used by
+        # magnitude-aware initialization. A posterior candidate must consume
+        # areas belonging to its current geometry.
+        current_patch_areas = self.multifaults.get_fault_areas()
+
         # Only Fault sources contribute to moment magnitude (Pressure/Sbarbot have no patch areas)
         fault_sources = [fault for fault in self.multifaults.faults
-                         if fault.name in self.patch_areas]
+                         if fault.name in current_patch_areas]
 
         total_moment = 0.0
         for fault in fault_sources:
-            areas = np.asarray(self.patch_areas[fault.name], dtype=float)
+            areas = np.asarray(current_patch_areas[fault.name], dtype=float)
             slip = np.asarray(self.compute_slip(samples, fault), dtype=float)
             if areas.shape != slip.shape:
                 raise ValueError(
@@ -3064,6 +3344,14 @@ class BayesianMultiFaultsInversion(
                 f"got '{actual}'. Use walk() for mode-aware dispatch."
             )
 
+    def _validate_sampling_ready(self):
+        """Run configuration-owned nonlinear preflight once per target build."""
+        if not self.nonlinear_inversion:
+            return
+        validator = getattr(self.config, 'validate_sampling_ready', None)
+        if validator is not None:
+            validator()
+
     def _freeze_fullsmc_bounds(self):
         """Freeze one effective bounds snapshot for target and proposal use."""
         self.constraint_manager._require_activation_flags_reconciled(
@@ -3097,6 +3385,7 @@ class BayesianMultiFaultsInversion(
 
     def make_target_for_parallel(self, log_enabled=False):
         self._require_bayesian_sampling_mode('FULLSMC', 'make_target_for_parallel')
+        self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
         if self.nonlinear_inversion:
             def target(samples):
@@ -3113,7 +3402,11 @@ class BayesianMultiFaultsInversion(
                                 fault_name, fault_config, samples,
                                 log_enabled=log_enabled):
                             return -np.inf
-                        self._update_fault_GFs_and_Laplacian(fault_name, fault_config, log_enabled=log_enabled)
+                        self._update_fault_GFs_and_Laplacian(
+                            fault_name, fault_config,
+                            update_laplacian=self.config.alpha_enabled,
+                            log_enabled=log_enabled,
+                        )
 
                 new_samples = self.transfer_samples(samples)
                 return log_prior + self._compute_likelihoods(new_samples)
@@ -3138,6 +3431,7 @@ class BayesianMultiFaultsInversion(
         self._require_bayesian_sampling_mode(
             'FULLSMC', 'make_magnitude_target_for_parallel'
         )
+        self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
         if self.nonlinear_inversion:
             def target(samples):
@@ -3165,7 +3459,11 @@ class BayesianMultiFaultsInversion(
 
                 for fault_name, fault_config in self.config.faults.items():
                     if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        self._update_fault_GFs_and_Laplacian(fault_name, fault_config, log_enabled=log_enabled)
+                        self._update_fault_GFs_and_Laplacian(
+                            fault_name, fault_config,
+                            update_laplacian=self.config.alpha_enabled,
+                            log_enabled=log_enabled,
+                        )
 
                 new_samples = self.transfer_samples(samples)
                 return log_prior + magnitude_log_prior + self._compute_likelihoods(new_samples)
@@ -3194,6 +3492,7 @@ class BayesianMultiFaultsInversion(
         self._require_bayesian_sampling_mode(
             'SMC_FJ', 'make_smc_fj_target_for_parallel'
         )
+        self._validate_sampling_ready()
 
         self.constraint_manager._require_activation_flags_reconciled(
             "SMC_FJ target construction"
@@ -3248,12 +3547,23 @@ class BayesianMultiFaultsInversion(
                                 fault_name, fault_config, samples,
                                 log_enabled=log_enabled):
                             return -np.inf
-                        self._update_fault_GFs_and_Laplacian(fault_name, fault_config, log_enabled=log_enabled)
+                        self._update_fault_GFs_and_Laplacian(
+                            fault_name, fault_config,
+                            update_laplacian=self.config.alpha_enabled,
+                            log_enabled=log_enabled,
+                        )
 
                 return log_prior + self._compute_likelihoods_smc_fj(samples, A=A, b=b, Aeq=Aeq, beq=beq, \
                                                                  lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
                                                                  magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate)
         else:
+            # Geometry, covariance, observations, and Laplacian remain fixed
+            # for this target.  Prepare their exact Gram/cross products once;
+            # candidates only change sigma/alpha scalar weights.
+            quadratic_workspace = self._build_smc_fj_quadratic_workspace(
+                GL_combined=self.GL_combined
+            )
+
             def target(samples):
                 ensure_current_constraints()
                 # Compute log prior
@@ -3264,7 +3574,8 @@ class BayesianMultiFaultsInversion(
                 
                 return log_prior + self._compute_likelihoods_smc_fj(samples, GL_combined=self.GL_combined, A=A, b=b, Aeq=Aeq, beq=beq, \
                                                                  lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,
-                                                                 magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate)
+                                                                 magnitude_log_prior=magnitude_log_prior, decay_rate=decay_rate,
+                                                                 quadratic_workspace=quadratic_workspace)
         self.target = target
         return target
 
@@ -3291,22 +3602,38 @@ class BayesianMultiFaultsInversion(
         sample_values = samples[start:end]
         # Update fault geometry
         start_time_geometry = time.time()
-        if not self.multifaults.faults_dict[fault_name].geometry_updated:
-            # print('sample_values', sample_values)
-            self.multifaults.update_fault_geometry(fault_names=[fault_name], perturbations=sample_values, **fault_config['method_parameters']['update_fault_geometry'])
+        # Followers returned above.  Every master candidate must replay its
+        # perturbation from the frozen reference; there is no persistent
+        # "geometry already updated" state across candidates.
+        self.multifaults.update_fault_geometry(
+            fault_names=[fault_name],
+            perturbations=sample_values,
+            **fault_config['method_parameters']['update_fault_geometry'],
+        )
         end_time_geometry = time.time()
         log_time(start_time_geometry, end_time_geometry, "Execution time for updating fault geometry", log_enabled)
         # Update mesh
         start_time_mesh = time.time()
-        if not self.multifaults.faults_dict[fault_name].mesh_updated:
-            self.multifaults.update_mesh(fault_names=[fault_name], **fault_config['method_parameters']['update_mesh'])
+        if not self.multifaults.faults_dict[fault_name].mesh_valid:
+            self.multifaults.update_mesh(
+                fault_names=[fault_name],
+                **fault_config['method_parameters']['update_mesh'],
+            )
         end_time_mesh = time.time()
         log_time(start_time_mesh, end_time_mesh, "Execution time for updating mesh", log_enabled)
         # Optionally update fault areas
         if update_areas:
-            self.multifaults.compute_fault_areas(fault_names=[fault_name])
+            self.multifaults.get_fault_areas(fault_names=[fault_name])
 
-    def _update_fault_GFs_and_Laplacian(self, fault_name, fault_config, log_enabled=False):
+    def _update_fault_GFs_and_Laplacian(
+            self, fault_name, fault_config, update_laplacian=True,
+            log_enabled=False):
+        """Refresh observation physics and requested candidate smoothing.
+
+        Green's functions depend on source position and are always refreshed
+        after nonlinear geometry updates. Laplacian construction is gated
+        separately because alpha-disabled targets do not consume smoothing.
+        """
         # Update GFs
         start_time_GFs = time.time()
         self.multifaults.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
@@ -3314,8 +3641,19 @@ class BayesianMultiFaultsInversion(
         log_time(start_time_GFs, end_time_GFs, "Execution time for updating GFs", log_enabled)
         # Update Laplacian
         start_time_Laplacian = time.time()
-        if not self.multifaults.faults_dict[fault_name].laplacian_updated:
-            self.multifaults.update_Laplacian(fault_names=[fault_name], **fault_config['method_parameters']['update_Laplacian'])
+        if (
+            update_laplacian
+            and (
+                not self.multifaults.faults_dict[fault_name].laplacian_valid
+                or getattr(
+                    self.multifaults.faults_dict[fault_name], 'GL', None
+                ) is None
+            )
+        ):
+            self.multifaults.update_Laplacian(
+                fault_names=[fault_name],
+                **fault_config['method_parameters']['update_Laplacian'],
+            )
         end_time_Laplacian = time.time()
         log_time(start_time_Laplacian, end_time_Laplacian, "Execution time for updating Laplacian", log_enabled)
 
@@ -3340,54 +3678,38 @@ class BayesianMultiFaultsInversion(
             else:
                 GL_combined = np.zeros((0, G_combined.shape[1]))
     
-        # Extract sigmas values
-        if self.sigmas_position is None:
-            sigmas = self._sigma_initial
-        else:
-            sigmas = self._sigma_initial.astype(np.float64, copy=True)
-            # Update sigmas with the samples if indices are provided
-            if len(self._sigma_update_indices) > 0:
-                sigmas[self._sigma_update_indices] = samples[self.sigmas_position[0]:self.sigmas_position[1]][self._sigma_update_positions]
-
-        # Convert log-scaled sigmas to non-log-scaled if necessary
-        if self.config.sigmas.get('log_scaled', True):
-            sigmas = np.power(10, sigmas)
+        sigmas = self._dataset_sigmas_from_samples(samples)
+        if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+            return -np.inf
     
-        # Initialize inverse covariance matrix and log determinant
-        inv_cov = np.zeros((len(self.observations), len(self.observations)))
-        log_det = 0.0
-        st = 0
-        ed = 0
-        for ind, idataname in enumerate(self.datanames):
-            ed += len(self.obs_dict[idataname])
-            isigmas_2 = sigmas[ind] ** 2
-            inv_cov[st:ed, st:ed] = np.divide(self.inv_covs[idataname], isigmas_2)
-            log_det += len(self.obs_dict[idataname]) * np.log(isigmas_2)
-            st = ed
-    
-        # Compute data log-likelihood
+        # Score each independent data block directly. The fixed log|C_k|
+        # constant remains omitted here to preserve this solver's established
+        # absolute-likelihood convention; sigma-dependent terms are retained.
         linear_sample = samples[self.linear_sample_start_position:]
-        data_log_likelihood = compute_data_log_likelihood(G_combined, linear_sample, self.observations, inv_cov, log_det)
+        data_log_likelihood = 0.0
+        st = 0
+        for ind, idataname in enumerate(self.datanames):
+            ed = st + len(self.obs_dict[idataname])
+            metric = self.data_covariance_metrics[idataname]
+            residual = (
+                G_combined[st:ed, :] @ linear_sample
+                - self.observations[st:ed]
+            )
+            data_log_likelihood += gaussian_log_likelihood(
+                residual,
+                metric,
+                sigmas[ind],
+                include_base_logdet=False,
+            )
+            st = ed
     
         # Check if alpha smoothing is enabled
         if not self.config.alpha_enabled:
             return data_log_likelihood
     
-        # If alpha smoothing is enabled, proceed with smoothness log-likelihood
-        if self.alpha_position is None:
-            alpha = self._alpha_initial
-        else:
-            alpha = self._alpha_initial.astype(np.float64, copy=True)
-            # Update alpha with the samples if indices are provided
-            if len(self._alpha_update_indices) > 0:
-                alpha[self._alpha_update_indices] = samples[self.alpha_position[0]:self.alpha_position[1]][self._alpha_update_positions]
-
-        # Convert log-scaled alpha to non-log-scaled if necessary
-        if self.config.alpha.get('log_scaled', True):
-            alpha = np.power(10, alpha)
-    
-        # Expand alpha values for each fault (smoothing-capable sources only)
-        alpha_faults = alpha[self._smoothing_alpha_faults_index]
+        # Resolve the same complete physical alpha state used by result
+        # reporting; non-smoothing sources are excluded by this adapter.
+        alpha_faults = self._smoothing_alphas_from_samples(samples)
         size_faults = self._get_smoothing_source_param_sizes()
         alpha = np.hstack([[alpha_faults[ind]] * size_faults[ind] for ind in range(len(alpha_faults))])
     
@@ -3398,146 +3720,186 @@ class BayesianMultiFaultsInversion(
         # Return the total log-likelihood
         return data_log_likelihood + smooth_log_likelihood
 
-    def _compute_likelihoods_smc_fj(self, samples, GL_combined=None, A=None, b=None, Aeq=None, beq=None,
-                                 lb=None, ub=None, x0=None, opts=None, 
-                                 smooth_prior_weight=1.0, magnitude_log_prior=False, decay_rate=0.1):
+    def _build_smc_fj_quadratic_workspace(self, GL_combined=None):
+        """Prepare exact residual/Gram blocks for the current geometry.
+
+        Fixed-geometry targets retain this immutable workspace across all
+        candidates.  Nonlinear targets build it transiently after publishing
+        each candidate's Green functions and Laplacian, so no geometry sample
+        is cached across candidates or MPI ranks.
         """
-        Calculate the log likelihood of the data given the samples.
-    
-        Parameters:
-        samples (array): The samples to be used in the calculation.
-        GL_combined (array, optional): The combined Laplacian matrix for all faults. If None, it will be computed.
-        A (array, optional): The A matrix for the linear constrained least squares problem.
-        b (array, optional): The b vector for the linear constrained least squares problem.
-        Aeq (array, optional): The Aeq matrix for the linear constrained least squares problem.
-        beq (array, optional): The beq vector for the linear constrained least squares problem.
-        lb (array, optional): The lower bounds for the linear constrained least squares problem.
-        ub (array, optional): The upper bounds for the linear constrained least squares problem.
-        x0 (array, optional): The initial guess for the linear constrained least squares problem.
-        opts (dict, optional): The options for the linear constrained least squares problem.
-        smooth_prior_weight (float, optional): The weight of the smoothness prior in the log likelihood calculation.
-        magnitude_log_prior (bool, optional): If True, include the magnitude log prior in the log likelihood calculation.
-        decay_rate (float, optional): The decay rate for the magnitude log prior.
-    
-        Returns:
-        float: The log likelihood of the data given the samples.
+        G_combined = np.hstack([
+            fault.Gassembled for fault in self.multifaults.faults
+        ])
+        data_blocks = []
+        start = 0
+        for data_name in self.datanames:
+            end = start + len(self.obs_dict[data_name])
+            metric = self.data_covariance_metrics[data_name]
+            data_blocks.append(LeastSquaresBlock.prepare(
+                metric.whiten(G_combined[start:end, :]),
+                metric.whiten(self.observations[start:end]),
+                name=f"data:{data_name}",
+            ))
+            start = end
+
+        smoothing_blocks = []
+        if self.config.alpha_enabled:
+            if GL_combined is None:
+                gl_list = [
+                    fault.GL for fault in self.multifaults.faults
+                    if hasattr(fault, 'GL') and fault.GL is not None
+                ]
+                GL_combined = (
+                    block_diag(gl_list).toarray()
+                    if gl_list
+                    else np.zeros((0, G_combined.shape[1]))
+                )
+            if hasattr(GL_combined, 'toarray'):
+                GL_combined = GL_combined.toarray()
+            GL_combined = np.asarray(GL_combined, dtype=float)
+            GL_combined_poly = self.combine_GL_poly(GL_combined)
+            sizes = self._get_smoothing_source_param_sizes()
+            if sum(sizes) != GL_combined_poly.shape[0]:
+                raise ValueError(
+                    "SMC_FJ smoothing row layout does not match the resolved "
+                    "per-source alpha layout"
+                )
+            row_start = 0
+            for source_index, size in enumerate(sizes):
+                row_end = row_start + size
+                smoothing_blocks.append(LeastSquaresBlock.prepare(
+                    GL_combined_poly[row_start:row_end, :],
+                    name=f"smoothing:{source_index}",
+                ))
+                row_start = row_end
+
+        return _SMCFJQuadraticWorkspace(
+            G_combined=G_combined,
+            data_blocks=tuple(data_blocks),
+            smoothing_blocks=tuple(smoothing_blocks),
+        )
+
+    def _compute_likelihoods_smc_fj(
+            self, samples, GL_combined=None, A=None, b=None, Aeq=None,
+            beq=None, lb=None, ub=None, x0=None, opts=None,
+            smooth_prior_weight=1.0, magnitude_log_prior=False,
+            decay_rate=0.1, quadratic_workspace=None):
+        """Solve and score one SMC-FJ candidate using an exact QP objective.
+
+        ``quadratic_workspace`` is supplied only by a fixed-geometry target.
+        Otherwise the current candidate geometry is prepared transiently.
+        Posterior data and smoothing scores are evaluated from the same frozen
+        residual blocks that assemble the conditional quadratic objective.
+        This keeps source/poly column placement and alpha-group row placement
+        identical between the solve and the score.
+
+        SMC-FJ eliminates the conditional linear parameters with the same
+        Gaussian/Laplace curvature contract whether smoothing is enabled or
+        not.  Alpha controls only the presence of smoothing blocks; it never
+        switches the target to a profile likelihood.  The curvature term is
+        therefore computed from the complete candidate Hessian before the QP
+        solve and requires that Hessian to be positive definite.
+
+        Bounds and linear constraints are enforced by the conditional QP.
+        The curvature is still the full-space Gaussian term and does not
+        include a truncated-Gaussian probability mass, so constrained results
+        retain the documented FJ/Laplace approximation rather than claiming an
+        exact constrained marginal density.
         """
-        G_combined = np.hstack([fault.Gassembled for fault in self.multifaults.faults])
-        if GL_combined is None:
-            gl_list = [fault.GL for fault in self.multifaults.faults if hasattr(fault, 'GL') and fault.GL is not None]
-            if gl_list:
-                GL_combined = block_diag(gl_list).toarray()
-            else:
-                GL_combined = np.zeros((0, G_combined.shape[1]))
-    
-        # Extract sigmas values
-        if self.sigmas_position is None:
-            sigmas = self._sigma_initial
-        else:
-            sigmas = self._sigma_initial.astype(np.float64, copy=True)
-            # Update sigmas with the samples if indices are provided
-            if len(self._sigma_update_indices) > 0:
-                sigmas[self._sigma_update_indices] = samples[self.sigmas_position[0]:self.sigmas_position[1]][self._sigma_update_positions]
-    
-        # Convert log-scaled sigmas to non-log-scaled if necessary
-        if self.config.sigmas.get('log_scaled', True):
-            sigmas = np.power(10, sigmas)
-    
-        # Initialize inverse covariance matrix and log determinant
-        inv_cov = np.zeros((len(self.observations), len(self.observations)))
-        log_det = 0.0
-        st = 0
-        ed = 0
-        chol_decomps = []
-        for ind, idataname in enumerate(self.datanames):
-            ed += len(self.obs_dict[idataname])
-            isigmas_2 = sigmas[ind] ** 2
-            inv_cov[st:ed, st:ed] = np.divide(self.inv_covs[idataname], isigmas_2)
-            log_det += len(self.obs_dict[idataname]) * np.log(isigmas_2)
-            chol_decomps.append(self.chol_decomps[idataname] / sigmas[ind])
-            st = ed
-    
-        # Invert slip samples and poly samples
-        G = G_combined
-        d = self.observations
-        W = scipy.linalg.block_diag(*chol_decomps)
-    
-        # Check if alpha smoothing is enabled
-        if not self.config.alpha_enabled:
-            # If alpha smoothing is disabled, skip smoothness-related calculations
-            d2I = np.dot(W, d)
-            G2I = np.dot(W, G)
-            self.G_combined = G_combined
-            self.G2I = G2I
-            self._last_linear_solve_valid = False
-            try:
-                mpost = self.least_squares_inversion(G2I, d2I, reg=0, A=A, b=b, Aeq=Aeq, beq=beq, lb=lb, ub=ub, x0=x0, opts=opts)
-            except Exception as e:
-                return self._record_linear_solve_failure(e)
-            self._last_linear_solve_valid = True
-            self.mpost = mpost
-            mpost = np.hstack((samples[:self.linear_sample_start_position], mpost))
-    
-            # Compute data log likelihood
-            linear_sample = mpost[self.linear_sample_start_position:]
-            data_log_likelihood = compute_data_log_likelihood(G_combined, linear_sample, self.observations, inv_cov, log_det)
-    
-            # Compute magnitude log prior if enabled
-            magnitude_log_prior_value = 0.0
-            if magnitude_log_prior:
-                magnitude_log_prior_value = self.compute_magnitude_log_prior(mpost, decay_rate)
-    
-            return data_log_likelihood + magnitude_log_prior_value
-    
-        # If alpha smoothing is enabled, proceed with smoothness log-likelihood
-        if self.alpha_position is None:
-            alpha = self._alpha_initial
-        else:
-            alpha = self._alpha_initial.astype(np.float64, copy=True)
-            # Update alpha with the samples if indices are provided
-            if len(self._alpha_update_indices) > 0:
-                alpha[self._alpha_update_indices] = samples[self.alpha_position[0]:self.alpha_position[1]][self._alpha_update_positions]
-    
-        # Convert log-scaled alpha to non-log-scaled if necessary
-        if self.config.alpha.get('log_scaled', True):
-            alpha = np.power(10, alpha)
-    
-        alpha_faults = alpha[self._smoothing_alpha_faults_index]
-        size_faults = self._get_smoothing_source_param_sizes()
-        alpha = np.hstack([[alpha_faults[ind]] * size_faults[ind] for ind in range(len(alpha_faults))])
-    
-        GL_combined_poly = self.combine_GL_poly(GL_combined)
-        d2I = np.hstack((np.dot(W, d), np.zeros(GL_combined_poly.shape[0])))
-        G2I = np.vstack((np.dot(W, G), GL_combined_poly / alpha[:, None]))
-        self.G_combined = G_combined
-        self.G2I = G2I
+        workspace = quadratic_workspace
+        if workspace is None:
+            workspace = self._build_smc_fj_quadratic_workspace(GL_combined)
+
+        sigmas = self._dataset_sigmas_from_samples(samples)
+        if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+            return -np.inf
+        if len(sigmas) != len(workspace.data_blocks):
+            raise ValueError("SMC_FJ sigma/data block cardinality mismatch")
+
+        weighted_blocks = [
+            (block, 1.0 / sigma**2)
+            for block, sigma in zip(workspace.data_blocks, sigmas)
+        ]
+        alpha_faults = None
+        if self.config.alpha_enabled:
+            alpha_faults = self._smoothing_alphas_from_samples(samples)
+            if (
+                len(alpha_faults) != len(workspace.smoothing_blocks)
+                or np.any(~np.isfinite(alpha_faults))
+                or np.any(alpha_faults <= 0.0)
+            ):
+                return -np.inf
+            weighted_blocks.extend(
+                (block, 1.0 / alpha_value**2)
+                for block, alpha_value in zip(
+                    workspace.smoothing_blocks, alpha_faults
+                )
+            )
+
+        H, q = assemble_quadratic_objective(
+            weighted_blocks,
+            n_parameters=workspace.G_combined.shape[1],
+        )
+        # Start each candidate transaction with no publishable linear result.
+        # A curvature or QP failure must never leave the previous candidate's
+        # model marked as current.
+        self.G_combined = workspace.G_combined
+        self.mpost = None
         self._last_linear_solve_valid = False
+        curvature_log_term = gaussian_curvature_log_term(
+            H, name="SMC_FJ conditional Hessian"
+        )
         try:
-            mpost = self.least_squares_inversion(G2I, d2I, reg=0, A=A, b=b, Aeq=Aeq, beq=beq, lb=lb, ub=ub, x0=x0, opts=opts)
-        except Exception as e:
-            return self._record_linear_solve_failure(e)
+            mpost = self.least_squares_quadratic_inversion(
+                H, q, reg=0, A=A, b=b, Aeq=Aeq, beq=beq,
+                lb=lb, ub=ub, x0=x0, opts=opts,
+            )
+        except Exception as error:
+            return self._record_linear_solve_failure(error)
         self._last_linear_solve_valid = True
         self.mpost = mpost
-        mpost = np.hstack((samples[:self.linear_sample_start_position], mpost))
-    
-        # Compute magnitude log prior if enabled
+        complete_sample = np.hstack((
+            samples[:self.linear_sample_start_position], mpost
+        ))
+
+        data_quadratic = sum(
+            weighted_residual_quadratic(block, mpost, 1.0 / sigma**2)
+            for block, sigma in zip(workspace.data_blocks, sigmas)
+        )
+        sigma_logdet = sum(
+            block.matrix.shape[0] * np.log(sigma**2)
+            for block, sigma in zip(workspace.data_blocks, sigmas)
+        )
+        data_log_likelihood = -0.5 * (data_quadratic + sigma_logdet)
+
         magnitude_log_prior_value = 0.0
         if magnitude_log_prior:
-            magnitude_log_prior_value = self.compute_magnitude_log_prior(mpost, decay_rate)
-    
-        # Compute data log likelihood
-        linear_sample = mpost[self.linear_sample_start_position:]
-        data_log_likelihood = compute_data_log_likelihood(G_combined, linear_sample, self.observations, inv_cov, log_det)
-    
-        # Compute smooth log likelihood (smoothing sources only)
-        linear_sample_slip_only = mpost[self.smoothing_slip_only_positions]
-        smooth_log_likelihood = compute_smooth_log_likelihood(GL_combined, linear_sample_slip_only, alpha)
-    
-        # Compute (ATA)^-1, where A = log[(GT*inv_cov*G + GL/alpha_2)^(-1/2)]
-        ATA = np.dot(G2I.T, G2I)
-        ATA_logdet = -1. / 2. * np.linalg.slogdet(ATA)[1]
-    
-        return data_log_likelihood + smooth_log_likelihood * smooth_prior_weight + magnitude_log_prior_value + ATA_logdet
+            magnitude_log_prior_value = self.compute_magnitude_log_prior(
+                complete_sample, decay_rate
+            )
+
+        # Score the exact source/poly blocks used in H.  Reconstructing a
+        # separate slip-only GL representation here would duplicate the row
+        # and column layout contract and could let the solve and posterior
+        # silently diverge when non-smoothing or polynomial columns exist.
+        smooth_log_likelihood = 0.0
+        if self.config.alpha_enabled:
+            smooth_log_likelihood = -0.5 * sum(
+                weighted_residual_quadratic(
+                    block, mpost, 1.0 / alpha_value**2
+                )
+                + block.matrix.shape[0] * np.log(alpha_value**2)
+                for block, alpha_value in zip(
+                    workspace.smoothing_blocks, alpha_faults
+                )
+            )
+        return (
+            data_log_likelihood
+            + smooth_log_likelihood * smooth_prior_weight
+            + magnitude_log_prior_value
+            + curvature_log_term
+        )
 
     def _record_linear_solve_failure(self, error):
         """Mark one constrained F_J solve invalid and return its low likelihood."""
@@ -3593,6 +3955,21 @@ class BayesianMultiFaultsInversion(
         self.mpost = lsqlin.cvxopt_to_numpy_matrix(mpost)
 
         return self.mpost
+
+    def least_squares_quadratic_inversion(
+            self, H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
+            lb=None, ub=None, x0=None, opts=None):
+        """Solve the exact prepared form of the SMC-FJ conditional problem."""
+        opts = {'show_progress': False} if opts is None else dict(opts)
+        opts.setdefault('show_progress', False)
+        ret = lsqlin.lsqlin_quadratic(
+            H, q, reg, A, b, Aeq, beq, lb, ub, x0, opts
+        )
+        _validate_lsqlin_status(
+            ret, context="SMC_FJ constrained quadratic solve"
+        )
+        self.mpost = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
+        return self.mpost
     
     def _get_source_param_sizes(self):
         """Return list of source parameter counts for each fault, using adapters when available."""
@@ -3643,7 +4020,68 @@ class BayesianMultiFaultsInversion(
                 self.GL_combined_poly = scipy.linalg.block_diag(*GL_combined_poly)
             else:
                 self.GL_combined_poly = np.zeros((0, 0))
-    
+
+            return self.GL_combined_poly
+
+        # Candidate matrices contain only smoothing-capable source blocks.
+        # Expand those blocks into the same source/poly column layout used by
+        # Gassembled. Consuming the explicit matrix is essential: returning an
+        # initialization cache would mix current smooth likelihood with
+        # baseline smoothing rows in one nonlinear candidate.
+        if hasattr(GL_combined, 'toarray'):
+            GL_combined = GL_combined.toarray()
+        GL_combined = np.asarray(GL_combined, dtype=float)
+        if GL_combined.ndim != 2:
+            raise ValueError("GL_combined must be a two-dimensional matrix.")
+
+        expanded_blocks = []
+        row_start = 0
+        col_start = 0
+        for fault in self.multifaults.faults:
+            has_gl = hasattr(fault, 'GL') and fault.GL is not None
+            poly_start, poly_end = self.poly_positions.get(
+                fault.name, (0, 0)
+            )
+            n_poly = poly_end - poly_start
+            if has_gl:
+                n_rows, n_cols = fault.GL.shape
+                row_end = row_start + n_rows
+                col_end = col_start + n_cols
+                if (
+                    row_end > GL_combined.shape[0]
+                    or col_end > GL_combined.shape[1]
+                ):
+                    raise ValueError(
+                        "GL_combined shape is inconsistent with current "
+                        f"smoothing source '{fault.name}'."
+                    )
+                block = np.zeros((n_rows, n_cols + n_poly))
+                block[:, :n_cols] = GL_combined[
+                    row_start:row_end, col_start:col_end
+                ]
+                expanded_blocks.append(block)
+                row_start = row_end
+                col_start = col_end
+            else:
+                slip_start, slip_end = self.slip_positions.get(
+                    fault.name, (0, 0)
+                )
+                n_params = (slip_end - slip_start) + n_poly
+                if n_params > 0:
+                    expanded_blocks.append(np.zeros((0, n_params)))
+
+        if (
+            row_start != GL_combined.shape[0]
+            or col_start != GL_combined.shape[1]
+        ):
+            raise ValueError(
+                "GL_combined contains rows or columns not described by the "
+                "current smoothing sources."
+            )
+        if expanded_blocks:
+            self.GL_combined_poly = scipy.linalg.block_diag(*expanded_blocks)
+        else:
+            self.GL_combined_poly = np.zeros((0, 0))
         return self.GL_combined_poly
     
     @property
@@ -3696,23 +4134,23 @@ class BayesianMultiFaultsInversion(
 
     @property
     def sigmas(self):
-        return self.config.sigmas['initial_value']
-
-    @sigmas.setter
-    def sigmas(self, value):
-        if not isinstance(value, list):
-            raise ValueError("sigmas must be a list")
-        self.config.sigmas['initial_value'] = value
+        """Retired ambiguous shortcut; use explicit config/result state."""
+        raise AttributeError(
+            "'sigmas' is not a Bayesian inversion state property. Read or "
+            "change configured values through inversion.config.sigmas; after "
+            "returnModel(), read current_data_sigmas for the activated "
+            "physical per-dataset values."
+        )
 
     @property
     def alpha(self):
-        return np.array(self.config.alpha['initial_value'])
-
-    @alpha.setter
-    def alpha(self, value):
-        if not isinstance(value, (int, float, ndarray)):
-            raise ValueError("alpha must be a number or a numpy array")
-        self.config.alpha['initial_value'] = value
+        """Retired ambiguous shortcut; use explicit config/result state."""
+        raise AttributeError(
+            "'alpha' is not a Bayesian inversion state property. Read or "
+            "change configured values through inversion.config.alpha; after "
+            "returnModel(), read current_smoothing_alphas or "
+            "current_alpha_group_values for activated physical values."
+        )
 
     @property
     def moment_magnitude_threshold(self):

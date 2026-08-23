@@ -1,8 +1,9 @@
-"""
-DirectionPerturbationMixin — Fixed-direction perturbation methods.
+"""Fixed-direction perturbations for edges, layers, and whole meshes.
 
-Extracted from BayesianAdaptiveTriangularPatches for modularity.
-All methods are pure move-over with zero logic changes.
+Coordinate-only methods read one frozen reference field and update its current
+counterpart.  ``*_simpleMesh`` and ``*_DeformMesh`` variants additionally
+materialize a mesh.  The whole-mesh method consumes a frozen vertices/faces
+pair and determines at runtime whether the displacement is rigid or deforming.
 """
 import numpy as np
 from ..bayesian_perturbation_base import track_mesh_update
@@ -157,31 +158,69 @@ class DirectionPerturbationMixin:
     
         return coords
 
-    @track_mesh_update(description="Perturb top coordinates along a fixed/average direction.",
-                       params_info={"perturbations": "1D Array of shifts (km)"})
+    @track_mesh_update(
+                       description="Perturb top coordinates along a fixed/average direction.",
+                       params_info={"perturbations": "Scalar or one shift per movable top node (km)"},
+                       reference_requirements={"fields": ("top_coords",)},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "top_coords",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_top_coords_along_fixed_direction(self, perturbations, average_direction=None,
                                          fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                      use_average_strike=False):
+        """Offset the frozen top edge without rebuilding a mesh.
+
+        ``perturbations`` is a scalar or one distance in km per non-fixed top
+        node.  Horizontal direction follows ``average_direction`` when given;
+        otherwise it is derived from the frozen top-edge strike.  Vertical
+        mode changes the third coordinate.  The returned array is also written
+        to current ``top_coords`` and ``top_coords_ll``.
+        """
         self._require_geometry_ref('top_coords')
         self.top_coords = self.perturb_coords_along_fixed_direction(self.geometry_ref.top_coords, perturbations, average_direction, 
                                                             fixed_nodes, angle_unit, perturbation_direction, use_average_strike)
         self.set_coords(self.top_coords, lonlat=False, coord_type='top')
         return self.top_coords
 
-    @track_mesh_update(description="Perturb bottom coordinates along a fixed/average direction.",
-                       params_info={"perturbations": "1D Array of shifts (km)"})
+    @track_mesh_update(
+                       description="Perturb bottom coordinates along a fixed/average direction.",
+                       params_info={"perturbations": "Scalar or one shift per movable bottom node (km)"},
+                       reference_requirements={"fields": ("bottom_coords",)},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "bottom_coords",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_bottom_coords_along_fixed_direction(self, perturbations, average_direction=None,
                                             fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                      use_average_strike=False):
+        """Offset the frozen bottom edge without rebuilding a mesh.
+
+        Parameter broadcasting, direction, units, and ``fixed_nodes`` follow
+        :meth:`perturb_top_coords_along_fixed_direction`.  Only current bottom
+        coordinate views are materialized; callers that need a mesh must use a
+        mesh-owning variant or an explicit update-mesh step.
+        """
         self._require_geometry_ref('bottom_coords')
         self.bottom_coords = self.perturb_coords_along_fixed_direction(self.geometry_ref.bottom_coords, perturbations, average_direction, 
                                                                fixed_nodes, angle_unit, perturbation_direction, use_average_strike)
         self.set_coords(self.bottom_coords, lonlat=False, coord_type='bottom')
         return self.bottom_coords
     
-    @track_mesh_update(update_mesh=True, 
+    @track_mesh_update(update_mesh=True,
                        description="Perturb bottom coords along fixed direction and rebuild simple mesh.",
-                       params_info={"perturbations": "Array of shifts", "average_direction": "Azimuth (deg/rad)"})
+                       params_info={"perturbations": "Scalar or one shift per movable bottom node", "average_direction": "Azimuth (deg/rad)"},
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "bottom_coords",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_BottomFixedDir_simpleMesh(self, perturbations, average_direction=None,
                                           fixed_nodes=None, angle_unit='degrees', 
                                           perturbation_direction='horizontal', 
@@ -215,7 +254,15 @@ class DirectionPerturbationMixin:
     @track_mesh_update(update_mesh=True,
                        description="Perturb bottom along fixed direction, then deform existing Gmsh mesh.",
                        params_info={"perturbations": "Array of shifts"},
-                       bayesian_forbidden={'remap': True})
+                       bayesian_forbidden={'remap': True},
+                       mesh_replay_method='generate_and_deform_mesh',
+                       reference_requirements={"fields": ("top_coords", "bottom_coords")},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "bottom_coords",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_BottomFixedDir_DeformMesh(self, perturbations, 
                                              top_size=2.0, bottom_size=4.0, num_segments=30, 
                                              disct_z=10, projection=None, rotation_angle=None, 
@@ -264,12 +311,27 @@ class DirectionPerturbationMixin:
                                     bias=bias, min_dz=min_dz)
         return self.bottom_coords
 
-    @track_mesh_update(description="Perturb a specific middle layer along a fixed direction.",
-                       params_info={"perturbations": "Array of shifts", "mid_layer_index": "Index of layer"})
+    @track_mesh_update(
+                       description="Perturb a specific middle layer along a fixed direction.",
+                       params_info={"perturbations": "Scalar or one shift per movable layer node", "mid_layer_index": "Index of layer"},
+                       reference_requirements={"fields": ("layers",)},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "layers",
+                           "reference_index_parameter": "mid_layer_index",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_layer_coords_along_fixed_direction(self, perturbations, mid_layer_index=0, average_direction=None, 
                                            fixed_nodes=None, angle_unit='degrees', 
                                            perturbation_direction='horizontal',
                                            use_average_strike=False):
+        """Offset one frozen intermediate layer and synchronize its lon/lat view.
+
+        The method does not rebuild the multilayer mesh.  ``mid_layer_index``
+        addresses ``geometry_ref.layers`` and must therefore match the layer
+        ordering captured by ``snapshot(capture_layers=True)``.
+        """
         self._require_geometry_ref('layers')
         assert mid_layer_index < len(self.geometry_ref.layers), f'mid_layer_index {mid_layer_index} out of range for layers_ref (len={len(self.geometry_ref.layers)}).'
         self.layers[mid_layer_index] = self.perturb_coords_along_fixed_direction(self.geometry_ref.layers[mid_layer_index], perturbations, average_direction, 
@@ -279,9 +341,17 @@ class DirectionPerturbationMixin:
         self.layers_ll[mid_layer_index] = np.vstack((lon, lat, z)).T
         return self.layers[mid_layer_index]
     
-    @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=1,
+    @track_mesh_update(
+                       update_mesh=True,
                        description="Translate the entire fault geometry along a fixed direction.",
-                       params_info={"perturbations": "[distance_km]"})
+                       params_info={"perturbations": "Scalar or one value per movable mesh vertex"},
+                       reference_requirements={"mesh_pair": True},
+                       perturbation_cardinality={
+                           "kind": "scalar_or_movable_nodes",
+                           "reference_field": "vertices",
+                           "fixed_nodes_parameter": "fixed_nodes",
+                       },
+                       perturbation_items=({"role": "distance", "unit": "km"},))
     def perturb_geometry_along_fixed_direction(self, perturbations, average_direction=None, 
                                                fixed_nodes=None, angle_unit='degrees', perturbation_direction='horizontal',
                                                use_average_strike=False):
@@ -297,10 +367,19 @@ class DirectionPerturbationMixin:
         use_average_strike (bool, optional): Whether to use the average strike direction. Default is False.
         """
         # Translate the fault geometry mesh along the fixed direction
-        self._ensure_vertices_ref()
-        vertices_trans = self.perturb_coords_along_fixed_direction(self.geometry_ref.vertices, perturbations, average_direction, 
+        ref_vertices, ref_faces = self._ensure_vertices_ref()
+        vertices_trans = self.perturb_coords_along_fixed_direction(ref_vertices, perturbations, average_direction,
                                                                    fixed_nodes, angle_unit, perturbation_direction, use_average_strike)
-        self.VertFace2csifault(vertices_trans, self.Faces)
+        displacement = vertices_trans - ref_vertices
+        is_rigid = np.allclose(displacement, displacement[0], rtol=0.0, atol=1e-12)
+        self.VertFace2csifault(
+            vertices_trans, ref_faces,
+            topology_changed=False,
+            change_kind='rigid' if is_rigid else 'deform',
+        )
+        if is_rigid:
+            self.laplacian_valid = self._has_laplacian_cache()
+            self.area_valid = self._has_area_cache()
     
         return vertices_trans
     #---------------------------------------------------------------------------------------------------------#

@@ -89,6 +89,12 @@ geodata:
 当前 CSI GPS 实现不支持给 GPS 使用整数 `1/3/4`。GPS 需要使用字符串 transform，例如
 `translation`。如果把 GPS 写成 `polys: 3`，可能在组装 transform 时失败，或造成参数语义错误。
 
+GPS 的反演行顺序是分量优先：先全部 East，再全部 North，启用垂直分量时最后是全部 Up。
+CSI 的观测向量、Green 函数、`Cd` 和 transform estimator 都遵守这一顺序；ECAT 的非线性
+几何入口也使用同一契约。站点对象本身仍保存为 `(n_stations, 3)` ENU 数组，用户不需要手动
+展开或重排。`d`、预测、`G`、`H_corr` 和 `Cd` 的完整行列关系见
+[观测向量、协方差与设计矩阵排列合同](../concepts/observation_matrix_layout.md)。
+
 多断层线性反演中，数据改正项只应组装一次；ECAT 当前会把 poly columns 放在第一个参与组装的 source
 后面，后续 source 不再重复组装同一组数据改正项。`bounds_config.yml` 中的 `poly` 边界应设置给实际持有
 poly columns 的 source。

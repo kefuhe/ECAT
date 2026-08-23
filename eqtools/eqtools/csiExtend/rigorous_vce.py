@@ -1,15 +1,18 @@
 import numpy as np
 from scipy.optimize import lsq_linear
+from .covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
+from eqtools.csiExtend.config.parameter_groups import resolve_group_layout
+
 
 def rigorous_vce(
-    Cd_inv, 
+    data_metrics,
     d, 
     G, 
     L, 
     bounds, 
     data_ranges=None,
     fault_ranges=None,
-    sigma_mode='single',
+    sigma_mode='individual',
     sigma_groups=None,
     smooth_mode='single',
     smooth_groups=None,
@@ -46,8 +49,8 @@ def rigorous_vce(
     
     Parameters:
     -----------
-    Cd_inv : array (n_obs, n_obs)
-        Inverse data covariance matrix
+    data_metrics : mapping
+        Prepared ``DataCovarianceMetric`` for each entry in ``data_ranges``.
     d : array (n_obs,)
         Observation vector
     G : array (n_obs, n_params)
@@ -67,6 +70,8 @@ def rigorous_vce(
         - 'single': All datasets share one sigma
         - 'individual': Each dataset has its own sigma
         - 'grouped': Custom grouping via sigma_groups
+        Defaults to ``'individual'``, matching the public BLSE/VCE
+        configuration contract.
     sigma_groups : dict, optional
         For 'grouped' mode: {'group1': ['dataset1', 'dataset2'], 'group2': ['dataset3']}
     smooth_mode : str
@@ -129,6 +134,10 @@ def rigorous_vce(
     # Configure data ranges
     if data_ranges is None:
         data_ranges = {'data': (0, n_obs)}
+
+    # The covariance metric does not change during VCE. Prepare its action on
+    # G and d once; iterations only apply scalar variance-component weights.
+    whitened_data = whiten_data_blocks(data_metrics, data_ranges, G, d)
     
     # Configure fault ranges
     if fault_ranges is None:
@@ -174,22 +183,10 @@ def rigorous_vce(
         # Add data blocks
         for group, datasets in sigma_config.items():
             for dataset in datasets:
-                start, end = data_ranges[dataset]
-                Cd_inv_sub = Cd_inv[start:end, start:end]
-                G_sub = G[start:end, :]
-                d_sub = d[start:end]
-                
-                # Weight: sqrt(Cd_inv) / sqrt(σ^2_d) = sqrt(Cd_inv) / σ_d
                 weight = 1.0 / np.sqrt(var_d[group])
-                try:
-                    L_chol = np.linalg.cholesky(Cd_inv_sub)
-                    G_blocks.append(L_chol @ G_sub * weight)
-                    d_blocks.append(L_chol @ d_sub * weight)
-                except np.linalg.LinAlgError:
-                    # Fallback for non-positive definite matrices
-                    sqrt_Cd_inv = np.sqrt(np.diag(Cd_inv_sub))
-                    G_blocks.append(np.diag(sqrt_Cd_inv) @ G_sub * weight)
-                    d_blocks.append(sqrt_Cd_inv * d_sub * weight)
+                WG_sub, Wd_sub = whitened_data[dataset]
+                G_blocks.append(WG_sub * weight)
+                d_blocks.append(Wd_sub * weight)
         
         # Add regularization blocks for each smoothing group
         for group, faults in smooth_config.items():
@@ -265,19 +262,14 @@ def rigorous_vce(
         
         # Data normal matrices
         for group, datasets in sigma_config.items():
-            group_Cd_inv = []
-            group_G = []
+            group_WG = []
             for dataset in datasets:
-                start, end = data_ranges[dataset]
-                Cd_inv_sub = Cd_inv[start:end, start:end]
-                G_sub = G[start:end, :]
-                group_Cd_inv.append(Cd_inv_sub)
-                group_G.append(G_sub)
-            
-            # Combine for this group
-            Cd_inv_combined = block_diag(*group_Cd_inv)
-            G_combined = np.vstack(group_G)
-            N_components[f'd_{group}'] = G_combined.T @ Cd_inv_combined @ G_combined / var_d[group]
+                group_WG.append(whitened_data[dataset][0])
+
+            WG_combined = np.vstack(group_WG)
+            N_components[f'd_{group}'] = (
+                WG_combined.T @ WG_combined / var_d[group]
+            )
         
         # Regularization normal matrices
         for group, faults in smooth_config.items():
@@ -312,18 +304,17 @@ def rigorous_vce(
         
         # Data components
         for group, datasets in sigma_config.items():
-            v = residuals_d[group]
-            group_Cd_inv = []
+            whitened_residuals = []
             for dataset in datasets:
-                start, end = data_ranges[dataset]
-                Cd_inv_sub = Cd_inv[start:end, start:end]
-                group_Cd_inv.append(Cd_inv_sub)
-            
-            Cd_inv_combined = block_diag(*group_Cd_inv)
-            quad_form = v.T @ Cd_inv_combined @ v / var_d[group]
+                WG_sub, Wd_sub = whitened_data[dataset]
+                whitened_residuals.append(WG_sub @ m - Wd_sub)
+            whitened_residual = np.concatenate(whitened_residuals)
+            quad_form = (
+                np.dot(whitened_residual, whitened_residual) / var_d[group]
+            )
             w_vector.append(quad_form)
             component_names.append(f'd_{group}')
-            component_sizes.append(len(v))
+            component_sizes.append(len(whitened_residual))
         
         # Regularization components
         for group, faults in smooth_config.items():
@@ -374,10 +365,11 @@ def rigorous_vce(
         # ======================================================================
         update_factors_d = {}
         update_factors_alpha = {}
-        for d, group_name in zip(c[:len(var_d)], var_d.keys()):
-            update_factors_d[group_name] = d
-        for alpha, group_name in zip(c[len(var_d):], var_alpha.keys()):
-            update_factors_alpha[group_name] = alpha
+        # Do not shadow the observation vector ``d`` across iterations.
+        for factor, group_name in zip(c[:len(var_d)], var_d.keys()):
+            update_factors_d[group_name] = factor
+        for factor, group_name in zip(c[len(var_d):], var_alpha.keys()):
+            update_factors_alpha[group_name] = factor
         # Check convergence based on update factors
         all_update_factors = list(update_factors_d.values()) + list(update_factors_alpha.values())
         update_factors = np.array(all_update_factors)
@@ -469,91 +461,29 @@ def _find_fault_constraints(L, start_param, end_param):
 
 
 def _setup_smooth_groups(fault_ranges, smooth_mode, smooth_groups):
-    """Setup smoothing grouping configuration."""
-    
-    faults = list(fault_ranges.keys())
-    
-    if smooth_mode == 'single':
-        return {'all': faults}
-    
-    elif smooth_mode == 'individual':
-        return {f'smooth_{fault}': [fault] for fault in faults}
-    
-    elif smooth_mode == 'grouped':
-        if smooth_groups is None:
-            raise ValueError("smooth_groups must be provided for 'grouped' mode")
-        
-        # Validate all faults are assigned
-        assigned = set()
-        for group, group_faults in smooth_groups.items():
-            for fault in group_faults:
-                if fault not in faults:
-                    raise ValueError(f"Fault '{fault}' not found in fault_ranges")
-                if fault in assigned:
-                    raise ValueError(f"Fault '{fault}' assigned to multiple groups")
-                assigned.add(fault)
-        
-        if assigned != set(faults):
-            unassigned = set(faults) - assigned
-            raise ValueError(f"Faults not assigned to any group: {unassigned}")
-        
-        return smooth_groups
-    
-    else:
-        raise ValueError(f"Unknown smooth_mode: {smooth_mode}")
+    """Resolve smoothing groups with the same contract as simplified VCE."""
+
+    return resolve_group_layout(
+        list(fault_ranges),
+        smooth_mode,
+        smooth_groups,
+        member_label="smoothing source",
+        single_group_name="all",
+        individual_prefix="smooth_",
+    )["members_by_group"]
 
 
 def _setup_sigma_groups(data_ranges, sigma_mode, sigma_groups):
-    """Setup sigma grouping configuration."""
-    
-    datasets = list(data_ranges.keys())
-    
-    if sigma_mode == 'single':
-        return {'all': datasets}
-    
-    elif sigma_mode == 'individual':
-        return {f'group_{dataset}': [dataset] for dataset in datasets}
-    
-    elif sigma_mode == 'grouped':
-        if sigma_groups is None:
-            raise ValueError("sigma_groups must be provided for 'grouped' mode")
-        
-        # Validate all datasets are assigned
-        assigned = set()
-        for group, group_datasets in sigma_groups.items():
-            for dataset in group_datasets:
-                if dataset not in datasets:
-                    raise ValueError(f"Dataset '{dataset}' not found in data_ranges")
-                if dataset in assigned:
-                    raise ValueError(f"Dataset '{dataset}' assigned to multiple groups")
-                assigned.add(dataset)
-        
-        if assigned != set(datasets):
-            unassigned = set(datasets) - assigned
-            raise ValueError(f"Datasets not assigned to any group: {unassigned}")
-        
-        return sigma_groups
-    
-    else:
-        raise ValueError(f"Unknown sigma_mode: {sigma_mode}")
+    """Resolve sigma groups with the shared parameter-group contract."""
 
-
-def block_diag(*arrays):
-    """Simple block diagonal matrix construction."""
-    if len(arrays) == 1:
-        return arrays[0]
-    
-    shapes = [a.shape for a in arrays]
-    out_shape = (sum(s[0] for s in shapes), sum(s[1] for s in shapes))
-    out = np.zeros(out_shape)
-    
-    r, c = 0, 0
-    for arr in arrays:
-        h, w = arr.shape
-        out[r:r+h, c:c+w] = arr
-        r, c = r + h, c + w
-    
-    return out
+    return resolve_group_layout(
+        list(data_ranges),
+        sigma_mode,
+        sigma_groups,
+        member_label="dataset",
+        single_group_name="all",
+        individual_prefix="group_",
+    )["members_by_group"]
 
 
 def test_rigorous_multi_fault_vce():
@@ -625,10 +555,10 @@ def test_rigorous_multi_fault_vce():
     d_noisy = d_clean + noise
     
     # Data covariance
-    Cd_inv = np.diag(np.concatenate([
-        np.full(100, 1/0.02**2),
-        np.full(100, 1/0.05**2),
-        np.full(100, 1/0.08**2)
+    Cd = np.diag(np.concatenate([
+        np.full(100, 0.02**2),
+        np.full(100, 0.05**2),
+        np.full(100, 0.08**2)
     ]))
     
     bounds = (-1.0, 1.0)
@@ -639,6 +569,7 @@ def test_rigorous_multi_fault_vce():
         'insar2': (100, 200),
         'gps': (200, 300)
     }
+    data_metrics = prepare_block_covariance_metrics(Cd, data_ranges)
     
     print("Testing Rigorous Multi-Fault VCE")
     print("=" * 50)
@@ -646,7 +577,7 @@ def test_rigorous_multi_fault_vce():
     # Test 1: Single smoothing parameter for all faults
     print("\n1. Single smoothing parameter:")
     result1 = rigorous_vce(
-        Cd_inv, d_noisy, G, L, bounds, 
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='single', 
@@ -656,7 +587,7 @@ def test_rigorous_multi_fault_vce():
     # Test 2: Individual smoothing parameters for each fault
     print("\n2. Individual smoothing parameters:")
     result2 = rigorous_vce(
-        Cd_inv, d_noisy, G, L, bounds,
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='individual',
@@ -670,7 +601,7 @@ def test_rigorous_multi_fault_vce():
         'background_smooth': ['background', 'ramp']
     }
     result3 = rigorous_vce(
-        Cd_inv, d_noisy, G, L, bounds,
+        data_metrics, d_noisy, G, L, bounds,
         data_ranges, fault_ranges,
         sigma_mode='individual',
         smooth_mode='grouped',

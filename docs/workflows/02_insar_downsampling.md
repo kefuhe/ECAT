@@ -95,6 +95,10 @@ ecat-generate-downsample --mode sar --sar-reader gamma --sar-mode unwrapped_phas
 `--template full` 会列出所有方法配置供进阶查阅，但运行时仍只有
 `downsample.method` 指定的方法生效。
 
+生成 `trirb` 模板时，两个三角断层示例会预先写好 `use_for: [trirb]`，但仍保持
+`enabled: false`。选择一种模型来源，填写真实文件和几何参数后再将它启用即可；生成
+`std`、`data` 或 `from_rsp` 模板时，示例模型保持 `use_for: []`，不会被隐式加入计算。
+
 `trirb` 还要求配置一个启用的三角形断层模型；只有 `fault_traces`
 不能满足算法输入。已有 CSI GMT 三角网格时，可直接复制下面这段：
 
@@ -263,6 +267,21 @@ ecat-downsample -s --sar-prefix nisar_pair --sar-mode unwrapped_phase --sar-look
 - 形变量级、正负号和异常尾部；
 - incidence 是否在合理范围，是否出现字节序警告。
 
+如果彩色图受少量极值影响，或希望更清楚地辨认闭合形变瓣和梯度，可在配置中临时启用
+raw 等值线：
+
+```yaml
+check_plots:
+  raw:
+    contours:
+      enabled: true
+      levels: auto
+```
+
+等值线只叠加到 `-s` 的 structured 二维 raw quick-look，不平滑、不插值，也不影响随后
+`-c/-d` 的数值。密集或破碎线条不一定是离散形变，也可能来自噪声、无效区或解缠问题；
+完整 levels、单位和样式语义见[降采样应用参考](../reference/downsampling_app.md#raw-等值线诊断层)。
+
 ## 5. 可选：参考改正与全分辨率导出
 
 如果远场整体不在零附近，先用一个明确的稳定参考区估计常数 offset。最方便的是
@@ -291,10 +310,38 @@ observation_correction:
         # [min_lon, max_lon, min_lat, max_lat]
 ```
 
-先使用 `offset`。只有确认归零后仍存在稳定长波趋势，才把 `model` 改为
-`plane`。改正发生在 `data_filters` 后、`processing_region` 前；原观测保留，
-协方差和降采样使用改正后观测。运行会写
-`<outName>_observation_correction.yml`。
+先使用 `offset`。只有确认归零后仍存在稳定长波趋势，才改用 `plane`。plane 估计默认
+使用全部有效观测，不需要手工填写截距、梯度或覆盖全图的 region；主要形变区可用 box
+排除。可直接复制：
+
+```yaml
+observation_correction:
+  enabled: true
+  model: plane
+  coefficient_mode: estimate
+  fit:
+    coord_type: lonlat
+    regions: []                 # 全部有效观测；非空时只拟合指定区域
+    exclude_regions:
+      - kind: box
+        bounds: [-68.2, -67.2, 9.7, 10.7]
+        # 排除主要形变或噪声区域
+  fixed_coefficients: null
+```
+
+最终拟合样本应在东西、南北两个方向都有足够展布；排除过多，或把 plane 限制在过窄、
+近似共线的显式 regions 中，都无法稳定确定两个梯度，并会明确报秩不足。若使用
+`coefficient_mode: fixed`，则必须清空
+`fit.regions/exclude_regions`，并提供系数原点以及每个观测分量的 `offset`、
+`east_gradient`、`north_gradient`。完整 SAR/optical 写法见下方 reference。
+
+`-c` 只启用经验协方差阶段，不会自动启用参考改正，也不会把 `covar.mask_out` 当成
+观测改正的 regions/exclusions。只想估计协方差、暂不进行观测改正时，应保持
+`observation_correction.enabled: false`；`covar.rampEst: true` 只处理协方差拟合中的 ramp，
+不会改写随后降采样使用的观测。
+
+改正发生在 `data_filters` 后、`processing_region` 前；原观测保留，协方差和降采样使用
+改正后观测。运行会写 `<outName>_observation_correction.yml`。
 
 少数情况下，不连通解缠分量存在已确认的 \(2n\pi\) jump。不要用全局 offset/plane
 拟合这种离散阶跃；在可靠确定整数周数后，使用高级顶层

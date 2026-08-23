@@ -45,6 +45,102 @@ inv = BoundLSEMultiFaultsInversion(
 
 配置字段见 [线性滑动反演配置](config_linear_slip.md)，约束模式见 [ECAT 约束管理器](constraint_manager.md)。
 
+### 固定几何生命周期
+
+一个 `BoundLSEMultiFaultsInversion` 实例对应一套固定的 fault geometry、mesh、GF、
+Laplacian、参数列布局和约束。`run()`、`simple_run_loop()` 与 `run_simple_vce()`
+只在这套固定基础上求滑动或更新权重，不会监听 fault 坐标变化并自动刷新全部矩阵。
+
+比较多组倾角或其他几何时，把几何放在外层循环，并在每个候选完成 mesh 更新后创建
+新的 inversion；同一候选内部的 penalty loop 或 VCE 迭代则复用该实例。不要在已经创建
+inversion 后只修改 `Vertices`、`Faces`、top/bottom 或倾角再继续求解，否则可能混用新几何
+与旧 GF、Laplacian 或约束布局。可复制组织方式见
+[固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md)。
+
+## 协方差权重的统一度量
+
+设第 \(k\) 个数据集的残差为 \(r_k=G_km-d_k\)，协方差为
+\(C_k\)。BLSE 和 VCE 的数据目标必须是：
+
+\[
+\Phi_d=\sum_k r_k^\mathsf{T}C_k^{-1}r_k.
+\]
+
+ECAT 直接从每个数据集的协方差建立左白化度量：
+
+这里默认 `d`、预测、`G` 和 `Cd` 已经使用同一个观测行顺序；GPS、optical 和多数据集
+分块的具体排列见
+[观测向量、协方差与设计矩阵排列合同](../concepts/observation_matrix_layout.md)。
+
+\[
+C_k=L_kL_k^\mathsf{T},\qquad W_k=L_k^{-1},\qquad
+W_k^\mathsf{T}W_k=C_k^{-1}.
+\]
+
+因此 \(\lVert W_kr_k\rVert_2^2=r_k^\mathsf{T}C_k^{-1}r_k\)。实现不会先显式
+计算 \(C_k^{-1}\)，也不会把所有数据集拼成一个全局白化矩阵；初始化时逐数据集验证并
+因子化，求解时按观测行切片生成 \(W_kG_k\) 和 \(W_kd_k\)。这既保留非对角协方差，
+也避免多个独立数据集产生不必要的全局稠密矩阵。
+
+单位阵、缩放单位阵和对角协方差使用完全相同的统计定义，但实现会自动保留其结构：
+单位阵只做无操作或标量缩放，对角阵按行乘以 \(1/\sqrt{C_{k,ii}}\)，一般非对角正定阵
+继续使用 Cholesky 左白化。这个分派不需要配置开关，也不会用对角近似替代用户提供的
+非对角协方差。结构化路径分别把白化的存储和计算从一般稠密阵的 \(O(n_k^2)\)、
+\(O(n_k^2p)\) 降到 \(O(1)\) 或 \(O(n_k)\)、\(O(n_kp)\)。
+
+在固定权重 BLSE 中，`data_weight = w` 产生
+\(w^2 r^\mathsf{T}Pr\)；等价的 `sigma` 写法使用 \(w=1/\sigma\)。
+`penalty_weight = \lambda` 同样是平滑残差行的直接乘数，因此平滑项为
+\(\lambda^2\lVert L_0m\rVert_2^2\)，不是 \(\lambda\lVert L_0m\rVert_2^2\)。
+当前实现按数据集依次白化并累计
+
+\[
+H=\sum_k(w_kW_kG_k)^\mathsf{T}(w_kW_kG_k)+L^\mathsf{T}L,
+\qquad
+q=-\sum_k(w_kW_kG_k)^\mathsf{T}(w_kW_kd_k).
+\]
+
+这与先拼接完整增广残差矩阵再计算 \(A^\mathsf{T}A\) 和
+\(-A^\mathsf{T}b\) 是同一个目标；它只缩短矩阵装配过程，不改变 bounds、rake、
+等式、不等式、DES 或最终模型定义。正常 CVXOPT 路径不再保留完整增广矩阵；仅当
+CVXOPT 失败并进入 Clarabel 后备时，才从同一批数据和平滑矩阵延迟重建原残差系统。
+
+VCE 第 \(k\) 个数据组和第 \(j\) 个平滑组求解：
+
+\[
+\min_m
+\sum_k \frac{r_k^\mathsf{T}P_k r_k}{\sigma_k^2}
++\sum_j \frac{\lVert L_jm\rVert_2^2}{\alpha_j^2},
+\]
+
+随后用同一批白化量计算残差二次型、法矩阵和方差分量更新：
+
+\[
+e_k=W_kG_km-W_kd_k,\quad
+e_k^\mathsf{T}e_k=r_k^\mathsf{T}C_k^{-1}r_k,\quad
+(W_kG_k)^\mathsf{T}(W_kG_k)=G_k^\mathsf{T}C_k^{-1}G_k.
+\]
+
+基础 \(W_kG_k\) 和 \(W_kd_k\) 在 VCE 迭代前只计算一次；每轮只按
+\(1/\sigma_k\) 缩放。当前 simple VCE 还会预先保存每个数据组和平滑组的
+Gram/cross 块，并在第 \(t\) 轮直接组合
+
+\[
+H^{(t)}=
+\sum_k\frac{(W_kG_k)^\mathsf{T}(W_kG_k)}{\sigma_k^{2(t)}}
++\sum_j\frac{L_j^\mathsf{T}L_j}{\alpha_j^{2(t)}},
+\qquad
+q^{(t)}=-\sum_k\frac{(W_kG_k)^\mathsf{T}W_kd_k}{\sigma_k^{2(t)}}.
+\]
+
+这与先拼接增广矩阵再计算 \(A^\mathsf{T}A\) 和 \(-A^\mathsf{T}b\) 严格等价；同一个
+\(H^{(t)}\) 同时用于约束 QP 和本轮 VCE 方差更新，不会产生两套度量。合法协方差应当
+为有限、对称正定矩阵；白化失败时 ECAT 会明确
+报错，不会静默丢弃非对角项、改用伪逆或对角近似。当前多数据模型要求各数据集协方差
+相互独立；若全局协方差含跨数据集非零块，会在求解前报错，避免静默丢失相关性。
+如果为了诊断而改成单位阵或手工方差，应在结果中把它报告为新的观测误差模型，而不应
+把结果差异解释成求解器自动修复了原协方差。
+
 ## 三种运行模式
 
 | 模式 | 方法 | 主要用途 | 常见输出 |
@@ -61,9 +157,13 @@ inv = BoundLSEMultiFaultsInversion(
 
 ```python
 inv.run(alpha=[-2.0])
-inv.returnModel(print_stat=True)
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
+
+`extract_and_plot_blse_results()` 已经会物化当前模型，并默认打印一次拟合表。
+只有在交互式地单独查看统计时才使用
+`returnModel(print_fit_statistics=True)`，不要在标准
+结果提取之前紧接着再调用一次。
 
 如果 `alpha.log_scaled: true`，`alpha=[-2.0]` 表示实际 `alpha = 10 ** -2 = 0.01`。线性求解中的惩罚权重约为：
 
@@ -90,6 +190,23 @@ inv.run(penalty_weight=[100.0])
 | `smoothing_constraints` | 可按断层传入 `(top, bottom, left, right)` 平滑边界 |
 | `des_enabled` | 运行期覆盖 DES 开关 |
 
+当 `smoothing_constraints` 使 VCE 为本次运行构造新的 Laplacian 时，求解结果会保存
+未缩放的 `smoothing_matrix`、与返回模型一致的 `model_smoothing_matrix` 以及
+`smoothing_provenance`。求解后的 `GL_combined_poly` 直接发布这份实际使用的加权矩阵，
+不会再从可能已经变化的 `fault.GL` 猜测重建。该状态合同不增加一次 VCE 求解，也不改变
+`m`、sigma 或 alpha 的迭代。`returnModel()` 的原始模型粗糙度读取未缩放矩阵，求解目标
+和 VCE 平滑组 `Qw` 读取加权矩阵；两者来自同一次求解，而不是从配置重新猜测。
+
+### 显式平滑矩阵布局（进阶）
+
+需要直接调用 `combine_GL_poly(GL_combined=..., penalty_weight=...)` 时，
+`GL_combined` 必须是**尚未施加 penalty weight** 的块对角平滑矩阵，并且只包含
+支持平滑的 source 块。各块按 `faults` 顺序排列；不要预先插入 polynomial 列或
+不支持平滑的 source 列。方法会统一补齐这些零列、施加逐 source 权重，再生成与
+全局线性模型向量完全对齐的 `GL_combined_poly`。显式矩阵未被当前 source 布局完整
+消费时会直接报错，避免静默复用旧矩阵。省略 `GL_combined` 时仍从各 source 当前的
+`fault.GL` 构造；关闭 alpha 时仍生成零平滑行，不改变“无平滑项”的语义。
+
 ## Smoothing Loop
 
 `simple_run_loop(...)` 用一组 `penalty_weight` 逐次运行 BLSE，并保存 RMS、粗糙度和 variance reduction：
@@ -104,7 +221,35 @@ df = inv.simple_run_loop(
 )
 ```
 
-函数会把每个 penalty 转为 `alpha = log10(1 / penalty)` 后调用 `run(...)`。因此 loop 表格中的 `Penalty_weight` 是惩罚权重，不是 `alpha` 本身。
+函数把每个候选作为标量 `penalty_weight` 直接传给 `run(...)`；标量在当前 alpha 参数组空间广播。因此 `alpha.mode: single`、`individual` 和 `grouped` 都使用同一个候选惩罚权重，但不会错误地按断层数构造 alpha 向量。表中的 `Penalty_weight` 就是目标函数中实际使用的惩罚权重。对第 \(i\) 个
+候选，求解矩阵和报告粗糙度分别为
+
+\[
+L_i=w_iL_0,
+\qquad
+R_i=\sqrt{\operatorname{mean}[(L_0m_i)^2]},
+\]
+
+其中 \(L_0\) 是当前固定 geometry、约束和参数列布局下未乘 penalty 的平滑矩阵。
+`alpha.initial_value` 只定义普通 `run()` 未显式传权重时的默认值，不定义 \(L_0\)，也不会
+改变 loop 的粗糙度尺度。
+
+`simple_run_loop()` 是诊断事务：每个候选的模型、活动矩阵和统计量在同一轮内保持对应，
+方法正常结束或候选求解异常时都会恢复调用前的活动模型、source 参数、平滑矩阵和权重。
+事务内部若 geometry、协方差、数据权重和未缩放的 \(L_0\) 不变，会复用数据项
+\(H_d,q_d\) 与 \(L_0^\mathsf{T}L_0\)；每个候选仍按自己的
+\(w_i^2L_0^\mathsf{T}L_0\) 独立求解。缓存只存在于本次
+`simple_run_loop()` 调用期间，不跨普通 `run()`、不跨 geometry 更新，也不在 DES
+变换前后复用。
+
+`preferred_penalty_weight` 只在图中标记候选，不会选择或激活模型。选定权重后应显式执行：
+
+```python
+inv.run(penalty_weight=30.0)
+```
+
+返回 DataFrame 和 CSV 中的 `RMS` 始终保存米制原值；`rms_unit="cm"` 或 `"mm"` 只改变
+图的纵轴显示，不会原地修改结果表。
 
 推荐检查：
 
@@ -117,11 +262,35 @@ df = inv.simple_run_loop(
 
 VCE 是 variance component estimation，用于估计数据项和正则化项的相对权重。适合多数据集联合反演，尤其是不同 InSAR 轨道、GPS 与 InSAR 权重不容易手工确定时。
 
+第 \(t\) 轮使用当前方差分量求解：
+
+\[
+m^{(t)}=\underset{m\in\mathcal C}{\operatorname{argmin}}
+\left[
+\sum_g\frac{\lVert W_g(G_gm-d_g)\rVert_2^2}{\sigma_g^{2(t)}}
++\sum_h\frac{\lVert L_hm\rVert_2^2}{\alpha_h^{2(t)}}
+\right].
+\]
+
+这里 \(W_g^\mathsf TW_g=C_g^{-1}\)，\(\mathcal C\) 是 bounds、等式和不等式约束
+共同形成的可行域。求得模型后，数据组和平滑组分别计算
+
+\[
+u_g=\frac{Q_{w,g}}{\nu_{\mathrm{eff},g}},
+\qquad v_g^{(t+1)}=v_g^{(t)}u_g,
+\]
+
+其中 \(v_g\) 表示 `sigma²` 或 `alpha²`。更新只改变下一轮行尺度，不改写本轮已求得的
+`m`；因此结果把“本轮已求解尺度”和“下一轮提议尺度”作为两个明确状态返回。
+
 典型调用：
 
 ```python
-vce_result = inv.run_simple_vce(max_iter=20, tol=1e-4)
-inv.returnModel(print_stat=True)
+vce_result = inv.run_simple_vce(
+    max_iter=20,
+    tol=1e-4,
+    report="compact",
+)
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
 
@@ -130,20 +299,83 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 | 键 | 含义 |
 | --- | --- |
 | `m` | 最终线性参数 |
-| `var_d` | 数据方差分量 |
-| `var_alpha` | 正则化方差分量 |
-| `weights` | 最终权重比例 |
+| `solved_sigma2_by_group` | 返回模型实际求解时使用的数据组 `sigma²` |
+| `solved_alpha2_by_group` | 返回模型实际求解时使用的平滑组 `alpha²` |
+| `proposed_sigma2_by_group` | 最后一次更新后、可供下一轮使用的数据组 `sigma²` |
+| `proposed_alpha2_by_group` | 最后一次更新后、可供下一轮使用的平滑组 `alpha²` |
+| `sigma_groups` / `smooth_groups` | 结果中实际采用的成员映射 |
+| `component_diagnostics` | 最终模型的组级 `Qw`、有效自由度和近似 reduced `Q` |
+| `convergence_mode` | `relative`、`anchored` 或全部固定时的 `fixed` |
+| `convergence_measure` | 最后一次停止判据的数值；与 `tol` 直接比较 |
 | `converged` | 是否收敛 |
 | `iterations` | 迭代次数 |
 
-VCE 可从配置读取 `geodata.sigmas` 和 `alpha` 的 `mode/update/initial_value`，也可以在调用时传入 `sigma_mode`、`sigma_groups`、`smooth_mode`、`smooth_groups` 等参数覆盖。分组组织方式见 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
+VCE 结果表中的符号遵循：`v=s²`，数据行的 `s=sigma`，平滑行的
+`s=alpha`；`1/s` 才是增广最小二乘行的直接乘数。`log10(s)` 方便与
+log-scaled 配置对照。`Qw` 是最终模型在该组完整协方差度量下的白化残差
+二次型；`Approx. red.Q` 使用 VCE 最后一次线性化的有效自由度，受 bounds 和
+活动约束影响，只作为诊断。当前实现还会在法矩阵奇异时使用伪逆，并在算得非正有效
+自由度时采用显式数值保护，因此 `Approx. red.Q` 不能不加说明地作为正式 reduced
+chi-square 写入论文。逐项公式、保护规则、单位和论文报告边界见
+[拟合统计量](fit_statistics.md#covariance-aware-diagnostics)。
+
+四个尺度字段始终都是以组名为键的字典，不因只有一个组而压缩成标量。若
+`converged=False`，`proposed_*` 可能已经包含原本准备供下一轮使用的更新值，而 `m`
+仍对应 `solved_*`。控制台表、拟合统计和当前模型权重只读取 `solved_*`；这不会追加
+一次求解或改变 `m`。旧的 `var_d`、`var_alpha`、`weights` 和 `model_var_*` 结果别名
+已经移除，脚本若直接读取低层结果字典，应迁移到上述具名字段。
+
+### 收敛模式
+
+| 当前有效方差分量 | 模式 | 判据 | 原因 |
+| --- | --- | --- | --- |
+| 数据和平滑分量全部可更新 | `relative` | `max(u) - min(u) < tol` | 保留 simple VCE 的共同尺度自由度，估计相对比例 |
+| 至少一个有实际行的分量固定 | `anchored` | `max(abs(u - 1)) < tol` | 固定分量已经给出绝对尺度锚点，更新分量必须各自稳定 |
+| 没有可更新的有效分量 | `fixed` | 求解一次 | 没有方差更新需要执行 |
+
+“有效”表示该组在增广系统中确实有行。没有 Laplacian 行的空平滑组不会制造锚点。
+例如一个 sigma 可更新、alpha 固定时，不能因为只有一个更新因子而在第一轮把
+`max(u)-min(u)` 错判为零；此时使用 `anchored`。
+
+`report` 与 `verbose` 分工如下：
+
+| 设置 | 作用 |
+| --- | --- |
+| `verbose=True` | 打印 VCE 初始化和逐轮收敛信息 |
+| `report="compact"` | 打印一次最终方差分量表 |
+| `report="full"` | 方差分量表后再打印一次当前模型拟合表 |
+| `report="none"` | 不打印最终表，适合批处理 |
+| `report=None` | `verbose=True` 时等价于 `compact`，否则等价于 `none` |
+
+最终拟合表中的 `Eff. std`、`Qw`、`wRMS` 和 reduced 值定义见
+[拟合统计量](fit_statistics.md#covariance-aware-diagnostics)。
+
+VCE 可从配置读取 `geodata.sigmas` 和 `alpha` 的
+`mode/update/initial_value`。`alpha.update: true` 表示由 VCE 迭代更新该
+平滑组；`alpha.update: false` 表示仍使用平滑，但将该组 alpha 固定在
+`alpha.initial_value`。这与 `alpha.enabled: false` 不同，后者关闭平滑项。
+
+调用时也可以传入 `sigma_mode`、`sigma_groups`、`sigma_update`、
+`sigma_values` 以及对应的 `smooth_mode`、`smooth_groups`、`smooth_update`、
+`smooth_values`。每一类运行期覆盖都是一个原子合同：Sigma 至少同时给出
+`sigma_mode/sigma_update/sigma_values`，Alpha 至少同时给出
+`smooth_mode/smooth_update/smooth_values`；`mode: grouped` 时还必须给出对应
+`*_groups`。若完全省略某一类运行期参数，则整套使用配置值。不能把部分新参数与其余旧配置混用。
+分组组织方式及 `log_scaled` 含义见
+[Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
+
+`fault_ranges` 始终描述完整模型列，包括 Pressure、Sbarbot 等非平滑源；alpha 分组只覆盖
+真正提供 Laplacian 的源。非平滑源仍正常参与 \(Gm\)、约束和结果分发，但不会被要求放入
+`smooth_groups`，也不会在 VCE 分量表中出现虚构的 alpha。若同时向低层接口传
+`smoothing_matrix` 和 `smoothing_constraints`，求解会在迭代前报错，因为两者代表两种
+互斥的平滑来源。固定权重 BLSE 自动构造 Laplacian 时采用相同的行布局：保留所有源的
+模型列，只为支持平滑的源建立实际平滑行，不用全零行表示非平滑源。
 
 ## 结果导出
 
 常用出口：
 
 ```python
-inv.returnModel(print_stat=True)
 inv.extract_and_plot_blse_results(
     plot_faults=True,
     plot_data=True,
@@ -153,6 +385,9 @@ inv.extract_and_plot_blse_results(
     data_outdir="Modeling",
 )
 ```
+
+该出口默认打印一次拟合表。若只需要数字、不绘图，改为单独调用
+`returnModel(print_fit_statistics=True)`；不要把两个打印入口连续使用。
 
 `data_poly="config"` 是推荐默认值：它逐数据集跟随已经解析的 `geodata.polys`。只有在明确诊断 source/slip-only 贡献时才传 `data_poly=None`；`data_poly="include"` 用于强制请求包含已求解改正项的预测。
 
@@ -213,8 +448,11 @@ BLSE/VCE 支持的约束主要包括：
 
 ### 求解器与约束保留
 
-BLSE/VCE 首先使用原有 CVXOPT QP 路径，因此普通成功案例的目标函数、参数排列
-和数值结果不变。若 QP 因 Euler 列、滑动列和硬等式之间的尺度差异返回
+BLSE/VCE 首先使用 CVXOPT QP 路径。固定权重 BLSE 按数据块累计
+\(H=A^\mathsf{T}A\)、\(q=-A^\mathsf{T}b\)；simple VCE 直接复用本轮由冻结
+Gram/cross 块组合的同一 \(H,q\)。这仍是历史 `lsqlin` 在内部实际求解的二次目标，
+并保留相同参数排列和约束。DES 开启时，BLSE 只从 DES 已变换的 \(G',D'\) 形成
+\(H,q\)，不会与变换前矩阵混用。若 QP 因 Euler 列、滑动列和硬等式之间的尺度差异返回
 `unknown` 或抛出数值异常，ECAT 才自动启用稳健后备：
 
 1. 对具有独立 pivot 参数的硬等式做严格代数消元；这不是删除或软化约束。
@@ -223,7 +461,9 @@ BLSE/VCE 首先使用原有 CVXOPT QP 路径，因此普通成功案例的目标
    `G.T @ G` 后放大条件数。
 4. 恢复原始参数，并用原始 `bounds/A/b/Aeq/beq` 再检查全部残差。
 
-后备路径只在原 QP 失败时运行，计算时间可能明显增加。若两个后端都不收敛，
+BLSE 和 simple VCE 正常求解时都不拼接完整增广残差矩阵；只有 QP 失败后，才从同一批
+数据、活动平滑矩阵和 DES 状态延迟重建它并交给 Clarabel。因此加速路径没有删除稳健
+后备所需的信息。后备路径只在原 QP 失败时运行，计算时间可能明显增加。若两个后端都不收敛，
 求解会明确报错；ECAT 不会再通过移除等式或不等式约束来生成一个看似成功的
 结果。正式研究仍应检查约束配置的物理可行性，不能把数值后备当作放宽先验。
 

@@ -242,6 +242,14 @@ DEFAULT_CHECK_PLOTS = {
         "labelfontsize": None,
         "trace_color": "black",
         "trace_linewidth": 0.5,
+        "contours": {
+            "enabled": False,
+            "levels": "auto",
+            "labels": False,
+            "color": "0.20",
+            "linewidth": 0.5,
+            "alpha": 0.8,
+        },
     },
     "decim": {
         "save_fig": True,
@@ -709,8 +717,14 @@ def normalize_check_plots(config):
     user_check_plots = deepcopy(config.get("check_plots", {}) or {})
     if not isinstance(user_check_plots, dict):
         return user_check_plots
-    raw.update(_flatten_check_plot_section(user_check_plots.get("raw", {}) or {}))
-    decim.update(_flatten_check_plot_section(user_check_plots.get("decim", {}) or {}))
+    raw = deep_update(
+        raw,
+        _flatten_check_plot_section(user_check_plots.get("raw", {}) or {}),
+    )
+    decim = deep_update(
+        decim,
+        _flatten_check_plot_section(user_check_plots.get("decim", {}) or {}),
+    )
     return {"raw": raw, "decim": decim}
 
 
@@ -1271,10 +1285,12 @@ def _validate_observation_correction(config, data_type, errors):
 
     fixed = config.get("fixed_coefficients")
     if config.get("enabled", False) and coefficient_mode == "estimate":
-        if not regions:
+        if model == "offset" and not regions:
             errors.append(
-                f"{label}.fit.regions must contain at least one reference "
-                "region when coefficient_mode='estimate'."
+                f"{label}.fit.regions must contain at least one stable "
+                "zero-reference region when model='offset' and "
+                "coefficient_mode='estimate'. Set model='plane' for an "
+                "all-valid ramp fit, or disable observation correction."
             )
         if fixed is not None:
             errors.append(
@@ -1684,6 +1700,37 @@ def _fault_entries_for_validation(section, errors, section_name):
     ]
 
 
+def _validate_segment_index(value, errors, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        errors.append(f"{label} must be a zero-based non-negative integer.")
+
+
+def _validate_segment_selection(value, errors, label):
+    if value == "all":
+        return
+    if isinstance(value, bool):
+        errors.append(
+            f"{label} must be 'all', a zero-based integer, or a list of integers."
+        )
+        return
+    if isinstance(value, int):
+        _validate_segment_index(value, errors, label)
+        return
+    if not isinstance(value, (list, tuple)) or not value:
+        errors.append(
+            f"{label} must be 'all', a zero-based integer, or a non-empty list."
+        )
+        return
+    for item in value:
+        _validate_segment_index(item, errors, label)
+    try:
+        has_duplicates = len(set(value)) != len(value)
+    except TypeError:
+        has_duplicates = False
+    if has_duplicates:
+        errors.append(f"{label} must not contain duplicate segment indices.")
+
+
 def _validate_fault_traces(config, errors):
     entries = _fault_entries_for_validation(
         config.get("fault_traces", []), errors, "fault_traces"
@@ -1701,6 +1748,11 @@ def _validate_fault_traces(config, errors):
                 f"{label}.use_for is not valid because fault_traces are display-only; "
                 "configure computation under fault_models."
             )
+        if entry.get("segment") is not None:
+            errors.append(
+                f"{label}.segment is not valid for display traces; use "
+                f"{label}.segments."
+            )
         if "enabled" in entry and not isinstance(entry["enabled"], bool):
             errors.append(f"{label}.enabled must be true or false.")
         if entry.get("enabled", False):
@@ -1711,6 +1763,8 @@ def _validate_fault_traces(config, errors):
             columns = entry["columns"]
             if not isinstance(columns, (list, tuple)) or len(columns) < 2:
                 errors.append(f"{label}.columns must contain at least lon and lat.")
+        if entry.get("segments") is not None:
+            _validate_segment_selection(entry["segments"], errors, f"{label}.segments")
         marker = entry.get("marker")
         if marker is not None:
             if not isinstance(marker, str) or not marker.strip():
@@ -1795,6 +1849,13 @@ def _validate_fault_models(config, errors):
                 f"{label}.increasingy is valid only for rectangular CSI GMT input; "
                 "omit it for triangular input."
             )
+        if entry.get("segment") is not None:
+            if model_type == "generated_from_trace":
+                _validate_segment_index(entry["segment"], errors, f"{label}.segment")
+            else:
+                errors.append(
+                    f"{label}.segment is valid only for generated_from_trace input."
+                )
         if entry.get("enabled", False):
             if model_type == "csi_gmt":
                 _require_keys(entry, ("file",), errors, label)
@@ -1970,6 +2031,95 @@ def _validate_check_plot_components(value, data_type, errors, label):
             errors.append(f"{label} supports only {allowed} for data_type={data_type!r}; got {item!r}.")
 
 
+def _validate_raw_contours(contours, errors, label):
+    if not isinstance(contours, dict):
+        errors.append(f"{label} must be a mapping.")
+        return
+
+    allowed_keys = {
+        "enabled",
+        "levels",
+        "labels",
+        "color",
+        "linewidth",
+        "alpha",
+    }
+    unknown = sorted(set(contours) - allowed_keys)
+    if unknown:
+        errors.append(f"Unsupported {label} keys: {', '.join(unknown)}.")
+
+    for key in ("enabled", "labels"):
+        if key in contours and not isinstance(contours[key], bool):
+            errors.append(f"{label}.{key} must be true or false.")
+
+    levels = contours.get("levels", "auto")
+    if isinstance(levels, str):
+        if levels.strip().lower() != "auto":
+            errors.append(
+                f"{label}.levels must be 'auto', an integer >= 2, or an "
+                "increasing list of finite values."
+            )
+    elif isinstance(levels, bool):
+        errors.append(
+            f"{label}.levels must be 'auto', an integer >= 2, or an "
+            "increasing list of finite values."
+        )
+    elif isinstance(levels, int):
+        if levels < 2:
+            errors.append(f"{label}.levels integer count must be >= 2.")
+    elif isinstance(levels, (list, tuple)):
+        numeric_levels = []
+        if not levels:
+            errors.append(f"{label}.levels list must not be empty.")
+        for index, value in enumerate(levels):
+            if isinstance(value, bool):
+                errors.append(f"{label}.levels[{index}] must be a finite number.")
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{label}.levels[{index}] must be a finite number.")
+                continue
+            if not isfinite(numeric_value):
+                errors.append(f"{label}.levels[{index}] must be a finite number.")
+                continue
+            numeric_levels.append(numeric_value)
+        if len(numeric_levels) == len(levels) and any(
+            right <= left
+            for left, right in zip(numeric_levels[:-1], numeric_levels[1:])
+        ):
+            errors.append(f"{label}.levels values must be strictly increasing.")
+    else:
+        errors.append(
+            f"{label}.levels must be 'auto', an integer >= 2, or an "
+            "increasing list of finite values."
+        )
+
+    color = contours.get("color")
+    if "color" in contours and (not isinstance(color, str) or not color.strip()):
+        errors.append(f"{label}.color must be a non-empty Matplotlib color string.")
+    if "linewidth" in contours and (
+        contours.get("linewidth") is None
+        or isinstance(contours.get("linewidth"), bool)
+    ):
+        errors.append(f"{label}.linewidth must be numeric.")
+    else:
+        _check_positive_number(contours, "linewidth", errors, label)
+    if "alpha" in contours and (
+        contours.get("alpha") is None or isinstance(contours.get("alpha"), bool)
+    ):
+        errors.append(f"{label}.alpha must be numeric.")
+    else:
+        _check_positive_number(contours, "alpha", errors, label, allow_zero=True)
+    if contours.get("alpha") is not None:
+        try:
+            alpha = float(contours["alpha"])
+        except (TypeError, ValueError):
+            alpha = None
+        if alpha is not None and alpha > 1.0:
+            errors.append(f"{label}.alpha must be <= 1.")
+
+
 def _validate_check_plot_stage(section, data_type, stage, errors):
     label = f"check_plots.{stage}"
     if not isinstance(section, dict):
@@ -2016,7 +2166,7 @@ def _validate_check_plot_stage(section, data_type, stage, errors):
         "trace_color",
         "trace_linewidth",
     }
-    raw_keys = {"plot_stride", "value_space"}
+    raw_keys = {"plot_stride", "value_space", "contours"}
     decim_keys = {"cell_style", "edgewidth", "edgecolor", "alpha", "markersize"}
     allowed_keys = common_keys | (raw_keys if stage == "raw" else decim_keys)
     unknown = sorted(set(section) - allowed_keys)
@@ -2077,6 +2227,7 @@ def _validate_check_plot_stage(section, data_type, stage, errors):
     _check_positive_number(section, "trace_linewidth", errors, label, allow_zero=True)
     if stage == "raw":
         _check_positive_int(section, "plot_stride", errors, label)
+        _validate_raw_contours(section.get("contours", {}), errors, f"{label}.contours")
         value_space = _mode_key(section.get("value_space", "auto"))
         if data_type == "sar" and value_space not in ("auto", "observation", "raw"):
             errors.append(f"{label}.value_space must be 'auto', 'observation', or 'raw'.")

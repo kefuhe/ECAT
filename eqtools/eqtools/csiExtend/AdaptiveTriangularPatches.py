@@ -3279,7 +3279,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
             self.VertFace2csifault(node_coordinates, element_indices)
         return node_coordinates, element_indices # , num_nodes_per_entity, num_elements_per_entity
     
-    def VertFace2csifault(self, vertices, faces, check_order=True):
+    def VertFace2csifault(self, vertices, faces, check_order=True,
+                          topology_changed=None, change_kind='deform'):
         """
         The purpose of this function is to convert vertex and face information into fault data in CSI format.
     
@@ -3287,6 +3288,11 @@ class AdaptiveTriangularPatches(TriangularPatches):
         vertices: A two-dimensional array where each row represents the coordinates of a vertex.
         faces: A two-dimensional array where each row represents the vertex indices of a face.
         check_order (bool, optional): If True, check and reorder the vertices to ensure counter-clockwise order. Default is True.
+        topology_changed (bool, optional): Explicitly select full mesh replacement
+            (True) or a fixed-connectivity coordinate update (False). When None,
+            compare connectivity with the current mesh once.
+        change_kind (str, optional): ``'deform'`` invalidates metric-dependent
+            area/Laplacian values; ``'rigid'`` preserves them.
     
         Return value:
         There is no return value. However, the function updates the following instance variables:
@@ -3299,44 +3305,31 @@ class AdaptiveTriangularPatches(TriangularPatches):
         - z_patches: An arithmetic sequence from 0 to depth, used for interpolation.
         - factor_depth: Depth factor, initially set to 1.
         """
-        import numpy as np
-    
-        # Input validation
-        if vertices.ndim != 2 or vertices.shape[1] != 3:
-            raise ValueError("vertices should be a 2D array with 3 columns.")
-        if faces.ndim != 2 or faces.shape[1] != 3:
-            raise ValueError("faces should be a 2D array with 3 columns.")
-    
-        if check_order:
-            # Ensure each patch's nodes are in counter-clockwise order
-            v0 = vertices[faces[:, 0]]
-            v1 = vertices[faces[:, 1]]
-            v2 = vertices[faces[:, 2]]
-            
-            # Calculate differences
-            v1_v0_x = v1[:, 0] - v0[:, 0]
-            v1_v0_y = v1[:, 1] - v0[:, 1]
-            v2_v0_x = v2[:, 0] - v0[:, 0]
-            v2_v0_y = v2[:, 1] - v0[:, 1]
-            
-            # Calculate cross product
-            cross_product = v1_v0_x * v2_v0_y - v1_v0_y * v2_v0_x
-            counter_clockwise = cross_product > 0
-            
-            # Swap the last two vertices to make it counter-clockwise where necessary
-            faces[~counter_clockwise] = faces[~counter_clockwise][:, [0, 2, 1]]
-    
-        self.Vertices = vertices
-        self.vertices2ll()
-        self.Faces = faces
-        self.patch = vertices[faces]
-        self.patch2ll()
-        self.numpatch = len(self.patch)
-    
-        self.top = np.amin(vertices[:, -1])
-        self.depth = np.amax(vertices[:, -1])
-        self.z_patches = self.generate_z_patches()
-        self.factor_depth = 1.
+        vertices = np.asarray(vertices)
+        faces = np.asarray(faces)
+        current_faces = getattr(self, 'Faces', None)
+
+        def same_connectivity(candidate):
+            return (
+                current_faces is not None
+                and np.asarray(current_faces).shape == candidate.shape
+                and np.array_equal(
+                    np.sort(np.asarray(current_faces), axis=1),
+                    np.sort(candidate, axis=1),
+                )
+            )
+
+        if topology_changed is None:
+            topology_changed = not same_connectivity(faces)
+
+        if topology_changed:
+            self.set_mesh(vertices, faces, check_order=check_order)
+        else:
+            if not same_connectivity(faces):
+                raise ValueError(
+                    "topology_changed=False requires the same face rows and vertex connectivity."
+                )
+            self.update_mesh_vertices(vertices, change_kind=change_kind)
 
     def calculate_triangle_areas(self):
         # Get the vertices of each triangle

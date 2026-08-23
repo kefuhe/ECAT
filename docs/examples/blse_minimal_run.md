@@ -89,8 +89,7 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 固定权重 BLSE 跑通后，再用 VCE 做权重诊断：
 
 ```python
-inv.run_simple_vce()
-inv.returnModel()
+inv.run_simple_vce(report="compact")
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
 
