@@ -106,6 +106,12 @@ from .source_adapters import FaultAdapter
 from .plot_product_mixin import FigureProductMixin
 from .geom_ops import InvalidFaultGeometryError
 from .covariance_utils import gaussian_log_likelihood
+from .hyperparameter_reporting import (
+    build_geometry_parameter_rows,
+    build_scale_parameter_rows,
+    format_geometry_parameter_report,
+    format_scale_parameter_report,
+)
 from .quadratic_objective import (
     LeastSquaresBlock,
     assemble_quadratic_objective,
@@ -281,6 +287,9 @@ def make_magnitude_target_for_sampler(Gs: List[ndarray], observations: List[ndar
 
 
 NT1 = namedtuple('NT1', 'N Neff target LB UB')
+_SMCFJOptions = namedtuple(
+    '_SMCFJOptions', 'N Neff target LB UB invalid_loglike'
+)
 # tuple object for the samples
 NT2 = namedtuple('NT2', 'allsamples postval beta stage covsmpl resmpl')
 
@@ -1475,16 +1484,12 @@ class BayesianMultiFaultsInversion(
             else:
                 samples = NT2(None, None, None, None, None, None)
     
-        if rank == 0:
-            print('Starting the loop...', flush=True)
-    
         # run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
                                          save_every, save_at_interval, covariance_epsilon, amh_a, amh_b)
         self.sampler = final
         if rank == 0:
             self.save2h5(final, filename)
-            print('Finished the loop.')
         
         return final
 
@@ -1544,21 +1549,26 @@ class BayesianMultiFaultsInversion(
             self.print_mcmc_parameter_positions()
 
         hyper_lb, hyper_ub = self.constraint_manager.get_bounds_for_hyperparameters()
-        opt = NT1(nchains, chain_length, self.target, hyper_lb, hyper_ub) # Use the bounds for the hyperparameters
+        opt = _SMCFJOptions(
+            nchains,
+            chain_length,
+            self.target,
+            hyper_lb,
+            hyper_ub,
+            invalid_loglike=_INVALID_CONSTRAINED_SOLVE_LOGLIKE,
+        )
     
         if samples is None:
             samples = NT2(None, None, None, None, None, None)
     
-        if rank == 0:
-            print('Starting the loop...', flush=True)
-    
         # run the SMC sampling
-        final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
-                                        save_every, save_at_interval, covariance_epsilon, amh_a, amh_b)
+        final = SMC_samples_parallel_mpi(
+            opt, samples, _SMCFJOptions, NT2, comm, save_at_final,
+            save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
+        )
         self.sampler = final
         if rank == 0:
             self.save2h5(final, filename)
-            print('Finished the loop.')
         
         return final
     
@@ -1935,12 +1945,16 @@ class BayesianMultiFaultsInversion(
         - fill (bool): Whether to fill the KDE plots (default is True).
         - scatter (bool): Whether to include scatter plots in the upper triangle (default is False).
         - scatter_size (int): Size of the scatter plot points (default is 15).
-        - plot_sigmas (bool): Whether to include sigma parameters in the plot (default is False).
-        - plot_alpha (bool): Whether to include alpha parameters in the plot (default is False).
+        - plot_sigmas (bool): Whether to include sampled sigma parameters in the plot
+          (default is False). Fixed sigma groups have no KDE column and are skipped.
+        - plot_alpha (bool): Whether to include sampled alpha parameters in the plot
+          (default is False). Fixed alpha groups have no KDE column and are skipped.
         - plot_faults (bool): Whether to include fault parameters in the plot (default is False).
         - faults (list or str): Specific faults to include in the plot (default is None).
         - plot_geometry (bool): Whether to include geometry parameters in the plot (default is False).
         - axis_labels (list): List of axis labels for the plot (default is None).
+          Labels may describe only sampled columns or every requested group; labels
+          belonging to fixed sigma/alpha groups are ignored with those groups.
         - hspace (float): Horizontal space between subplots (default is None).
         - wspace (float): Vertical space between subplots (default is None).
         - xtick_rotation (float): Rotation angle for x-axis ticks (default is None).
@@ -1984,50 +1998,127 @@ class BayesianMultiFaultsInversion(
         trace = self.sampler.allsamples
         keys = []
         index = []
+        # Keep a parallel mask for callers that supply labels for every
+        # requested group, including fixed sigma/alpha groups.  Fixed groups
+        # have no posterior coordinate and therefore no KDE column.
+        axis_label_selection = []
+
+        def group_update_mask(config_block):
+            layout = config_block.get('group_layout')
+            if layout is not None:
+                updates = layout.get('update_by_group', [])
+            else:
+                updates = config_block.get('update', [])
+            return np.asarray(updates, dtype=bool).reshape(-1)
+
         if plot_faults:
             if faults is None:
                 for fault_name in self.faultnames:
-                    keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
+                    fault_keys = [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
+                    keys += fault_keys
                     index += self.param_index[fault_name]
+                    axis_label_selection += [True] * len(fault_keys)
             elif type(faults) in (list, ):
                 for fault_name in faults:
-                    keys += [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
+                    fault_keys = [f"{fault_name}_{key}" for key in self.param_keys[fault_name]]
+                    keys += fault_keys
                     index += self.param_index[fault_name]
+                    axis_label_selection += [True] * len(fault_keys)
             elif type(faults) in (str, ):
                 assert faults in self.faultnames, f"Fault {faults} not found."
-                keys += self.param_keys[faults]
+                fault_keys = list(self.param_keys[faults])
+                keys += fault_keys
                 index += self.param_index[faults]
+                axis_label_selection += [True] * len(fault_keys)
         
         if plot_geometry:
             for fault_name in self.faultnames:
                 if self.config.nonlinear_inversion and self.config.faults[fault_name]['geometry']['update']:
                     if self.config.faults[fault_name]['geometry'].get('follows'):
                         continue
-                    keys += [f"{fault_name}_{i}" for i in range(self.config.faults[fault_name]['geometry']['sample_positions'][1] - self.config.faults[fault_name]['geometry']['sample_positions'][0])]
+                    geometry_keys = [f"{fault_name}_{i}" for i in range(self.config.faults[fault_name]['geometry']['sample_positions'][1] - self.config.faults[fault_name]['geometry']['sample_positions'][0])]
+                    keys += geometry_keys
                     index += list(range(self.config.faults[fault_name]['geometry']['sample_positions'][0], self.config.faults[fault_name]['geometry']['sample_positions'][1]))
+                    axis_label_selection += [True] * len(geometry_keys)
         
-        if plot_sigmas and any(self.config.geodata['sigmas']['update']):
-            keys += [f"sigmas_{i}" for i in range(self.sigmas_position[1]-self.sigmas_position[0])]
-            index += list(range(self.sigmas_position[0], self.sigmas_position[1]))
-            if plot_posterior_sigmas:
-                index_sigmas = list(range(self.sigmas_position[0], self.sigmas_position[1]))
-                aprior_sigmas = []
-                for idata in self.config.geodata['data']:
-                    isigma = np.mean(np.sqrt(np.diag(idata.Cd)))
-                    aprior_sigmas.append(isigma)
-                aprior_sigmas = np.array(aprior_sigmas)
+        if plot_sigmas:
+            sigma_updates = group_update_mask(self.config.geodata['sigmas'])
+            axis_label_selection += sigma_updates.tolist()
+            if self.sigmas_position is not None:
+                sigma_count = self.sigmas_position[1] - self.sigmas_position[0]
+                if sigma_count != int(np.count_nonzero(sigma_updates)):
+                    raise RuntimeError(
+                        "Sigma KDE layout is inconsistent with sampled sigma groups."
+                    )
+                keys += [f"sigmas_{i}" for i in range(sigma_count)]
+                index += list(range(self.sigmas_position[0], self.sigmas_position[1]))
+                if plot_posterior_sigmas:
+                    index_sigmas = list(range(self.sigmas_position[0], self.sigmas_position[1]))
+                    aprior_sigmas = []
+                    for idata in self.config.geodata['data']:
+                        isigma = np.mean(np.sqrt(np.diag(idata.Cd)))
+                        aprior_sigmas.append(isigma)
+                    aprior_sigmas = np.array(aprior_sigmas)
+            elif np.any(sigma_updates):
+                raise RuntimeError(
+                    "Sigma groups are marked for sampling but sigmas_position is not set."
+                )
         
         if plot_alpha:
-            keys += [f'alpha_{i}' for i in range(self.alpha_position[1]-self.alpha_position[0])]
-            index += list(range(self.alpha_position[0], self.alpha_position[1]))
+            alpha_updates = group_update_mask(self.config.alpha)
+            axis_label_selection += alpha_updates.tolist()
+            if self.alpha_position is not None:
+                alpha_count = self.alpha_position[1] - self.alpha_position[0]
+                if alpha_count != int(np.count_nonzero(alpha_updates)):
+                    raise RuntimeError(
+                        "Alpha KDE layout is inconsistent with sampled alpha groups."
+                    )
+                keys += [f'alpha_{i}' for i in range(alpha_count)]
+                index += list(range(self.alpha_position[0], self.alpha_position[1]))
+            elif np.any(alpha_updates):
+                raise RuntimeError(
+                    "Alpha groups are marked for sampling but alpha_position is not set."
+                )
+
+        if not keys:
+            raise ValueError(
+                "No sampled parameters were selected for the KDE matrix. "
+                "Fixed sigma/alpha groups do not have posterior KDE columns."
+            )
+
+        resolved_axis_labels = None
+        if axis_labels is not None:
+            supplied_labels = list(axis_labels)
+            if len(supplied_labels) == len(keys):
+                resolved_axis_labels = supplied_labels
+            elif len(supplied_labels) == len(axis_label_selection):
+                resolved_axis_labels = [
+                    label for label, selected
+                    in zip(supplied_labels, axis_label_selection)
+                    if selected
+                ]
+            else:
+                raise ValueError(
+                    "axis_labels must match either the sampled KDE columns "
+                    "or all requested parameter groups (including fixed "
+                    "sigma/alpha groups)."
+                )
         
         # Convert the SMC chains to a DataFrame
         df = pd.DataFrame(trace[:, index], columns=keys)
         
-        if plot_posterior_sigmas and any(self.config.geodata['sigmas']['update']):
+        if plot_posterior_sigmas and self.sigmas_position is not None:
             df.iloc[:, index_sigmas] = 10**df.iloc[:, index_sigmas] * aprior_sigmas[None, :]
         # Remove columns with zero variance
         df = df.loc[:, df.var() != 0]
+        if df.shape[1] == 0:
+            raise ValueError(
+                "The selected sampled parameters have zero variance; a KDE "
+                "matrix cannot be constructed."
+            )
+        if resolved_axis_labels is not None:
+            label_by_key = dict(zip(keys, resolved_axis_labels))
+            resolved_axis_labels = [label_by_key[key] for key in df.columns]
         
         # Data cleaning: remove outliers
         if remove_outliers:
@@ -2159,8 +2250,8 @@ class BayesianMultiFaultsInversion(
 
         # Set axis labels if provided
         default_label_fontsize = label_fontsize if label_fontsize is not None else 12
-        if axis_labels:
-            for i, label in enumerate(axis_labels):
+        if resolved_axis_labels is not None:
+            for i, label in enumerate(resolved_axis_labels):
                 g.axes[-1, i].set_xlabel(label, fontsize=default_label_fontsize)
                 g.axes[i, 0].set_ylabel(label, fontsize=default_label_fontsize)
         else:
@@ -2304,6 +2395,16 @@ class BayesianMultiFaultsInversion(
         """
         if model is not None:
             best_model = model
+        if (
+            rank == 0
+            and isinstance(best_model, str)
+            and best_model.lower() == 'std'
+        ):
+            raise ValueError(
+                "best_model='std' is descriptive, not predictive. Use "
+                "plot_std=True and select mean, median, MAP, max_prob, or a "
+                "custom vector as the active result model."
+            )
         if rank == 0:
             import cmcrameri
             from ..getcpt import get_cpt 
@@ -2428,192 +2529,108 @@ class BayesianMultiFaultsInversion(
                 show=show,
             )
     
-    def _print_hyperparameters_summary(self):
-        """Print hyperparameters summary in a beautiful table format."""
-        from tabulate import tabulate
-        
-        # Get basic information
-        if self.config.sigmas['mode'] == 'single':
-            datanames_updated = ['All data']
-        elif self.config.sigmas['mode'] == 'individual':
-            datanames_updated = [name for name, update in zip(self.datanames, self.config.geodata['sigmas']['update']) if update]
-        elif self.config.sigmas['mode'] == 'grouped':
-            datanames_updated = []
-            for iupdate, ikey in zip(self.config.geodata['sigmas']['update'], self.config.geodata['sigmas']['groups'].keys()):
-                if iupdate:
-                    iname = ikey + ' (' + ', '.join(self.config.geodata['sigmas']['groups'][ikey]) + ')'
-                    datanames_updated.append(iname)
-        else:
-            raise ValueError(f"Unknown sigmas mode: {self.config.sigmas['mode']}")
-        alpha_faults = self.config.alphaFaults
-        
-        # Create hyperparameters summary table
-        hyper_table_data = []
-        hyper_index = 0
-    
-        # Add geometry hyperparameters (these come first in the parameter vector)
-        # Only process unique geometry parameter positions to avoid counting shared parameters multiple times
-        processed_geometry_positions = set()
-        
-        for fault_name in self.faultnames:
-            if self.config.nonlinear_inversion and self.config.faults[fault_name]['geometry']['update']:
-                geometry_positions = self.config.faults[fault_name]['geometry']['sample_positions']
-                
-                # Create a tuple for the position range to use as a set key
-                position_key = (geometry_positions[0], geometry_positions[1])
-                
-                # Only process if we haven't seen this position range before
-                if position_key not in processed_geometry_positions:
-                    processed_geometry_positions.add(position_key)
-                    
-                    num_geometry_params = geometry_positions[1] - geometry_positions[0]
-                    
-                    # Get geometry values and std from the samples
-                    geometry_values = self.model[geometry_positions[0]:geometry_positions[1]]
-                    geometry_std_values = self.sampler.allsamples.std(axis=0)[geometry_positions[0]:geometry_positions[1]]
-                    
-                    # Find all faults that share this geometry parameter range
-                    sharing_faults = []
-                    for other_fault in self.faultnames:
-                        if (self.config.nonlinear_inversion and 
-                            self.config.faults[other_fault]['geometry']['update'] and
-                            self.config.faults[other_fault]['geometry']['sample_positions'] == geometry_positions):
-                            sharing_faults.append(other_fault)
-                    
-                    # Create a descriptive name for shared parameters
-                    if len(sharing_faults) == 1:
-                        fault_description = sharing_faults[0]
-                    else:
-                        fault_description = f"Shared: {', '.join(sharing_faults)}"
-                    
-                    for i in range(num_geometry_params):
-                        hyper_table_data.append([
-                            hyper_index,
-                            'Geometry',
-                            fault_description,
-                            f"{geometry_values[i]:.7g}",
-                            f"{geometry_std_values[i]:.7g}"
-                        ])
-                        hyper_index += 1
-    
-        # Add sigma hyperparameters
-        if self.sigmas_position is not None:
-            sigma_values = self.model[self.sigmas_position[0]:self.sigmas_position[1]]
-            sigma_std_values = self.sampler.allsamples.std(axis=0)[self.sigmas_position[0]:self.sigmas_position[1]]
-    
-            for i, data_name in enumerate(datanames_updated):
-                hyper_table_data.append([
-                    hyper_index,
-                    'Sigma',
-                    data_name,
-                    f"{sigma_values[i]:.7g}",
-                    f"{sigma_std_values[i]:.7g}"
-                ])
-                hyper_index += 1
-    
-        # Add alpha hyperparameters
-        if self.alpha_position is not None:
-            alpha_values = self.model[self.alpha_position[0]:self.alpha_position[1]]
-            alpha_std_values = self.sampler.allsamples.std(axis=0)[self.alpha_position[0]:self.alpha_position[1]]
-    
-            alpha_update = self.config.alpha['update']
-            val_idx = 0
-            for i, fault_list in enumerate(alpha_faults):
-                if not alpha_update[i]:
-                    continue
-                if self.config.alpha['mode'] == 'individual':
-                    fault_names_str = fault_list[0]
-                elif self.config.alpha['mode'] == 'grouped':
-                    fault_names_str = f'Event {i+1}' + f'({", ".join(fault_list)})'
-                elif self.config.alpha['mode'] == 'single':
-                    fault_names_str = 'Event all'
+    def _collect_scale_parameter_rows(self):
+        """Return physical sigma/alpha rows for the currently active model.
 
-                hyper_table_data.append([
-                    hyper_index,
-                    'Alpha',
-                    fault_names_str,
-                    f"{alpha_values[val_idx]:.7g}",
-                    f"{alpha_std_values[val_idx]:.7g}"
-                ])
-                hyper_index += 1
-                val_idx += 1
-    
-        # Print hyperparameters table
-        headers = ['Index', 'Type', 'Data/Fault Names', 'Value', 'STD']
-        print("\n" + "="*80)
-        print("Hyperparameters Summary")
-        print("="*80)
-        print(tabulate(hyper_table_data, headers=headers, tablefmt='grid', stralign='left'))
-        print(f"\nTotal hyperparameters: {len(hyper_table_data)}")
-    
-        # Print detailed hyperparameters information
-        if self.config.sigmas['mode'] == 'individual':
-            self._print_detailed_hyperparameters_info(datanames_updated)
-
-    def _print_detailed_hyperparameters_info(self, datanames_updated):
-        """Print sampler-space parameters and physical active-model scales.
-
-        Values in ``self.model`` may be logarithmic.  Physical sigma/alpha
-        values must therefore come from the same fixed/update/log-scale
-        adapters as the likelihood, rather than applying ``10**`` here.
+        This reporting adapter intentionally reuses the canonical group layout
+        and the same physical-scale resolvers as the likelihood.  It never
+        changes ``self.model``, samples, geometry, Green functions, Laplacian,
+        or the conditional linear solution.
         """
-        print("\n" + "="*80)
-        print("Detailed Hyperparameters Information")
-        print("="*80)
-    
-        # Print raw hyperparameter values
-        hyper_samples_start = self.sample_slip_only_positions[0] if hasattr(self, 'sample_slip_only_positions') else self.linear_sample_start_position
-        print('Hyper-parameters: [', ', '.join(f'{x:.7g}' for x in self.model[:hyper_samples_start]), ']', sep='')
-        print('STD Hyper-parameters: [', ', '.join(f'{x:.7g}' for x in self.sampler.allsamples.std(axis=0)[:hyper_samples_start]), ']', sep='')
-    
-        # Calculate and print sigma information.  Resolve by data name instead
-        # of zipping filtered lists so reordered data cannot mislabel a scale.
-        if datanames_updated:
-            sigma_by_name = dict(zip(
-                self.datanames,
-                self._dataset_sigmas_from_samples(self.model),
-            ))
-            data_by_name = {data.name: data for data in self.geodata}
-            sigma_scales = np.array(
-                [sigma_by_name[name] for name in datanames_updated],
-                dtype=float,
-            )
-            data_weights = 1.0 / sigma_scales
-            post_sigmas = {}
-            prior_sigmas = {}
-        
-            for k, iname in enumerate(datanames_updated):
-                idata = data_by_name[iname]
-                isigma_mean = np.mean(np.sqrt(idata.Cd.diagonal()))
-                prior_sigmas[iname] = isigma_mean
-                post_sigmas[iname] = sigma_scales[k] * isigma_mean
-    
-        if datanames_updated:
-            print('Prior sigmas for each data: [', ', '.join(f'{prior_sigmas[iname]:.7g}' for iname in datanames_updated), ']', sep='')
-            print('Posterior sigmas for each data: [', ', '.join(f'{post_sigmas[iname]:.7g}' for iname in datanames_updated), ']', sep='')
-            print('Data weights: [', ', '.join(f'{x:.7g}' for x in data_weights), ']', sep='')
 
-        group_values = getattr(self, 'current_alpha_group_values', {})
-        if group_values:
-            alpha_layout = self.config.alpha.get('group_layout', {})
-            group_names = alpha_layout.get('group_names', [])
-            update_by_group = alpha_layout.get('update_by_group', [])
-            active_groups = [
-                name
-                for name, update in zip(group_names, update_by_group)
-                if update
-            ]
-            penalty_weights = [1.0 / group_values[name] for name in active_groups]
-            print(
-                'Penalty weights: [',
-                ', '.join(
-                    f'{name}={value:.7g}'
-                    for name, value in zip(active_groups, penalty_weights)
-                ),
-                ']',
-                sep='',
+        posterior = np.asarray(self.sampler.allsamples, dtype=float)
+        rows = []
+
+        sigma_layout = self.config.sigmas.get('group_layout', {})
+        sigma_by_dataset = getattr(self, 'current_data_sigmas', {})
+        if not sigma_by_dataset:
+            raise RuntimeError(
+                "No active physical sigma context. Activate a predictive "
+                "mean/median/MAP/custom model with returnModel() before "
+                "printing hyperparameter summaries; the posterior standard "
+                "deviation vector is descriptive and is not a model."
             )
-        print("="*80)
+        sigma_scales = {
+            group: float(sigma_by_dataset[members[0]])
+            for group, members in sigma_layout.get('members_by_group', {}).items()
+            if members
+        }
+        sigma_samples = None
+        sigma_offset = None
+        if self.sigmas_position is not None:
+            sigma_offset = self.sigmas_position[0]
+            sigma_samples = posterior[:, self.sigmas_position[0]:self.sigmas_position[1]]
+        rows.extend(
+            build_scale_parameter_rows(
+                kind='sigma',
+                layout=sigma_layout,
+                active_scales_by_group=sigma_scales,
+                update_state='sampled',
+                log_scaled=bool(self.config.sigmas.get('log_scaled', False)),
+                posterior_samples=sigma_samples,
+                sample_index_offset=sigma_offset,
+            )
+        )
+
+        if self.config.alpha_enabled:
+            alpha_layout = self.config.alpha.get('group_layout', {})
+            alpha_scales = getattr(self, 'current_alpha_group_values', {})
+            if not alpha_scales:
+                raise RuntimeError(
+                    "No active physical alpha context. Activate a predictive "
+                    "mean/median/MAP/custom model with returnModel() before "
+                    "printing hyperparameter summaries."
+                )
+            alpha_samples = None
+            alpha_offset = None
+            if self.alpha_position is not None:
+                alpha_offset = self.alpha_position[0]
+                alpha_samples = posterior[:, self.alpha_position[0]:self.alpha_position[1]]
+            rows.extend(
+                build_scale_parameter_rows(
+                    kind='alpha',
+                    layout=alpha_layout,
+                    active_scales_by_group=alpha_scales,
+                    update_state='sampled',
+                    log_scaled=bool(self.config.alpha.get('log_scaled', False)),
+                    posterior_samples=alpha_samples,
+                    sample_index_offset=alpha_offset,
+                )
+            )
+        return rows
+
+    def _print_hyperparameters_summary(self):
+        """Print geometry and scale parameters without mixing coordinate spaces."""
+
+        posterior = np.asarray(self.sampler.allsamples, dtype=float)
+        resolved_updates = getattr(self.config, '_resolved_geometry_updates', ())
+        geometry_rows = build_geometry_parameter_rows(
+            resolved_updates,
+            active_vector=self.model,
+            posterior_samples=posterior,
+        )
+        scale_rows = self._collect_scale_parameter_rows()
+
+        print("\n" + "=" * 80)
+        print("Bayesian Hyperparameter Summary")
+        print("=" * 80)
+        if geometry_rows:
+            print(format_geometry_parameter_report(geometry_rows))
+            print()
+        print(
+            format_scale_parameter_report(
+                scale_rows,
+                title="Bayesian scale parameters",
+                show_index=True,
+                show_posterior_uncertainty=True,
+                tablefmt='simple',
+            )
+        )
+        print(
+            "Scale (s) and Row mult. (1/s) are physical active-model values; "
+            "Sampling identifies the stored Bayesian coordinate."
+        )
+        print("=" * 80)
 
     def save2h5(self, samples, filename):
         with h5py.File(filename, 'w') as f:
@@ -3847,16 +3864,23 @@ class BayesianMultiFaultsInversion(
         self.G_combined = workspace.G_combined
         self.mpost = None
         self._last_linear_solve_valid = False
-        curvature_log_term = gaussian_curvature_log_term(
-            H, name="SMC_FJ conditional Hessian"
-        )
+        try:
+            curvature_log_term = gaussian_curvature_log_term(
+                H, name="SMC_FJ conditional Hessian"
+            )
+        except ValueError as error:
+            return self._record_smc_fj_candidate_failure(
+                error, stage="conditional curvature evaluation"
+            )
         try:
             mpost = self.least_squares_quadratic_inversion(
                 H, q, reg=0, A=A, b=b, Aeq=Aeq, beq=beq,
                 lb=lb, ub=ub, x0=x0, opts=opts,
             )
         except Exception as error:
-            return self._record_linear_solve_failure(error)
+            return self._record_smc_fj_candidate_failure(
+                error, stage="conditional QP solve"
+            )
         self._last_linear_solve_valid = True
         self.mpost = mpost
         complete_sample = np.hstack((
@@ -3901,27 +3925,35 @@ class BayesianMultiFaultsInversion(
             + curvature_log_term
         )
 
-    def _record_linear_solve_failure(self, error):
-        """Mark one constrained F_J solve invalid and return its low likelihood."""
+    def _record_smc_fj_candidate_failure(self, error, *, stage):
+        """Reject one invalid conditional candidate without aborting SMC.
+
+        Geometry, curvature, and constrained-QP failures belong to individual
+        candidates.  They must clear transient linear state and receive the
+        shared invalid likelihood; configuration/programming failures outside
+        this conditional transaction remain visible to the caller.
+        """
         self.mpost = None
         self._last_linear_solve_valid = False
-        self.invalid_linear_solve_count = (
-            getattr(self, 'invalid_linear_solve_count', 0) + 1
+        self.invalid_smc_fj_candidate_count = (
+            getattr(self, 'invalid_smc_fj_candidate_count', 0) + 1
         )
+        parallel_rank = getattr(self.config, 'parallel_rank', None)
         if (
-            (self.config.parallel_rank is None or self.config.parallel_rank == 0)
-            and not getattr(self, '_linear_solve_failure_warned', False)
+            (parallel_rank is None or parallel_rank == 0)
+            and not getattr(self, '_smc_fj_candidate_failure_warned', False)
         ):
             warnings.warn(
-                "Constrained SMC_FJ linear solve failed "
+                f"SMC_FJ candidate rejected during {stage} "
                 f"({type(error).__name__}: {error}). The full constraint set "
                 f"was retained and this sample receives log-likelihood "
-                f"{_INVALID_CONSTRAINED_SOLVE_LOGLIKE:g}. Inspect "
-                "get_constraint_snapshot(validate=True) before sampling.",
+                f"{_INVALID_CONSTRAINED_SOLVE_LOGLIKE:g}. Inspect Hessian "
+                "conditioning, sigma/alpha bounds, and "
+                "get_constraint_snapshot(validate=True).",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            self._linear_solve_failure_warned = True
+            self._smc_fj_candidate_failure_warned = True
         return _INVALID_CONSTRAINED_SOLVE_LOGLIKE
 
     def least_squares_inversion(self, C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \

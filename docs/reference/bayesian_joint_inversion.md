@@ -40,6 +40,31 @@
 
 `SMC_FJ` 维度通常较低，是联合几何-滑动反演的推荐高级路线。`FULLSMC` 适合小规模模型或需要显式研究滑动先验的场景，但计算成本和收敛诊断难度都更高。
 
+### SMC 温度推进
+
+当前粒子群代表温度 \(\beta_k\) 下的分布时，候选温度
+\(\beta>\beta_k\) 的增量权重为
+
+\[
+w_i(\beta)=\exp\!\left[(\beta-\beta_k)
+(\ell_i-\max_j\ell_j)\right],
+\]
+
+其中 \(\ell_i\) 是当前粒子的未温度化 target 分数。减去共同最大值只用于
+防止指数溢出，不改变归一化权重。ECAT 在区间
+\((\beta_k,\min(\beta_k+0.5,1)]\) 内选择下一个温度：若最大允许步长的
+权重变异系数（coefficient of variation, COV）不超过 1，直接接受该步长；
+否则用二分求解
+
+\[
+\operatorname{COV}\!\left[w(\beta_{k+1})\right]=1.
+\]
+
+搜索期间 \(\beta_k\) 始终是固定的旧温度；只有二分上、下界发生变化。
+这一约定保证搜索方程与随后的重采样权重使用同一个
+\(\Delta\beta=\beta_{k+1}-\beta_k\)。温度序列由当前粒子分数自适应决定，
+不是用户需要配置的模型参数。
+
 ## 协方差与似然度量
 
 令数据残差为 \(r\)，基础精度矩阵为 \(P=C_d^{-1}\)。给定当前样本的
@@ -124,16 +149,38 @@ Gaussian 积分为
 \(N\log\sigma^2\) 修正为 \((N-p)\log\sigma^2\)。所以无平滑时省略
 \(\log|H_d|\) 会改变 sigma 和几何的后验排序，不是可忽略常数。
 
-实现使用 \(H=LL^\mathsf{T}\) 的 Cholesky 因子计算
+实现不会直接按原始参数单位判断 Cholesky 对角元大小。令
 
 \[
--\frac12\log|H|=-\sum_i\log L_{ii}.
+S=\operatorname{diag}\!\left(\sqrt{H_{11}},\ldots,\sqrt{H_{pp}}\right),
+\qquad R=S^{-1}HS^{-1},
 \]
 
-如果 \(H\) 不对称、非正定或在双精度下秩亏，程序会明确报错。此时平坦测度下的
-全维 Gaussian 积分并不存在，不能用 `abs(det(H))`、伪行列式或静默退回 profile
-评分掩盖问题。需要重新检查数据可辨识性，或明确定义一个 proper prior；数值 jitter
-不能替代科学先验。
+则 \(R\) 是对角线为 1 的无量纲平衡矩阵，并且
+
+\[
+\log|H|=2\sum_i\log S_{ii}+\log|R|.
+\]
+
+程序对 \(R=L_RL_R^\mathsf{T}\) 做 Cholesky 分解和倒条件数估计，再将尺度项精确
+加回：
+
+\[
+-\frac12\log|H|
+=-\sum_i\log S_{ii}-\sum_i\log (L_R)_{ii}.
+\]
+
+这个变换只改变数值坐标，不改变 \(H\)、条件 QP 或曲率公式；滑动与 poly 等列采用不同
+单位或尺度时，不会仅因 Cholesky 对角元量级不同而被误判为秩亏。如果 \(H\) 不对称、
+非正定，或无量纲 \(R\) 在双精度下仍不可辨识，该候选的全维 Gaussian 积分才无效。
+不能用 `abs(det(H))`、伪行列式或静默退回 profile 评分掩盖问题；数值 jitter 也不能
+替代科学先验。
+
+一次候选的曲率或条件 QP 失败会清空该候选的临时线性解并赋予统一低似然，不会复用
+前一候选的 `mpost`，也不会立即终止整个 SMC。首次失败由 rank 0 给出紧凑告警；若初始
+粒子中仍有有效候选，采样继续。若初始粒子全部无效，各 MPI rank 会在一致完成初始化
+状态同步后共同报错退出。此时应检查 sigma/alpha bounds、数据与线性参数可辨识性和完整
+约束，而不是放宽数值秩标准来接受未定义的边缘化。
 
 当前 bounds、rake、等式和不等式仍由条件 QP 强制执行。只有 bounds/不等式形成的
 全维可行域，严格边缘化才可写成全空间 Gaussian 积分乘截断概率质量。精确等式约束会把
@@ -385,6 +432,22 @@ single/individual/grouped 索引展开每个数据集的物理 sigma。因而
 `sigmas` / `alpha` 快捷属性不会在配置态和结果态之间猜测。三类结果均已处理
 `log_scaled`，不要再次应用 `10**`。
 
+高层结果入口随后打印两类相互独立的超参数表：
+
+1. `Bayesian geometry parameters`：按真实采样索引列出 fault、扰动方法、参数角色、单位、
+   代表值和 posterior 标准差；共享 sample slice 只出现一次并列出所有消费 fault。
+2. `Bayesian scale parameters`：按规范 sigma/alpha 参数组列出固定或采样状态、采样坐标、
+   物理 `Scale (s)`、两种 posterior 标准差以及 `1/s`。
+
+这里 `Sampling=log10(s)` 时，原始样本列仍保存在 HDF5/KDE 中；控制台的 `Scale (s)`
+才是当前 likelihood 和条件线性解使用的物理 sigma/alpha。固定组不会因为不占采样向量而
+从表中消失，也不会伪造 `Post. SD(s)=0`。表格生成只读取 `group_layout`、活动物理映射和
+posterior 样本，不再次调用 target 或重建几何。
+
+posterior `std` 向量只是逐参数离散度，不是一组可预测参数。高层入口用 `plot_std=True`
+绘制滑动不确定性，但 `model` / `best_model` 必须选择 `mean`、`median`、`MAP`、
+`max_prob` 或显式自定义向量；`std` 不会被误报为活动 geometry、sigma 或 alpha。
+
 ### 标准结果入口与脚本层导出
 
 `extract_and_plot_bayesian_results(...)` 在 rank 0 执行完整的代表模型激活路径：读取样本、
@@ -413,8 +476,9 @@ if rank == 0:
     )
 ```
 
-`axis_labels=None` 使用内部顺序和默认标签。若手工提供标签，数量和顺序必须严格对应
-geometry slice、被更新的 sigma、被更新的 alpha；更改分组或更新开关后也要同步修改。
+`axis_labels=None` 使用内部顺序和默认标签。若手工提供标签，可以只列实际采样列，也可以按
+请求顺序列出 geometry、sigma 和 alpha 的全部组；固定 sigma/alpha 没有后验 KDE 列，接口会
+连同对应标签一起跳过。除此之外，标签顺序仍必须与参数顺序一致。
 
 代表模型激活后，公共模板再调用 CSI 现有的 `writeFourEdges2File()`、
 `writePatches2File()`、`writeSlipCenter2File()`、`writeSlipDirection2File()`。InSAR 文本通过

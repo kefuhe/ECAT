@@ -292,7 +292,26 @@ actual_alpha = 10 ** config_alpha
 似然中的物理标准差。不要把 `sigmas: [-3, 3]` 与非对数 sigma 配合；这会允许负标准差和
 零附近的无效数值。非对数模式应使用与观测单位一致的正边界。
 
-非线性几何反演的模型摘要会把这两个尺度分开显示：带参数索引的 `Sigma parameters` 是采样尺度，和 KDE、HDF5 样本列一致；`Physical sigma values used in likelihood` 才是似然实际使用的 `10 ** sampled_sigma`。因此看到 `0.110743` 和 `1.290455` 同时出现时，它们不是两套结果，而是同一个 sigma 的采样尺度和物理尺度。
+结果摘要不再用两张名称相近的表分别展示采样值和物理值。VCE、联合 Bayesian 和新版
+非线性几何 SMC 统一以物理尺度 `Scale (s)` 为主值，并用 `Sampling` 明确原样本列是
+`s` 还是 `log10(s)`。`log10(s)` 是同一活动物理尺度的对数表示；`Row mult. (1/s)` 是
+求解或白化行实际使用的乘数。HDF5 和 KDE 仍保留原采样坐标，不会因为控制台格式改变而
+重写样本。
+
+Bayesian 表中的 `Post. SD(s)` 不是把 `SD[log10(s)]` 简单取幂。实现先把每个 posterior
+样本转换到物理尺度，再对整列计算标准差：
+
+\[
+\operatorname{SD}(s)=
+\operatorname{SD}\!\left(10^{x_1},\ldots,10^{x_N}\right),
+\qquad x_i=\log_{10}s_i.
+\]
+
+这里沿用既有结果摘要的 NumPy 总体标准差约定，即 `numpy.std(..., ddof=0)`，分母为
+`N`。这一约定只决定 posterior 摘要列的显示值，不进入似然、SMC 权重或条件线性解。
+
+固定组仍显示其活动物理尺度，但 `State=fixed`、参数索引和两种 posterior 标准差为 `-`；
+这表示它不是 posterior 随机变量，不应写成零不确定性。
 
 例如：
 
@@ -339,16 +358,24 @@ inv.run(penalty_weight=[100.0])
 - 多断层或多段断层：若构造上需要不同平滑强度，再使用 `alpha.mode: grouped`。
 - VCE 案例：明确写出哪些 sigma/alpha `update: true`，并保存每轮权重诊断。
 
-### VCE 结果中的名称
+### 统一结果表中的名称
 
-VCE 最终表使用统一符号，避免把方差、标准差尺度和矩阵乘数混为一谈：
+各结果表使用统一符号，避免把方差、标准差尺度、采样坐标和矩阵乘数混为一谈：
 
-| 表中字段 | 数据组 | 平滑组 |
-| --- | --- | --- |
-| `Variance (v)` | `sigma²` | `alpha²` |
-| `Std scale (s)` | `sigma` | `alpha` |
-| `log10(s)` | 与 log-scaled sigma 配置对照 | 与 log-scaled alpha 配置对照 |
-| `Row mult. (1/s)` | 数据白化行乘数 | Laplacian 行乘数 |
+| 表中字段 | 数据组 | 平滑组 | 适用场景 |
+| --- | --- | --- | --- |
+| `State` | `sampled` / `estimated` / `fixed` | 同左 | Bayesian / VCE |
+| `Sampling` | `s` 或 `log10(s)` | 同左 | Bayesian；VCE 为 `-` |
+| `Variance (v)` | `sigma²` | `alpha²` | VCE |
+| `Scale (s)` | `sigma` | `alpha` | 全部场景的活动物理值 |
+| `Post. SD(s)` | 物理 sigma 的 posterior 标准差 | 物理 alpha 的 posterior 标准差 | Bayesian |
+| `log10(s)` | 物理 sigma 的常用对数 | 物理 alpha 的常用对数 | 全部场景 |
+| `SD[log10(s)]` | log 尺度 posterior 标准差 | 同左 | Bayesian |
+| `Row mult. (1/s)` | 数据白化行乘数 | Laplacian 行乘数 | 全部场景 |
+
+联合 Bayesian 同一张尺度表同时列 sigma 和 alpha；独立非线性几何 SMC 只列 sigma，因为
+该工作流没有分布式滑动 Laplacian。几何参数单独成表，使用 perturbation registry 中的
+角色和单位，不再把无单位的 geometry `Value` 与尺度参数混排。
 
 simple VCE 结果使用 `solved_sigma2_by_group` 与 `solved_alpha2_by_group` 保存返回模型
 实际使用的尺度，并使用对应的 `proposed_*_by_group` 保存可能的下一轮更新。四个字段
@@ -356,6 +383,16 @@ simple VCE 结果使用 `solved_sigma2_by_group` 与 `solved_alpha2_by_group` �
 `1/sqrt(solved_sigma2_by_group[group])` 和
 `1/sqrt(solved_alpha2_by_group[group])`，也就是表中的 `1/s`。旧的无明确阶段含义的
 `weights`、`var_d` 和 `var_alpha` 结果字段不再返回。
+
+VCE 的 `State=estimated` 表示该组参加方差分量迭代，`State=fixed` 表示它以配置值参加
+目标函数但不更新。VCE 不是 posterior 采样，所以不显示 `Post. SD(s)` 或
+`SD[log10(s)]`；`Qw` 和 `Approx. red.Q` 仍是与返回模型同一组 `solved_*` 尺度对应的
+迭代诊断。
+
+所有设置为更新且拥有实际增广行的 sigma/alpha 组采用同一乘法停止准则
+`max(abs(log(u))) < tol`，默认 `tol=1e-4`。因此 `mode: single` 只有一个更新组时也会
+估计其绝对方差尺度，不会因为更新因子列表只有一个元素而提前停止。固定组继续参与求解，
+但不参加停止准则。
 
 ## 相关页面
 

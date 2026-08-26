@@ -611,7 +611,7 @@ covar:
   mask_out: null           # required for covariance; longitude matches modulo 360
   missing_policy: "existing_or_identity" # when downsampling without covariance: existing_or_identity | identity | error
   function: "exp"          # exp | gauss covariance model
-  frac: 0.002              # fraction of remaining background pixels sampled by CSI imagecovariance
+  frac: 5000               # int=count; float (0, 1]=fraction of remaining background pixels
   every: 2.0               # distance-bin spacing for empirical covariance, usually in km
   distmax: 100.0           # maximum fitting distance, same unit as every
   rampEst: true            # ask CSI imagecovariance to estimate/remove a ramp before fitting

@@ -55,8 +55,10 @@ Laplacian，magnitude prior 未参与时不额外物化面积。该判断在每�
 
 `alpha.enabled: false` 只表示不构造和评分 Laplacian 平滑块。`SMC_FJ` 仍会从数据法矩阵
 计算消去线性滑动参数所需的 \(-\tfrac12\log|H_d|\) 曲率项；因此无平滑模型必须由数据
-充分约束全部线性参数。若数据 Hessian 秩亏，运行会明确报出 Gaussian 边缘化不成立，
-不会静默退回另一种 profile 目标。完整推导和约束近似边界见
+充分约束全部线性参数。实现先在无量纲对角平衡坐标中检查数值秩，再把尺度行列式精确
+加回，因此参数单位差异不会被当成秩亏。单个无效候选会获得低似然而不复用旧线性解；
+只有初始粒子全部无效时，MPI 任务才会一致报错退出。程序不会静默退回另一种 profile
+目标。完整推导、平衡公式和约束近似边界见
 [Bayesian 联合反演参考：为什么消去线性参数会产生 log-determinant](../reference/bayesian_joint_inversion.md#为什么消去线性参数会产生-log-determinant)。
 
 ## 输入和完成标准
@@ -117,11 +119,11 @@ fault.geometry_summary()
 
 | 场景 | 模板 |
 | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) |
-| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) |
+| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) |
 
-它们各有一套位于 [`scripts/configs/joint_bayesian/`](https://github.com/kefuhe/eqtools/tree/main/scripts/configs/joint_bayesian/)
+它们各有一套位于 [`scripts/configs/joint_bayesian/`](../../scripts/configs/joint_bayesian/)
 的主配置和 bounds。新用户可以成套复制；需要从当前版本全部默认字段开始时，使用 CLI：
 
 模板中的 `lon0/lat0` 是数据与断层共享的坐标参考。修改案例时，还要一起核对 geodata 顺序、
@@ -397,6 +399,8 @@ inversion.extract_and_plot_bayesian_results(
 - 几何参数后验是否收敛，是否贴边。
 - 滑动后验均值、中位数和可信区间是否受几何扰动主导。
 - 每条数据的残差、sigma 后验和权重是否合理。
+- 超参数摘要中 geometry 的角色/单位是否与配置一致，sigma/alpha 的 `Scale (s)`、
+  `Sampling`、`State` 和 `Row mult. (1/s)` 是否能逐组对上；不要把 `log10(s)` 当成物理尺度。
 - `SMC_FJ` 中线性约束是否按预期生效。
 - `inactive_constraints` 是否只包含当前模式预期不消费的配置项。
 - 是否出现重复的 constrained linear solve 失败告警；若有，应先检查约束可行性。

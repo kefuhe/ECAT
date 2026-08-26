@@ -110,9 +110,11 @@ def simplified_vce(
     max_iter : int
         Maximum iterations
     tol : float
-        Convergence tolerance. With no fixed effective component, convergence
-        uses the historical spread of update factors. If any effective data or
-        smoothing component is fixed, each updated factor must approach one.
+        Dimensionless convergence tolerance for the multiplicative variance
+        updates.  Every effective updated component must satisfy
+        ``abs(log(update_factor)) < tol``.  The default ``1e-4`` is almost
+        identical near one to the historical ``abs(update_factor - 1)``
+        tolerance, while treating reciprocal scale changes symmetrically.
     verbose : bool
         Print progress
     
@@ -127,8 +129,11 @@ def simplified_vce(
         - 'proposed_alpha2_by_group': post-update values for a possible next
           iteration
         - 'sigma_groups'/'smooth_groups': resolved member mappings
+        - 'sigma_update_by_group'/'smooth_update_by_group': report-only
+          estimated/fixed state for each canonical group
         - 'component_diagnostics': group-level Qw and approximate reduced Q
-        - 'convergence_mode'/'convergence_measure': stopping-rule diagnostics
+        - 'convergence_mode'/'convergence_metric'/'convergence_measure':
+          stopping-rule diagnostics
         - 'converged': convergence flag
         - 'iterations': number of iterations
     """
@@ -222,20 +227,11 @@ def simplified_vce(
     effective_updatable = list(sigma_updatable) + [
         group for group in smooth_updatable if group in effective_smooth_groups
     ]
-    has_fixed_effective_component = (
-        any(not update for update in sigma_update)
-        or any(
-            not smooth_update[index]
-            for index, group in enumerate(smooth_group_names)
-            if group in effective_smooth_groups
-        )
-    )
     if not effective_updatable:
         convergence_mode = 'fixed'
-    elif has_fixed_effective_component:
-        convergence_mode = 'anchored'
     else:
-        convergence_mode = 'relative'
+        convergence_mode = 'absolute_log'
+    convergence_metric = 'max_abs_log_update_factor'
     
     if verbose:
         print(f"VCE Setup: {n_obs} obs, {n_params} params, {n_reg} constraints")
@@ -264,6 +260,8 @@ def simplified_vce(
     smooth_effective_dof = {}
     solved_sigma2_by_group = dict(var_d)
     solved_alpha2_by_group = dict(var_alpha)
+    proposed_sigma2_by_group = dict(var_d)
+    proposed_alpha2_by_group = dict(var_alpha)
     for it in range(max_iter):
         # These are the variance components that scale the augmented system
         # solved in this iteration. If the iteration limit is reached, the
@@ -366,32 +364,58 @@ def simplified_vce(
                 update_factors_alpha[group] = rss / dof_eff if smooth_update[i] else 1.0
             else:
                 update_factors_alpha[group] = 1.0
-        # Check convergence.  When every effective component is updated, VCE
-        # has a common-scale freedom and only relative update factors are
-        # identifiable, so the historical spread criterion is retained.  A
-        # fixed effective component anchors the scale; then every updated
-        # factor must approach one.  In particular, one updated sigma against
-        # fixed alpha must not converge merely because its factor list has one
-        # element.
-        all_update_factors = [update_factors_d[g] for g in sigma_updatable]
-        all_update_factors.extend(
-            update_factors_alpha[g]
-            for g in smooth_updatable
-            if g in effective_smooth_groups
+        # VCE estimates absolute variance components, not only their ratios.
+        # The model can be invariant to a common scale while the residual
+        # moments still identify that scale.  Therefore every effective
+        # updated component must approach a multiplicative factor of one.
+        # The log ratio is symmetric for reciprocal changes (for example,
+        # factors 2 and 1/2 have the same distance from convergence).
+        factor_items = [
+            ('sigma', group, update_factors_d[group])
+            for group in sigma_updatable
+        ]
+        factor_items.extend(
+            ('alpha', group, update_factors_alpha[group])
+            for group in smooth_updatable
+            if group in effective_smooth_groups
         )
-        update_factors = np.asarray(all_update_factors, dtype=float)
-        if convergence_mode == 'relative':
-            change = (
-                np.max(update_factors) - np.min(update_factors)
-                if update_factors.size else 0.0
+        update_factors = np.asarray(
+            [factor for _, _, factor in factor_items], dtype=float
+        )
+        if update_factors.size and (
+            not np.all(np.isfinite(update_factors))
+            or np.any(update_factors <= 0.0)
+        ):
+            invalid = [
+                f"{kind}:{group}={factor!r}"
+                for kind, group, factor in factor_items
+                if not np.isfinite(factor) or factor <= 0.0
+            ]
+            raise ValueError(
+                "VCE update factors must be finite and strictly positive "
+                "for logarithmic convergence; invalid " + ", ".join(invalid)
             )
-        elif convergence_mode == 'anchored':
-            change = (
-                np.max(np.abs(update_factors - 1.0))
-                if update_factors.size else 0.0
+
+        proposed_sigma2_by_group = {
+            group: (
+                solved_sigma2_by_group[group] * update_factors_d[group]
+                if sigma_update[index]
+                else solved_sigma2_by_group[group]
             )
-        else:
-            change = 0.0
+            for index, group in enumerate(sigma_group_names)
+        }
+        proposed_alpha2_by_group = {
+            group: (
+                solved_alpha2_by_group[group] * update_factors_alpha[group]
+                if smooth_update[index]
+                else solved_alpha2_by_group[group]
+            )
+            for index, group in enumerate(smooth_group_names)
+        }
+        change = (
+            float(np.max(np.abs(np.log(update_factors))))
+            if update_factors.size else 0.0
+        )
         if verbose:
             print(
                 f"Iter {it+1}: convergence[{convergence_mode}] = "
@@ -406,13 +430,11 @@ def simplified_vce(
             if verbose:
                 print(f"Converged after {it+1} iterations")
             break
-        # Apply update factors
-        for i, group in enumerate(sigma_group_names):
-            if sigma_update[i]:
-                var_d[group] = var_d[group] * update_factors_d[group]
-        for i, group in enumerate(smooth_group_names):
-            if smooth_update[i]:
-                var_alpha[group] = var_alpha[group] * update_factors_alpha[group]
+        # Advance only after retaining the exact solved/proposed association
+        # above.  The returned model always belongs to ``solved_*``; the
+        # proposed dictionaries remain valid diagnostics even on convergence.
+        var_d = dict(proposed_sigma2_by_group)
+        var_alpha = dict(proposed_alpha2_by_group)
     
     # Final diagnostics reuse the already-whitened blocks. They do not enter
     # the VCE update and therefore cannot change the estimated model or
@@ -463,12 +485,25 @@ def simplified_vce(
         # seed another iteration when the loop stops before convergence.
         'solved_sigma2_by_group': solved_sigma2_by_group,
         'solved_alpha2_by_group': solved_alpha2_by_group,
-        'proposed_sigma2_by_group': dict(var_d),
-        'proposed_alpha2_by_group': dict(var_alpha),
+        'proposed_sigma2_by_group': proposed_sigma2_by_group,
+        'proposed_alpha2_by_group': proposed_alpha2_by_group,
         'sigma_groups': {key: list(value) for key, value in sigma_config.items()},
         'smooth_groups': {key: list(value) for key, value in smooth_config.items()},
+        # Reporting metadata only: the solved variance dictionaries above are
+        # unchanged.  Publishing state by canonical group lets result tables
+        # distinguish estimated components from configured fixed components
+        # without re-reading or reinterpreting the input configuration.
+        'sigma_update_by_group': {
+            group: bool(sigma_update[index])
+            for index, group in enumerate(sigma_group_names)
+        },
+        'smooth_update_by_group': {
+            group: bool(smooth_update[index])
+            for index, group in enumerate(smooth_group_names)
+        },
         'component_diagnostics': component_diagnostics,
         'convergence_mode': convergence_mode,
+        'convergence_metric': convergence_metric,
         'convergence_measure': float(change),
         'fault_ranges': fault_ranges,      # Fault parameter ranges
         'sigma_only': sigma_only,          # True when no smoothing constraints

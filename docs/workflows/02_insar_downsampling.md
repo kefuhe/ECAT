@@ -430,7 +430,7 @@ covar:
   do_covar: false
   mask_out: [100.5, 101.75, 37.35, 38.1]  # [minlon, maxlon, minlat, maxlat]
   function: exp
-  frac: 0.002
+  frac: 5000  # 整数=固定点数；(0, 1] 浮点数=剩余背景点的抽样比例
   every: 2.0
   distmax: 100.0
   rampEst: true
@@ -438,7 +438,9 @@ covar:
 
 第一次通常只需要修改 `mask_out`。它应遮住主要震源形变，同时保留足够背景点估计
 空间相关噪声；它不会删除最终降采样点，也不能替代 `data_filters` 或
-`processing_region`。其余参数可先保留模板值。
+`processing_region`。模板中的整数 `frac: 5000` 表示固定抽取最多 5000 个剩余背景点；
+需要按比例抽样时可写成 `frac: 0.002`。不要把固定点数写成 `5000.0`，因为浮点数按比例
+解释。其余参数可先保留模板值。
 
 西半球 box 可以直接使用负经度；区域选择和协方差掩膜会与 CSI 的等价 `0–360°`
 经度自动匹配。跨日界线写法和运行诊断见

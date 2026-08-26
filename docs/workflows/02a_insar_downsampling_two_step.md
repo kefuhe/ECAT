@@ -101,7 +101,7 @@ covar:
   do_covar: false  # 使用 -c 时不需要改为 true
   mask_out: [100.5, 101.75, 37.35, 38.1]  # [minlon, maxlon, minlat, maxlat]
   function: exp
-  frac: 0.002
+  frac: 5000  # 整数=固定点数；(0, 1] 浮点数=剩余背景点的抽样比例
   every: 2.0
   distmax: 100.0
   rampEst: true
@@ -117,13 +117,14 @@ ecat-downsample -f downsample.yml -c
 
 ```python
 covar.maskOut([maskOut])
-covar.computeCovariance(function="exp", frac=0.002, every=2.0, distmax=100.0, rampEst=True)
+covar.computeCovariance(function="exp", frac=5000, every=2.0, distmax=100.0, rampEst=True)
 covar.write2file(savedir="./")
 ```
 
 旧脚本和 CLI 使用同一科学步骤：先排除主形变区，再从背景点拟合经验协方差。
-具体案例中的 `maskOut`、`frac/every/distmax` 值应继续以对应案例脚本为准；新配置不要
-因为模板值不同而机械覆盖已经验证过的案例设置。
+`frac` 为正整数时表示固定采样点数，为 `(0, 1]` 浮点数时表示剩余背景点的抽样比例；固定
+点数不要写成带小数点的 `5000.0`。具体案例中的 `maskOut`、`frac/every/distmax` 值应
+继续以对应案例脚本为准；新配置不要因为模板值不同而机械覆盖已经验证过的案例设置。
 
 输出通常是：
 

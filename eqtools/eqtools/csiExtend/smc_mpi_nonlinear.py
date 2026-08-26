@@ -10,12 +10,42 @@ is limited to recording per-stage diagnostics in ``sample_stats``.
 
 from __future__ import annotations
 
-from datetime import datetime
 import time
 
 import h5py
 import numpy as np
 from numba import njit
+
+from .smc_progress import SMCProgressReporter
+from .smc_tempering import select_next_beta_by_cov
+
+
+_INITIAL_DIMENSION_FACTORS = (
+    0.441,
+    0.352,
+    0.316,
+    0.285,
+    0.275,
+    0.273,
+    0.270,
+    0.268,
+    0.267,
+    0.266,
+    0.265,
+    0.255,
+)
+
+
+def _initial_proposal_scale(dims, a=1.0 / 9.0, b=8.0 / 9.0):
+    """Return the source algorithm's one-based empirical AMH scale.
+
+    Keep this mapping equivalent to the generic backend: dimensions 1--11
+    select their corresponding factors, and dimensions 12+ use 0.255.
+    """
+    if dims < 1:
+        raise ValueError("AMH proposal dimension must be at least one.")
+    factor_index = min(dims, len(_INITIAL_DIMENSION_FACTORS)) - 1
+    return a + b * _INITIAL_DIMENSION_FACTORS[factor_index]
 
 
 def deterministicR_optimized(inIndex, q):
@@ -56,18 +86,19 @@ def adjust_bounds(X_new, LB, UB, avg_acc):
 
 
 def run_amh(X, covariance_chol, mrun, beta, LB, UB, target, a=1.0 / 9.0, b=8.0 / 9.0):
+    """Walk one tempered Metropolis chain and retain paired states/scores.
+
+    At every stored step, ``current_tempered_logp == beta * target(X)``.  A
+    historical maximum is not part of an SMC particle: attaching such a
+    maximum to the terminal state would corrupt the importance weights of the
+    following stage.
+    """
     Dims = covariance_chol.shape[0]
-    logpdf = target(X)
-    P = logpdf * beta
-    best_P = P
-    P0 = P
+    # Current tempered log target.  Update atomically with ``X`` on acceptance.
+    current_tempered_logp = beta * target(X)
 
     sameind = np.where(np.equal(LB, UB))
-    dimension = np.array(
-        [0.441, 0.352, 0.316, 0.285, 0.275, 0.273, 0.270, 0.268,
-         0.267, 0.266, 0.265, 0.255]
-    )
-    s = a + b * dimension[np.minimum(Dims, 11)]
+    s = _initial_proposal_scale(Dims, a=a, b=b)
 
     L = covariance_chol
 
@@ -84,22 +115,17 @@ def run_amh(X, covariance_chol, mrun, beta, LB, UB, target, a=1.0 / 9.0, b=8.0 /
 
         X_new = adjust_bounds(X_new, LB, UB, avg_acc)
 
-        P_new = beta * target(X_new)
+        candidate_tempered_logp = beta * target(X_new)
 
-        if P_new > best_P:
+        rho = candidate_tempered_logp - current_tempered_logp
+        log_acceptance = np.minimum(0.0, rho)
+        acc_rate = np.exp(log_acceptance)
+        if U[i] <= log_acceptance:
             X = X_new
-            best_P = P_new
-            P0 = P_new
-            acc_rate = 1
-        else:
-            rho = P_new - P0
-            acc_rate = 1 if rho > 0 else np.exp(rho)
-            if U[i] <= rho:
-                X = X_new
-                P0 = P_new
+            current_tempered_logp = candidate_tempered_logp
 
         TH[:, i] = X
-        THP[i] = best_P
+        THP[i] = current_tempered_logp
         inv_i_plus_1 = 1.0 / (i + 1)
         avg_acc = avg_acc * i * inv_i_plus_1 + acc_rate * inv_i_plus_1
         s = a + b * avg_acc
@@ -385,31 +411,16 @@ class NonlinearSMCclass:
         )
 
     def find_beta_numpy(self):
-        beta1 = self.samples.beta[-1]
-        max_post = np.max(self.samples.postval)
-        logpst = self.samples.postval - max_post
-        beta = beta1 + .5
-
-        if beta > 1:
-            beta = 1
-
-        refcov = 1
-
-        while beta - beta1 > 1e-6:
-            curr_beta = (beta + beta1) / 2
-            diffbeta = beta - beta1
-            logwght = diffbeta * logpst
-            wght = np.exp(logwght)
-
-            covwght = np.std(wght, ddof=1) / np.mean(wght)
-
-            if covwght > refcov:
-                beta = curr_beta
-            else:
-                beta1 = curr_beta
-
-        betanew = np.min(np.array([1, beta]))
-        betaarray = np.append(self.samples.beta, betanew)
+        """Advance using the same formula-aligned COV search as generic SMC."""
+        beta_new = select_next_beta_by_cov(
+            self.samples.postval,
+            self.samples.beta[-1],
+            target_cov=1.0,
+            max_delta_beta=0.5,
+            tolerance=1.0e-6,
+            ddof=1,
+        )
+        betaarray = np.append(self.samples.beta, beta_new)
         newstage = np.arange(1, self.samples.stage[-1] + 2)
         return _make_samples(
             self.NT2,
@@ -567,28 +578,35 @@ def SMC_samples_parallel_mpi_nonlinear(
 
     rank = comm.Get_rank()
 
-    current = NonlinearSMCclass(opt, samples, NT1, NT2)
     if rank == 0:
-        current.initialize()
+        progress = SMCProgressReporter(
+            chains=opt.N,
+            chain_length=opt.Neff,
+            mpi_ranks=comm.Get_size(),
+        )
+        progress.start(resumed=samples.allsamples is not None)
+        if samples.allsamples is None:
+            progress.begin_prior()
+    else:
+        progress = None
 
     if samples.allsamples is None:
         if rank == 0:
-            print("------Calculating the prior posterior values at stage 1-----", flush=True)
             current = NonlinearSMCclass(opt, samples, NT1, NT2)
             samples = current.prior_samples_vectorize()
-            start_time = time.time()
+            progress.complete_prior()
         else:
             samples = None
-    else:
-        if rank == 0:
-            start_time = time.time()
-
     comm.Barrier()
     samples = comm.bcast(samples, root=0)
 
     while samples.beta[-1] != 1:
         stage_record = None
         if rank == 0:
+            # This diagnostic is stage-local preparation time.  Keep it
+            # independent of the progress reporter and out of the candidate
+            # loop so observing a run cannot change its numerical path.
+            pre_mcmc_started = time.perf_counter()
             beta_previous = float(samples.beta[-1])
             current = NonlinearSMCclass(opt, samples, NT1, NT2)
             samples = current.find_beta_numpy()
@@ -616,20 +634,14 @@ def SMC_samples_parallel_mpi_nonlinear(
             except np.linalg.LinAlgError:
                 stage_record["covariance_condition"] = np.inf
 
-            print(
-                f"Starting metropolis chains at stage = {samples.stage[-1] :3d} "
-                f"and beta = {samples.beta[-1] :.6f}.",
-                flush=True,
+            progress.begin_stage(
+                stage=samples.stage[-1],
+                beta_previous=beta_previous,
+                beta_current=samples.beta[-1],
             )
 
-            end_time = time.time()
-            execution_time = end_time - start_time
-            current_time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
-            stage_record["pre_mcmc_elapsed_seconds"] = float(execution_time)
-            print(
-                f"The while loop took {execution_time:.6f} seconds to execute. "
-                f"Current time: {current_time}",
-                flush=True,
+            stage_record["pre_mcmc_elapsed_seconds"] = float(
+                time.perf_counter() - pre_mcmc_started
             )
 
             if save_at_interval and samples.stage[-1] % save_interval == 0:
@@ -640,7 +652,7 @@ def SMC_samples_parallel_mpi_nonlinear(
         comm.Barrier()
         samples = comm.bcast(samples, root=0)
 
-        mutation_start = time.time()
+        mutation_start = time.perf_counter()
         current = NonlinearSMCclass(opt, samples, NT1, NT2)
         samples, acceptance_rates, jump_distances = current.MCMC_samples_parallel_mpi(
             comm=comm,
@@ -649,7 +661,9 @@ def SMC_samples_parallel_mpi_nonlinear(
         )
 
         if rank == 0:
-            stage_record["mutation_elapsed_seconds"] = float(time.time() - mutation_start)
+            stage_record["mutation_elapsed_seconds"] = float(
+                time.perf_counter() - mutation_start
+            )
             finite_acc = acceptance_rates[np.isfinite(acceptance_rates)]
             finite_jump = jump_distances[np.isfinite(jump_distances)]
             stage_record["acceptance_rate_mean"] = (
@@ -700,6 +714,9 @@ def SMC_samples_parallel_mpi_nonlinear(
         comm.Barrier()
         samples = comm.bcast(samples, root=0)
 
+        if rank == 0:
+            progress.complete_stage()
+
     if rank == 0:
         samples = _make_samples(
             NT2,
@@ -716,6 +733,7 @@ def SMC_samples_parallel_mpi_nonlinear(
         )
         if save_at_final_stage:
             _write_samples_h5("samples_final.h5", samples)
+        progress.complete(stage=samples.stage[-1], beta=samples.beta[-1])
 
     samples = comm.bcast(samples if rank == 0 else None, root=0)
     return samples

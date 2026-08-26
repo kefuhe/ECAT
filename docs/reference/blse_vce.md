@@ -260,7 +260,9 @@ inv.run(penalty_weight=30.0)
 
 ## VCE
 
-VCE 是 variance component estimation，用于估计数据项和正则化项的相对权重。适合多数据集联合反演，尤其是不同 InSAR 轨道、GPS 与 InSAR 权重不容易手工确定时。
+VCE 是 variance component estimation，用于估计数据项和正则化项的绝对方差分量，并
+由这些方差确定相对权重。适合多数据集联合反演，尤其是不同 InSAR 轨道、GPS 与 InSAR
+权重不容易手工确定时。
 
 第 \(t\) 轮使用当前方差分量求解：
 
@@ -305,8 +307,9 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 | `proposed_alpha2_by_group` | 最后一次更新后、可供下一轮使用的平滑组 `alpha²` |
 | `sigma_groups` / `smooth_groups` | 结果中实际采用的成员映射 |
 | `component_diagnostics` | 最终模型的组级 `Qw`、有效自由度和近似 reduced `Q` |
-| `convergence_mode` | `relative`、`anchored` 或全部固定时的 `fixed` |
-| `convergence_measure` | 最后一次停止判据的数值；与 `tol` 直接比较 |
+| `convergence_mode` | 有有效更新分量时为 `absolute_log`；全部固定时为 `fixed` |
+| `convergence_metric` | 当前为 `max_abs_log_update_factor` |
+| `convergence_measure` | 最后一次的 `max(abs(log(u)))`；与 `tol` 直接比较 |
 | `converged` | 是否收敛 |
 | `iterations` | 迭代次数 |
 
@@ -319,23 +322,31 @@ log-scaled 配置对照。`Qw` 是最终模型在该组完整协方差度量下�
 chi-square 写入论文。逐项公式、保护规则、单位和论文报告边界见
 [拟合统计量](fit_statistics.md#covariance-aware-diagnostics)。
 
-四个尺度字段始终都是以组名为键的字典，不因只有一个组而压缩成标量。若
-`converged=False`，`proposed_*` 可能已经包含原本准备供下一轮使用的更新值，而 `m`
-仍对应 `solved_*`。控制台表、拟合统计和当前模型权重只读取 `solved_*`；这不会追加
-一次求解或改变 `m`。旧的 `var_d`、`var_alpha`、`weights` 和 `model_var_*` 结果别名
-已经移除，脚本若直接读取低层结果字典，应迁移到上述具名字段。
+四个尺度字段始终都是以组名为键的字典，不因只有一个组而压缩成标量。无论本轮是否已经
+满足容差，`proposed_*` 都记录本轮 `solved_* × u`；`m` 始终只对应 `solved_*`。
+控制台表、拟合统计和当前模型权重只读取 `solved_*`；这不会追加一次求解或改变 `m`。
+旧的 `var_d`、`var_alpha`、`weights` 和 `model_var_*` 结果别名已经移除，脚本若直接读取
+低层结果字典，应迁移到上述具名字段。
 
-### 收敛模式
+### 乘法收敛判据
 
-| 当前有效方差分量 | 模式 | 判据 | 原因 |
-| --- | --- | --- | --- |
-| 数据和平滑分量全部可更新 | `relative` | `max(u) - min(u) < tol` | 保留 simple VCE 的共同尺度自由度，估计相对比例 |
-| 至少一个有实际行的分量固定 | `anchored` | `max(abs(u - 1)) < tol` | 固定分量已经给出绝对尺度锚点，更新分量必须各自稳定 |
-| 没有可更新的有效分量 | `fixed` | 求解一次 | 没有方差更新需要执行 |
+simple VCE 返回的是绝对方差分量，而不只是分量之间的相对比例。对所有确实在增广系统中
+有行、且设置为更新的组，统一计算
 
-“有效”表示该组在增广系统中确实有行。没有 Laplacian 行的空平滑组不会制造锚点。
-例如一个 sigma 可更新、alpha 固定时，不能因为只有一个更新因子而在第一轮把
-`max(u)-min(u)` 错判为零；此时使用 `anchored`。
+\[
+\Delta=\max_g\left|\log u_g\right|,
+\qquad \Delta<\mathtt{tol}.
+\]
+
+`u_g=v_g^(t+1)/v_g^(t)` 是无量纲乘法因子。对数距离使放大和缩小对称，例如 `u=2`
+与 `u=1/2` 距离收敛点相同。即使公共尺度不改变线性模型，残差矩仍然用于估计绝对方差，
+所以不能用 `max(u)-min(u)`：单个更新分量的极差恒为零，多个相同但远离 1 的因子也会被
+错误判为收敛。
+
+默认 `tol=1e-4` 对应每轮方差乘法变化约小于 `0.01%`。它在 1 附近与历史
+`abs(u-1)<1e-4` 几乎相同，但对倒数变化保持对称。没有可更新有效分量时模式为 `fixed`，
+只求解一次；没有 Laplacian 行的空平滑组不参加停止判断。更新因子必须有限且严格为正，
+否则无法定义对数尺度，算法会报告方差分量不可继续更新，而不会静默宣布收敛。
 
 `report` 与 `verbose` 分工如下：
 

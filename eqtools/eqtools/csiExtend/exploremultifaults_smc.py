@@ -768,9 +768,6 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
             comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
     
-        if rank == 0:
-            self.logger.info('Starting the loop...')
-    
         # Run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
                                          save_every, save_at_interval, covariance_epsilon, amh_a, amh_b)
@@ -780,7 +777,6 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
             self.sampler = final._asdict()
             # Save the samples to an HDF5 file
             self.save2h5(filename)
-            self.logger.info('Finished the loop.')
     
         # All done
         return

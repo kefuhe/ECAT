@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
+from scipy.linalg.lapack import dpocon
 
 
 @dataclass(frozen=True)
@@ -157,11 +158,14 @@ def gaussian_curvature_log_term(hessian, *, name="quadratic Hessian"):
     that statistical contract separate from optional smoothing blocks: a
     data-only Hessian and a data-plus-smoothing Hessian are treated identically.
 
-    The determinant is evaluated from a Cholesky factor instead of accepting
-    the absolute determinant returned by ``slogdet``.  A non-symmetric or
-    non-positive-definite matrix has no valid full-dimensional Gaussian
-    curvature under this contract and therefore raises a clear error rather
-    than producing a finite but scientifically ambiguous score.
+    The determinant is evaluated from a diagonally equilibrated Cholesky
+    factor instead of accepting the absolute determinant returned by
+    ``slogdet``.  Equilibration changes only the numerical coordinates: its
+    exact determinant contribution is restored before returning.  This keeps
+    the result invariant to heterogeneous parameter scales (for example slip
+    and polynomial columns) while still rejecting a genuinely unresolved
+    Gaussian metric.  A non-symmetric or non-positive-definite matrix has no
+    valid full-dimensional Gaussian curvature under this contract.
     """
 
     hessian = np.asarray(hessian, dtype=float)
@@ -183,11 +187,31 @@ def gaussian_curvature_log_term(hessian, *, name="quadratic Hessian"):
             f"{symmetry_error:.3e} exceeds {symmetry_tolerance:.3e}"
         )
 
-    # Gram blocks are symmetric by construction.  Averaging removes only
+    # Gram blocks are symmetric by construction. Averaging removes only
     # round-off-level assembly asymmetry admitted by the check above.
     symmetric_hessian = 0.5 * (hessian + hessian.T)
+    hessian_diagonal = np.diag(symmetric_hessian)
+    if np.any(hessian_diagonal <= 0.0):
+        raise ValueError(
+            f"{name} must be positive definite for Gaussian marginalization; "
+            "its diagonal contains a non-positive entry"
+        )
+
+    # H = S R S, where S_ii = sqrt(H_ii) and diag(R) = 1. Cholesky and
+    # numerical-rank decisions are made on dimensionless R so a harmless
+    # change of parameter units cannot be mistaken for loss of rank. The
+    # determinant identity log|H| = 2 sum(log(S_ii)) + log|R| restores the
+    # original parameter-space measure exactly.
+    parameter_scales = np.sqrt(hessian_diagonal)
+    equilibrated_hessian = symmetric_hessian / parameter_scales[:, None]
+    equilibrated_hessian = (
+        equilibrated_hessian / parameter_scales[None, :]
+    )
+    equilibrated_hessian = 0.5 * (
+        equilibrated_hessian + equilibrated_hessian.T
+    )
     try:
-        chol = np.linalg.cholesky(symmetric_hessian)
+        chol = np.linalg.cholesky(equilibrated_hessian)
     except np.linalg.LinAlgError as exc:
         raise ValueError(
             f"{name} must be positive definite for Gaussian marginalization; "
@@ -195,17 +219,29 @@ def gaussian_curvature_log_term(hessian, *, name="quadratic Hessian"):
             "metric is invalid"
         ) from exc
 
-    diagonal = np.diag(chol)
-    # An algebraically singular Gram matrix can occasionally pass an
-    # unpivoted Cholesky because round-off creates a tiny positive pivot.  Such
-    # a factor does not define a numerically resolved p-dimensional Gaussian
-    # volume.  The scale-free threshold rejects only pivots at the effective
-    # double-precision rank boundary.
-    if np.min(diagonal) <= (
-        10.0 * np.sqrt(np.finfo(float).eps) * np.max(diagonal)
+    # DPOCON estimates reciprocal condition from the existing Cholesky factor
+    # in O(p^2), avoiding another O(p^3) factorization. The decision is made
+    # after equilibration, so it detects unresolved column dependence rather
+    # than raw unit/scale contrast.
+    matrix_norm = float(np.linalg.norm(equilibrated_hessian, ord=1))
+    reciprocal_condition, info = dpocon(chol, matrix_norm, uplo="L")
+    if info != 0:
+        raise ValueError(
+            f"{name} reciprocal-condition estimation failed with "
+            f"LAPACK info={info}"
+        )
+    rank_tolerance = 100.0 * np.finfo(float).eps
+    if (
+        not np.isfinite(reciprocal_condition)
+        or reciprocal_condition <= rank_tolerance
     ):
         raise ValueError(
             f"{name} must be positive definite for Gaussian marginalization; "
-            "its Cholesky factor is numerically rank-deficient"
+            "its diagonally equilibrated metric is numerically rank-deficient "
+            f"(estimated reciprocal condition {reciprocal_condition:.3e}, "
+            f"threshold {rank_tolerance:.3e})"
         )
-    return -float(np.sum(np.log(diagonal)))
+    return -float(
+        np.sum(np.log(parameter_scales))
+        + np.sum(np.log(np.diag(chol)))
+    )

@@ -607,7 +607,10 @@ class BoundLSEMultiFaultsInversion(
         max_iter : int, optional
             Maximum number of VCE iterations. Default is 10.
         tol : float, optional
-            Convergence tolerance for VCE. Default is 1e-4.
+            Dimensionless tolerance for the largest absolute logarithmic
+            variance-update factor.  VCE converges when every effective
+            updated component satisfies ``abs(log(u)) < tol``.  Default is
+            ``1e-4``.
         des_enabled : bool, optional
             Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
         sigma_mode : str, optional
@@ -648,6 +651,7 @@ class BoundLSEMultiFaultsInversion(
               proposed for a possible next iteration
             - 'sigma_groups'/'smooth_groups': resolved member mappings
             - 'component_diagnostics': group Qw and approximate reduced Q
+            - 'convergence_metric': ``'max_abs_log_update_factor'``
             - 'smoothing_matrix'/'model_smoothing_matrix': exact unscaled
               and active weighted regularization rows for the returned model
             - 'smoothing_provenance': source, method, bounds and DES context

@@ -34,9 +34,9 @@ GF、Laplacian 和约束。
 | 如何计算 Euler/block 模式的震间 loading/backslip/coupling | [Interseismic Kinematics](../reference/interseismic_kinematics.md) | [线性滑动配置](../reference/config_linear_slip.md#震间配置) |
 | 如何用深部自由滑动作为浅部加载代理 | [Deep Slip Loading Proxy](../reference/deep_slip_loading_proxy.md) | [Fault Patch Indices](../reference/fault_patch_indices.md) |
 | sigma 和 alpha 如何解释 | [Sigmas and Alpha](../reference/sigmas_alpha.md) | [BLSE/VCE 参考](../reference/blse_vce.md) |
-| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
-| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
-| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_smoothing_search_BLSE.py) |
+| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](../../scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
+| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](../../scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
+| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](../../scripts/test_dip_smoothing_search_BLSE.py) |
 
 ## 目标
 
@@ -197,6 +197,10 @@ Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任�
 [BLSE/VCE 参考](../reference/blse_vce.md#约束检查)。
 
 第一个可运行例子建议先用固定平滑 BLSE，确认约束和输出链条正确后，再用 smoothing loop 或 VCE 做权重诊断。
+VCE 对所有可更新有效组统一估计绝对方差尺度，并以
+`max(abs(log(update_factor))) < tol` 判断乘法收敛；默认 `tol=1e-4`。固定组仍参与
+线性求解，但不参加停止判断。公式、结果字段和单分量情形见
+[BLSE/VCE 参考](../reference/blse_vce.md#乘法收敛判据)。
 
 Smoothing loop 只返回候选表和权衡图：粗糙度统一按未加权 \(L_0\) 计算，且循环结束后
 恢复调用前的活动解。图中的 preferred 点不会自动成为最终模型；选定权重后，用固定平滑
@@ -305,6 +309,8 @@ creep_fraction_to_deep = s / b
 
 标准输出应包括：
 
+- VCE 尺度表中的 `State`、`Variance (v)`、物理 `Scale (s)`、`1/s`、`Qw` 和
+  `Approx. red.Q`；固定组继续显示，但不应被解释为已估计分量；
 - 滑动平面图和地图图件；
 - data/synthetic/residual 文件；
 - `output/slip_<FaultName>.gmt`；

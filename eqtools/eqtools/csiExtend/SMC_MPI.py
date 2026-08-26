@@ -18,9 +18,39 @@ from multiprocessing import Pool
 from joblib import Parallel, delayed
 from numpy.random import RandomState
 from scipy.optimize import brentq
-import time
-from datetime import datetime
 import h5py
+
+from .smc_progress import SMCProgressReporter
+from .smc_tempering import select_next_beta_by_cov
+
+
+_INITIAL_DIMENSION_FACTORS = (
+    0.441,
+    0.352,
+    0.316,
+    0.285,
+    0.275,
+    0.273,
+    0.270,
+    0.268,
+    0.267,
+    0.266,
+    0.265,
+    0.255,
+)
+
+
+def _initial_proposal_scale(dims, a=1.0 / 9.0, b=8.0 / 9.0):
+    """Return the empirical initial AMH scale for a positive dimension.
+
+    The source algorithm defines a one-based lookup: dimension 1 uses the
+    first factor (0.441), while dimensions 12 and above use the last factor
+    (0.255).  Convert that contract explicitly before zero-based indexing.
+    """
+    if dims < 1:
+        raise ValueError("AMH proposal dimension must be at least one.")
+    factor_index = min(dims, len(_INITIAL_DIMENSION_FACTORS)) - 1
+    return a + b * _INITIAL_DIMENSION_FACTORS[factor_index]
 
 # @njit
 def deterministicR(inIndex, q):
@@ -110,10 +140,10 @@ def AMH(X,target,covariance,mrun,beta,LB,UB):
     warnings.warn("AMH is deprecated. Use AMH_optimized_jit instead.", DeprecationWarning, stacklevel=2)
     
     Dims = covariance.shape[0]
-    logpdf = target(X) 
     V = covariance
-    best_P = logpdf * beta 
-    P0 = logpdf * beta 
+    # ``X`` and its tempered log target form one indivisible particle state;
+    # they must always be accepted and stored together.
+    current_tempered_logp = beta * target(X)
     
     # the following values are estimated empirically 
     a = 1/9
@@ -121,11 +151,8 @@ def AMH(X,target,covariance,mrun,beta,LB,UB):
     
     sameind = np.where(np.equal(LB, UB))
     
-    dimension = np.array([0.441, 0.352, 0.316, 0.285, 0.275, 
-                          0.273, 0.270, 0.268, 0.267, 0.266, 0.265, 0.255])
-    
     # set initial scaling factor
-    s = a + b*dimension[min(Dims, 11)]
+    s = _initial_proposal_scale(Dims, a=a, b=b)
     
     U = np.log(np.random.rand(1,mrun))
     TH = np.zeros((Dims,mrun))
@@ -151,22 +178,16 @@ def AMH(X,target,covariance,mrun,beta,LB,UB):
         if avg_acc < 0.05:
             X_new[ind2] = UB[ind2]
             
-        P_new = beta * target(X_new)
+        candidate_tempered_logp = beta * target(X_new)
         
-        if P_new > best_P: 
+        rho = candidate_tempered_logp - current_tempered_logp
+        acc_rate = np.exp(np.min([0, rho]))
+        if U[0, i] <= np.minimum(0.0, rho):
             X = X_new
-            best_P = P_new
-            P0 = P_new
-            acc_rate = 1 
-        else:
-            rho = P_new - P0 
-            acc_rate = np.exp(np.min([0,rho]))
-            if U[0,i] <= rho : 
-                X = X_new
-                P0 = P_new
+            current_tempered_logp = candidate_tempered_logp
                 
         TH[:,i] = np.transpose(X) 
-        THP[0,i] = P0 
+        THP[0,i] = current_tempered_logp
         factor[0,i] = s**2
         avg_acc = avg_acc*(i)/(i+1) + acc_rate/(i+1) 
         s = a+ b*avg_acc
@@ -193,16 +214,19 @@ def adjust_bounds(X_new, LB, UB, avg_acc):
     return X_new
 
 def run_amh(X, covariance_chol, mrun, beta, LB, UB, target, a=1.0/9.0, b=8.0/9.0):
+    """Walk one tempered Metropolis chain and retain paired states/scores.
+
+    At every stored step, ``current_tempered_logp == beta * target(X)``.  A
+    historical maximum is not part of an SMC particle: attaching such a
+    maximum to the terminal state would corrupt the importance weights of the
+    following stage.
+    """
     Dims = covariance_chol.shape[0]
-    logpdf = target(X) 
-    P = logpdf * beta 
-    best_P = P
-    P0 = P
+    # Current tempered log target.  Update atomically with ``X`` on acceptance.
+    current_tempered_logp = beta * target(X)
 
     sameind = np.where(np.equal(LB, UB))
-    dimension = np.array([0.441, 0.352, 0.316, 0.285, 0.275, 0.273, 0.270, 0.268, 
-                          0.267, 0.266, 0.265, 0.255])
-    s = a + b*dimension[np.minimum(Dims, 11)]
+    s = _initial_proposal_scale(Dims, a=a, b=b)
 
     L = covariance_chol  # Use pre-computed Cholesky decomposition
 
@@ -223,23 +247,17 @@ def run_amh(X, covariance_chol, mrun, beta, LB, UB, target, a=1.0/9.0, b=8.0/9.0
         # Apply bound adjustments using the updated helper function
         X_new = adjust_bounds(X_new, LB, UB, avg_acc)
 
-        P_new = beta * target(X_new)
+        candidate_tempered_logp = beta * target(X_new)
 
-        if P_new > best_P: 
+        rho = candidate_tempered_logp - current_tempered_logp
+        log_acceptance = np.minimum(0.0, rho)
+        acc_rate = np.exp(log_acceptance)
+        if U[i] <= log_acceptance:
             X = X_new
-            best_P = P_new
-            P0 = P_new
-            acc_rate = 1 
-        else:
-            rho = P_new - P0 
-            # acc_rate = np.exp(np.minimum(0,rho))
-            acc_rate = 1 if rho > 0 else np.exp(rho)
-            if U[i] <= rho: 
-                X = X_new
-                P0 = P_new
+            current_tempered_logp = candidate_tempered_logp
 
         TH[:, i] = X
-        THP[i] = best_P
+        THP[i] = current_tempered_logp
         inv_i_plus_1 = 1.0 / (i + 1)
         avg_acc = avg_acc * i * inv_i_plus_1 + acc_rate * inv_i_plus_1
         s = a + b*avg_acc
@@ -283,7 +301,8 @@ class SMCclass:
                 - opt.UB (upper bound of parameters)
                 - opt.LB (lower bound of parameters)
                 - opt.N (number of Markov chains at each stage)
-                - opt.Neff (Chain length of the MCMC sampling) 
+                - opt.Neff (Chain length of the MCMC sampling)
+                - opt.invalid_loglike (optional target-owned rejection sentinel)
                 
             samples: named tuple
                 - samples.allsamples (samples at each stage)
@@ -311,6 +330,38 @@ class SMCclass:
             print ("-----------------------------------------------------------------------------------------------")
             print ("-----------------------------------------------------------------------------------------------")
             print(f'Initializing ATMIP with {self.opt.N :8d} Markov chains and {self.opt.Neff :8d} chain length.')
+
+    def _validate_initial_posteriors(self, values):
+        """Validate an optional target-owned invalid-candidate contract.
+
+        SMC_FJ uses a finite sentinel for conditional candidates that cannot
+        be marginalized or solved. A mixture of valid and invalid prior draws
+        is expected and can be tempered normally; an entirely invalid initial
+        population cannot define the first SMC stage and must fail explicitly.
+        Other SMC targets remain unchanged because ``invalid_loglike`` is an
+        optional field on the backend options object.
+        """
+        invalid_loglike = getattr(self.opt, 'invalid_loglike', None)
+        if invalid_loglike is None:
+            return
+
+        values = np.asarray(values, dtype=float).reshape(-1)
+        invalid = ~np.isfinite(values) | (values == float(invalid_loglike))
+        invalid_count = int(np.count_nonzero(invalid))
+        if invalid_count == values.size:
+            raise RuntimeError(
+                "All initial SMC candidates were rejected by the target. "
+                "Inspect the first candidate warning, parameter bounds, and "
+                "conditional-model identifiability before sampling."
+            )
+        if invalid_count:
+            warnings.warn(
+                f"Initial SMC population contains {invalid_count}/{values.size} "
+                "rejected candidates; sampling continues with the valid "
+                "population.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
                     
     def prior_samples(self):
         '''
@@ -336,7 +387,8 @@ class SMCclass:
             samp0 = sampzero[i,:]
             logpost = self.opt.target(samp0)
             postval[i] = logpost
-            
+
+        self._validate_initial_posteriors(postval)
         samples = self.NT2(sampzero, postval, beta, stage, None, None)
         return samples
 
@@ -358,167 +410,70 @@ class SMCclass:
         
         # Use NumPy vectorized operations to replace the for loop
         logpost = np.apply_along_axis(self.opt.target, 1, sampzero)
+        self._validate_initial_posteriors(logpost)
         postval = logpost.reshape(-1, 1)
             
         samples = self.NT2(sampzero, postval, beta, stage, None, None)
         return samples
           
     
+    def _advance_beta(self, *, ddof):
+        """Return a sample record advanced to the COV-controlled temperature."""
+        beta_old = self.samples.beta[-1]
+        beta_new = select_next_beta_by_cov(
+            self.samples.postval,
+            beta_old,
+            target_cov=1.0,
+            max_delta_beta=0.5,
+            tolerance=1.0e-6,
+            ddof=ddof,
+        )
+        betaarray = np.append(self.samples.beta, beta_new)
+        newstage = np.arange(1, self.samples.stage[-1] + 2)
+        return self.NT2(
+            self.samples.allsamples,
+            self.samples.postval,
+            betaarray,
+            newstage,
+            self.samples.covsmpl,
+            self.samples.resmpl,
+        )
+
     def find_beta(self): 
         """
         [DEPRECATED] Calculates the beta parameter for the next stage.
         
-        Legacy method. Kept for educational and algorithmic evolution purposes.
-        Replaced by `find_beta_welford` (for better numerical stability) and subsequently
-        `find_beta_numpy` (vectorized, 100x+ faster).
+        Retains the original ``ddof=0`` COV convention while delegating the
+        temperature search to the shared, formula-aligned implementation.
         """
         warnings.warn("find_beta is deprecated. Use find_beta_numpy instead.", DeprecationWarning, stacklevel=2)
-        beta1 = self.samples.beta[-1]       #prev_beta
-        beta2 = self.samples.beta[-1]       #prev_beta
-        max_post = np.max(self.samples.postval) 
-        logpst = self.samples.postval - max_post
-        beta = beta1+.5
-    
-        if beta>1:
-            beta = 1
-            #logwght = beta.*logpst
-            #wght = np.exp(logwght)
-    
-        refcov = 1 
-    
-        # Binary search to find the beta parameter
-        while beta - beta1 > 1e-6:
-            curr_beta = (beta+beta1)/2
-            diffbeta = beta-beta1
-            logwght = diffbeta*logpst
-            wght = np.exp(logwght)
-            covwght = np.std(wght)/np.mean(wght)
-            if covwght > refcov:
-                beta = curr_beta
-            else:
-                beta1 = curr_beta
-            
-        betanew = np.min(np.array([1,beta]))
-        betaarray = np.append(self.samples.beta,betanew)
-        newstage = np.arange(1,self.samples.stage[-1]+2)
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, \
-                           betaarray, newstage, self.samples.covsmpl, \
-                           self.samples.resmpl)
-    
-        return samples
+        return self._advance_beta(ddof=0)
     
     def find_beta_welford(self): 
         """
         [DEPRECATED] Calculates the beta parameter using the online Welford algorithm.
         
-        Legacy method. Kept to illustrate the mathematical equivalence with NumPy's ddof=1
-        and how Welford's algorithm avoids numerical catastrophic cancellation.
-        Replaced by `find_beta_numpy` which eliminates the pure Python loop for ~100x+ speedup
-        while maintaining exact mathematical equivalence.
+        Compatibility wrapper retaining the historical ``ddof=1`` COV
+        convention.  The active implementation is ``find_beta_numpy``.
         """
         warnings.warn("find_beta_welford is deprecated. Use find_beta_numpy instead.", DeprecationWarning, stacklevel=2)
-        beta1 = self.samples.beta[-1]       #prev_beta
-        beta2 = self.samples.beta[-1]       #prev_beta
-        max_post = np.max(self.samples.postval) 
-        logpst = self.samples.postval - max_post
-        beta = beta1+.5
-
-        if beta>1:
-            beta = 1
-
-        refcov = 1 
-
-        while beta - beta1 > 1e-6:
-            curr_beta = (beta+beta1)/2
-            diffbeta = beta-beta1
-            logwght = diffbeta*logpst
-            wght = np.exp(logwght)
-
-            # Use online welford algorithm to calculate standard deviation and mean
-            mean = 0
-            M2 = 0
-            for i in range(len(wght)):
-                delta = wght[i] - mean
-                mean += delta / (i + 1)
-                delta2 = wght[i] - mean
-                M2 += delta * delta2
-            var = M2 / (len(wght) - 1)
-            std_dev = np.sqrt(var)
-            covwght = std_dev / mean
-
-            if covwght > refcov:
-                beta = curr_beta
-            else:
-                beta1 = curr_beta
-
-        betanew = np.min(np.array([1,beta]))
-        betaarray = np.append(self.samples.beta,betanew)
-        newstage = np.arange(1,self.samples.stage[-1]+2)
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, \
-                           betaarray, newstage, self.samples.covsmpl, \
-                           self.samples.resmpl)
-
-        return samples
+        return self._advance_beta(ddof=1)
 
     def find_beta_numpy(self):
         """
-        Calculates the beta parameter for the next stage using numpy built-in
-        functions (numpy-optimized version).
+        Select the next temperature from the incremental-weight COV target.
 
-        Comparison with find_beta_welford:
-        - find_beta_welford: uses the Welford online algorithm (8-line loop)
-          to manually compute standard deviation
-        - This method: directly calls np.std(ddof=1) / np.mean(), replacing the
-          loop with a single line; results are numerically identical
-
-        Equivalence proof (Welford <-> numpy):
-          Welford recurrence: M_{2,n} = M_{2,n-1} + (x_n - mu_{n-1})(x_n - mu_n)
-          Mathematical induction proves M_{2,N} = sum_i (x_i - mu)^2 = N * np.var(x, ddof=0)
-          Therefore M_{2,N} / (N-1) = np.var(x, ddof=1)
-          See docs/SMC_MPI_PERFORMANCE_ANALYSIS.md section 4.5 for the full proof.
-
-        Note on ddof:
-          ddof=1 (sample std) is used to align exactly with find_beta_welford,
-          which divides M2 by (N-1). In practice, ddof=0 and ddof=1 converge to
-          the same beta value within the 1e-6 bisection tolerance.
+        For particles representing ``pi(beta_old)``, every candidate is scored
+        with ``delta_beta = beta_candidate - beta_old``.  The immutable old
+        temperature is deliberately distinct from the mutable bisection bounds.
+        ``ddof=1`` preserves the established active-backend COV convention.
 
         Returns
         -------
         samples : namedtuple
             Updated samples with new beta and stage fields.
         """
-        beta1 = self.samples.beta[-1]       #prev_beta
-        max_post = np.max(self.samples.postval)
-        logpst = self.samples.postval - max_post
-        beta = beta1 + .5
-
-        if beta > 1:
-            beta = 1
-
-        refcov = 1
-
-        while beta - beta1 > 1e-6:
-            curr_beta = (beta + beta1) / 2
-            diffbeta = beta - beta1
-            logwght = diffbeta * logpst
-            wght = np.exp(logwght)
-
-            # Single numpy call replaces the 8-line Welford loop; results are identical
-            covwght = np.std(wght, ddof=1) / np.mean(wght)
-
-            if covwght > refcov:
-                beta = curr_beta
-            else:
-                beta1 = curr_beta
-
-        betanew = np.min(np.array([1, beta]))
-        betaarray = np.append(self.samples.beta, betanew)
-        newstage = np.arange(1, self.samples.stage[-1] + 2)
-        samples = self.NT2(self.samples.allsamples, self.samples.postval, \
-                           betaarray, newstage, self.samples.covsmpl, \
-                           self.samples.resmpl)
-
-        return samples
+        return self._advance_beta(ddof=1)
     
     def resample_stage(self):
         '''
@@ -806,6 +761,7 @@ def SMC_samples(opt,samples, NT1, NT2):
             - opt.LB (lower bound of parameters)
             - opt.N (number of Markov chains at each stage)
             - opt.Neff (Chain length of the MCMC sampling)
+            - opt.invalid_loglike (optional target-owned rejection sentinel)
             
         samples: named tuple
             - samples.allsamples (samples at an intermediate stage)
@@ -890,6 +846,7 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             - opt.LB (lower bound of parameters)
             - opt.N (number of Markov chains at each stage)
             - opt.Neff (Chain length of the MCMC sampling)
+            - opt.invalid_loglike (optional target-owned rejection sentinel)
             
         samples: named tuple
             - samples.allsamples (samples at an intermediate stage)
@@ -919,22 +876,47 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
     size = comm.Get_size()
     # print(size, rank)
 
-    current = SMCclass(opt, samples, NT1, NT2)
-    if  rank == 0:
-        current.initialize()           
+    if rank == 0:
+        progress = SMCProgressReporter(
+            chains=opt.N,
+            chain_length=opt.Neff,
+            mpi_ranks=size,
+        )
+        progress.start(resumed=samples.allsamples is not None)
+        if samples.allsamples is None:
+            progress.begin_prior()
+    else:
+        progress = None
 
     if samples.allsamples is None:  
+        initialization_error = None
         if rank == 0:
-            print('------Calculating the prior posterior values at stage 1-----', flush=True)
             current = SMCclass(opt, samples, NT1, NT2)
-            samples = current.prior_samples_vectorize()
-            start_time = time.time()
+            try:
+                samples = current.prior_samples_vectorize()
+            except Exception as error:
+                # Do not raise on rank 0 before the other ranks reach a
+                # collective.  Broadcast a serializable failure description
+                # first so every MPI process exits this initialization stage
+                # consistently instead of hanging at the barrier below.
+                initialization_error = (
+                    type(error).__name__, str(error)
+                )
+                samples = None
+                progress.fail(f"{type(error).__name__}: {error}")
+            else:
+                progress.complete_prior()
         else:
             samples = None
-    else:
-        if rank == 0:
-            start_time = time.time()
-        
+        initialization_error = comm.bcast(
+            initialization_error, root=0
+        )
+        if initialization_error is not None:
+            error_type, error_message = initialization_error
+            raise RuntimeError(
+                "SMC initialization failed on rank 0 "
+                f"({error_type}: {error_message})"
+            )
     # Wait for all processes to complete
     comm.Barrier()
     # Broadcast samples to all processes
@@ -942,6 +924,7 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
         
     while samples.beta[-1] != 1:
         if rank == 0:
+            beta_previous = float(samples.beta[-1])
             current = SMCclass(opt, samples, NT1, NT2)
             samples = current.find_beta_numpy() # find_beta_welford() changed to find_beta_numpy() for further optimization
         
@@ -951,14 +934,11 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             current = SMCclass(opt, samples, NT1, NT2)
             samples = current.make_covariance_numpy(epsilon=covariance_epsilon) # make_covariance_optimized() changed to make_covariance_numpy() for further optimization
         
-            print(f'Starting metropolis chains at stage = {samples.stage[-1] :3d} and beta = {samples.beta[-1] :.6f}.', flush=True)
-
-            end_time = time.time()
-
-            # Calculate and print execution time
-            execution_time = end_time - start_time
-            current_time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
-            print(f'The while loop took {execution_time:.6f} seconds to execute. Current time: {current_time}', flush=True)
+            progress.begin_stage(
+                stage=samples.stage[-1],
+                beta_previous=beta_previous,
+                beta_current=samples.beta[-1],
+            )
 
             if save_at_interval and samples.stage[-1] % save_interval == 0:
                 with h5py.File(f'samples_stage_{samples.stage[-1]}.h5', 'w') as f:
@@ -981,9 +961,15 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
         # Broadcast samples to all processes
         samples = comm.bcast(samples, root=0)
 
+        if rank == 0:
+            progress.complete_stage()
+
     if rank == 0 and save_at_final_stage:
         with h5py.File('samples_final.h5', 'w') as f:
             for key, value in samples._asdict().items():
                 f.create_dataset(key, data=value)
+
+    if rank == 0:
+        progress.complete(stage=samples.stage[-1], beta=samples.beta[-1])
 
     return samples

@@ -14,6 +14,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .data_vector_layout import gps_component_major_vector
+from .hyperparameter_reporting import (
+    build_scale_parameter_rows,
+    format_scale_parameter_report,
+)
 
 
 def data_fit_vectors(data: Any, vertical: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -180,8 +184,6 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
     ``Qw`` and ``Approx. red.Q`` are evaluated for the final reported model
     and the explicit ``solved_*`` variance scales associated with it.
     """
-    from tabulate import tabulate
-
     rows = []
     diagnostics = result.get("component_diagnostics", {})
     sections = [
@@ -190,6 +192,7 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
             "sigma",
             result.get("solved_sigma2_by_group", {}),
             result.get("sigma_groups", {}),
+            result.get("sigma_update_by_group", {}),
         )
     ]
     if not result.get("sigma_only", False):
@@ -199,48 +202,54 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
                 "alpha",
                 result.get("solved_alpha2_by_group", {}),
                 result.get("smooth_groups", {}),
+                result.get("smooth_update_by_group", {}),
             )
         )
-    for kind, symbol, values, groups in sections:
+    for kind, symbol, values, groups, update_by_group in sections:
         if not isinstance(values, Mapping):
             continue
-        kind_diagnostics = diagnostics.get(kind, {})
-        for group, variance in values.items():
-            variance = float(variance)
-            std = float(np.sqrt(variance))
-            members = ", ".join(str(value) for value in groups.get(group, []))
-            diag = kind_diagnostics.get(group, {})
-            rows.append(
-                [
-                    symbol,
-                    group,
-                    members or "-",
-                    f"{variance:.6g}",
-                    f"{std:.6g}",
-                    _format_log10(std),
-                    _format_reciprocal(std),
-                    _format_optional_float(diag.get("weighted_quadratic")),
-                    _format_optional_float(diag.get("reduced_weighted_misfit")),
-                ]
+        group_names = list(values)
+        # Older low-level callers did not publish update metadata.  Preserve
+        # their established interpretation as estimated components, while new
+        # solver results distinguish estimated and fixed groups explicitly.
+        updates = np.asarray(
+            [bool(update_by_group.get(name, True)) for name in group_names],
+            dtype=bool,
+        )
+        next_update = 0
+        sample_indices = []
+        for should_update in updates:
+            sample_indices.append(next_update if should_update else -1)
+            next_update += int(should_update)
+        layout = {
+            "group_names": group_names,
+            "members_by_group": groups,
+            "update_by_group": updates,
+            "sample_index_by_group": np.asarray(sample_indices, dtype=int),
+        }
+        rows.extend(
+            build_scale_parameter_rows(
+                kind=symbol,
+                layout=layout,
+                active_scales_by_group={
+                    group: float(np.sqrt(variance))
+                    for group, variance in values.items()
+                },
+                update_state="estimated",
+                variance_by_group=values,
+                diagnostics_by_group=diagnostics.get(kind, {}),
             )
+        )
 
     status = "converged" if result.get("converged") else "not converged"
     title = f"VCE variance components ({status}, {result.get('iterations', 0)} iterations)"
-    if not rows:
-        return title + "\n  No variance components available."
-    return title + "\n" + tabulate(
+    return format_scale_parameter_report(
         rows,
-        headers=[
-            "Kind",
-            "Group",
-            "Members",
-            "Variance (v)",
-            "Std scale (s)",
-            "log10(s)",
-            "Row mult. (1/s)",
-            "Qw",
-            "Approx. red.Q",
-        ],
+        title=title,
+        show_index=False,
+        show_posterior_uncertainty=False,
+        show_variance=True,
+        show_diagnostics=True,
         tablefmt="simple",
     )
 
@@ -252,20 +261,6 @@ def _format_optional_float(value: Any) -> str:
     if not np.isfinite(value):
         return "-"
     return f"{value:.6g}"
-
-
-def _format_log10(value: float) -> str:
-    """Format a positive scale without producing runtime warnings."""
-    if not np.isfinite(value) or value <= 0.0:
-        return "-"
-    return f"{np.log10(value):.6g}"
-
-
-def _format_reciprocal(value: float) -> str:
-    """Format a positive row multiplier without dividing by zero."""
-    if not np.isfinite(value) or value <= 0.0:
-        return "-"
-    return f"{1.0 / value:.6g}"
 
 
 def fit_statistics_rows_to_dataframe(rows: Sequence[Mapping[str, Any]]):

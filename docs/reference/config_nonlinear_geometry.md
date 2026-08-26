@@ -248,6 +248,15 @@ data_corrections.datasets.<data>.parameter_bounds.<parameter>
 
 非线性几何反演不设置 `alpha`。`alpha` 是后续分布式滑动反演中的平滑尺度，放在线性滑动或滑动 Bayesian 配置中说明。
 
+结果文件和屏幕摘要中的 `Sigma parameters (Bayesian physical scale)` 使用统一尺度表：
+`Scale (s)` 是当前 likelihood 使用的物理 sigma，`Sampling` 说明保存的样本列是 `s` 还是
+`log10(s)`，`Post. SD(s)` 由整列物理 posterior 样本计算。原始样本向量仍按
+`ParameterSpec` 顺序单独保留，便于与 HDF5、KDE 和参数索引逐列核对。固定 sigma 组会以
+`State=fixed` 出现，但不具有 posterior 标准差。本入口不显示 alpha 行。
+
+`model="std"` 表示逐参数 posterior 标准差，只用于不确定性描述，不是可预测模型。因此
+结果文件仍可列出原采样向量的 STD，但不会打印活动物理 sigma 表，也不会计算数据拟合统计。
+
 ## 脚本需要同步检查
 
 YAML 配置不负责读取数据。用户应在脚本中显式构造 CSI 数据对象，再传给 `NonlinearGeometrySMCInversion`：

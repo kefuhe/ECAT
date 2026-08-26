@@ -1275,7 +1275,9 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         max_iter : int
             Maximum VCE iterations
         tol : float
-            Convergence tolerance
+            Dimensionless tolerance for the largest absolute logarithmic
+            variance-update factor.  Convergence requires
+            ``max(abs(log(u))) < tol`` over every effective updated group.
         des_enabled : bool, optional
             Whether to use DES (if None, uses self.des_enabled)
         sigma_mode : str
@@ -1303,6 +1305,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             - 'solved_alpha2_by_group': smoothing variances used by ``m``
             - 'proposed_sigma2_by_group': possible next-iteration values
             - 'proposed_alpha2_by_group': possible next-iteration values
+            - 'convergence_metric': ``'max_abs_log_update_factor'``
             - 'converged': convergence flag
             - 'iterations': number of iterations
             - 'smoothing_matrix': unscaled smoothing matrix in original model coordinates

@@ -45,6 +45,23 @@ Bayesian 对象还能提供 `global_solver_vector`；独立几何 SMC 没有一�
 历史上的 `print_stat` / `print_stats` 仍作为兼容关键字保留；公开脚本和新代码使用统一
 拼写。相同关键字只统一结果责任，不会把不同求解器的参数注册或前向模型强行合并。
 
+### 拟合表与尺度参数表的边界
+
+逐数据集拟合表回答“当前模型如何拟合观测”；尺度参数表回答“这一活动模型使用什么
+sigma/alpha，以及它来自固定、VCE 更新还是 Bayesian 采样”。两者共享同一个已激活模型，
+但不应合并成一张宽表：
+
+- 拟合表保留 `RMS`、`VR`、`Eff. std`、`Qw` 和 `wRMS`；
+- 尺度表以物理 `Scale (s)` 为主值，并显式列出 `State`、`Sampling`、`log10(s)` 和
+  `Row mult. (1/s)`；
+- Bayesian 的 `Post. SD(s)` 从整列物理 posterior 样本精确计算；固定组留空；
+- VCE 额外列出 `Variance (v)` 和组级 `Approx. red.Q`，但没有 posterior 标准差；
+- 格式化器只读取活动结果和保存的 posterior，不重算 synthetic、likelihood、GF 或
+  Laplacian，也不改变 HDF5 样本。
+
+完整字段和 `log_scaled` 对照见
+[Sigmas 与 Alpha 配置模式](sigmas_alpha.md#统一结果表中的名称)。
+
 ## 符号和残差
 
 对第 \(k\) 个向量化数据集，记：
@@ -182,11 +199,16 @@ H_g=\frac{(W_gG_g)^\mathsf T(W_gG_g)}{\sigma_g^2},
 - 单数据集独占一个 VCE 组时，数据集行可以显示同一个近似 reduced 值。
 
 在 simple VCE 中，数据组或平滑组的方差更新因子正是
-\(u_g=Q_{w,g}/\nu_{\mathrm{eff},g}\)。当所有有效分量都可更新时，算法保留相对尺度判据
-\(\max(u_g)-\min(u_g)<\mathtt{tol}\)；`Approx. red.Q` 因而可能收敛到共同的非 1
-数值。若任一有实际行的分量固定，它就提供绝对尺度锚点，此时改为
-\(\max_g|u_g-1|<\mathtt{tol}\)。没有 Laplacian 行的空平滑组不构成锚点。又因为 sigma
-利用同一批残差估计，该列不是独立于反演的 goodness-of-fit 检验。
+\(u_g=Q_{w,g}/\nu_{\mathrm{eff},g}\)。所有有实际行且设置为更新的分量统一要求
+
+\[
+\max_g|\log u_g|<\mathtt{tol}.
+\]
+
+这是绝对方差分量的乘法收敛条件：即使所有因子拥有同一个公共尺度，它们仍须各自趋近
+1。没有 Laplacian 行的空平滑组不参加停止判断。又因为 sigma 利用同一批残差估计，
+`Approx. red.Q` 不是独立于反演的 goodness-of-fit 检验；在约束问题中还应保留
+`Approx.` 限定。
 
 固定 BLSE、SMC_FJ、FULLSMC 和独立几何 SMC 不会人为构造这一自由度，因此 reduced
 列为空；只要当前模型已发布准确的协方差和 sigma，`Qw` 与 `wRMS` 仍然有效。
@@ -367,8 +389,9 @@ inv.extract_and_plot_blse_results(
 用于静默批处理。若紧接着又调用默认打印的 extraction，`full` 会使拟合表出现两次；
 标准脚本通常使用 `compact + extraction`。
 
-VCE 在 `max_iter` 处未收敛时，`m` 属于最后一次实际求解使用的方差，而
-`proposed_sigma2_by_group/proposed_alpha2_by_group` 可能已包含原本供下一轮使用的更新。
+VCE 返回的 `m` 属于最后一次实际求解使用的方差，而
+`proposed_sigma2_by_group/proposed_alpha2_by_group` 始终记录该轮残差提出的下一步更新；
+即使已经满足容差，两者也可能存在容差范围内的差别。
 报告只使用 `solved_sigma2_by_group/solved_alpha2_by_group`，避免模型与标签错配；这一
 选择不会追加求解或改变 `m`。
 

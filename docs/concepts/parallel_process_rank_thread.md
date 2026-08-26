@@ -86,6 +86,29 @@ ECAT 让不同 rank 分担粒子。rank 数不应超过 `nchains`；能整除 `n
 如果 MPI runtime 已经为每个 rank 分配 CPU 并自动控制数值线程，用户也不需要再
 手工设置 `MKL_NUM_THREADS=1`。
 
+### SMC 长任务进度表
+
+SMC-FJ、FULLSMC 和非线性几何 SMC 由 rank 0 输出同一份阶段表：
+
+```text
+STAGE  BETA (FROM -> TO)        START     END       MCMC TIME   TOTAL
+    1  PRIOR -> 0.000000     12:07:07  12:16:06    00:08:59    00:08:59
+    2  0.000000 -> 0.001953  12:16:06  12:50:09    00:34:03    00:43:02
+    3  0.001953 -> 1.000000  12:50:09  13:24:01    00:33:52    01:16:54
+```
+
+`MCMC TIME` 是该阶段 mutation 的墙钟时间，`TOTAL` 是本次启动或恢复会话自开始以来的
+累计墙钟时间。交互终端会显示一个带 `MCMC` 或 `FINAL MCMC` 的临时活动行；阶段结束时
+该行原位替换为上面这种唯一的完成记录，不会为同一阶段保留开始、结束两行。Python warning
+会暂时清除活动行，正常显示后再恢复当前进度。Windows Terminal、VS Code 终端以及
+WSL/Linux 控制终端均由 rank 0 自动识别，不需要用户选择显示模式。若 MPI 转发或批处理环境
+无法确认支持原位刷新，程序会安全退化为向 `stdout` 追加每个已完成阶段及最终总时间；不会
+因为控制终端探测失败而静默丢失整张进度表。自动识别为批处理或无终端时不会写入回车控制符。
+
+`FINAL MCMC` 只在活动行中表示 beta 已到 1、正在完整目标后验下执行最后一次 mutation；
+完成后留下普通的阶段记录，随后输出带完整结束时间的 `ATMIP completed`。由于 beta 阶段数
+由采样器自适应决定，进度表不显示容易误导的完成百分比或 ETA。
+
 ## 5. CPU affinity / pinning 是什么
 
 CPU affinity 表示某个进程允许在哪些逻辑 CPU 上运行；pinning 表示 MPI runtime、

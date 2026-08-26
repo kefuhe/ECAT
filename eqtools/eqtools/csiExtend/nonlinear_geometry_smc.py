@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
 from csi import SourceInv, planarfault
 
 from .config.nonlinear_geometry_config import NonlinearGeometryConfig
+from .config.parameter_groups import attach_group_parameters, resolve_group_layout
 from .covariance_utils import (
     DataCovarianceMetric,
     gaussian_log_likelihood,
@@ -60,6 +61,10 @@ from .data_vector_layout import (
     write_data_synthetic_vector,
 )
 from .fault_angle_conventions import canonicalize_compact_fault_angles
+from .hyperparameter_reporting import (
+    build_scale_parameter_rows,
+    format_scale_parameter_report,
+)
 from .logging_utils.mpi_logging import ensure_default_logging
 from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 from .smc_mpi_nonlinear import SMC_samples_parallel_mpi_nonlinear
@@ -1019,9 +1024,6 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         rank = comm.Get_rank()
         diagnostic_info = self._fault_parameter_diagnostic_info()
 
-        if rank == 0:
-            self.logger.info("Starting nonlinear geometry SMC sampling...")
-
         final = SMC_samples_parallel_mpi_nonlinear(
             opt,
             samples,
@@ -1051,7 +1053,6 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                     print_report=True,
                     print_detail=diagnose_detail,
                 )
-            self.logger.info("Finished nonlinear geometry SMC sampling.")
         return None
 
     def evaluate_convergence(self, **kwargs):
@@ -2485,6 +2486,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
     def _format_model_summary(self, model, model_entry):
         theta = self._summary_model_vector(model)
         std_by_index = self._summary_std_by_index()
+        descriptive_std = str(model).lower() == "std"
         parameter_specs = list(getattr(self, "parameter_specs", []))
         lines = [
             f"Nonlinear Geometry Model Summary ({str(model).upper()})",
@@ -2508,13 +2510,21 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 std_by_index=std_by_index,
             )
         )
-        lines.extend(
-            self._format_sigma_model_summary(
-                model_entry.get("sigmas", {}),
-                std_by_index=std_by_index,
-                theta=theta,
+        if descriptive_std:
+            lines.extend([
+                "Sigma parameters",
+                "=" * 60,
+                "Posterior STD is descriptive; no active physical sigma scale.",
+                "",
+            ])
+        else:
+            lines.extend(
+                self._format_sigma_model_summary(
+                    model_entry.get("sigmas", {}),
+                    std_by_index=std_by_index,
+                    theta=theta,
+                )
             )
-        )
         lines.extend(
             self._format_sample_vector_summary(
                 theta,
@@ -2527,6 +2537,10 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         theta = self._summary_model_vector(model)
         std_by_index = self._summary_std_by_index()
         rows = self._compact_model_summary_rows(model_entry, theta=theta, std_by_index=std_by_index)
+        descriptive_std = str(model).lower() == "std"
+        scale_rows = [] if descriptive_std else self._scale_parameter_rows(
+            model_entry.get("sigmas", {}), theta=theta
+        )
         lines = [
             "",
             "=" * 60,
@@ -2541,6 +2555,22 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         ])
         headers = ["Index", "Category", "Name", "Parameter", str(model).upper(), "STD", "Note"]
         lines.extend(self._format_compact_table(headers, rows))
+        if scale_rows:
+            lines.extend([
+                "",
+                format_scale_parameter_report(
+                    scale_rows,
+                    title="Sigma parameters (Bayesian physical scale)",
+                    show_index=True,
+                    show_posterior_uncertainty=True,
+                    tablefmt="simple",
+                ),
+            ])
+        elif descriptive_std:
+            lines.extend([
+                "",
+                "Sigma parameters: posterior STD is descriptive; no active physical scale.",
+            ])
         lines.append("")
         lines.append(f"Total sampled parameters: {len(getattr(self, 'parameter_specs', []) or [])}")
         lines.extend([
@@ -2560,7 +2590,6 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             )
         )
         rows.extend(self._compact_data_correction_rows(model_entry.get("data_corrections", {}), std_by_index))
-        rows.extend(self._compact_sigma_rows(model_entry.get("sigmas", {}), theta, std_by_index))
         return rows
 
     def _compact_fault_rows(self, faults, std_by_index):
@@ -2649,35 +2678,6 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 ))
         return rows
 
-    def _compact_sigma_rows(self, sigmas, theta, std_by_index):
-        rows = []
-        sampled_note = "sampled log10" if self._sigma_log_scaled() else "sampled"
-        for row in self._sigma_sample_summary_rows(theta, std_by_index):
-            fixed = row["fixed"]
-            note = "fixed *" if fixed else sampled_note
-            rows.append(self._compact_summary_row(
-                index=self._compact_index_from_row(row),
-                group="Sigma",
-                name=row["name"],
-                parameter="sigma",
-                value=row["value"],
-                std=row["std"] if row["std"] is not None else (0.0 if fixed else None),
-                note=note,
-            ))
-        if self._sigma_log_scaled():
-            physical_std = self._physical_sigma_std_by_dataset()
-            for data_name, value in sigmas.items():
-                rows.append(self._compact_summary_row(
-                    index="[data]",
-                    group="Sigma physical",
-                    name=data_name,
-                    parameter="sigma",
-                    value=value,
-                    std=physical_std.get(data_name),
-                    note="10**sampled",
-                ))
-        return rows
-
     def _compact_summary_row(self, *, index, group, name, parameter, value, std, note):
         return [
             str(index),
@@ -2696,14 +2696,6 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         if spec is None:
             return "[-]"
         return f"[{spec.index}]"
-
-    @staticmethod
-    def _compact_index_from_row(row):
-        if row["fixed"]:
-            return "[fixed]"
-        if row["index"] is None:
-            return "[-]"
-        return f"[{row['index']}]"
 
     @staticmethod
     def _compact_std(spec, std_by_index, *, fixed=False):
@@ -2871,113 +2863,88 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
     def _format_sigma_model_summary(self, sigmas, *, std_by_index, theta=None):
         if not sigmas:
             return []
-        lines = [
-            "Sigma parameters",
-            "=" * 60,
-        ]
-        sample_rows = self._sigma_sample_summary_rows(theta, std_by_index)
-        if sample_rows:
-            lines.extend(self._format_parameter_rows(sample_rows))
-        else:
-            # Fallback for partially constructed test/user objects without a parsed
-            # geodata.sigmas config. New nonlinear objects should use the branch above.
-            lookup = self._sigma_spec_lookup()
-            for data_name, value in sigmas.items():
-                spec = lookup.get(data_name)
-                fixed = spec is None
-                row = self._parameter_summary_row(
-                    data_name,
-                    value,
-                    spec=spec,
-                    std_by_index=std_by_index,
-                    fixed=fixed,
-                )
-                lines.extend(self._format_parameter_rows([row]))
-        if self._sigma_log_scaled():
-            lines.extend(["", "Physical sigma values used in likelihood (10**sampled sigma)"])
-            physical_std = self._physical_sigma_std_by_dataset()
-            for data_name, value in sigmas.items():
-                std = physical_std.get(data_name)
-                lines.append(
-                    f"  {data_name:<12} {'[data]':<8}: "
-                    f"{self._format_model_float(value):>12} {self._format_uncertainty(std)}"
-                )
-        lines.append("")
-        return lines
+        rows = self._scale_parameter_rows(sigmas, theta=theta)
+        return format_scale_parameter_report(
+            rows,
+            title="Sigma parameters (Bayesian physical scale)",
+            show_index=True,
+            show_posterior_uncertainty=True,
+            tablefmt="simple",
+        ).splitlines() + [""]
 
-    def _sigma_sample_summary_rows(self, theta, std_by_index):
+    def _scale_parameter_rows(self, active_sigmas, *, theta=None):
+        """Return canonical physical sigma rows without changing model state."""
+
         sigmas = getattr(self, "sigmas", None)
         if not isinstance(sigmas, Mapping) or "values" not in sigmas:
             return []
-        values = np.asarray(sigmas.get("values", []), dtype=float)
-        if values.size == 0:
-            return []
-        names = list(self._sigma_group_names())
-        if len(names) < values.size:
-            names.extend(f"sigma_{i}" for i in range(len(names), values.size))
-        spec_by_param_index = {}
-        for spec in getattr(self, "sigma_parameter_specs", []):
-            metadata = getattr(spec, "metadata", {}) or {}
-            sigma_param_index = metadata.get("sigma_param_index")
-            if sigma_param_index is None:
-                try:
-                    sigma_param_index = names.index(spec.local_name)
-                except (AttributeError, ValueError):
-                    continue
-            if sigma_param_index is not None:
-                spec_by_param_index[int(sigma_param_index)] = spec
-        theta = None if theta is None else np.asarray(theta, dtype=float)
-        rows = []
-        for sigma_param_index, initial_value in enumerate(values):
-            spec = spec_by_param_index.get(sigma_param_index)
-            if spec is not None and theta is not None and spec.index < theta.size:
-                value = theta[spec.index]
-            else:
-                value = initial_value
-            rows.append(
-                self._parameter_summary_row(
-                    names[sigma_param_index],
-                    value,
-                    spec=spec,
-                    std_by_index=std_by_index,
-                    fixed=spec is None,
-                )
+        layout = sigmas.get("group_layout")
+        if not layout:
+            dataset_names = [
+                data.name for data in getattr(self, "geodata", {}).get("data", [])
+            ]
+            mode = sigmas.get("mode", "individual")
+            layout = attach_group_parameters(
+                resolve_group_layout(
+                    dataset_names,
+                    mode,
+                    sigmas.get("groups") if mode == "grouped" else None,
+                    member_label="dataset",
+                    single_group_name="all",
+                    individual_prefix="group_",
+                ),
+                values=sigmas.get("values", 1.0),
+                update=sigmas.get("update", False),
+                value_name="sigma values",
+                default_value=1.0,
             )
-        return rows
 
-    def _physical_sigma_std_by_dataset(self):
-        if not self._sigma_log_scaled():
-            return {}
-        if not hasattr(self, "sampler") or "allsamples" not in self.sampler:
-            return {}
-        data_list = getattr(self, "geodata", {}).get("data", [])
-        if not data_list:
-            return {}
-        try:
-            samples = np.asarray(self.sampler["allsamples"], dtype=float)
-        except (TypeError, ValueError):
-            return {}
-        if samples.ndim != 2 or samples.shape[0] == 0:
-            return {}
-        values = []
-        for sample in samples:
-            try:
-                values.append(self._dataset_sigmas_from_theta(sample))
-            except Exception:
-                return {}
-        values = np.asarray(values, dtype=float)
-        if values.ndim != 2:
-            return {}
-        std = np.std(values, axis=0)
-        return {
-            data.name: float(std[i])
-            for i, data in enumerate(data_list)
-            if i < std.size
+        active_scales = {
+            group: float(active_sigmas[members[0]])
+            for group, members in layout.get("members_by_group", {}).items()
+            if members
         }
+        specs_by_group_index = {
+            int(spec.metadata["sigma_param_index"]): spec
+            for spec in getattr(self, "sigma_parameter_specs", [])
+            if "sigma_param_index" in (getattr(spec, "metadata", {}) or {})
+        }
+        posterior_samples = None
+        sample_offset = None
+        if specs_by_group_index and hasattr(self, "sampler") and "allsamples" in self.sampler:
+            allsamples = np.asarray(self.sampler["allsamples"], dtype=float)
+            updatable = int(layout.get("updatable_params", len(specs_by_group_index)))
+            posterior_samples = np.empty((allsamples.shape[0], updatable), dtype=float)
+            global_indices = []
+            for group_index, local_index in enumerate(layout["sample_index_by_group"]):
+                if local_index < 0:
+                    continue
+                spec = specs_by_group_index[group_index]
+                posterior_samples[:, int(local_index)] = allsamples[:, spec.index]
+                global_indices.append((int(local_index), int(spec.index)))
+            global_indices.sort()
+            sample_offset = global_indices[0][1]
+            if any(global_index != sample_offset + local_index
+                   for local_index, global_index in global_indices):
+                # The current registry is contiguous, but do not publish a
+                # misleading global index if a future registry interleaves
+                # parameter families.
+                sample_offset = None
 
-    def _sigma_log_scaled(self):
-        sigmas = getattr(self, "sigmas", None)
-        return isinstance(sigmas, Mapping) and bool(sigmas.get("log_scaled", False))
+        rows = build_scale_parameter_rows(
+            kind="sigma",
+            layout=layout,
+            active_scales_by_group=active_scales,
+            update_state="sampled",
+            log_scaled=bool(sigmas.get("log_scaled", False)),
+            posterior_samples=posterior_samples,
+            sample_index_offset=sample_offset,
+        )
+        if sample_offset is None and specs_by_group_index:
+            for group_index, row in enumerate(rows):
+                spec = specs_by_group_index.get(group_index)
+                row["index"] = None if spec is None else int(spec.index)
+        return rows
 
     def _format_sample_vector_summary(self, theta, *, parameter_specs):
         lines = [
@@ -3171,7 +3138,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         """
         if rank != 0:
             return None
-        if model in {"std", "Std", "STD"}:
+        descriptive_std = str(model).lower() == "std"
+        if descriptive_std:
             plot_data = False
 
         self.load_samples_from_h5(filename=filename)
@@ -3244,7 +3212,12 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             model=model,
             output_to_screen=True,
         )
-        if print_fit_statistics and hasattr(self, "datas") and hasattr(self, "verticals"):
+        if (
+            print_fit_statistics
+            and not descriptive_std
+            and hasattr(self, "datas")
+            and hasattr(self, "verticals")
+        ):
             self.calculate_and_print_fit_statistics(model=model)
 
         grouped_data = self._group_data_by_type()
