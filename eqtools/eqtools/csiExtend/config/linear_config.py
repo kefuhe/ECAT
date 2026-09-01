@@ -1,4 +1,3 @@
-import warnings
 import yaml
 import os
 import numpy as np
@@ -207,8 +206,11 @@ class LinearInversionConfig(CommonConfigBase):
         # Simple validation
         valid_modes = ['per_patch', 'per_depth', 'per_column']
         if config['mode'] not in valid_modes:
-            if self.verbose:
-                logger.warning(f"Invalid DES mode '{config['mode']}'. Fallback to 'per_patch'.")
+            self._record_config_diagnostic(
+                'CFG_DES_MODE_FALLBACK',
+                f"invalid value '{config['mode']}'; using 'per_patch'",
+                field='des.mode',
+            )
             config['mode'] = 'per_patch'
 
         return config
@@ -548,9 +550,11 @@ class LinearInversionConfig(CommonConfigBase):
             merged.setdefault('method_parameters', {}).setdefault('update_Laplacian', {})
 
             if src_name in self.faults:
-                logger.warning(
-                    f"Source '{src_name}' appears in both 'faults' and '{section_key}'. "
-                    f"The '{section_key}' entry will overwrite the 'faults' entry."
+                self._record_config_diagnostic(
+                    'CFG_SOURCE_SECTION_OVERRIDE',
+                    f"source '{src_name}' also appears in 'faults'; "
+                    f"the '{section_key}' entry takes precedence",
+                    field=f'{section_key}.{src_name}',
                 )
             self.faults[src_name] = merged
 

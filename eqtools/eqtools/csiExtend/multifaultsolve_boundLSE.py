@@ -1210,7 +1210,12 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             lb_prime, ub_prime,
             None, opts,
         )
-        if verbose and ret.get('solver') != 'cvxopt_qp':
+        if verbose and ret.get('solver') == 'scipy_cholesky':
+            print(
+                "[SOLVER] Exact Cholesky route accepted "
+                f"({ret.get('constraint_class', 'unknown')})"
+            )
+        elif verbose and ret.get('solver') == 'clarabel_socp':
             print(
                 "[SOLVER] CVXOPT did not converge; solved the unchanged "
                 "constraint system with the robust Clarabel fallback"
@@ -1252,7 +1257,7 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
                    verbose=False, max_iter=10, tol=1e-4, des_enabled=None,
                    sigma_mode='individual', sigma_groups=None, sigma_update=None, sigma_values=None,
                    smooth_mode='single', smooth_groups=None, smooth_update=None, smooth_values=None,
-                   validate_constraints=True):
+                   validate_constraints=True, qp_acceleration='off'):
         """
         Perform Simple Variance Component Estimation (VCE) for multi-fault inversion.
 
@@ -1296,6 +1301,11 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             Whether to update each smoothing group (same order as smoothing groups)
         smooth_values : list of float, optional
             Initial/fixed values for each smoothing group (same order as smoothing groups)
+        qp_acceleration : {'off', 'certified_kkt'}
+            Optional VCE-local active-set acceleration. The central solver
+            always selects the certified Cholesky/CVXOPT/Clarabel route
+            automatically. ``'certified_kkt'`` adds a candidate-local KKT
+            attempt and falls back to that central route on any rejection.
 
         Returns
         -------
@@ -1306,6 +1316,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             - 'proposed_sigma2_by_group': possible next-iteration values
             - 'proposed_alpha2_by_group': possible next-iteration values
             - 'convergence_metric': ``'max_abs_log_update_factor'``
+            - 'qp_diagnostics': report-only acceleration, solver-route and
+              fallback counters
             - 'converged': convergence flag
             - 'iterations': number of iterations
             - 'smoothing_matrix': unscaled smoothing matrix in original model coordinates
@@ -1528,7 +1540,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
             beq=beq_vce,
             max_iter=max_iter,
             tol=tol,
-            verbose=verbose
+            verbose=verbose,
+            qp_acceleration=qp_acceleration,
         )
 
         # Recover solution if DES was used

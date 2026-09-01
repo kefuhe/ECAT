@@ -31,6 +31,11 @@
 | `bayesian_sampling_mode` | `SMC_FJ`, `FULLSMC` | 解析后只保存这两个规范值 |
 | `slip_sampling_mode` | `ss_ds`, `magnitude_rake`, `mag_rake`, `rake_fixed` | `mag_rake` 会归一化为 `magnitude_rake`；`SMC_FJ` 使用 `ss_ds` |
 
+主配置中的顶层标量 `rake_angle` 只服务于 `slip_sampling_mode: rake_fixed`。它与
+`bounds_config.yml` 中按断层设置的 `rake_angle` 约束不是同一个字段：后者可用于
+`SMC_FJ + ss_ds` 的线性 rake 扇区约束。若在 `ss_ds` 等其他模式下保留顶层标量
+`rake_angle`，该值不会参与计算，启动时会以 `CFG_UNUSED_RAKE_ANGLE` 配置诊断明确提示。
+
 两种 Bayesian 模式的核心差异：
 
 | 模式 | SMC 样本向量包含 | 滑动如何得到 | 约束特点 |

@@ -4,6 +4,8 @@ import glob
 import numpy as np
 import logging
 
+from .diagnostics import ConfigDiagnostics
+
 # Setup module-level logger
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,9 @@ class CommonConfigBase:
     def __init__(self, config_file='default_config.yml', geodata=None, encoding='utf-8', verbose=False, parallel_rank=None):
         self.verbose = verbose and (parallel_rank is None or parallel_rank == 0)
         self.parallel_rank = parallel_rank # Rank for parallel processing, if applicable
+        # Deterministic config decisions are reported at explicit lifecycle
+        # boundaries, never directly from parser branches through stderr.
+        self._config_diagnostics = ConfigDiagnostics()
         if self.verbose:
             self._print_initialization_message()
 
@@ -41,6 +46,49 @@ class CommonConfigBase:
         self.faults_list = [] # List of fault objects
         self.clipping_options = {} # Dictionary to store the clipping options
         self.data_sources = {} # Dictionary to store the data sources
+
+    @property
+    def config_diagnostics(self):
+        """Return all non-fatal decisions recorded while resolving config."""
+        diagnostics = getattr(self, '_config_diagnostics', None)
+        return () if diagnostics is None else diagnostics.records
+
+    def _record_config_diagnostic(
+        self,
+        code,
+        message,
+        *,
+        field=None,
+        severity='warning',
+    ):
+        """Record a deterministic config decision without producing output."""
+        diagnostics = getattr(self, '_config_diagnostics', None)
+        if diagnostics is None:
+            # Focused tests may construct instances through ``object.__new__``.
+            # Lazy initialization preserves those internal validation paths.
+            diagnostics = ConfigDiagnostics()
+            self._config_diagnostics = diagnostics
+        return diagnostics.add(
+            code,
+            message,
+            field=field,
+            severity=severity,
+        )
+
+    def report_config_diagnostics(self, *, stream=None, enabled=None):
+        """Render pending config diagnostics once on the owning output rank.
+
+        ``enabled`` defaults to the config's rank-aware ``verbose`` state. A
+        high-level inversion receiving a prebuilt quiet config may pass its own
+        rank-zero verbose decision. This method has no MPI, solver, or numerical
+        side effects.
+        """
+        diagnostics = getattr(self, '_config_diagnostics', None)
+        if diagnostics is None:
+            return ()
+        if enabled is None:
+            enabled = self.verbose
+        return diagnostics.report(enabled=bool(enabled), stream=stream)
 
     @property
     def sigmas(self):

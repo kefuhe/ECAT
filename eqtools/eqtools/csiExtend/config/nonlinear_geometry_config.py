@@ -62,6 +62,8 @@ class NonlinearGeometryConfig(CommonConfigBase):
                     param_name="values",
                 )
 
+        self.report_config_diagnostics()
+
     def load_config(self, config_file, geodata=None):
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)

@@ -112,6 +112,8 @@ class ExploreFaultConfig(CommonConfigBase):
                     param_name='values'
                 )
 
+        self.report_config_diagnostics()
+
     def load_config(self, config_file, geodata=None):
         """
         Load configuration from a YAML file.

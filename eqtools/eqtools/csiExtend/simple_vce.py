@@ -1,3 +1,5 @@
+from collections import Counter
+
 import numpy as np
 from . import lsqlin
 from .covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
@@ -26,6 +28,22 @@ def _finite_block_array(values):
     return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _trace_product_contraction(left, right):
+    """Return ``trace(left @ right)`` without forming that dense product.
+
+    For conformable square matrices,
+
+    ``trace(A @ B) = sum_ij A[i, j] * B[j, i]``.
+
+    The VCE effective degrees of freedom use this identity as
+    ``nu_g = n_g - trace(N_inv @ N_g)``.  ``einsum`` evaluates the exact same
+    scalar contraction in ``O(p**2)`` work and does not materialize the
+    intermediate ``p x p`` matrix required by a dense matrix product.  Only
+    floating-point summation order can differ from ``np.trace(A @ B)``.
+    """
+    return np.einsum('ij,ji->', left, right, optimize=False)
+
+
 def simplified_vce(
     data_metrics,
     d, 
@@ -49,7 +67,8 @@ def simplified_vce(
     beq=None,
     max_iter=20, 
     tol=1e-4, 
-    verbose=False
+    verbose=False,
+    qp_acceleration='off',
 ):
     """
     Simplified Variance Component Estimation for geodetic inversions using lsqlin solver.
@@ -117,6 +136,14 @@ def simplified_vce(
         tolerance, while treating reciprocal scale changes symmetrically.
     verbose : bool
         Print progress
+    qp_acceleration : {'off', 'certified_kkt'}
+        Optional VCE-local acceleration. ``'off'`` leaves every iteration to
+        the shared automatic Cholesky/CVXOPT/Clarabel route.
+        ``'certified_kkt'`` may reuse a certified active set between
+        consecutive iterations in this VCE call; every failed prediction
+        falls back to the same shared route. This option changes only how the
+        identical constrained QP is solved, never the VCE objective,
+        constraints, or variance update.
     
     Returns:
     --------
@@ -134,6 +161,7 @@ def simplified_vce(
         - 'component_diagnostics': group-level Qw and approximate reduced Q
         - 'convergence_mode'/'convergence_metric'/'convergence_measure':
           stopping-rule diagnostics
+        - 'qp_diagnostics': report-only acceleration and solver-route counters
         - 'converged': convergence flag
         - 'iterations': number of iterations
     """
@@ -144,6 +172,20 @@ def simplified_vce(
     n_params = G.shape[1]
     n_reg = L.shape[0]
     sigma_only = (n_reg == 0)  # No smoothing constraints → sigma-only VCE
+    qp_acceleration = str(qp_acceleration).lower()
+    if qp_acceleration not in {'off', 'certified_kkt'}:
+        raise ValueError(
+            "qp_acceleration must be 'off' or 'certified_kkt'"
+        )
+    qp_session = None
+    if qp_acceleration == 'certified_kkt':
+        from .qp_sequence_fastpath import VCEKKTSession
+
+        qp_session = VCEKKTSession(
+            lsqlin._prepare_qp_constraints(
+                n_params, A_ueq, b_ueq, Aeq, beq, lb, ub
+            )
+        )
     
     # Configure data ranges
     if data_ranges is None:
@@ -262,6 +304,11 @@ def simplified_vce(
     solved_alpha2_by_group = dict(var_alpha)
     proposed_sigma2_by_group = dict(var_d)
     proposed_alpha2_by_group = dict(var_alpha)
+    previous_change = None
+    # Route counts are diagnostic output only.  They are populated from the
+    # accepted result of each iteration and are never read by the VCE update
+    # or by the next solver call.
+    route_counts = Counter()
     for it in range(max_iter):
         # These are the variance components that scale the augmented system
         # solved in this iteration. If the iteration limit is reached, the
@@ -291,17 +338,40 @@ def simplified_vce(
 
         # Solve using lsqlin solver with constraints
         opts = {'show_progress': False}
-        ret = lsqlin.lsqlin_quadratic_auto(
-            N_total, q_total,
-            lambda: assemble_residual_system(
-                weighted_blocks, n_parameters=n_params
-            ),
-            0,
-            A_ueq, b_ueq,
-            Aeq, beq,
-            lb, ub,
-            None, opts,
-        )
+        def central_qp_solve():
+            return lsqlin.lsqlin_quadratic_auto(
+                N_total, q_total,
+                lambda: assemble_residual_system(
+                    weighted_blocks, n_parameters=n_params
+                ),
+                0,
+                A_ueq, b_ueq,
+                Aeq, beq,
+                lb, ub,
+                None, opts,
+            )
+
+        if qp_session is None:
+            ret = central_qp_solve()
+        else:
+            from .qp_sequence_fastpath import solve_vce_qp_candidate
+
+            ret = solve_vce_qp_candidate(
+                N_total,
+                q_total,
+                session=qp_session,
+                fallback=central_qp_solve,
+                change_measure=previous_change,
+            )
+        solve_route = ret.get('solve_route')
+        if solve_route is None:
+            solver_name = str(ret.get('solver', '')).lower()
+            solve_route = (
+                'clarabel_fallback'
+                if solver_name == 'clarabel_socp'
+                else 'unknown'
+            )
+        route_counts[str(solve_route)] += 1
         m = lsqlin.cvxopt_to_numpy_matrix(ret['x']).flatten()
 
         # ======================================================================
@@ -338,7 +408,12 @@ def simplified_vce(
                 data_quadratic_blocks[dataset].gram
                 for dataset in sigma_config[group]
             ) / var_d[group]
-            dof_eff = len(whitened_residual) - np.trace(N_inv @ N_d_group)
+            # nu_g = n_g - tr(N^-1 N_g).  Contract the two matrices directly;
+            # forming the complete N^-1 @ N_g product is unnecessary because
+            # VCE consumes only its trace.
+            dof_eff = len(whitened_residual) - _trace_product_contraction(
+                N_inv, N_d_group
+            )
             if dof_eff <= 0:
                 dof_eff = len(whitened_residual) * 0.1
             data_effective_dof[group] = float(dof_eff)
@@ -356,7 +431,9 @@ def simplified_vce(
                 N_alpha_group = (
                     smooth_quadratic_blocks[group].gram / var_alpha[group]
                 )
-                dof_eff = len(reg_res) - np.trace(N_inv @ N_alpha_group)
+                dof_eff = len(reg_res) - _trace_product_contraction(
+                    N_inv, N_alpha_group
+                )
                 if dof_eff <= 0:
                     dof_eff = len(reg_res) * 0.1
                 smooth_effective_dof[group] = float(dof_eff)
@@ -435,6 +512,7 @@ def simplified_vce(
         # proposed dictionaries remain valid diagnostics even on convergence.
         var_d = dict(proposed_sigma2_by_group)
         var_alpha = dict(proposed_alpha2_by_group)
+        previous_change = change
     
     # Final diagnostics reuse the already-whitened blocks. They do not enter
     # the VCE update and therefore cannot change the estimated model or
@@ -478,6 +556,36 @@ def simplified_vce(
                 ),
             }
 
+    qp_diagnostics = (
+        {
+            'acceleration': 'off',
+            'attempts': 0,
+            'successes': 0,
+            'repairs': 0,
+            'fallbacks': 0,
+            'skips': 0,
+            'kkt_seconds': 0.0,
+            'fallback_seconds': None,
+            'disabled_reason': None,
+        }
+        if qp_session is None else qp_session.diagnostics()
+    )
+    qp_diagnostics['route_counts'] = dict(sorted(route_counts.items()))
+    if verbose:
+        routes = ', '.join(
+            f"{route}={count}"
+            for route, count in qp_diagnostics['route_counts'].items()
+        )
+        print(f"VCE QP routes: {routes}")
+    if verbose and qp_session is not None:
+        print(
+            "VCE certified KKT acceleration: "
+            f"KKT {qp_diagnostics['successes']}/"
+            f"{qp_diagnostics['attempts']}, repairs "
+            f"{qp_diagnostics['repairs']}, fallbacks "
+            f"{qp_diagnostics['fallbacks']}"
+        )
+
     return {
         'm': m,
         # ``solved_*`` is the only scale state scientifically associated with
@@ -502,6 +610,7 @@ def simplified_vce(
             for index, group in enumerate(smooth_group_names)
         },
         'component_diagnostics': component_diagnostics,
+        'qp_diagnostics': qp_diagnostics,
         'convergence_mode': convergence_mode,
         'convergence_metric': convergence_metric,
         'convergence_measure': float(change),

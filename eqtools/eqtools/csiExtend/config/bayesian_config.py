@@ -145,9 +145,15 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
 
         # Bayesian-specific post-processing
         self._process_bayesian_specific_config()
+        self._validate_rake_angle_scope()
         
         # Bayesian-specific validation
         self._validate_fault_configurations()
+
+        # Emit normalization decisions before numerical assembly.  The single
+        # flushed stdout block also preserves the order of preceding CSI
+        # initialization output under MPI forwarding.
+        self.report_config_diagnostics()
         
         # Initialize data assembly
         if self.clipping_options.get('enabled', False):
@@ -161,6 +167,9 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Validate the perturbation methods defined in the raw YAML configuration
         self._validate_perturbation_config()
         self._normalize_mesh_config()
+        # Perturbation preflight can add later diagnostics.  The report cursor
+        # emits only those new records and never repeats the earlier block.
+        self.report_config_diagnostics()
 
         if self.parallel_rank is not None and self.parallel_rank == 0:
             self.export_config()
@@ -244,6 +253,26 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Map 'mag_rake' to 'magnitude_rake'
         if self.slip_sampling_mode == 'mag_rake':
             self.slip_sampling_mode = 'magnitude_rake'
+
+    def _validate_rake_angle_scope(self):
+        """Diagnose a top-level rake value against the final sampling mode.
+
+        ``SMC_FJ`` forces ``slip_sampling_mode`` to ``ss_ds`` during Bayesian
+        post-processing.  Scope validation must therefore run after that
+        normalization, rather than against the transient value read from YAML.
+        The top-level scalar is separate from per-fault rake constraints in the
+        bounds configuration.
+        """
+        configured = getattr(self, '_rake_angle_was_configured', False)
+        configured = configured or self.rake_angle is not None
+        if configured and self.slip_sampling_mode != 'rake_fixed':
+            self._record_config_diagnostic(
+                'CFG_UNUSED_RAKE_ANGLE',
+                f"ignored because slip_sampling_mode="
+                f"'{self.slip_sampling_mode}'; it is used only by "
+                "'rake_fixed'",
+                field='rake_angle',
+            )
 
     def _validate_perturbation_config(self):
         """
@@ -632,7 +661,6 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         6. mesh_valid=False + inherited/missing unregistered → try get_mesh_params()
         7. Auto-filled update_mesh also gets forbidden + spelling check
         """
-        import warnings
         from .. import mesh_registry as _mesh_registry
         from ..bayesian_perturbation_base import PerturbationRegistry
 
@@ -654,10 +682,13 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             # Rule 1: geometry.update=false — update_mesh won't be called
             if not geom_config.get('update', False):
                 if origin.get('update_mesh') == 'explicit':
-                    warnings.warn(
-                        f"[{fault_name}] geometry.update=false but update_mesh is "
-                        f"explicitly configured; it will not be called.",
-                        stacklevel=2,
+                    self._record_config_diagnostic(
+                        'CFG_UNUSED_UPDATE_MESH',
+                        'geometry.update=false, so the explicitly configured '
+                        'update_mesh method will not be called',
+                        field=(
+                            f'faults.{fault_name}.method_parameters.update_mesh'
+                        ),
                     )
                 continue
 
@@ -697,10 +728,13 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             # --- mesh_valid=True: warn if explicit, then done ---
             if mesh_valid_flag:
                 if mesh_method and mesh_origin == 'explicit':
-                    warnings.warn(
-                        f"[{fault_name}] perturbation method '{perturb_method}' already "
-                        f"updates mesh internally; explicit update_mesh will be ignored.",
-                        stacklevel=2,
+                    self._record_config_diagnostic(
+                        'CFG_REDUNDANT_UPDATE_MESH',
+                        f"perturbation method '{perturb_method}' updates the mesh "
+                        'internally; the explicit update_mesh method is ignored',
+                        field=(
+                            f'faults.{fault_name}.method_parameters.update_mesh'
+                        ),
                     )
                 continue
 
@@ -809,6 +843,11 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             self.alpha.update(config_data['alpha'])
             config_data.pop('alpha')  # Remove alpha from config_data to avoid overwriting the alpha attribute
     
+        # Remember field presence until the final Bayesian sampling-mode
+        # normalization has completed.  Its meaning cannot be decided from the
+        # transient YAML mode alone because SMC_FJ later forces ``ss_ds``.
+        self._rake_angle_was_configured = 'rake_angle' in config_data
+
         # Handle the default parameters
         if 'slip_sampling_mode' in config_data:
             self.slip_sampling_mode = config_data['slip_sampling_mode']
@@ -819,9 +858,6 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     msg = "When slip_sampling_mode is 'rake_fixed', a 'rake_angle' must be provided in the config file."
                     logger.error(msg)
                     raise ValueError(msg)
-            elif 'rake_angle' in config_data:
-                if self.verbose:
-                    logger.warning("Warning: 'rake_angle' is provided but 'slip_sampling_mode' is not 'rake_fixed'. 'rake_angle' will be ignored.")
     
         # Get the default parameters
         default_fault_parameters = config_data['faults']['defaults']

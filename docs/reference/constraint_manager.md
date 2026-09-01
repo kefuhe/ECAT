@@ -433,6 +433,11 @@ BLSE 和 VCE 每次求解前读取同一管理器 revision。`SMC_FJ` 在 target
 bounds 快照，并让 prior 与 proposal 使用同一数组。之后若约束发生变化，
 旧 target 会拒绝继续，需要重新调用对应 `walk_*()` 或重建 target。
 
+约束管理器只负责“约束是什么”和“对应哪些参数列”，不选择数值后端。求解层读取冻结
+快照后自动区分无约束、仅 bounds 和一般线性约束：只有没有 `A/Aeq` 且自由解严格位于
+bounds 内时，才接受通过证书的 Cholesky 解；活动 bounds、rake、零滑等式或自定义矩阵
+仍进入 QP。用户不需要设置路由参数，也不应通过删除物理约束来触发某条数值路径。
+
 ```python
 snapshot = inversion.get_constraint_snapshot(validate=True)
 print(snapshot["state_revision"])

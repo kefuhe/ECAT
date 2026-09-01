@@ -86,28 +86,48 @@ ECAT 让不同 rank 分担粒子。rank 数不应超过 `nchains`；能整除 `n
 如果 MPI runtime 已经为每个 rank 分配 CPU 并自动控制数值线程，用户也不需要再
 手工设置 `MKL_NUM_THREADS=1`。
 
+### 启动期配置诊断
+
+配置读取、规范化和预检发现可继续运行的问题时，ECAT 由 rank 0 在实际发现阶段输出紧凑的
+静态诊断，例如：
+
+```text
+CONFIG  WARN  CFG_UNUSED_RAKE_ANGLE           rake_angle: ignored because slip_sampling_mode='ss_ds'; it is used only by 'rake_fixed'
+```
+
+这类确定性的配置诊断与普通初始化信息使用同一个 `stdout`，每条诊断只显示一次并立即刷新；
+因此不会因为 MPI 分别转发 `stdout` 和 `stderr` 而跑到数据、断层初始化信息之前。其他 rank
+执行相同配置验证但不重复显示。致命配置错误仍通过异常停止运行，采样期的数值 warning 仍属于
+运行期诊断，不会被伪装成配置提示。
+
 ### SMC 长任务进度表
 
 SMC-FJ、FULLSMC 和非线性几何 SMC 由 rank 0 输出同一份阶段表：
 
 ```text
-STAGE  BETA (FROM -> TO)        START     END       MCMC TIME   TOTAL
-    1  PRIOR -> 0.000000     12:07:07  12:16:06    00:08:59    00:08:59
-    2  0.000000 -> 0.001953  12:16:06  12:50:09    00:34:03    00:43:02
-    3  0.001953 -> 1.000000  12:50:09  13:24:01    00:33:52    01:16:54
+ATMIP  mode=fresh  chains=100x50  mpi_ranks=25  started=2026-08-27 09:14:03
+TIME      ELAPSED    STATUS  CURRENT   BETA (FROM -> TO)       PREVIOUS / DETAIL
+09:14:03    00:00:00  RUN     PRIOR      initial population      -
+09:21:32    00:07:29  RUN     STAGE 02   0.000000 -> 0.001953    PRIOR 00:07:29
+10:00:44    00:46:41  RUN     STAGE 03   0.001953 -> 1.000000    STAGE 02 00:39:12
+10:38:49    01:24:46  DONE    ATMIP      stage=3 beta=1.000000   STAGE 03 00:38:05
 ```
 
-`MCMC TIME` 是该阶段 mutation 的墙钟时间，`TOTAL` 是本次启动或恢复会话自开始以来的
-累计墙钟时间。交互终端会显示一个带 `MCMC` 或 `FINAL MCMC` 的临时活动行；阶段结束时
-该行原位替换为上面这种唯一的完成记录，不会为同一阶段保留开始、结束两行。Python warning
-会暂时清除活动行，正常显示后再恢复当前进度。Windows Terminal、VS Code 终端以及
-WSL/Linux 控制终端均由 rank 0 自动识别，不需要用户选择显示模式。若 MPI 转发或批处理环境
-无法确认支持原位刷新，程序会安全退化为向 `stdout` 追加每个已完成阶段及最终总时间；不会
-因为控制终端探测失败而静默丢失整张进度表。自动识别为批处理或无终端时不会写入回车控制符。
+每一行表示一次状态转换，而不是重复报告同一阶段：`CURRENT` 是该行输出后正在执行的工作，
+所以长时间没有新行时，最后一行仍能回答“现在运行到哪里”；`ELAPSED` 是本次启动或恢复以来的
+累计墙钟时间；`PREVIOUS / DETAIL` 给出刚完成工作的耗时。阶段完成时程序先记住耗时，下一阶段
+开始时再把它写到 `PREVIOUS / DETAIL`，因此不会同时保留同一阶段的 `RUN` 和 `DONE` 两行。
+最终行用 `DONE ATMIP` 给出最终 beta、阶段号、最后一次 MCMC 的耗时和总耗时。若在初始化阶段
+失败，则相同表格用 `FAILED` 记录失败位置、已运行时间和异常摘要。首行的 `chains=100x50`
+是 `nchains × chain_length` 的紧凑写法，不是 MPI rank 数。
 
-`FINAL MCMC` 只在活动行中表示 beta 已到 1、正在完整目标后验下执行最后一次 mutation；
-完成后留下普通的阶段记录，随后输出带完整结束时间的 `ATMIP completed`。由于 beta 阶段数
-由采样器自适应决定，进度表不显示容易误导的完成百分比或 ETA。
+这张表只由 rank 0 向同一个 `stdout` 追加普通文本；没有回车覆盖、ANSI 控制、终端探测或每个
+rank 的重复进度。每条记录都会立即刷新，所以 Windows、Linux、WSL、MPI 转发、输出重定向和
+批处理日志采用相同格式，普通初始化 `verbose` 信息也会在进度表开始前刷新。标准运行命令仍是
+`python script.py` 或 `mpiexec -n N python script.py`，不要求用户了解或添加 `python -u`。
+采样期 Python warning 可以正常出现在状态行之间，不会破坏已有记录。由于 beta 阶段数由采样器自适应
+决定，进度表不显示容易误导的完成百分比或 ETA；当某行的目标 beta 为 `1.000000` 时，该行表示
+正在完整目标后验下执行最后一次 mutation，并不表示采样已经完成，只有 `DONE ATMIP` 才表示结束。
 
 ## 5. CPU affinity / pinning 是什么
 

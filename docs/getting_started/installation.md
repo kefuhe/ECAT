@@ -307,8 +307,14 @@ MPI runtime 问题与普通 Python 包导入问题分开诊断。
 
 ## 8. 快速检查
 
+BLSE、VCE 和 SMC-FJ 的条件线性求解依赖已包含在基础安装中：SciPy 提供
+Cholesky/条件估计，CVXOPT 处理活动边界及一般线性约束，Clarabel 只在可信 QP
+失败后承担延迟回退。无需另装 `qpsolvers`、DAQP 或其他实验后端；本机是否恰好安装
+这些包也不会改变 ECAT 的生产求解路由。
+
 ```bash
 python -c "import csi, eqtools, okada4py; print('ECAT imports succeeded')"
+python -c "import cvxopt, clarabel; from scipy.linalg.lapack import dpocon; print('ECAT linear solvers succeeded')"
 ecat-generate-downsample --help
 ecat-generate-nonlinear --help
 ecat-downsample --help

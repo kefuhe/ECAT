@@ -34,9 +34,9 @@ GF、Laplacian 和约束。
 | 如何计算 Euler/block 模式的震间 loading/backslip/coupling | [Interseismic Kinematics](../reference/interseismic_kinematics.md) | [线性滑动配置](../reference/config_linear_slip.md#震间配置) |
 | 如何用深部自由滑动作为浅部加载代理 | [Deep Slip Loading Proxy](../reference/deep_slip_loading_proxy.md) | [Fault Patch Indices](../reference/fault_patch_indices.md) |
 | sigma 和 alpha 如何解释 | [Sigmas and Alpha](../reference/sigmas_alpha.md) | [BLSE/VCE 参考](../reference/blse_vce.md) |
-| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [平滑模板](../../scripts/test_smoothing_search_BLSE.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
-| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](../../scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
-| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](../../scripts/test_dip_smoothing_search_BLSE.py) |
+| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
+| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [Fit Statistics](../reference/fit_statistics.md) |
+| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | 参见该工作流中的顺序式示例 |
 
 ## 目标
 
@@ -201,6 +201,15 @@ VCE 对所有可更新有效组统一估计绝对方差尺度，并以
 `max(abs(log(update_factor))) < tol` 判断乘法收敛；默认 `tol=1e-4`。固定组仍参与
 线性求解，但不参加停止判断。公式、结果字段和单分量情形见
 [BLSE/VCE 参考](../reference/blse_vce.md#乘法收敛判据)。
+当普通 VCE 已稳定运行、且约束问题较大时，可按
+[连续 QP 快速路径](../reference/blse_vce.md#连续-qp-快速路径可选) 显式试用
+`qp_acceleration="certified_kkt"`。中央求解器始终自动区分无约束、仅 bounds 和一般线性
+约束；该选项只额外预测相邻 VCE 轮次的活动集，失败会回退同一中央路线。用户不选择具体
+后端，也不应为了提速删除具有物理意义的 rake 或其他约束。返回结果中的
+`qp_diagnostics["route_counts"]` 可只读检查各路线实际使用次数；命中很少时再查看
+`skips`、`fallbacks`、`disabled_reason` 和 `failure_reasons`。若 rake 与某个分量的单边
+bound 表达了同一符号先验，应按 [rake 与 bounds 的职责划分](../reference/rake_constraints.md#避免用-component-bounds-重复表达-rake-方向)
+检查配置；有独立物理意义的约束仍应保留。
 
 Smoothing loop 只返回候选表和权衡图：粗糙度统一按未加权 \(L_0\) 计算，且循环结束后
 恢复调用前的活动解。图中的 preferred 点不会自动成为最终模型；选定权重后，用固定平滑

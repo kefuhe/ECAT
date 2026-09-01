@@ -75,6 +75,10 @@ class BoundLSEInversionConfig(LinearInversionConfig):
 
         # BLSE-specific validation
         self._validate_laplacian_bounds()
+
+        # Keep deterministic config decisions ordered with preceding startup
+        # output before any data/solver assembly messages are produced.
+        self.report_config_diagnostics()
         
         # Data assembly
         if self.clipping_options.get('enabled', False):

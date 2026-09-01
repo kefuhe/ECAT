@@ -310,6 +310,7 @@ inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 | `convergence_mode` | 有有效更新分量时为 `absolute_log`；全部固定时为 `fixed` |
 | `convergence_metric` | 当前为 `max_abs_log_update_factor` |
 | `convergence_measure` | 最后一次的 `max(abs(log(u)))`；与 `tol` 直接比较 |
+| `qp_diagnostics` | 只读求解诊断；含 `acceleration`、各中央/快速路线的 `route_counts`，启用 KKT 时另含命中、修复、跳过、回退与耗时统计 |
 | `converged` | 是否收敛 |
 | `iterations` | 迭代次数 |
 
@@ -360,6 +361,114 @@ simple VCE 返回的是绝对方差分量，而不只是分量之间的相对比
 
 最终拟合表中的 `Eff. std`、`Qw`、`wRMS` 和 reduced 值定义见
 [拟合统计量](fit_statistics.md#covariance-aware-diagnostics)。
+
+### H–q 自动求解路由与边界诊断
+
+BLSE、simple VCE 和 SMC-FJ 的条件线性问题使用同一二次目标：
+
+\[
+\min_m\;\frac12m^\mathsf{T}Hm+q^\mathsf{T}m,
+\qquad
+l\le m\le u,\quad Am\le b,\quad A_{\rm eq}m=b_{\rm eq}.
+\]
+
+用户只声明科学约束，不需要选择“无约束”或“box 求解器”。内部根据最终约束快照自动
+分类，但不改写任何 bounds、rake 或自定义矩阵：
+
+| 最终约束结构 | 标准路线 | 接受条件 |
+| --- | --- | --- |
+| 无约束 | Cholesky 解 `Hm=-q` | SPD、条件估计和 stationarity 证书通过 |
+| 仅 bounds | 先检查同一自由解 | 严格位于 bounds 内且 projected-KKT 证书通过 |
+| 自由解接近/越过 bounds | box QP | 保留全部上下界 |
+| rake、等式或一般不等式 | 通用 QP | 保留完整 `A/b/Aeq/beq` |
+
+直接路线还会检查 Hessian 对称性、Cholesky、reciprocal condition estimate、bounds
+可行性和缩放 stationarity。任一检查不通过只会改变数值求解路线：问题立即交给原
+CVXOPT QP；CVXOPT 失败后才延迟物化同一残差系统并进入 Clarabel。它不会自动增加
+正则化、放宽 bounds 或移除 rake。
+
+需要区分两类诊断：Hessian 数值病态由求解层自动识别并回退；解靠近 bounds 只说明
+边界可能控制当前点估计。BLSE/VCE 的一个最优点不能证明后验“偏态”；在 Bayesian
+结果中应另外检查边界附近样本比例、MAP/median 和上下分位区间。ECAT 只报告，不会
+根据这些统计自动扩大边界，因为扩大边界会改变科学先验。
+
+关闭 rake 不是纯性能选项。它可能把问题从一般 QP 变成 box-only，也同时允许原角度
+扇区之外的滑动。只有在机制先验确实允许时才关闭；不能为了触发快速路线而删除物理约束。
+
+### 连续 QP 快速路径（可选）
+
+simple VCE 始终使用上述中央自动路由；用户不需要、也不能逐一指定 Cholesky、CVXOPT
+或 Clarabel。默认 `qp_acceleration="off"` 不增加跨轮状态。对参数较多、活动约束在
+相邻 VCE 轮次间较稳定的问题，可以显式试用高级加速：
+
+```python
+vce_result = inv.run_simple_vce(
+    max_iter=20, tol=1e-4, report="compact",
+    qp_acceleration="certified_kkt",
+)
+print(vce_result["qp_diagnostics"])
+```
+
+`certified_kkt` 不会改写 VCE 更新公式，也不会改变 \(H^{(t)},q^{(t)}\)、参数列或约束。
+第一次求解仍走中央路线；后续轮次只在同一次 `run_simple_vce()` 内用上一轮已认证活动集构造
+
+\[
+\begin{bmatrix}
+H & C_W^\mathsf{T}\\
+C_W & 0
+\end{bmatrix}
+\begin{bmatrix}m\\\lambda_W\end{bmatrix}
+=
+\begin{bmatrix}-q\\b_W\end{bmatrix}.
+\]
+
+候选解必须同时通过原坐标下的不等式/等式可行性、KKT stationarity、乘子符号和
+complementarity 检查。活动集预测、修复或证书任一失败时，该轮立即回到标准路线；
+标准路线若需要 QP，仍先用 CVXOPT，CVXOPT 本身失败时保留 Clarabel 残差形式后备。
+session 在该次 VCE 返回时销毁，
+不会跨 inversion、geometry、SMC 粒子或 MPI rank 保存。
+
+`qp_diagnostics["route_counts"]` 只统计每轮最终接受的求解路线，例如
+`direct_unconstrained`、`direct_box_inactive`、`unconstrained_qp`、`box_qp`、
+`general_qp`、`clarabel_fallback` 或 `vce_certified_kkt`。它不参与下一轮求解，也不公开
+或允许设置内部证书阈值。修改返回字典不会改变已经完成的模型。
+
+#### 查看快速路径是否生效
+
+`qp_diagnostics` 是只读运行诊断。通常先查看以下字段，不需要打开调试日志：
+
+```python
+diag = vce_result["qp_diagnostics"]
+for key in (
+    "route_counts", "attempts", "successes", "repairs",
+    "skips", "fallbacks", "disabled_reason", "failure_reasons",
+    "last_seed_active_count", "kkt_seconds", "fallback_seconds",
+):
+    print(f"{key}: {diag.get(key)}")
+```
+
+| 字段 | 怎样解释 |
+| --- | --- |
+| `route_counts` | 每轮最终被接受的路线；`vce_certified_kkt` 次数较多才说明快速路径实际命中 |
+| `attempts` / `successes` | KKT 尝试数与通过完整中央证书的次数 |
+| `repairs` | 预测活动集经过 add/drop 修复的累计次数 |
+| `skips` | 门控认为本轮不适合 KKT，直接走标准路线的次数 |
+| `fallbacks` | KKT 未通过后由标准中央路线完成求解的次数 |
+| `disabled_reason` | 当前 session 停用快速路径的原因；`rank_deficient_working_set` 常表示活动行线性相关 |
+| `failure_reasons` | 失败原因计数，用于区分工作集秩亏、证书失败等情况 |
+| `last_seed_active_count` | 最近一次认证标准解识别出的活动不等式数；很大时快速路径收益通常下降 |
+| `kkt_seconds` / `fallback_seconds` | 快速尝试与标准回退的累计耗时；用于判断加速是否真实存在 |
+
+`sum(route_counts.values())` 应与 VCE 实际求解轮数一致。`successes=0`、较多 `skips`
+或 `disabled_reason` 不表示 VCE 结果错误：它们表示本次问题不适合这条可选快速路径，标准
+求解器仍负责给出并认证解。若 `rank_deficient_working_set` 与 rake 同时出现，应先检查
+component bounds 是否重复表达了 rake 已推出的符号关系；配置原则和代数例子见
+[避免用 component bounds 重复表达 rake 方向](rake_constraints.md#避免用-component-bounds-重复表达-rake-方向)。
+
+该选项是有条件的性能优化，不是新的求解模型：低到中等活动率、相邻轮变化较小时通常
+更有利；活动约束很多或早期方差变化很大时会跳过或回退，因此不保证加速。工作集解位于
+精确活动边界，CVXOPT 是有限容差内点解，两者可能有求解器容差量级差异；应以预测、约束
+残差和最终 sigma/alpha 的科学精度做对照，不应要求随机或浮点路径逐位相同。
 
 VCE 可从配置读取 `geodata.sigmas` 和 `alpha` 的
 `mode/update/initial_value`。`alpha.update: true` 表示由 VCE 迭代更新该
@@ -459,11 +568,13 @@ BLSE/VCE 支持的约束主要包括：
 
 ### 求解器与约束保留
 
-BLSE/VCE 首先使用 CVXOPT QP 路径。固定权重 BLSE 按数据块累计
+BLSE/VCE 默认使用统一 H–q 自动路由。固定权重 BLSE 按数据块累计
 \(H=A^\mathsf{T}A\)、\(q=-A^\mathsf{T}b\)；simple VCE 直接复用本轮由冻结
 Gram/cross 块组合的同一 \(H,q\)。这仍是历史 `lsqlin` 在内部实际求解的二次目标，
 并保留相同参数排列和约束。DES 开启时，BLSE 只从 DES 已变换的 \(G',D'\) 形成
-\(H,q\)，不会与变换前矩阵混用。若 QP 因 Euler 列、滑动列和硬等式之间的尺度差异返回
+\(H,q\)，不会与变换前矩阵混用。无约束或仅 bounds 且自由解严格位于边界内时，
+Cholesky 证书通过即可返回同一精确最优解；有活动边界、rake、等式或一般不等式时仍
+进入 CVXOPT。若 QP 因 Euler 列、滑动列和硬等式之间的尺度差异返回
 `unknown` 或抛出数值异常，ECAT 才自动启用稳健后备：
 
 1. 对具有独立 pivot 参数的硬等式做严格代数消元；这不是删除或软化约束。
@@ -477,6 +588,9 @@ BLSE 和 simple VCE 正常求解时都不拼接完整增广残差矩阵；只有
 后备所需的信息。后备路径只在原 QP 失败时运行，计算时间可能明显增加。若两个后端都不收敛，
 求解会明确报错；ECAT 不会再通过移除等式或不等式约束来生成一个看似成功的
 结果。正式研究仍应检查约束配置的物理可行性，不能把数值后备当作放宽先验。
+
+`run_simple_vce(qp_acceleration="certified_kkt")` 只在上述中央链路之前增加一次受门控且有
+中央证书的候选局部 KKT 尝试；它不是 BLSE、SMC-FJ 或 FULLSMC 的全局后端开关。
 
 <a id="recommended-reporting"></a>
 

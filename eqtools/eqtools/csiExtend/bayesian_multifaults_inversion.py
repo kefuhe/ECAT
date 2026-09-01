@@ -321,6 +321,15 @@ class BayesianMultiFaultsInversion(
         else:
             self.config = config
 
+        reporter = getattr(self.config, 'report_config_diagnostics', None)
+        if reporter is not None:
+            rank = (
+                parallel_rank
+                if parallel_rank is not None
+                else MPI.COMM_WORLD.Get_rank()
+            )
+            reporter(enabled=bool(verbose and rank == 0))
+
         if interseismic_config is None:
             interseismic_config = getattr(self.config, 'interseismic_config_file', None)
         if interseismic_config is not None:

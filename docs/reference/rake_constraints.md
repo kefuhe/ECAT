@@ -81,6 +81,49 @@ ss * sin(rake0) - ds * cos(rake0) = 0
 该等式只限定一条穿过原点的直线。若还需要限定沿直线的正负方向，应另外使用
 slip bounds 或符号不等式。
 
+### 避免用 component bounds 重复表达 rake 方向
+
+`rake_angle` 与 `strikeslip`/`dipslip` 可以同时使用，但应分别承担不同职责：
+
+- rake sector 表达断层面内允许的**方向或分量耦合关系**；
+- component bounds 表达各分量独立的**物理幅值范围**或宽泛数值保护。
+
+不要在没有独立科学理由时，用 component bound 再重复 rake 已经表达的符号。例如
+`rake_angle: [150, 210]` 对每个 patch 生成
+
+\[
+0.5\,ss+0.866\,ds\le 0,
+\qquad
+0.5\,ss-0.866\,ds\le 0.
+\]
+
+两式相加可得 \(ss\le 0\)。这时再设置 `strikeslip: [-10, 0]`，其上界行
+\(ss\le0\) 与 rake 两行线性相关；零滑 patch 处三行还可能同时活动。约束可行域没有
+因此变得更严格，但连续 VCE 的活动集 KKT 快速路径可能因工作集秩亏而回退到标准 QP。
+回退只影响耗时，不改变原问题或最终证书。
+
+若 rake sector 已经表达方向，通常把 component bounds 保留为宽泛幅值保护：
+
+```yaml
+rake_angle:
+  FaultA: [150.0, 210.0]
+
+strikeslip:
+  FaultA: [-10.0, 10.0]
+dipslip:
+  FaultA: [-10.0, 10.0]
+```
+
+这里 `strikeslip` 的正值区间并不会被线性解实际采用，因为 rake sector 仍要求
+\(ss\le0\)。如果只知道某一分量的符号、并不知道可信的 rake 范围，则反过来：不声明
+rake sector，只用 `strikeslip: [-10, 0]` 或相应的 `dipslip` bound。
+
+若 rake 与 component bound 分别来自独立物理先验，应保留两者，即使快速路径因此回退；
+不能为了提速删除有意义的约束。也不要用 `-epsilon` 或很小的正上界规避诊断，这会改变
+约束语义或让结果依赖数值容差。component box 约束各分量，不等价于总滑动幅值上界。
+VCE 路线和回退原因的查看方法见
+[连续 QP 快速路径](blse_vce.md#连续-qp-快速路径可选)。
+
 ## 两种 angle 校验
 
 ### 线性 sector
@@ -288,6 +331,8 @@ A = snapshot["inequality_constraints"]["rake_sector"]["A"]
 
 - 只限制某一滑动分量正负时，优先使用 `strikeslip`/`dipslip` bounds。
 - 已知一个允许范围时使用 rake sector。
+- 同时使用 rake 与 component bounds 时，让前者表达方向、后者表达独立的宽泛幅值范围；
+  不要无意中重复同一符号约束。
 - 机制非常明确且确实需要零宽角度时才使用 fixed rake。
 - 不同断层段机制不同时使用 patch selector，不要把整条 fault 强制为同一 sector。
 

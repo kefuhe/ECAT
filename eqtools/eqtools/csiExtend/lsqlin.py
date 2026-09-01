@@ -13,10 +13,18 @@ __version__ = '1.0'
 __date__ = '22.11.2013'
 __license__ = 'WTFPL'
 
+import itertools
+from dataclasses import dataclass
+
 import numpy as np
 from cvxopt import solvers, matrix, spmatrix, mul
-import itertools
-from scipy import sparse
+from scipy import linalg, sparse
+from scipy.linalg.lapack import dpocon
+
+
+_DIRECT_CERTIFICATE_TOL = 1.0e-8
+_TRUSTED_CERTIFICATE_TOL = 1.0e-6
+_DIRECT_RCOND_THRESHOLD = 100.0 * np.finfo(float).eps
 
 
 def scipy_sparse_to_spmatrix(A):
@@ -89,6 +97,98 @@ def cvxopt_to_numpy_matrix(A):
     return np.atleast_1d(np.asarray(A).squeeze())
 
 
+@dataclass(frozen=True)
+class PreparedQPConstraints:
+    """Canonical linear constraints shared by every quadratic solve path.
+
+    Inequalities always use ``G @ x <= h`` and equalities use
+    ``Aeq @ x == beq``.  Bounds are appended after caller-supplied
+    inequalities in the historical CVXOPT order: lower bounds first, then
+    upper bounds.  Keeping this conversion in one place prevents a fast path
+    from assigning different signs or row positions to the same constraint.
+    """
+
+    G: object
+    h: object
+    Aeq: object
+    beq: object
+
+
+@dataclass(frozen=True)
+class QuadraticConstraintProfile:
+    """Small routing view of one quadratic problem's constraints.
+
+    The inversion and constraint-manager layers remain authoritative for the
+    scientific meaning and parameter layout.  This profile records only the
+    numerical structure needed to choose an exact solver path.
+    """
+
+    kind: str
+    lower: np.ndarray
+    upper: np.ndarray
+    finite_lower: np.ndarray
+    finite_upper: np.ndarray
+
+
+def _prepare_qp_constraints(
+        nvars, A=None, b=None, Aeq=None, beq=None, lb=None, ub=None):
+    """Return the exact linear-constraint layout consumed by CVXOPT.
+
+    This helper intentionally preserves the dense/sparse choice and bound-row
+    order of the longstanding ``_solve_qp`` implementation.  It is also the
+    single source of truth for certified sequential-QP fast paths.
+    """
+    sparse_case = sparse.issparse(A) or isinstance(A, spmatrix)
+    if isinstance(A, spmatrix):
+        A = spmatrix_sparse_to_scipy(A)
+    elif isinstance(A, matrix):
+        A = np.asarray(A, dtype=float)
+    if isinstance(Aeq, spmatrix):
+        Aeq = spmatrix_sparse_to_scipy(Aeq)
+    elif isinstance(Aeq, matrix):
+        Aeq = np.asarray(Aeq, dtype=float)
+
+    lb = cvxopt_to_numpy_matrix(lb)
+    ub = cvxopt_to_numpy_matrix(ub)
+    b = cvxopt_to_numpy_matrix(b)
+    beq = cvxopt_to_numpy_matrix(beq)
+    if b is not None and b.size == 1:
+        b = np.array([b.item(0)])
+    if beq is not None and np.asarray(beq).size == 1:
+        beq = np.asarray(beq, dtype=float).reshape(1)
+
+    if lb is not None:
+        if lb.size == 1:
+            lb = np.repeat(lb, nvars)
+        if lb.size != nvars or np.any(np.isnan(lb)):
+            raise ValueError(f"lb must contain one or {nvars} non-NaN entries")
+        finite = np.isfinite(lb)
+        if np.any(finite):
+            if sparse_case:
+                lb_A = -sparse.eye(nvars, nvars, format='csr')[finite]
+                A = sparse_None_vstack(A, lb_A)
+            else:
+                lb_A = -np.eye(nvars)[finite]
+                A = numpy_None_vstack(A, lb_A)
+            b = numpy_None_concatenate(b, -lb[finite])
+    if ub is not None:
+        if ub.size == 1:
+            ub = np.repeat(ub, nvars)
+        if ub.size != nvars or np.any(np.isnan(ub)):
+            raise ValueError(f"ub must contain one or {nvars} non-NaN entries")
+        finite = np.isfinite(ub)
+        if np.any(finite):
+            if sparse_case:
+                ub_A = sparse.eye(nvars, nvars, format='csr')[finite]
+                A = sparse_None_vstack(A, ub_A)
+            else:
+                ub_A = np.eye(nvars)[finite]
+                A = numpy_None_vstack(A, ub_A)
+            b = numpy_None_concatenate(b, ub[finite])
+
+    return PreparedQPConstraints(G=A, h=b, Aeq=Aeq, beq=beq)
+
+
 def _as_vector(value, size=None, default=None):
     if value is None:
         if size is None or default is None:
@@ -100,6 +200,259 @@ def _as_vector(value, size=None, default=None):
     return out
 
 
+def _matrix_row_count(value):
+    if value is None:
+        return 0
+    if isinstance(value, (matrix, spmatrix)):
+        return int(value.size[0])
+    return int(value.shape[0])
+
+
+def _rhs_has_entries(value):
+    if value is None:
+        return False
+    return np.asarray(cvxopt_to_numpy_matrix(value)).size > 0
+
+
+def _quadratic_constraint_profile(
+        nvars, A=None, b=None, Aeq=None, beq=None, lb=None, ub=None):
+    """Classify constraints without changing their scientific semantics."""
+    lower = _as_vector(lb, nvars, -np.inf)
+    upper = _as_vector(ub, nvars, np.inf)
+    if lower.size != nvars or upper.size != nvars:
+        raise ValueError(
+            f"bounds must contain one or {nvars} entries per side"
+        )
+    if np.any(np.isnan(lower)) or np.any(np.isnan(upper)):
+        raise ValueError("bounds must not contain NaN")
+    if np.any(lower > upper):
+        raise ValueError("lower bounds must not exceed upper bounds")
+
+    general = (
+        _matrix_row_count(A) > 0
+        or _matrix_row_count(Aeq) > 0
+        or _rhs_has_entries(b)
+        or _rhs_has_entries(beq)
+    )
+    finite_lower = np.isfinite(lower)
+    finite_upper = np.isfinite(upper)
+    if general:
+        kind = "general_linear"
+    elif np.any(finite_lower) or np.any(finite_upper):
+        kind = "box_only"
+    else:
+        kind = "unconstrained"
+    return QuadraticConstraintProfile(
+        kind=kind,
+        lower=lower,
+        upper=upper,
+        finite_lower=finite_lower,
+        finite_upper=finite_upper,
+    )
+
+
+def certify_box_quadratic_solution(
+        H, q, x, profile, *, tolerance=_DIRECT_CERTIFICATE_TOL):
+    """Certify primal feasibility and projected KKT stationarity.
+
+    For a lower-active variable the objective gradient must be non-negative;
+    for an upper-active variable it must be non-positive; for a free variable
+    it must vanish.  Fixed variables need no projected-gradient condition.
+    This avoids constructing dense ``2p x p`` identity constraint matrices
+    merely to certify an unconstrained optimum lying inside its bounds.
+    """
+    H = np.asarray(H, dtype=float)
+    q = np.asarray(q, dtype=float).reshape(-1)
+    x = np.asarray(x, dtype=float).reshape(-1)
+    if (
+        H.ndim != 2
+        or H.shape[0] != H.shape[1]
+        or x.size != q.size
+        or x.size != H.shape[0]
+        or not np.all(np.isfinite(H))
+        or not np.all(np.isfinite(q))
+        or not np.all(np.isfinite(x))
+    ):
+        return {
+            "passed": False,
+            "primal": np.inf,
+            "stationarity": np.inf,
+            "active_lower": 0,
+            "active_upper": 0,
+        }
+
+    lower_scale = 1.0 + np.abs(profile.lower)
+    upper_scale = 1.0 + np.abs(profile.upper)
+    lower_violation = np.zeros_like(x)
+    upper_violation = np.zeros_like(x)
+    lower_violation[profile.finite_lower] = np.maximum(
+        profile.lower[profile.finite_lower] - x[profile.finite_lower], 0.0
+    ) / lower_scale[profile.finite_lower]
+    upper_violation[profile.finite_upper] = np.maximum(
+        x[profile.finite_upper] - profile.upper[profile.finite_upper], 0.0
+    ) / upper_scale[profile.finite_upper]
+    primal = float(max(np.max(lower_violation), np.max(upper_violation)))
+
+    activity_tol = 10.0 * tolerance
+    at_lower = profile.finite_lower & (
+        x - profile.lower <= activity_tol * lower_scale
+    )
+    at_upper = profile.finite_upper & (
+        profile.upper - x <= activity_tol * upper_scale
+    )
+    fixed = at_lower & at_upper
+    gradient = H @ x + q
+    projected = gradient.copy()
+    projected[at_lower & ~at_upper] = np.minimum(
+        gradient[at_lower & ~at_upper], 0.0
+    )
+    projected[at_upper & ~at_lower] = np.maximum(
+        gradient[at_upper & ~at_lower], 0.0
+    )
+    projected[fixed] = 0.0
+    stationarity = float(
+        np.linalg.norm(projected, ord=np.inf)
+        / (1.0 + np.linalg.norm(q, ord=np.inf)
+           + np.linalg.norm(H @ x, ord=np.inf))
+    )
+    return {
+        "passed": bool(primal <= tolerance and stationarity <= tolerance),
+        "primal": primal,
+        "stationarity": stationarity,
+        "active_lower": int(np.count_nonzero(at_lower)),
+        "active_upper": int(np.count_nonzero(at_upper)),
+    }
+
+
+def _try_direct_quadratic_solution(
+        H, q, reg, profile, *, symmetry_tolerance=1.0e-10):
+    """Try the exact free optimum for unconstrained or box-only problems.
+
+    Rejection changes only the numerical route: the caller proceeds to the
+    trusted constrained QP with the original objective and constraints.
+    """
+    diagnostics = {
+        "attempted": False,
+        "accepted": False,
+        "constraint_class": profile.kind,
+        "reason": None,
+    }
+    if profile.kind == "general_linear":
+        diagnostics["reason"] = "general_linear_constraints"
+        return None, diagnostics
+    if sparse.issparse(H) or isinstance(H, (matrix, spmatrix)):
+        diagnostics["reason"] = "non_dense_hessian"
+        return None, diagnostics
+
+    H = np.asarray(H, dtype=float)
+    q = np.asarray(cvxopt_to_numpy_matrix(q), dtype=float).reshape(-1)
+    if (
+        H.ndim != 2
+        or H.shape[0] != H.shape[1]
+        or q.size != H.shape[0]
+        or not np.all(np.isfinite(H))
+        or not np.all(np.isfinite(q))
+    ):
+        diagnostics["reason"] = "invalid_quadratic"
+        return None, diagnostics
+    diagnostics["attempted"] = True
+
+    h_scale = max(1.0, np.linalg.norm(H, ord=np.inf))
+    relative_asymmetry = float(
+        np.linalg.norm(H - H.T, ord=np.inf) / h_scale
+    )
+    diagnostics["relative_asymmetry"] = relative_asymmetry
+    if relative_asymmetry > symmetry_tolerance:
+        diagnostics["reason"] = "nonsymmetric_hessian"
+        return None, diagnostics
+
+    H_effective = 0.5 * (H + H.T)
+    if reg > 0:
+        H_effective = H_effective + reg * np.eye(H.shape[0])
+    try:
+        factor = linalg.cholesky(
+            H_effective, lower=True, check_finite=False
+        )
+    except linalg.LinAlgError:
+        diagnostics["reason"] = "non_spd_hessian"
+        return None, diagnostics
+
+    rcond, info = dpocon(
+        factor, np.linalg.norm(H_effective, ord=1), uplo='L'
+    )
+    rcond = float(rcond)
+    diagnostics["hessian_rcond"] = rcond
+    if info != 0 or not np.isfinite(rcond):
+        diagnostics["reason"] = "condition_estimate_failed"
+        return None, diagnostics
+    if rcond <= _DIRECT_RCOND_THRESHOLD:
+        diagnostics["reason"] = "numerically_rank_deficient_hessian"
+        return None, diagnostics
+
+    x_free = linalg.cho_solve(
+        (factor, True), -q, check_finite=False
+    )
+    lower_scale = 1.0 + np.abs(profile.lower)
+    upper_scale = 1.0 + np.abs(profile.upper)
+    lower_violation = np.zeros_like(x_free)
+    upper_violation = np.zeros_like(x_free)
+    lower_violation[profile.finite_lower] = np.maximum(
+        profile.lower[profile.finite_lower]
+        - x_free[profile.finite_lower],
+        0.0,
+    ) / lower_scale[profile.finite_lower]
+    upper_violation[profile.finite_upper] = np.maximum(
+        x_free[profile.finite_upper]
+        - profile.upper[profile.finite_upper],
+        0.0,
+    ) / upper_scale[profile.finite_upper]
+    max_violation = float(max(
+        np.max(lower_violation), np.max(upper_violation)
+    ))
+    diagnostics["free_solution_bound_violation"] = max_violation
+    if max_violation > _DIRECT_CERTIFICATE_TOL:
+        diagnostics["reason"] = "free_solution_outside_bounds"
+        return None, diagnostics
+
+    candidate = np.minimum(np.maximum(x_free, profile.lower), profile.upper)
+    certificate = certify_box_quadratic_solution(
+        H_effective, q, candidate, profile,
+        tolerance=_DIRECT_CERTIFICATE_TOL,
+    )
+    diagnostics["certificate"] = certificate
+    if not certificate["passed"]:
+        diagnostics["reason"] = "direct_certificate_failed"
+        return None, diagnostics
+    if (
+        profile.kind == "box_only"
+        and (certificate["active_lower"] or certificate["active_upper"])
+    ):
+        # A free optimum numerically touching a bound is still mathematically
+        # feasible, but the active-bound route is deliberately left to the
+        # trusted box QP.  This conservative boundary guard preserves the
+        # established constrained-solver tolerance semantics and keeps the
+        # fast route limited to genuinely inactive bounds.
+        diagnostics["reason"] = "free_solution_near_bound"
+        return None, diagnostics
+
+    diagnostics["accepted"] = True
+    diagnostics["reason"] = "certified"
+    route = (
+        "direct_unconstrained"
+        if profile.kind == "unconstrained"
+        else "direct_box_inactive"
+    )
+    return {
+        "status": "optimal",
+        "x": matrix(candidate),
+        "solver": "scipy_cholesky",
+        "solve_route": route,
+        "constraint_class": profile.kind,
+        "qp_certificate": certificate,
+        "route_diagnostics": diagnostics,
+    }, diagnostics
+
+
 def _as_sparse_rows(value, rhs, nvars):
     if value is None:
         return sparse.csr_matrix((0, nvars)), np.empty(0, dtype=float)
@@ -107,6 +460,139 @@ def _as_sparse_rows(value, rhs, nvars):
         value = spmatrix_sparse_to_scipy(value)
     rows = sparse.csr_matrix(value, dtype=float)
     return rows, _as_vector(rhs)
+
+
+def _qp_constraint_scales(rows, rhs, x):
+    if _matrix_row_count(rows) == 0:
+        return np.empty(0, dtype=float)
+    if sparse.issparse(rows):
+        row_norms = np.asarray(np.abs(rows).sum(axis=1)).reshape(-1)
+    elif isinstance(rows, spmatrix):
+        rows = spmatrix_sparse_to_scipy(rows)
+        row_norms = np.asarray(np.abs(rows).sum(axis=1)).reshape(-1)
+    else:
+        row_norms = np.sum(np.abs(np.asarray(rows, dtype=float)), axis=1)
+    return 1.0 + np.abs(rhs) + row_norms * max(
+        1.0, np.linalg.norm(x, ord=np.inf)
+    )
+
+
+def _qp_matvec(rows, vector):
+    if isinstance(rows, spmatrix):
+        rows = spmatrix_sparse_to_scipy(rows)
+    return np.asarray(rows @ vector, dtype=float).reshape(-1)
+
+
+def _qp_transpose_matvec(rows, vector):
+    if isinstance(rows, spmatrix):
+        rows = spmatrix_sparse_to_scipy(rows)
+    return np.asarray(rows.T @ vector, dtype=float).reshape(-1)
+
+
+def certify_qp_solution(
+        H, q, constraints, x, lambda_ineq=None, lambda_eq=None,
+        *, tolerance=_TRUSTED_CERTIFICATE_TOL):
+    """Evaluate one canonical QP with scaled KKT residuals.
+
+    The same certificate is consumed by the central trusted route and the
+    optional VCE active-set path.  It is diagnostic for CVXOPT/Clarabel but a
+    mandatory acceptance condition for alternative fast paths.
+    """
+    H = np.asarray(H, dtype=float)
+    q = np.asarray(q, dtype=float).reshape(-1)
+    x = np.asarray(x, dtype=float).reshape(-1)
+    n_ineq = _matrix_row_count(constraints.G)
+    n_eq = _matrix_row_count(constraints.Aeq)
+    lambda_ineq = (
+        np.zeros(n_ineq, dtype=float)
+        if lambda_ineq is None
+        else np.asarray(lambda_ineq, dtype=float).reshape(-1)
+    )
+    lambda_eq = (
+        np.zeros(n_eq, dtype=float)
+        if lambda_eq is None
+        else np.asarray(lambda_eq, dtype=float).reshape(-1)
+    )
+    finite = (
+        H.ndim == 2
+        and H.shape[0] == H.shape[1]
+        and x.size == q.size == H.shape[0]
+        and lambda_ineq.size == n_ineq
+        and lambda_eq.size == n_eq
+        and np.all(np.isfinite(H))
+        and np.all(np.isfinite(q))
+        and np.all(np.isfinite(x))
+        and np.all(np.isfinite(lambda_ineq))
+        and np.all(np.isfinite(lambda_eq))
+    )
+    if not finite:
+        return {
+            "passed": False,
+            "primal": np.inf,
+            "stationarity": np.inf,
+            "dual": np.inf,
+            "complementarity": np.inf,
+        }
+
+    Hx = H @ x
+    gradient = Hx + q
+    primal = 0.0
+    complementarity = 0.0
+    if n_ineq:
+        h = _as_vector(constraints.h)
+        violation = _qp_matvec(constraints.G, x) - h
+        scales = _qp_constraint_scales(constraints.G, h, x)
+        primal = max(
+            primal,
+            float(np.max(np.maximum(violation, 0.0) / scales)),
+        )
+        gradient = gradient + _qp_transpose_matvec(
+            constraints.G, lambda_ineq
+        )
+        objective_scale = 1.0 + abs(
+            0.5 * float(x @ Hx) + float(q @ x)
+        )
+        complementarity = float(np.max(
+            np.abs(lambda_ineq * violation) / objective_scale
+        ))
+    if n_eq:
+        equality_rhs = _as_vector(constraints.beq)
+        equality_residual = (
+            _qp_matvec(constraints.Aeq, x) - equality_rhs
+        )
+        equality_scales = _qp_constraint_scales(
+            constraints.Aeq, equality_rhs, x
+        )
+        primal = max(
+            primal,
+            float(np.max(np.abs(equality_residual) / equality_scales)),
+        )
+        gradient = gradient + _qp_transpose_matvec(
+            constraints.Aeq, lambda_eq
+        )
+
+    stationarity = float(
+        np.linalg.norm(gradient, ord=np.inf)
+        / (1.0 + np.linalg.norm(q, ord=np.inf)
+           + np.linalg.norm(Hx, ord=np.inf))
+    )
+    dual = (
+        float(np.max(np.maximum(-lambda_ineq, 0.0)))
+        / (1.0 + np.linalg.norm(lambda_ineq, ord=np.inf))
+        if n_ineq else 0.0
+    )
+    return {
+        "passed": bool(
+            primal <= tolerance
+            and stationarity <= tolerance
+            and dual <= tolerance
+            and complementarity <= tolerance
+        ),
+        "primal": primal,
+        "stationarity": stationarity,
+        "dual": dual,
+        "complementarity": complementarity,
+    }
 
 
 def _normalize_rows(rows, rhs, include_rhs=False):
@@ -358,10 +844,12 @@ def lsqlin_quadratic_auto(
     """Solve a prepared quadratic objective with a lazy residual fallback.
 
     ``H`` and ``q`` define the same objective as an unmaterialized residual
-    system, ``H = C.T @ C`` and ``q = -C.T @ d``.  The callable
-    ``residual_factory`` is evaluated only when CVXOPT fails, preserving the
-    residual-form Clarabel fallback without paying its assembly cost during a
-    normal solve.
+    system, ``H = C.T @ C`` and ``q = -C.T @ d``.  The central quadratic
+    route first accepts a certified Cholesky solution only when the problem is
+    unconstrained or box-only and the free optimum is feasible.  All other
+    cases retain the trusted CVXOPT QP.  ``residual_factory`` is evaluated
+    only if that trusted solve fails, preserving the residual-form Clarabel
+    fallback without paying its assembly cost during a normal solve.
     """
     primary_error = None
     primary = None
@@ -372,7 +860,7 @@ def lsqlin_quadratic_auto(
     except Exception as exc:
         primary_error = exc
     if primary is not None and str(primary.get('status', '')).lower() == 'optimal':
-        primary['solver'] = 'cvxopt_qp'
+        primary.setdefault('solver', 'cvxopt_qp')
         return primary
 
     primary_status = (
@@ -385,6 +873,7 @@ def lsqlin_quadratic_auto(
         C, d, reg, A, b, Aeq, beq, lb, ub, x0, opts
     )
     robust['fallback_reason'] = primary_status
+    robust['solve_route'] = 'clarabel_fallback'
     if str(robust.get('status', '')).lower() not in {
         'optimal', 'optimal_inaccurate'
     }:
@@ -397,12 +886,9 @@ def lsqlin_quadratic_auto(
 
 
 def _solve_qp(H, q, A=None, b=None, Aeq=None, beq=None,
-              lb=None, ub=None, x0=None, opts=None):
+              lb=None, ub=None, x0=None, opts=None,
+              prepared_constraints=None):
     """Send an already assembled quadratic objective to CVXOPT."""
-    sparse_case = sparse.issparse(A) or isinstance(A, spmatrix)
-    if isinstance(A, spmatrix):
-        A = spmatrix_sparse_to_scipy(A)
-
     H = numpy_to_cvxopt_matrix(H)
     q = numpy_to_cvxopt_matrix(q)
     nvars = H.size[1]
@@ -413,37 +899,15 @@ def _solve_qp(H, q, A=None, b=None, Aeq=None, beq=None,
     if q.size != (nvars, 1):
         raise ValueError(f"q must contain {nvars} entries")
 
-    lb = cvxopt_to_numpy_matrix(lb)
-    ub = cvxopt_to_numpy_matrix(ub)
-    b = cvxopt_to_numpy_matrix(b)
-    if b is not None and b.size == 1:
-        b = np.array([b.item(0)])
-
-    if lb is not None:
-        if lb.size == 1:
-            lb = np.repeat(lb, nvars)
-        if sparse_case:
-            lb_A = -sparse.eye(nvars, nvars, format='coo')
-            A = sparse_None_vstack(A, lb_A)
-        else:
-            lb_A = -np.eye(nvars)
-            A = numpy_None_vstack(A, lb_A)
-        b = numpy_None_concatenate(b, -lb)
-    if ub is not None:
-        if ub.size == 1:
-            ub = np.repeat(ub, nvars)
-        if sparse_case:
-            ub_A = sparse.eye(nvars, nvars, format='coo')
-            A = sparse_None_vstack(A, ub_A)
-        else:
-            ub_A = np.eye(nvars)
-            A = numpy_None_vstack(A, ub_A)
-        b = numpy_None_concatenate(b, ub)
-
-    A = numpy_to_cvxopt_matrix(A)
-    Aeq = numpy_to_cvxopt_matrix(Aeq)
-    b = numpy_to_cvxopt_matrix(b)
-    beq = numpy_to_cvxopt_matrix(beq)
+    constraints = prepared_constraints
+    if constraints is None:
+        constraints = _prepare_qp_constraints(
+            nvars, A, b, Aeq, beq, lb, ub
+        )
+    A = numpy_to_cvxopt_matrix(constraints.G)
+    Aeq = numpy_to_cvxopt_matrix(constraints.Aeq)
+    b = numpy_to_cvxopt_matrix(constraints.h)
+    beq = numpy_to_cvxopt_matrix(constraints.beq)
 
     if opts is not None:
         for key, value in opts.items():
@@ -453,30 +917,23 @@ def _solve_qp(H, q, A=None, b=None, Aeq=None, beq=None,
 
 def lsqlin_quadratic(H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
                      lb=None, ub=None, x0=None, opts=None):
-    """Solve the exact quadratic form of a constrained least-squares problem.
+    """Solve one exact quadratic through the shared automatic route.
 
     The objective follows CVXOPT's convention,
     ``0.5 * x.T @ H @ x + q.T @ x``.  ``reg`` preserves ``lsqlin`` semantics
-    by adding ``reg * I`` to ``H``.
+    by adding ``reg * I`` to ``H``.  Unconstrained and box-only problems first
+    try the free SPD optimum; that solution is accepted only after bounds and
+    projected-KKT certification.  General linear constraints, active bounds,
+    non-SPD metrics, and failed certificates use the unchanged CVXOPT QP.
     """
     if sparse.issparse(H):
-        H = H.copy()
         nvars = H.shape[0]
         if H.ndim != 2 or H.shape[1] != nvars:
             raise ValueError("H must be square")
-        if reg > 0:
-            H = H + reg * sparse.eye(nvars, format=H.format)
     elif isinstance(H, (matrix, spmatrix)):
         nvars = H.size[0]
         if H.size[1] != nvars:
             raise ValueError("H must be square")
-        if reg > 0:
-            identity = (
-                spmatrix(1.0, range(nvars), range(nvars))
-                if isinstance(H, spmatrix)
-                else matrix(np.eye(nvars), (nvars, nvars), 'd')
-            )
-            H = H + reg * identity
     else:
         H = np.asarray(H, dtype=float)
         if H.ndim != 2 or H.shape[0] != H.shape[1]:
@@ -484,14 +941,96 @@ def lsqlin_quadratic(H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
         if not np.all(np.isfinite(H)):
             raise ValueError("H must contain only finite values")
         nvars = H.shape[0]
-        if reg > 0:
-            H = H + reg * np.eye(nvars)
     q_array = np.asarray(cvxopt_to_numpy_matrix(q), dtype=float).reshape(-1)
     if q_array.size != nvars or not np.all(np.isfinite(q_array)):
         raise ValueError(f"q must contain {nvars} finite entries")
-    return _solve_qp(
-        H, q_array, A, b, Aeq, beq, lb, ub, x0, opts
+
+    profile = _quadratic_constraint_profile(
+        nvars, A, b, Aeq, beq, lb, ub
     )
+    direct, route_diagnostics = _try_direct_quadratic_solution(
+        H, q_array, reg, profile
+    )
+    if direct is not None:
+        return direct
+
+    if sparse.issparse(H):
+        H_effective = H.copy()
+        if reg > 0:
+            H_effective = H_effective + reg * sparse.eye(
+                nvars, format=H.format
+            )
+    elif isinstance(H, (matrix, spmatrix)):
+        H_effective = H
+        if reg > 0:
+            identity = (
+                spmatrix(1.0, range(nvars), range(nvars))
+                if isinstance(H, spmatrix)
+                else matrix(np.eye(nvars), (nvars, nvars), 'd')
+            )
+            H_effective = H_effective + reg * identity
+    else:
+        H_effective = H + reg * np.eye(nvars) if reg > 0 else H
+
+    constraints = _prepare_qp_constraints(
+        nvars, A, b, Aeq, beq, lb, ub
+    )
+    result = _solve_qp(
+        H_effective,
+        q_array,
+        A,
+        b,
+        Aeq,
+        beq,
+        lb,
+        ub,
+        x0,
+        opts,
+        prepared_constraints=constraints,
+    )
+    result['solver'] = 'cvxopt_qp'
+    result['constraint_class'] = profile.kind
+    result['solve_route'] = (
+        'general_qp'
+        if profile.kind == 'general_linear'
+        else 'box_qp'
+        if profile.kind == 'box_only'
+        else 'unconstrained_qp'
+    )
+    result['route_diagnostics'] = route_diagnostics
+
+    # CVXOPT remains authoritative when selected.  Its KKT certificate is
+    # recorded centrally for diagnostics and VCE active-set seeding; unlike a
+    # fast-path certificate it does not silently replace backend status.
+    if (
+        isinstance(H_effective, np.ndarray)
+        and str(result.get('status', '')).lower() == 'optimal'
+        and result.get('x') is not None
+        and result.get('z') is not None
+    ):
+        x = np.asarray(
+            cvxopt_to_numpy_matrix(result['x']), dtype=float
+        ).reshape(-1)
+        lambda_ineq = np.asarray(
+            cvxopt_to_numpy_matrix(result['z']), dtype=float
+        ).reshape(-1)
+        lambda_eq = (
+            np.empty(0, dtype=float)
+            if result.get('y') is None
+            else np.asarray(
+                cvxopt_to_numpy_matrix(result['y']), dtype=float
+            ).reshape(-1)
+        )
+        result['qp_certificate'] = certify_qp_solution(
+            H_effective,
+            q_array,
+            constraints,
+            x,
+            lambda_ineq,
+            lambda_eq,
+            tolerance=_TRUSTED_CERTIFICATE_TOL,
+        )
+    return result
 
 
 def lsqlin(C, d, reg=0, A=None, b=None, Aeq=None, beq=None, \

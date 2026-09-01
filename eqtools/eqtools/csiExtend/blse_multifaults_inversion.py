@@ -104,6 +104,10 @@ class BoundLSEMultiFaultsInversion(
         else:
             self.config = config
 
+        reporter = getattr(self.config, 'report_config_diagnostics', None)
+        if reporter is not None:
+            reporter(enabled=verbose)
+
         if interseismic_config is None:
             interseismic_config = getattr(self.config, 'interseismic_config_file', None)
         if interseismic_config is not None:
@@ -586,7 +590,7 @@ class BoundLSEMultiFaultsInversion(
     def run_simple_vce(self, smoothing_constraints=None, verbose=True, max_iter=20, tol=1e-4, 
                        des_enabled=None, sigma_mode=None, sigma_groups=None, sigma_update=None, sigma_values=None,
                        smooth_mode=None, smooth_groups=None, smooth_update=None, smooth_values=None,
-                       report=None):
+                       report=None, qp_acceleration='off'):
         """
         Run Simple Variance Component Estimation (VCE) for multi-fault inversion.
     
@@ -605,7 +609,7 @@ class BoundLSEMultiFaultsInversion(
         verbose : bool, optional
             Whether to print detailed progress information. Default is True.
         max_iter : int, optional
-            Maximum number of VCE iterations. Default is 10.
+            Maximum number of VCE iterations. Default is 20.
         tol : float, optional
             Dimensionless tolerance for the largest absolute logarithmic
             variance-update factor.  VCE converges when every effective
@@ -639,6 +643,12 @@ class BoundLSEMultiFaultsInversion(
             one variance-component table; ``'full'`` additionally prints the
             current model's fit table. Iteration progress remains controlled
             only by ``verbose``.
+        qp_acceleration : {'off', 'certified_kkt'}, optional
+            Optional VCE-local active-set acceleration. The central solver
+            always routes the problem automatically. The default ``'off'``
+            adds no sequential fast path; ``'certified_kkt'`` attempts reuse
+            of a certified active set and falls back to the central route on
+            any rejection.
     
         Returns
         -------
@@ -651,6 +661,8 @@ class BoundLSEMultiFaultsInversion(
               proposed for a possible next iteration
             - 'sigma_groups'/'smooth_groups': resolved member mappings
             - 'component_diagnostics': group Qw and approximate reduced Q
+            - 'qp_diagnostics': report-only acceleration, solver-route and
+              fallback counters
             - 'convergence_metric': ``'max_abs_log_update_factor'``
             - 'smoothing_matrix'/'model_smoothing_matrix': exact unscaled
               and active weighted regularization rows for the returned model
@@ -803,7 +815,8 @@ class BoundLSEMultiFaultsInversion(
                 smooth_mode=smooth_mode,
                 smooth_groups=smooth_groups,
                 smooth_update=smooth_update,
-                smooth_values=smooth_values
+                smooth_values=smooth_values,
+                qp_acceleration=qp_acceleration,
             )
         else:
             if verbose:
@@ -826,7 +839,8 @@ class BoundLSEMultiFaultsInversion(
                 smooth_mode=smooth_mode,
                 smooth_groups=smooth_groups,
                 smooth_update=smooth_update,
-                smooth_values=smooth_values
+                smooth_values=smooth_values,
+                qp_acceleration=qp_acceleration,
             )
     
         self.distributem()

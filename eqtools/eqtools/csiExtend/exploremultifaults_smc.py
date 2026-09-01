@@ -196,7 +196,12 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
     
     def load_and_set_config(self, config_file, fixed_params, geodata=None):
         # Load the configuration file
-        self.config = explorefaultConfig(config_file, geodata=geodata)
+        self.config = explorefaultConfig(
+            config_file,
+            geodata=geodata,
+            verbose=self.verbose,
+            parallel_rank=self.parallel_rank,
+        )
 
         # --- Compatibility handling: migrate 'magnitude' to 'slip' if present in config ---
         # If the config file uses 'magnitude', remap it to 'slip'
