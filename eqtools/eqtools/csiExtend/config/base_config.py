@@ -23,6 +23,7 @@ from .config_utils import (
     parse_sigmas_config,
     parse_update,
 )
+from ..smc_tempering import resolve_smc_tempering_policy
 
 
 class CommonConfigBase:
@@ -38,6 +39,7 @@ class CommonConfigBase:
         self.config_file = config_file
         self.nchains = 100 # Number of chains for BayesianMultiFaultsInversion
         self.chain_length = 50 # Length of each chain for BayesianMultiFaultsInversion
+        self.smc_tempering = None
         self.geodata = {}
         self.units = normalize_units_config(None)
         self.lon0 = None
@@ -52,6 +54,16 @@ class CommonConfigBase:
         """Return all non-fatal decisions recorded while resolving config."""
         diagnostics = getattr(self, '_config_diagnostics', None)
         return () if diagnostics is None else diagnostics.records
+
+    @property
+    def smc_tempering(self):
+        """Resolved immutable temperature-scheduling policy for SMC runs."""
+        return self._smc_tempering_policy
+
+    @smc_tempering.setter
+    def smc_tempering(self, value):
+        """Normalize the public mapping at the configuration boundary."""
+        self._smc_tempering_policy = resolve_smc_tempering_policy(value)
 
     def _record_config_diagnostic(
         self,

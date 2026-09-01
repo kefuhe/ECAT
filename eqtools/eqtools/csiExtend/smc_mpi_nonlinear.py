@@ -17,7 +17,10 @@ import numpy as np
 from numba import njit
 
 from .smc_progress import SMCProgressReporter
-from .smc_tempering import select_next_beta_by_cov
+from .smc_tempering import (
+    resolve_smc_tempering_policy,
+    write_smc_tempering_metadata,
+)
 
 
 _INITIAL_DIMENSION_FACTORS = (
@@ -344,7 +347,7 @@ def _weight_stats(postval, beta_previous, beta_current):
     }
 
 
-def _write_samples_h5(filename, samples):
+def _write_samples_h5(filename, samples, *, tempering_policy):
     with h5py.File(filename, "w") as f:
         for key, value in samples._asdict().items():
             if value is None:
@@ -355,6 +358,7 @@ def _write_samples_h5(filename, samples):
                     _write_h5_dataset(group, subkey, subvalue)
             else:
                 _write_h5_dataset(f, key, value)
+        write_smc_tempering_metadata(f.attrs, tempering_policy)
 
 
 def _write_h5_dataset(group, key, value):
@@ -369,12 +373,23 @@ def _write_h5_dataset(group, key, value):
 class NonlinearSMCclass:
     """SMC state machine for nonlinear geometry diagnostics."""
 
-    def __init__(self, opt, samples, NT1, NT2, verbose=True):
+    def __init__(
+        self,
+        opt,
+        samples,
+        NT1,
+        NT2,
+        verbose=True,
+        tempering_policy=None,
+    ):
         self.verbose = verbose
         self.opt = opt
         self.samples = samples
         self.NT1 = NT1
         self.NT2 = NT2
+        self.tempering_policy = resolve_smc_tempering_policy(
+            tempering_policy
+        )
 
     def initialize(self):
         if self.verbose:
@@ -412,13 +427,9 @@ class NonlinearSMCclass:
 
     def find_beta_numpy(self):
         """Advance using the same formula-aligned COV search as generic SMC."""
-        beta_new = select_next_beta_by_cov(
+        beta_new = self.tempering_policy.select_next_beta(
             self.samples.postval,
             self.samples.beta[-1],
-            target_cov=1.0,
-            max_delta_beta=0.5,
-            tolerance=1.0e-6,
-            ddof=1,
         )
         betaarray = np.append(self.samples.beta, beta_new)
         newstage = np.arange(1, self.samples.stage[-1] + 2)
@@ -573,9 +584,12 @@ def SMC_samples_parallel_mpi_nonlinear(
     diagnostic_upper_bounds=None,
     diagnostic_credible_interval=0.95,
     diagnostic_boundary_tol_fraction=0.01,
+    *,
+    tempering_policy=None,
 ):
     """Sequential Monte Carlo sampling with stage-level diagnostics."""
 
+    tempering_policy = resolve_smc_tempering_policy(tempering_policy)
     rank = comm.Get_rank()
 
     if rank == 0:
@@ -583,6 +597,8 @@ def SMC_samples_parallel_mpi_nonlinear(
             chains=opt.N,
             chain_length=opt.Neff,
             mpi_ranks=comm.Get_size(),
+            target_cov=tempering_policy.target_cov,
+            max_delta_beta=tempering_policy.max_delta_beta,
         )
         progress.start(resumed=samples.allsamples is not None)
         if samples.allsamples is None:
@@ -608,7 +624,13 @@ def SMC_samples_parallel_mpi_nonlinear(
             # loop so observing a run cannot change its numerical path.
             pre_mcmc_started = time.perf_counter()
             beta_previous = float(samples.beta[-1])
-            current = NonlinearSMCclass(opt, samples, NT1, NT2)
+            current = NonlinearSMCclass(
+                opt,
+                samples,
+                NT1,
+                NT2,
+                tempering_policy=tempering_policy,
+            )
             samples = current.find_beta_numpy()
             beta_current = float(samples.beta[-1])
 
@@ -645,7 +667,11 @@ def SMC_samples_parallel_mpi_nonlinear(
             )
 
             if save_at_interval and samples.stage[-1] % save_interval == 0:
-                _write_samples_h5(f"samples_stage_{samples.stage[-1]}.h5", samples)
+                _write_samples_h5(
+                    f"samples_stage_{samples.stage[-1]}.h5",
+                    samples,
+                    tempering_policy=tempering_policy,
+                )
         else:
             samples = None
 
@@ -732,7 +758,11 @@ def SMC_samples_parallel_mpi_nonlinear(
             ),
         )
         if save_at_final_stage:
-            _write_samples_h5("samples_final.h5", samples)
+            _write_samples_h5(
+                "samples_final.h5",
+                samples,
+                tempering_policy=tempering_policy,
+            )
         progress.complete(stage=samples.stage[-1], beta=samples.beta[-1])
 
     samples = comm.bcast(samples if rank == 0 else None, root=0)

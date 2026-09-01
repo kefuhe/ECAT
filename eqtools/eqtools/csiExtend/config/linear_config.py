@@ -921,6 +921,10 @@ class LinearInversionConfig(CommonConfigBase):
             add_optional('slip_sampling_mode', export_value=slip_export_value)
             add_optional('nchains')
             add_optional('chain_length')
+            add_optional(
+                'smc_tempering',
+                export_value=self.smc_tempering.as_public_config(),
+            )
         else:
             add_optional('slip_sampling_mode')
 

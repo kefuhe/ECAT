@@ -68,6 +68,10 @@ from .hyperparameter_reporting import (
 from .logging_utils.mpi_logging import ensure_default_logging
 from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 from .smc_mpi_nonlinear import SMC_samples_parallel_mpi_nonlinear
+from .smc_tempering import (
+    read_smc_tempering_metadata,
+    write_smc_tempering_metadata,
+)
 from .smc_convergence import evaluate_smc_convergence, write_convergence_report
 
 logger = logging.getLogger(__name__)
@@ -1041,6 +1045,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             diagnostic_display_names=diagnostic_info["display_names"],
             diagnostic_lower_bounds=diagnostic_info["lower_bounds"],
             diagnostic_upper_bounds=diagnostic_info["upper_bounds"],
+            tempering_policy=self.config.smc_tempering,
         )
 
         if rank == 0:
@@ -3503,6 +3508,10 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             lb, ub = self.parameter_bounds()
             f.create_dataset("lower_bounds", data=lb)
             f.create_dataset("upper_bounds", data=ub)
+            write_smc_tempering_metadata(
+                f.attrs,
+                self.config.smc_tempering,
+            )
 
     def load_samples_from_h5(self, filename, datasets=None):
         """Load sampler arrays into the canonical result dictionary."""
@@ -3522,6 +3531,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             ]
         samples = {}
         with h5py.File(filename, "r") as f:
+            checkpoint_tempering = read_smc_tempering_metadata(f.attrs)
             for dataset in datasets:
                 if dataset in f:
                     item = f[dataset]
@@ -3533,6 +3543,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                     else:
                         samples[dataset] = self._read_h5_dataset(item)
         self.sampler = samples
+        self._loaded_smc_tempering_policy = checkpoint_tempering
 
     @staticmethod
     def _write_h5_dataset(group, key, value):

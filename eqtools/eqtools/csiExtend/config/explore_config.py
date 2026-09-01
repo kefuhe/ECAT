@@ -161,6 +161,7 @@ class ExploreFaultConfig(CommonConfigBase):
         
         self.slip_sampling_mode = config.get('slip_sampling_mode', 'mag_rake')
         self.clipping_options = config.get('clipping_options', {})
+        self.smc_tempering = config.get('smc_tempering')
         
         # Handle Geodata
         # Priority: arguments > config file
@@ -362,6 +363,7 @@ class ExploreFaultConfig(CommonConfigBase):
             ('prior_bounds_format', getattr(self, 'prior_bounds_format', LOWER_RANGE)),
             ('nchains', getattr(self, 'nchains', None)),
             ('chain_length', getattr(self, 'chain_length', None)),
+            ('smc_tempering', self.smc_tempering.as_public_config()),
             ('nfaults', self.nfaults),
             ('lon_lat_0', getattr(self, 'lon_lat_0', None) if hasattr(self, 'lon_lat_0') else None),
             ('slip_sampling_mode', self.slip_sampling_mode),

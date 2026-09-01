@@ -94,6 +94,7 @@ class NonlinearGeometryConfig(CommonConfigBase):
         self.faultnames = [f"fault_{i}" for i in range(self.nfaults)]
         self.slip_sampling_mode = config.get("slip_sampling_mode", "mag_rake")
         self.clipping_options = config.get("clipping_options", {})
+        self.smc_tempering = config.get("smc_tempering")
         self.units = normalize_units_config(config.get("units"))
         self.geodata = config.get("geodata", {})
 

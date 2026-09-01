@@ -88,6 +88,11 @@ from ..viztools import normalize_image_format, sci_plot_style
 # Local imports - core modules
 from .BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches as relocfault
 from .SMC_MPI import SMC_samples_parallel_mpi
+from .smc_tempering import (
+    DEFAULT_SMC_TEMPERING_POLICY,
+    read_smc_tempering_metadata,
+    write_smc_tempering_metadata,
+)
 from .config.bayesian_config import (
     BayesianMultiFaultsInversionConfig,
     normalize_bayesian_sampling_mode,
@@ -1356,6 +1361,39 @@ class BayesianMultiFaultsInversion(
         config = BayesianMultiFaultsInversionConfig(**kwargs)
         return cls(config)
 
+    def _validate_smc_tempering_resume(self, samples):
+        """Reject ambiguous non-default continuation from a beta checkpoint."""
+        if samples is None or samples.allsamples is None:
+            return
+        beta = np.asarray(samples.beta, dtype=float).reshape(-1)
+        if beta.size == 0 or beta[-1] <= 0.0:
+            return
+
+        configured = self.config.smc_tempering
+        loaded = None
+        if getattr(self, '_loaded_smc_samples_id', None) == id(samples):
+            loaded = getattr(
+                self,
+                '_loaded_smc_tempering_policy',
+                None,
+            )
+        if loaded is None:
+            if configured != DEFAULT_SMC_TEMPERING_POLICY:
+                raise ValueError(
+                    "Cannot continue a beta>0 SMC state with non-default "
+                    "smc_tempering because the checkpoint has no matching "
+                    "tempering metadata. Start a fresh run or load a "
+                    "metadata-bearing checkpoint."
+                )
+            return
+        if loaded != configured:
+            raise ValueError(
+                "SMC checkpoint tempering policy does not match the current "
+                "configuration: checkpoint="
+                f"{loaded.as_public_config()}, current="
+                f"{configured.as_public_config()}."
+            )
+
     def walk(self, nchains=None, chain_length=None, samples=None, magprior=False, comm=None, filename='samples_smc.h5',
              save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
              sliplb=None, slipub=None, rake_angle=None, rake_sigma=None, rake_range=None, magposteriors=False,
@@ -1492,10 +1530,13 @@ class BayesianMultiFaultsInversion(
                 )
             else:
                 samples = NT2(None, None, None, None, None, None)
+
+        self._validate_smc_tempering_resume(samples)
     
         # run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
-                                         save_every, save_at_interval, covariance_epsilon, amh_a, amh_b)
+                                         save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
+                                         tempering_policy=self.config.smc_tempering)
         self.sampler = final
         if rank == 0:
             self.save2h5(final, filename)
@@ -1569,11 +1610,14 @@ class BayesianMultiFaultsInversion(
     
         if samples is None:
             samples = NT2(None, None, None, None, None, None)
+
+        self._validate_smc_tempering_resume(samples)
     
         # run the SMC sampling
         final = SMC_samples_parallel_mpi(
             opt, samples, _SMCFJOptions, NT2, comm, save_at_final,
             save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
+            tempering_policy=self.config.smc_tempering,
         )
         self.sampler = final
         if rank == 0:
@@ -2649,9 +2693,14 @@ class BayesianMultiFaultsInversion(
             f.create_dataset('stage', data=samples.stage)
             f.create_dataset('covsmpl', data=samples.covsmpl)
             f.create_dataset('resmpl', data=samples.resmpl)
+            write_smc_tempering_metadata(
+                f.attrs,
+                self.config.smc_tempering,
+            )
 
     def load_from_h5(self, filename):
         with h5py.File(filename, 'r') as f:
+            checkpoint_tempering = read_smc_tempering_metadata(f.attrs)
             
             # Create a namedtuple to store the data
             data = NT2(
@@ -2664,6 +2713,8 @@ class BayesianMultiFaultsInversion(
             )
 
         self.sampler = data
+        self._loaded_smc_tempering_policy = checkpoint_tempering
+        self._loaded_smc_samples_id = id(data)
             
         return data
 

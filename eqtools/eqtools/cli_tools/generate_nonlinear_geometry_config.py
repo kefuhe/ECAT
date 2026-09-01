@@ -16,6 +16,9 @@ def generate_nonlinear_geometry_config(output_path):
 # ----------- Nonlinear Geometry SMC ----------- #
 nchains: 100       # Number of SMC chains/particles
 chain_length: 50   # Mutation steps per SMC stage
+smc_tempering:
+  target_cov: 1.0       # Incremental-weight COV target; standard value
+  max_delta_beta: 0.5   # Maximum beta increment; normally keep the default
 nfaults: 1         # Number of compact fault sources
 fault_aliasnames: null  # null or exactly one alias per fault, e.g. [MainFault]
 lon_lat_0: null         # [lon, lat] degrees; set here or pass lon0/lat0

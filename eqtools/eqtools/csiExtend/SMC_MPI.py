@@ -21,7 +21,10 @@ from scipy.optimize import brentq
 import h5py
 
 from .smc_progress import SMCProgressReporter
-from .smc_tempering import select_next_beta_by_cov
+from .smc_tempering import (
+    resolve_smc_tempering_policy,
+    write_smc_tempering_metadata,
+)
 
 
 _INITIAL_DIMENSION_FACTORS = (
@@ -293,7 +296,15 @@ class SMCclass:
     Generates samples of the 'target' posterior PDF using SMC sampling. Also called Adapative Transitional Metropolis
     Importance (sampling) P abbreviated as ATMIP  
     """
-    def __init__(self, opt, samples, NT1, NT2, verbose=True):
+    def __init__(
+        self,
+        opt,
+        samples,
+        NT1,
+        NT2,
+        verbose=True,
+        tempering_policy=None,
+    ):
         """
         Parameters: 
             opt : named tuple 
@@ -324,6 +335,9 @@ class SMCclass:
         self.samples = samples
         self.NT1 = NT1
         self.NT2 = NT2
+        self.tempering_policy = resolve_smc_tempering_policy(
+            tempering_policy
+        )
             
     def initialize(self):
         if self.verbose:
@@ -417,15 +431,12 @@ class SMCclass:
         return samples
           
     
-    def _advance_beta(self, *, ddof):
+    def _advance_beta(self, *, ddof=None):
         """Return a sample record advanced to the COV-controlled temperature."""
         beta_old = self.samples.beta[-1]
-        beta_new = select_next_beta_by_cov(
+        beta_new = self.tempering_policy.select_next_beta(
             self.samples.postval,
             beta_old,
-            target_cov=1.0,
-            max_delta_beta=0.5,
-            tolerance=1.0e-6,
             ddof=ddof,
         )
         betaarray = np.append(self.samples.beta, beta_new)
@@ -457,7 +468,7 @@ class SMCclass:
         convention.  The active implementation is ``find_beta_numpy``.
         """
         warnings.warn("find_beta_welford is deprecated. Use find_beta_numpy instead.", DeprecationWarning, stacklevel=2)
-        return self._advance_beta(ddof=1)
+        return self._advance_beta()
 
     def find_beta_numpy(self):
         """
@@ -821,7 +832,8 @@ def SMC_samples(opt,samples, NT1, NT2):
 
 def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_stage=True,
                              save_interval=1, save_at_interval=False,
-                            covariance_epsilon = 1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0):
+                            covariance_epsilon = 1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
+                            *, tempering_policy=None):
     '''
     Sequential Monte Carlo technique
     < a subset of CATMIP by Sarah Minson>
@@ -871,6 +883,7 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
     written by: Rishabh Dutta, Mar 25 2019
     (Don't forget to acknowledge)
     '''
+    tempering_policy = resolve_smc_tempering_policy(tempering_policy)
     comm = comm
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -881,6 +894,8 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             chains=opt.N,
             chain_length=opt.Neff,
             mpi_ranks=size,
+            target_cov=tempering_policy.target_cov,
+            max_delta_beta=tempering_policy.max_delta_beta,
         )
         progress.start(resumed=samples.allsamples is not None)
         if samples.allsamples is None:
@@ -925,7 +940,13 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
     while samples.beta[-1] != 1:
         if rank == 0:
             beta_previous = float(samples.beta[-1])
-            current = SMCclass(opt, samples, NT1, NT2)
+            current = SMCclass(
+                opt,
+                samples,
+                NT1,
+                NT2,
+                tempering_policy=tempering_policy,
+            )
             samples = current.find_beta_numpy() # find_beta_welford() changed to find_beta_numpy() for further optimization
         
             current = SMCclass(opt, samples, NT1, NT2)
@@ -944,6 +965,10 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
                 with h5py.File(f'samples_stage_{samples.stage[-1]}.h5', 'w') as f:
                     for key, value in samples._asdict().items():
                         f.create_dataset(key, data=value)
+                    write_smc_tempering_metadata(
+                        f.attrs,
+                        tempering_policy,
+                    )
         else:
             samples = None
 
@@ -968,6 +993,7 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
         with h5py.File('samples_final.h5', 'w') as f:
             for key, value in samples._asdict().items():
                 f.create_dataset(key, data=value)
+            write_smc_tempering_metadata(f.attrs, tempering_policy)
 
     if rank == 0:
         progress.complete(stage=samples.stage[-1], beta=samples.beta[-1])

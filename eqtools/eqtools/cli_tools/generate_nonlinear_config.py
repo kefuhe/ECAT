@@ -17,6 +17,9 @@ def generate_nonlinear_config(output_path):
 # General settings for the Bayesian inversion process
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain for BayesianMultiFaultsInversion
+smc_tempering:
+  target_cov: 1.0  # Incremental-weight COV target; standard value
+  max_delta_beta: 0.5  # Maximum beta increment; normally keep the default
 nfaults: 1  # Number of faults to be modeled
 fault_aliasnames: null  # null or exactly one alias per fault (e.g., ['RC', 'KL'])
 lon_lat_0: null  # [lon, lat] degrees; set here or pass lon0/lat0

@@ -59,6 +59,8 @@ class SMCProgressReporter:
         chains,
         chain_length,
         mpi_ranks,
+        target_cov=1.0,
+        max_delta_beta=0.5,
         stream=None,
         timer=None,
         now=None,
@@ -66,6 +68,8 @@ class SMCProgressReporter:
         self.chains = int(chains)
         self.chain_length = int(chain_length)
         self.mpi_ranks = int(mpi_ranks)
+        self.target_cov = float(target_cov)
+        self.max_delta_beta = float(max_delta_beta)
         self.stream = stream if stream is not None else sys.stdout
         self._timer = timer if timer is not None else time.perf_counter
         self._now = now if now is not None else datetime.now
@@ -94,6 +98,8 @@ class SMCProgressReporter:
             "ATMIP  "
             f"mode={mode}  chains={self.chains}x{self.chain_length}  "
             f"mpi_ranks={self.mpi_ranks}  "
+            f"target_cov={self.target_cov:g}  "
+            f"max_delta_beta={self.max_delta_beta:g}  "
             f"started={self._run_started_at:%Y-%m-%d %H:%M:%S}"
         )
         self._write_line(self._HEADER)

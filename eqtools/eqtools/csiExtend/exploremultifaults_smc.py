@@ -33,6 +33,10 @@ from csi import planarfault
 from csi import gps, insar, leveling, crossfaultoffset
 from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 from .SMC_MPI import SMC_samples_parallel_mpi
+from .smc_tempering import (
+    read_smc_tempering_metadata,
+    write_smc_tempering_metadata,
+)
 from .config import explorefaultConfig
 from .logging_utils.mpi_logging import ensure_default_logging
 from numba import njit
@@ -775,7 +779,8 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
     
         # Run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
-                                         save_every, save_at_interval, covariance_epsilon, amh_a, amh_b)
+                                         save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
+                                         tempering_policy=self.config.smc_tempering)
     
         if rank == 0:
             # Save the final samples
@@ -1811,6 +1816,10 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
                 for dataset in datasets:
                     data = samples[dataset]
                     f.create_dataset(dataset, data=data)
+                write_smc_tempering_metadata(
+                    f.attrs,
+                    self.config.smc_tempering,
+                )
         except Exception as e:
             self.logger.warning(f'Error saving to HDF5 file: {e}')
     
@@ -1836,10 +1845,12 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
         try:
             # Open the HDF5 file
             with h5py.File(filename, 'r') as f:
+                checkpoint_tempering = read_smc_tempering_metadata(f.attrs)
                 # Load each dataset
                 for dataset in datasets:
                     data = f[dataset][:]
                     samples[dataset] = data
+            self._loaded_smc_tempering_policy = checkpoint_tempering
         except Exception as e:
             self.logger.warning(f'Error loading from HDF5 file: {e}')
 

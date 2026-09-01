@@ -12,7 +12,169 @@ the likelihood exponent.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+
 import numpy as np
+
+
+_PUBLIC_TEMPERING_FIELDS = frozenset(
+    {"target_cov", "max_delta_beta"}
+)
+_TEMPERING_METADATA_FIELDS = {
+    "smc_tempering_target_cov": "target_cov",
+    "smc_tempering_max_delta_beta": "max_delta_beta",
+    "smc_tempering_tolerance": "tolerance",
+    "smc_tempering_ddof": "ddof",
+}
+
+
+def _finite_float(value, *, name):
+    """Normalize one real policy value while rejecting bools and NaNs."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a finite real number, not bool.")
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a finite real number.") from error
+    if not np.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+    return normalized
+
+
+@dataclass(frozen=True)
+class SMCTemperingPolicy:
+    """Immutable run-level policy for COV-controlled SMC temperatures.
+
+    Only ``target_cov`` and ``max_delta_beta`` belong to the public config.
+    ``tolerance`` and ``ddof`` are recorded for reproducibility but remain
+    internal numerical/statistical conventions.  Keeping all four values in
+    one frozen object prevents generic and nonlinear MPI backends from
+    silently drifting to different schedules.
+    """
+
+    target_cov: float = 1.0
+    max_delta_beta: float = 0.5
+    tolerance: float = 1.0e-6
+    ddof: int = 1
+
+    def __post_init__(self):
+        target_cov = _finite_float(self.target_cov, name="target_cov")
+        max_delta_beta = _finite_float(
+            self.max_delta_beta,
+            name="max_delta_beta",
+        )
+        tolerance = _finite_float(self.tolerance, name="tolerance")
+        if isinstance(self.ddof, (bool, np.bool_)) or not isinstance(
+            self.ddof, (int, np.integer)
+        ):
+            raise ValueError("ddof must be an integer.")
+        ddof = int(self.ddof)
+
+        if target_cov <= 0.0:
+            raise ValueError("target_cov must be positive.")
+        if not 0.0 < max_delta_beta <= 1.0:
+            raise ValueError("max_delta_beta must lie in (0, 1].")
+        if tolerance <= 0.0:
+            raise ValueError("tolerance must be positive.")
+        if max_delta_beta <= tolerance:
+            raise ValueError(
+                "max_delta_beta must be greater than tolerance."
+            )
+        if ddof not in (0, 1):
+            raise ValueError("ddof must be 0 or 1.")
+
+        object.__setattr__(self, "target_cov", target_cov)
+        object.__setattr__(self, "max_delta_beta", max_delta_beta)
+        object.__setattr__(self, "tolerance", tolerance)
+        object.__setattr__(self, "ddof", ddof)
+
+    @classmethod
+    def from_public_config(cls, value=None):
+        """Resolve the public mapping without exposing internal conventions."""
+        if value is None:
+            return DEFAULT_SMC_TEMPERING_POLICY
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise ValueError(
+                "smc_tempering must be a mapping containing target_cov and/or "
+                "max_delta_beta."
+            )
+        unknown = set(value) - _PUBLIC_TEMPERING_FIELDS
+        if unknown:
+            fields = ", ".join(sorted(unknown))
+            raise ValueError(
+                "Unknown public smc_tempering field(s): "
+                f"{fields}. Supported fields are target_cov and "
+                "max_delta_beta."
+            )
+        return cls(
+            target_cov=value.get("target_cov", 1.0),
+            max_delta_beta=value.get("max_delta_beta", 0.5),
+        )
+
+    def as_public_config(self):
+        """Return the stable user-facing YAML/JSON representation."""
+        return {
+            "target_cov": self.target_cov,
+            "max_delta_beta": self.max_delta_beta,
+        }
+
+    def as_metadata(self):
+        """Return complete scalar metadata for checkpoints and final results."""
+        return {
+            metadata_name: getattr(self, field_name)
+            for metadata_name, field_name in _TEMPERING_METADATA_FIELDS.items()
+        }
+
+    def select_next_beta(self, log_likelihoods, beta_old, *, ddof=None):
+        """Apply this policy through the shared pure beta selector."""
+        return select_next_beta_by_cov(
+            log_likelihoods,
+            beta_old,
+            target_cov=self.target_cov,
+            max_delta_beta=self.max_delta_beta,
+            tolerance=self.tolerance,
+            ddof=self.ddof if ddof is None else ddof,
+        )
+
+
+DEFAULT_SMC_TEMPERING_POLICY = SMCTemperingPolicy()
+
+
+def resolve_smc_tempering_policy(value=None):
+    """Resolve a policy object or its public mapping to one frozen policy."""
+    return SMCTemperingPolicy.from_public_config(value)
+
+
+def write_smc_tempering_metadata(attributes, policy):
+    """Write policy scalars to an HDF5-like attribute mapping."""
+    resolved = resolve_smc_tempering_policy(policy)
+    for key, value in resolved.as_metadata().items():
+        attributes[key] = value
+
+
+def read_smc_tempering_metadata(attributes):
+    """Read complete policy metadata, returning ``None`` for legacy files."""
+    present = [key in attributes for key in _TEMPERING_METADATA_FIELDS]
+    if not any(present):
+        return None
+    if not all(present):
+        missing = [
+            key
+            for key, exists in zip(_TEMPERING_METADATA_FIELDS, present)
+            if not exists
+        ]
+        raise ValueError(
+            "Incomplete SMC tempering metadata; missing: "
+            + ", ".join(missing)
+        )
+    values = {
+        field_name: attributes[metadata_name]
+        for metadata_name, field_name in _TEMPERING_METADATA_FIELDS.items()
+    }
+    return SMCTemperingPolicy(**values)
 
 
 def select_next_beta_by_cov(

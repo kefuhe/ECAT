@@ -33,6 +33,9 @@ slip_sampling_mode: ss_ds  # Default SMC_FJ parameterization
 bayesian_sampling_mode: 'SMC_FJ'  # Use FULLSMC for fully sampled slip modes
 nchains: 100  # Number of chains for BayesianMultiFaultsInversion
 chain_length: 50  # Length of each chain
+smc_tempering:
+  target_cov: 1.0  # Incremental-weight COV target; standard value
+  max_delta_beta: 0.5  # Maximum beta increment; normally keep the default
 use_bounds_constraints: true  # Whether to use bounds constraints
 use_rake_angle_constraints: true  # Whether to use rake angle constraints
 interseismic_config_file: null  # Optional separate interseismic block-motion config
