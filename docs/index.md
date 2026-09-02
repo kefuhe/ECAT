@@ -2,7 +2,7 @@
 
 [ECAT](https://github.com/kefuhe/ECAT) 是面向地震大地测量建模与反演的科研工具集。公开代码包含 `eqtools` 和 `csi` 相关扩展；本手册按实际科研流程组织，而不是按源码目录组织。
 
-标准入门路线是两步走：
+标准入门路线是**两阶段反演**，下文简称“两步走”：
 
 1. **Bayesian 非线性几何反演**：估计断层顶边中点经纬度和深度、走向、倾角、长度、宽度等几何参数。
 2. **BLSE/VCE 线性滑动分布反演**：固定优选几何后，反演分布式滑动。
@@ -15,7 +15,7 @@
 
 | 当前目标 | 入口 | 用法 |
 | --- | --- | --- |
-| 第一次使用 | [安装与环境检查](getting_started/installation.md) → [标准两步走路线](getting_started/quickstart_two_step.md) | 先跑通环境和标准反演主线 |
+| 第一次使用 | [安装与环境检查](getting_started/installation.md) → [标准两阶段反演（两步走）](getting_started/quickstart_two_step.md) | 先跑通环境和标准反演主线 |
 | 已经知道要完成的科研任务 | [Workflows / 科研工作流](workflows/index.md) | 按输入、命令或脚本、输出和检查项执行 |
 | 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
 | 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |

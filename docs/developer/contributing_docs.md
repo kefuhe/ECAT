@@ -12,7 +12,8 @@
 - 大型 HDF5 样本和图件应放在 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)，不要放进 [ECAT](https://github.com/kefuhe/ECAT) 主代码仓库。
 - 导航入口使用“中文 / English (`directory/`)”格式，例如“工作流 / Workflows (`workflows/`)”，让用户能直接对应 GitHub 目录。
 - 跨页链接如果跳到小节，优先使用稳定英文锚点；中文小节被外部引用时，在标题前加 `<a id="english-anchor"></a>`。
-- `eqtools/csiExtend/docs` 可作为素材池和内部维护参考；公开用户路线以顶层 `docs/` 为唯一入口，不把内部设计、计划、审计和 changelog 原样搬进用户手册。
+- 公开用户路线以顶层 `docs/` 为唯一入口；设计草稿、调试记录、任务计划和 changelog
+  不能原样搬进用户手册，应先按用户任务重写。
 - eqtools 的 workflow、example 和 reference 可以从独立开发仓库选择性同步；
   `getting_started/installation.md`、顶层导航和发布边界属于 ECAT 集成层，不能用
   包级 README 或机器环境说明整页覆盖。

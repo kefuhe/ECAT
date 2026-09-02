@@ -31,8 +31,13 @@ _ACTIVE_DUAL_TOL = 1.0e-9
 
 
 @dataclass
-class VCEKKTSession:
-    """Candidate-local state for consecutive QPs in one VCE call."""
+class CertifiedQPSequenceSession:
+    """Caller-local state for one sequence of related convex QPs.
+
+    The session owns only a previously certified working set and diagnostic
+    counters.  VCE iterations and posterior conditional-solution replay each
+    create their own instance; no state is shared across those lifecycles.
+    """
 
     constraints: PreparedQPConstraints
     x: np.ndarray | None = None
@@ -74,16 +79,17 @@ class VCEKKTSession:
         }
 
 
-def solve_vce_qp_candidate(
-        H, q, *, session, fallback, change_measure=None):
-    """Solve one VCE QP with a certified KKT attempt and trusted fallback.
+def solve_qp_sequence_candidate(
+        H, q, *, session, fallback, change_measure=None,
+        route_name="certified_kkt"):
+    """Solve one related QP with a certified KKT attempt and fallback.
 
     ``fallback`` must solve the same ``H, q`` and canonical constraints.  A
     KKT trial mutates no accepted state until its central certificate passes;
     otherwise the fallback result replaces the session state atomically.
     """
-    if not isinstance(session, VCEKKTSession):
-        raise TypeError("session must be a VCEKKTSession")
+    if not isinstance(session, CertifiedQPSequenceSession):
+        raise TypeError("session must be a CertifiedQPSequenceSession")
 
     attempted = False
     if _eligible_for_kkt(session, H.shape[0], change_measure):
@@ -115,7 +121,7 @@ def solve_vce_qp_candidate(
                 "status": "optimal",
                 "x": trial["x"],
                 "solver": "kkt_fastpath",
-                "solve_route": "vce_certified_kkt",
+                "solve_route": str(route_name),
                 "qp_certificate": trial["certificate"],
             }
 

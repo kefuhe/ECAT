@@ -2,7 +2,7 @@
 
 本目录放短小、可复制、按任务组织的示例。它回答“这件小事怎么写”，不替代完整工作流和真实案例：
 
-- 想跑完整科研流程：先读 [标准两步走路线](../getting_started/quickstart_two_step.md)。
+- 想跑完整科研流程：先读 [标准两阶段反演（两步走）](../getting_started/quickstart_two_step.md)。
 - 想从完整可编辑脚本开始：看 [可运行脚本模板导航](script_templates.md)。
 - 想对照真实事件脚本和数据：读 [案例选择表](../casebook/index.md)。
 - 想查完整字段、参数和接口：回到 [参考手册入口地图](../reference/index.md)。

@@ -27,8 +27,8 @@ workflow：确定何时设置约束
       -> 本 reference：遇到字段、覆盖或模式问题时查阅
 ```
 
-私有 registry、生命周期 metadata 和编译器方法属于内部维护协议，不是用户配置
-字段或公开方法参数。用户只需要选择正确的 inversion facade 方法。
+本页只把配置字段和 inversion 对象的公开方法作为稳定接口。源码中的存储结构和辅助方法
+不属于用户配置，也不应由脚本直接调用。
 
 ## 最短使用路径
 
@@ -124,7 +124,7 @@ BLSE/VCE 或 `SMC_FJ + ss_ds` 中生效。FULLSMC 会把配置中存在但
 ## 公开接口边界与操作语义
 
 约束的稳定对外入口是 BLSE/Bayesian inversion 对象，不是
-`constraint_manager` 的私有方法。公开动词具有统一含义：
+`constraint_manager` 的内部方法。公开动词具有统一含义：
 
 | 动词 | 语义 |
 | --- | --- |
@@ -423,15 +423,14 @@ with inversion.constraint_transaction():
     )
 ```
 
-外层事务只在结束时统一校验和同步。任一步失败时，bounds、命名组、
-runtime 声明、interseismic 配置和 `state_revision` 都恢复到进入事务前。
+外层事务只在结束时统一校验和同步。任一步失败时，整组修改都会回滚；诊断快照中的
+`state_revision` 保持不变，可用来确认没有发布部分更新。
 
 ## 求解时读取与诊断
 
-BLSE 和 VCE 每次求解前读取同一管理器 revision。`SMC_FJ` 在 target
-构建时冻结当时的 bounds 和矩阵；FULLSMC 也在 target 构建时生成一次有效
-bounds 快照，并让 prior 与 proposal 使用同一数组。之后若约束发生变化，
-旧 target 会拒绝继续，需要重新调用对应 `walk_*()` 或重建 target。
+BLSE 和 VCE 每次求解前读取当前约束。`SMC_FJ` 和 FULLSMC 在创建采样 target 时冻结
+当时的有效约束；之后若修改约束，需要重建 target 后再继续采样。旧 target 会明确拒绝
+继续，不会把新旧约束混在同一次运行中。
 
 约束管理器只负责“约束是什么”和“对应哪些参数列”，不选择数值后端。求解层读取冻结
 快照后自动区分无约束、仅 bounds 和一般线性约束：只有没有 `A/Aeq` 且自由解严格位于

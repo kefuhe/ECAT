@@ -210,9 +210,8 @@ Hessian (Z^\mathsf{T}HZ) 计算。ECAT 当前既不计算截断概率质量，�
 
 其中 \(n_j\) 是第 \(j\) 个平滑块的行数。因而 alpha 组的行归属、source/poly 列位置和
 求解矩阵不会在评分阶段通过另一份 `GL_combined` 重新推断。
-几何可变时不会缓存各个几何样本；当前候选更新 GF/Laplacian 后保守地瞬态重建数据块和
-平滑块，候选结束即可释放。刚性变化仍可在几何派生状态层保留有效的 Laplacian，但当前
-二次型工作区不跨几何候选缓存其 Gram 块；这避免在缺少明确几何版本键时误用陈旧矩阵。
+几何可变时，每个候选都使用与当前几何一致的 GF 和 Laplacian；刚性变化可以保留仍然有效的
+Laplacian，非刚性变化则按依赖关系更新。候选评分不会复用其他几何的线性子问题状态。
 后验数据项仍由直接白化残差计算，`smooth_prior_weight` 仍只改变后验平滑评分，
 不会乘入 \(H\) 改变条件线性解。
 
@@ -450,8 +449,36 @@ single/individual/grouped 索引展开每个数据集的物理 sigma。因而
 posterior 样本，不再次调用 target 或重建几何。
 
 posterior `std` 向量只是逐参数离散度，不是一组可预测参数。高层入口用 `plot_std=True`
-绘制滑动不确定性，但 `model` / `best_model` 必须选择 `mean`、`median`、`MAP`、
+绘制滑动分量离散度，但 `model` / `best_model` 必须选择 `mean`、`median`、`MAP`、
 `max_prob` 或显式自定义向量；`std` 不会被误报为活动 geometry、sigma 或 alpha。
+
+两种 Bayesian 模式中的 `std` 定义不同，但都沿用 NumPy 总体标准差 `ddof=0`：
+
+- `FULLSMC`：先把每个样本转换到规范走滑/倾滑分量布局，再对真实采样的线性参数逐分量
+  计算标准差。
+- `SMC_FJ`：对每个已接受的几何与 sigma/alpha 样本，重新求同一约束合同下的条件最优解
+  \(\mathbf m_s^*\)，再计算这些条件最优解的逐分量标准差：
+
+\[
+\mathbf m_s^*=\arg\min_{\mathbf m\in\mathcal C}
+\left(\mathbf m^\mathsf{T}\mathbf H_s\mathbf m
++2\mathbf q_s^\mathsf{T}\mathbf m\right),
+\qquad
+\operatorname{std}_j=
+\sqrt{\frac{1}{N}\sum_{s=1}^{N}(m_{s,j}^*-\bar m_j^*)^2}.
+\]
+
+因此，`SMC_FJ` 给出的是条件优化解随后验样本变化的离散度，不包含给定超参数后
+\(\mathbf m\) 自身的完整条件协方差，不能写成完整边缘 posterior 标准差。实现复用采样阶段
+同一套 \(\mathbf H_s,\mathbf q_s\)、参数列顺序和约束；只跳过已经用于筛选样本的 likelihood、
+prior 与曲率/log-determinant 评分。固定几何只准备一次白化数据和平滑块；连续 QP 可在中央
+证书通过时复用活动集，否则回退到可信 QP 求解器。统计使用在线矩算法，只保留长度为参数数
+的均值和二阶矩，不保存所有滑动解。
+
+双分量断层的 `total` 图显示
+\(\sqrt{\operatorname{std}_{ss}^{2}+\operatorname{std}_{ds}^{2}}\)，即滑动向量分量离散度的
+模，不是“滑动模长样本”的标准差。单分量断层时两者没有这一区别。图件始终放在所选
+代表几何上，绘制结束后恢复代表模型，synthetic 和后续导出不会使用描述性 `std`。
 
 ### 标准结果入口与脚本层导出
 
@@ -467,6 +494,7 @@ KDE，再显式调用一次：
 inversion.extract_and_plot_bayesian_results(
     rank=rank, filename=str(samples_file), model="median",
     plot_faults=True, plot_data=True,
+    plot_std=args.plot_std and not args.no_plot,  # 显式请求，计算可能较慢。
     plot_sigmas=False,  # 关闭内置 KDE，避免与下面的联合 KDE 重复。
     data_poly="config",  # 沿用每个数据集解析后的 poly 设置。
     fault_outdir="output", data_outdir="Modeling", show=False,
@@ -491,6 +519,57 @@ if rank == 0:
 有效选择；`None` 会按 corner 形状自动判断三角形、完整四边形或旧式对角格式。synthetic
 本身由上面的高层入口依据 `verticals`/`polys` 生成，脚本不再按 SAR/opticorr 类型自行
 复制一套正演逻辑。
+
+三份公共模板默认只保存代表滑动；传入 `--plot-std` 后，才额外计算并保存 posterior
+滑动分量离散度。该开关还受 `--no-plot` 约束。离散度绘制完成后，高层入口会恢复所选代表
+模型，后面的 synthetic、拟合统计和文本不会误用 `std`。同一进程内重复请求相同样本和
+约束的统计会复用结果；重新加载或完成一组样本会清空该进程内缓存。
+
+公共模板不再复制一段临时改写断层状态的 STD 文件导出代码。确实需要 patch/center GMT 时，
+可在个人脚本的断层文件输出区增加一个显式开关，并在 `try/finally` 中临时发布离散度、写出
+文件后恢复代表模型：
+
+```python
+parser.add_argument(
+    "--export-std-gmt", action="store_true",
+    help="Export posterior slip dispersion as fault patch/center GMT files.",
+)
+
+if args.export_std_gmt:
+    inversion.returnModel(
+        model="std",
+        representative_model=representative_model,
+        print_fit_statistics=False,
+    )
+    try:
+        for fault in faults_list:
+            fault.writePatches2File(
+                str(output_dir / f"slip_{fault.name}_std.gmt"),
+                add_slip="total",
+            )
+            fault.writeSlipCenter2File(
+                str(output_dir / f"slip_{fault.name}_std_center.gmt"),
+                add_slip="total", scale=1.0, neg_depth=False,
+            )
+    finally:
+        inversion.returnModel(
+            model=representative_model, print_fit_statistics=False,
+        )
+```
+
+`returnModel(model="std")` 的 `representative_model` 是显式的显示状态选择：可以是
+`"median"`、`"MAP"`、`"mean"` 或一个完整模型向量，默认仍为 `"median"`。中央统计入口会在
+样本重放成功或异常退出后重新激活该代表模型，避免几何、GF、Laplacian 或 synthetic 停留在
+最后一个尝试的候选；外层 `try/finally` 则只负责在文件写出失败时恢复临时发布前的预测结果。
+若同一进程已通过 `--plot-std` 计算过相同统计，上述入口会复用缓存，不会再次重放全部样本。
+STD 分量不是物理滑动方向，因此不要据此调用 `writeSlipDirection2File()`；输出文件名也应保留
+`_std`，避免与 median/MAP 等可预测结果混淆。
+
+默认 `Modeling/` 文本仍是可由 GMT 直接着色的降采样多边形。显式传入
+`--export-point-values` 后，模板才额外创建 `Modeling/points/`：InSAR 的每行包含位置、标量值
+和 ENU 投影向量；`opticorr` 的每行包含位置及 east/north 两个分量。三种状态均为
+`data`、`synth`、`resid`。这是同一代表模型的另一种输出表示，不会改变 likelihood、重建 GF
+或再次计算 synthetic。
 
 `plot_faults_geometry_correction(...)` 比较当前代表几何与 `geometry_ref`，因此必须放在代表
 模型激活之后。它的 `filename` 是图件路径，`output_dir` 是参考/改正边界文本目录，两者不是

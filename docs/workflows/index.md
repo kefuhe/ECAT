@@ -2,7 +2,7 @@
 
 本目录按科研任务组织页面。第一次使用先读
 [安装与环境检查](../getting_started/installation.md) 和
-[标准两步走路线](../getting_started/quickstart_two_step.md)；已经明确任务时，直接从下表进入对应 workflow。
+[标准两阶段反演（两步走）](../getting_started/quickstart_two_step.md)；已经明确任务时，直接从下表进入对应 workflow。
 
 ## 标准主线
 

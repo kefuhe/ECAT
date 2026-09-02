@@ -6,7 +6,7 @@
 
 | 问题 | 先读 |
 | --- | --- |
-| 为什么推荐先非线性几何、再线性滑动 | [标准两步走反演逻辑](two_step_inversion.md) |
+| 为什么推荐先非线性几何、再线性滑动 | [标准两阶段反演逻辑](two_step_inversion.md) |
 | trace、top/bottom、layers、mesh 和 patch 有什么区别 | [断层几何状态](fault_geometry_states.md) |
 | 联合 Bayesian 中参考几何、样本状态和候选 mesh 是什么关系 | [Bayesian 联合反演中的几何参考](bayesian_geometry_reference.md) |
 | `strike/dip/rake` 如何配套解释，跨 `90°` 时怎样进入 CSI | [断层走向、倾角与滑动基底约定](fault_angle_conventions.md) |

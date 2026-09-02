@@ -14,6 +14,7 @@
 | 生成 SAR/optical 降采样配置 | `ecat-generate-downsample` | 核对 reader、mode、文件与处理参数 |
 | 观测改正/导出、预览、协方差或降采样 | `ecat-downsample` | 无阶段选项可只执行已启用的改正/导出；`-s/-c/-d` 执行对应阶段 |
 | 查看 GF 方法选项 | `ecat-generate-config --show-gf-options` | 把选项写入 `faults.defaults.method_parameters.update_GFs.options` |
+| 运行已安装的 PSGRN/PSCMP 或 EDGRN/EDCMP 二进制 | `ecat-psgrn`, `ecat-pscmp`, `ecat-edgrn`, `ecat-edcmp` | 先生成并检查对应程序的输入文件，再按平台能力运行 |
 | 简化或处理断层迹线 | `ecat-fault-trace-tool` | 在构建断层几何前处理 trace |
 | 导出 Google Earth KMZ | `ecat-export-google-earth` | 选择标准网格、CSI varres、地震 CSV 或多图层 project |
 | 打开本地科研地图 | `ecat-map` | 读取短 project YAML，按需显示地震、断层、GNSS、标准观测或 varres |
@@ -264,9 +265,9 @@ ecat-fault-trace-tool simplify input_trace.txt --method vw --tolerance 0.5 -o tr
 [断层迹线处理参考](fault_trace_processing.md)。旧的
 `input_trace.txt --algo vw --param 0.5 --output PREFIX` 调用仍保留兼容，继续生成原有三类输出。
 
-## Green's Function 模板工具
+## Green's Function 模板与运行入口
 
-包中还包含 PSGRN/PSCMP 和 EDGRN/EDCMP 的模板生成与运行辅助：
+包中包含 PSGRN/PSCMP 和 EDGRN/EDCMP 的输入模板生成器：
 
 ```bash
 ecat-generate-psgrn-template --help
@@ -275,7 +276,28 @@ ecat-generate-edgrn-template --help
 ecat-generate-edcmp-template --help
 ```
 
-这些属于进阶内容，建议在 BLSE/VCE 主流程稳定后再引入。
+生成器只负责创建可编辑输入，不会自动运行外部程序。检查输入后，对应运行入口是：
+
+```bash
+ecat-psgrn [PSGRN 原生参数]
+ecat-pscmp [PSCMP 原生参数]
+ecat-edgrn [EDGRN 原生参数]
+ecat-edcmp [EDCMP 原生参数]
+```
+
+这四个入口是已安装 CSI 二进制的轻量转发器：它们不解析 ECAT YAML，也不改写上游程序
+参数；当前终端的输入输出和程序退出码会原样传递。因此输入文件名、工作目录和参数格式应
+遵循对应 PSGRN/PSCMP 或 EDGRN/EDCMP 程序的约定。
+
+运行前先检查：
+
+- 当前平台是 Windows 或 Linux，且安装的 CSI 包包含对应平台二进制；
+- 模板中的单位、层状模型、观测点和输出目录已经按上游程序要求修改；
+- Windows 安装中当前随包提供的 PSGRN/PSCMP 可执行文件不可用，需改用经过验证的 Linux
+  环境或自行编译的兼容二进制；EDGRN/EDCMP 仍应先用小输入检查运行时依赖和输出。
+
+这些属于进阶正演工具。普通 `cutde`/Okada 线性反演不需要直接调用它们；建议在标准
+BLSE/VCE 主流程稳定后，再根据层状介质 GF 需求引入。
 
 ## 典型工具链
 

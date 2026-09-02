@@ -284,8 +284,10 @@ check_plots:
 
 ## 5. 可选：参考改正与全分辨率导出
 
-如果远场整体不在零附近，先用一个明确的稳定参考区估计常数 offset。最方便的是
-圆心加半径：
+参考改正不是降采样的必选步骤。只有原始观测存在明确的常数偏移或长波趋势时才启用；
+先保留未改正 quick-look 作为对照。
+
+最常见的情况是用稳定远场估计常数 offset：
 
 ```yaml
 observation_correction:
@@ -301,18 +303,15 @@ observation_correction:
     exclude_regions: []
 ```
 
-也可以换成 box：
+模型选择遵循下面的最短判断：
 
-```yaml
-    regions:
-      - kind: box
-        bounds: [-68.6, -68.2, 9.1, 9.5]
-        # [min_lon, max_lon, min_lat, max_lat]
-```
+| 现象 | 建议模型 | 拟合区域 |
+| --- | --- | --- |
+| 稳定远场整体偏离零值 | `offset` | 指定一个或多个稳定 circle/box |
+| 归零后仍有稳定的一阶长波趋势 | `plane` | 默认全部有效观测，并排除主要形变区 |
+| 不连通区域存在已确认的整周 jump | 不用 offset/plane 代替 | 使用高级 `phase_cycle_correction` |
 
-先使用 `offset`。只有确认归零后仍存在稳定长波趋势，才改用 `plane`。plane 估计默认
-使用全部有效观测，不需要手工填写截距、梯度或覆盖全图的 region；主要形变区可用 box
-排除。可直接复制：
+`plane` 估计不要求填写覆盖全图的 region；主要形变区通常用 box 排除：
 
 ```yaml
 observation_correction:
@@ -329,11 +328,9 @@ observation_correction:
   fixed_coefficients: null
 ```
 
-最终拟合样本应在东西、南北两个方向都有足够展布；排除过多，或把 plane 限制在过窄、
-近似共线的显式 regions 中，都无法稳定确定两个梯度，并会明确报秩不足。若使用
-`coefficient_mode: fixed`，则必须清空
-`fit.regions/exclude_regions`，并提供系数原点以及每个观测分量的 `offset`、
-`east_gradient`、`north_gradient`。完整 SAR/optical 写法见下方 reference。
+最终拟合样本应在东西、南北两个方向都有足够展布；过窄或近似共线的区域会明确报秩不足。
+固定 plane 系数、多个区域、optical 分量和整周改正的完整写法统一放在
+[观测参考改正与无重采样网格导出](../reference/observation_correction_export.md)。
 
 `-c` 只启用经验协方差阶段，不会自动启用参考改正，也不会把 `covar.mask_out` 当成
 观测改正的 regions/exclusions。只想估计协方差、暂不进行观测改正时，应保持
@@ -343,13 +340,7 @@ observation_correction:
 改正发生在 `data_filters` 后、`processing_region` 前；原观测保留，协方差和降采样使用
 改正后观测。运行会写 `<outName>_observation_correction.yml`。
 
-少数情况下，不连通解缠分量存在已确认的 \(2n\pi\) jump。不要用全局 offset/plane
-拟合这种离散阶跃；在可靠确定整数周数后，使用高级顶层
-`phase_cycle_correction` 给目标区域明确设置 `cycles_to_remove`。该块不在默认
-模板中，完整可复制配置和符号公式见
-[指定区域整周修正](../reference/observation_correction_export.md#高级给指定不连通区域修正整周)。
-
-需要绘制全分辨率原观测和改正后观测时：
+需要保存全分辨率原观测和改正后观测时，可启用标准网格导出：
 
 ```yaml
 export:
@@ -361,61 +352,16 @@ export:
     verify: true
 ```
 
-它写 `<outName>_observation.nc`，不插值、不重投影。规则经纬网格可以直接给
-PyGMT/GMT；二维曲线经纬网格会原样保存在 NetCDF 中，不会被压成近似的一维轴。
-若后续需要用 xarray/HDF5 工具读取，可把 `file` 显式设置为
-`<outName>_observation.h5`；变量和坐标结构保持相同。
-详细变量、fixed plane 和 PyGMT 路径见
-[观测参考改正与无重采样网格导出](../reference/observation_correction_export.md)。
-
-如果想从同一 reader 配置生成 Google Earth 全分辨率显示副本，在同一个 `export`
-下加入并列块，不需要第二份配置：
-
-```yaml
-export:
-  observation_grid:
-    enabled: false        # 只有需要标准 .nc/.h5 时才打开
-  google_earth:
-    enabled: true
-    file: auto            # <outName>_google_earth.kmz
-    mask: source_valid    # 全部有效源像元；analysis_valid 仅显示分析子集
-    style:
-      vmin: null          # 显示色标范围，不是经纬度范围
-      vmax: null          # 两者同时留空时自动计算
-      symmetry: true      # 自动范围关于 0 对称；显式 vmin/vmax 优先
-```
-
-KMZ 自动读取当前 reader 和最终改正值，只导出全分辨率 raster，不自动加入
-`.txt/.rsp`。规则、等间距的经纬网格可精确写出；其他拓扑明确报错，绝不插值。
-不加 `-s/-c/-d`、只运行 `ecat-downsample -f downsample_phase.yml` 时执行该导出；
-quick-look、协方差和降采样阶段不重复写 KMZ。完整高级字段见
-[Google Earth Export Reference](../reference/google_earth_export.md#downsample-integration)。
-
-只执行参考改正/导出而不估计协方差或降采样时，保持
-`covar.do_covar: false`、`downsample.enabled: false` 并直接运行：
+该导出不插值、不重投影。只执行参考改正或导出时，保持协方差和降采样关闭并直接运行：
 
 ```bash
 ecat-downsample -f downsample_phase.yml
 ```
 
-预计输出：
-
-```text
-<outName>_observation.nc
-<outName>_phase_cycle_correction.yml  # 启用区域整周修正时
-<outName>_observation_correction.yml   # 启用参考改正时
-<outName>_observation_grid.yml
-<outName>_run_metadata.yml
-```
-
-具有可靠 affine/CRS 的 TIFF 输入还可能生成
-`<outName>_<variable>.tif`；纯 GAMMA 二进制通常只生成标准 NetCDF，
-不会因缺少 GeoTIFF sidecar 而视为失败。
-
-若同一次运行还需要 quick-look、协方差或降采样，照常加 `-s`、`-c` 或 `-d`；
-这些选项不改变标准 NC/H5 导出的网格分辨率，但不会触发 Google Earth 联动。
-
-这两个块均默认关闭；不需要改正或导出时，现有读取和降采样数值路径不变。
+`observation_correction` 和 `export` 默认都关闭，不会改变普通降采样数值路径。需要 KMZ
+显示副本时转到 [Google Earth 科研导出](06_google_earth_export.md)；需要完整 NetCDF/HDF5
+变量、GeoTIFF sidecar 和验证规则时查
+[观测参考改正与无重采样网格导出](../reference/observation_correction_export.md)。
 
 ## 6. 协方差和正式降采样
 

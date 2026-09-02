@@ -35,7 +35,7 @@
 | `examples/` | 短例 / Examples | 给短小可复制的任务代码或命令，不承载完整案例 |
 | `casebook/` | 案例 / Casebook | 将工作流映射到 ECAT-Cases 中的真实脚本、数据和输出 |
 | `reference/` | 参考 / Reference | 解释 CLI、配置字段、reader、降采样、约束和反演细节 |
-| `developer/` | 维护说明 / Developer Notes | 说明文档组织、维护规则和面向维护者的边界 |
+| `developer/` | 公开贡献说明 / Developer Notes | 说明公开文档组织、贡献规则和验证要求 |
 
 导航标题应保留中文解释，同时显式写出英文目录名或英文功能名，便于用户在 GitHub 目录、文档页和案例仓库之间对应。
 
@@ -47,7 +47,7 @@
 
 1. 基础入口：CLI。
 2. 数据准备：SAR Reader、Downsampling App。
-3. 标准两步反演：非线性几何配置、线性滑动配置、Sigmas/Alpha、约束管理器、BLSE/VCE。
+3. 标准两阶段反演：非线性几何配置、线性滑动配置、Sigmas/Alpha、约束管理器、BLSE/VCE。
 4. 高级 Bayesian：联合反演、可扰动断层几何。
 5. 通用工具：Viztools。
 
@@ -77,19 +77,18 @@ reference 的相关小节”，不要为每个函数建立独立学习路线，�
 
 高级联合 Bayesian 几何-滑动反演应放在 Advanced Workflows 中，不应归入入门两步走的非线性几何页面。`geometry_perturbation` 只解释联合 Bayesian 中的可扰动断层几何，不作为普通断层几何预处理教程。
 
-## 约束文档的双层边界
+## 约束内容怎样分层
 
-约束文档同时服务科研用户和代码维护者，但两类内容不能混写：
+约束文档既要帮助用户完成配置，也要保持公开接口边界清楚：
 
 | 层级 | 规范入口 | 应包含 | 不应包含 |
 | --- | --- | --- | --- |
-| 公开短例层 | [Constraint Runtime Example](../examples/constraint_config_runtime.md) | 可复制的配置基线、会话修改、patch/rake 调整和求解前检查 | 完整字段字典、私有实现 |
-| 公开用户层 | [Constraint Manager](../reference/constraint_manager.md), [Rake Constraints](../reference/rake_constraints.md) | 配置字段、稳定 facade、`update/add/replace/set/clear` 语义、config/runtime 生命周期、公式和诊断 | 私有 registry、`owner/family` 写入、内部重建方法 |
-| 内部维护层 | [Constraint Manager Developer Guide](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/docs/CONSTRAINT_MANAGER_DEVELOPER_GUIDE.md) | 声明态与解析态、owner/family、CRUD 和 reconciliation、事务、参数布局、solver handoff、扩展清单 | 重复维护面向用户的完整配置教程 |
-| 追溯层 | `eqtools/csiExtend/docs/` 中的 plan、audit、changelog | 设计原因、迁移记录、验证证据 | 作为当前公开接口的唯一依据 |
+| 短例 | [Constraint Runtime Example](../examples/constraint_config_runtime.md) | 可复制的配置基线、会话修改、patch/rake 调整和求解前检查 | 完整字段字典、求解器实现 |
+| 工作流 | [BLSE/VCE](../workflows/04_linear_slip_blse_vce.md) 与 [联合 Bayesian](../workflows/05_joint_bayesian_geometry_slip.md) | 何时设置约束、运行前检查、失败后下一步 | 内部状态和编译过程 |
+| 参考 | [Constraint Manager](../reference/constraint_manager.md), [Rake Constraints](../reference/rake_constraints.md) | 配置字段、公开方法、覆盖顺序、公式、快照和用户可见诊断 | 非公开存储结构、内部重建方法 |
 
 推荐阅读顺序是“workflow 选择任务 → example 复制最小搭配 → reference 查完整语义”。
-内部维护指南不进入普通用户的必读路径。
+公开源码链接可以帮助贡献者核对实现，但源码中的辅助对象不会因此成为用户 API。
 
 ## 反演输入装配的文档所有权
 
@@ -105,14 +104,18 @@ fault 和 geodata 是非线性与线性反演的共同交接对象，应按同�
 保存可复制代码，reference 保存完整模式和边界条件。降采样 workflow 的末尾可以保留一次最短
 “读回反演”代码，因为它属于该任务的直接输出交接点。
 
-本地研究案例可以用于核对公开 API、数据列语义和常见用法，但公开页面不得写入本地绝对路径，
-也不得链接尚未公开的脚本或数据。公开示例一律改写为通用文件名和占位数值；只有已经公开且
-稳定的完整案例才进入 `casebook/`。
+案例证据只有在脚本、数据入口和必要说明已经公开时才能写入用户手册。公开短例一律使用
+通用文件名和占位数值；只有稳定、可访问且具有明确教学目标的完整案例才进入 `casebook/`。
 
-公开接口或层级语义变化时，应同时更新公开 reference 和内部 developer guide。
-只有内部实现细节变化且用户行为不变时，只更新 developer guide 和相应测试/变更记录。
+公开接口或层级语义变化时，应同步更新 workflow、example 或 reference 中真正受影响的页面，
+并用实现、模板和测试核对。只有实现细节变化且用户行为不变时，不需要为了展示源码改动而
+扩写用户手册。
 
-Viztools 同样遵守双层边界：普通用户从 [科研绘图短例](../examples/viztools_scientific_figures.md) 进入，再到 [Viztools reference](../reference/viztools.md) 和 [Figure Products](../reference/figure_products.md) 查完整语义；代码层级、兼容入口、参数所有权和扩展模板只维护在 [Viztools Developer Guide](https://github.com/kefuhe/eqtools/blob/main/eqtools/viztools/docs/VIZTOOLS_DEVELOPER_GUIDE.md)。
+Viztools 也遵守同一阅读顺序：普通用户从
+[科研绘图短例](../examples/viztools_scientific_figures.md) 进入，再到
+[Viztools reference](../reference/viztools.md) 和
+[Figure Products](../reference/figure_products.md) 查完整语义；内部参数传递和兼容实现不进入
+用户必读路径。
 
 ## 手册当前覆盖
 

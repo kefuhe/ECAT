@@ -1,13 +1,13 @@
-# 标准两步走路线
+# 标准两阶段反演：两步走路线
 
-ECAT 教程按两步走路线组织反演阶段：
+ECAT 教程按标准两阶段路线组织反演，下文简称“两步走”：
 
 1. **Bayesian 非线性几何反演**：估计断层几何。
 2. **BLSE/VCE 线性滑动分布反演**：固定几何，求解分布式滑动。
 
 这里的“两步走”指反演阶段。完整上手顺序是：安装环境，确认 InSAR/GNSS 数据读取，必要时做 InSAR 降采样，然后进入非线性几何反演和线性滑动分布反演。
 
-如果还不清楚为什么要分成几何搜索和线性滑动两步，先读 [标准两步走反演逻辑](../concepts/two_step_inversion.md)。如果只需要某个小任务的最小代码，例如 trace 预处理、GAMMA quick-look 或 BLSE 最小脚本，看 [Examples / 任务短例](../examples/index.md)。
+如果还不清楚为什么要分成几何搜索和线性滑动两步，先读 [标准两阶段反演逻辑](../concepts/two_step_inversion.md)。如果只需要某个小任务的最小代码，例如 trace 预处理、GAMMA quick-look 或 BLSE 最小脚本，看 [Examples / 任务短例](../examples/index.md)。
 
 ## 先选择非线性入口
 

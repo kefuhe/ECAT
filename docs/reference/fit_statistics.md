@@ -30,7 +30,7 @@
 | 场景 | 激活当前模型 | 结构化拟合统计 | 一站式结果入口 |
 | --- | --- | --- | --- |
 | 固定权重 BLSE | `run()`；交互查看可用 `returnModel()` | `collect_fit_statistics()` | `extract_and_plot_blse_results()` |
-| simple VCE | `run_simple_vce()` | `collect_fit_statistics()` | `extract_and_plot_blse_results()` |
+| 简化 VCE | `run_simple_vce()` | `collect_fit_statistics()` | `extract_and_plot_blse_results()` |
 | SMC_FJ / FULLSMC / 联合 Bayesian | `returnModel(model=...)` | `collect_fit_statistics()` | `extract_and_plot_bayesian_results()` |
 | 独立非线性几何 SMC | `returnModel(model=...)` | `collect_fit_statistics()` | `extract_and_plot_bayesian_results()` |
 | 历史多断层 `explorefault` 路线 | `returnModel(model=...)` | `collect_fit_statistics()` | 历史 Bayesian 结果入口 |
@@ -153,13 +153,13 @@ s_{\mathrm{eff},k}=\sigma_k s_{0,k}.
 | `Eff. std` / `effective_marginal_std` | \(\sigma_k\sqrt{\operatorname{mean}(\operatorname{diag}C_k)}\) | 观测单位 | 阅读有效边际噪声尺度 | 完整协方差的单值等价物 |
 | `Qw` / `weighted_quadratic` | \(r_k^\mathsf T(\sigma_k^2C_k)^{-1}r_k\) | 无量纲 | 检查求解目标中的数据失配 | 不含模型复杂度修正的正式 reduced chi-square |
 | `wRMS` / `weighted_rms` | \(\sqrt{Q_{w,k}/n_k}\) | 无量纲 | 比较不同单位和协方差尺度的数据集 | 观测单位 RMS |
-| `weighted_effective_dof` | \(\nu_{\mathrm{eff},g}\) | 个数 | simple VCE 组级线性化诊断 | 严格约束问题的精确自由度 |
+| `weighted_effective_dof` | \(\nu_{\mathrm{eff},g}\) | 个数 | 简化 VCE 组级线性化诊断 | 严格约束问题的精确自由度 |
 | `Approx. red.Q` / `reduced_weighted_misfit` | \(Q_{w,g}/\nu_{\mathrm{eff},g}\) | 无量纲 | 检查 VCE 分组的尺度是否明显失衡 | 可直接作为所有模式的正式卡方检验 |
 
 如果误差模型、sigma 和可预测模型都合适，独立高斯条件下 \(Q_w\) 的期望量级与相应
 自由度相近。但相关结构、模型缺失、异常值、估计得到的 sigma、边界约束和有效自由度
 近似都会改变这种解释。论文中可以直接报告 RMS、VR、\(Q_w\) 及其定义；若报告
-`Approx. red.Q`，必须同时说明 ECAT 使用的是 simple VCE 的近似线性化自由度，而不是
+`Approx. red.Q`，必须同时说明 ECAT 使用的是简化 VCE 的近似线性化自由度，而不是
 严格约束卡方检验。
 
 ## VCE 组级统计和有效自由度
@@ -172,7 +172,7 @@ Q_{w,g}=\sum_{k\in g}Q_{w,k},
 n_g=\sum_{k\in g}n_k.
 \]
 
-simple VCE 对最后一次线性化使用以下实现。令：
+简化 VCE 对最后一次线性化使用以下实现。令：
 
 \[
 H=\sum_g\frac{(W_gG_g)^\mathsf T(W_gG_g)}{\sigma_g^2}
@@ -186,7 +186,7 @@ H_g=\frac{(W_gG_g)^\mathsf T(W_gG_g)}{\sigma_g^2},
 \]
 
 若 \(H\) 不可逆，实现使用 Moore–Penrose 伪逆。若算得
-\(\nu_{\mathrm{eff},g}\le 0\)，当前 simple VCE 使用
+\(\nu_{\mathrm{eff},g}\le 0\)，当前简化 VCE 使用
 \(0.1n_g\) 作为数值保护值。平滑组使用相同结构，把 \(W_gG_g\) 换成 \(L_j\)，把
 \(n_g\) 换成该平滑组的行数。
 
@@ -198,7 +198,7 @@ H_g=\frac{(W_gG_g)^\mathsf T(W_gG_g)}{\sigma_g^2},
 - 共享组的 reduced 值只出现在 VCE 分量表，数据集行不复制该值；
 - 单数据集独占一个 VCE 组时，数据集行可以显示同一个近似 reduced 值。
 
-在 simple VCE 中，数据组或平滑组的方差更新因子正是
+在简化 VCE 中，数据组或平滑组的方差更新因子正是
 \(u_g=Q_{w,g}/\nu_{\mathrm{eff},g}\)。所有有实际行且设置为更新的分量统一要求
 
 \[

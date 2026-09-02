@@ -276,8 +276,11 @@ alpha_groups = inversion.current_alpha_group_values
 ```
 
 这些值已经按照各自的 `log_scaled` 设置完成转换。不要再对它们应用 `10**`。
-`returnModel(model="std")` 得到的是 sampler/模型分量的标准差，并不构成一个物理模型，
-因此不会发布上述活动模型权重。
+`returnModel(model="std", representative_model="median")` 是描述性线性分量离散度的
+兼容导出入口；`representative_model` 可显式改为 `"MAP"`、`"mean"` 或完整模型向量，用于
+确定承载该描述场的几何和预测状态。它不构成一个可预测物理模型，也不会把 STD 当作活动
+sigma/alpha。新脚本优先使用 `compute_posterior_slip_statistics()` 或高层入口的
+`plot_std=True`；无论统计重放成功还是异常退出，中央入口都会恢复所选代表模型。
 
 ## Log Scale
 
@@ -377,7 +380,7 @@ inv.run(penalty_weight=[100.0])
 该工作流没有分布式滑动 Laplacian。几何参数单独成表，使用 perturbation registry 中的
 角色和单位，不再把无单位的 geometry `Value` 与尺度参数混排。
 
-simple VCE 结果使用 `solved_sigma2_by_group` 与 `solved_alpha2_by_group` 保存返回模型
+简化 VCE 结果使用 `solved_sigma2_by_group` 与 `solved_alpha2_by_group` 保存返回模型
 实际使用的尺度，并使用对应的 `proposed_*_by_group` 保存可能的下一轮更新。四个字段
 始终为按组命名的字典；实际行乘数分别为
 `1/sqrt(solved_sigma2_by_group[group])` 和

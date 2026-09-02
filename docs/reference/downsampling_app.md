@@ -7,7 +7,6 @@
 - 入门运行：先看 [InSAR 降采样](../workflows/02_insar_downsampling.md)，按 `-s/-c/-d` 跑通一个标准 reader 案例。
 - 数据格式对照：看 [InSAR/Offset 降采样案例](../casebook/insar_downsampling_gamma_geotiff.md)，按 GAMMA、GeoTIFF、GMTSAR 或 adapter 选择模板。
 - 字段查阅：回到本页确认 YAML 字段语义、默认值、兼容记录和输出文件。
-- 维护扩展：先读 [文档架构说明](../developer/architecture.md) 和 [文档维护规范](../developer/contributing_docs.md)；用户字段语义以本页为准。
 
 ## 入口定位
 

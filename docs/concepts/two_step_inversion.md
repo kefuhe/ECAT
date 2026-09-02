@@ -1,6 +1,6 @@
-# 标准两步走反演逻辑
+# 标准两阶段反演逻辑
 
-ECAT 推荐把常规同震反演分成两步：
+ECAT 推荐把常规同震反演分成两个阶段，下文简称“两步走”：
 
 1. **Bayesian 非线性几何反演**：用紧凑源估计断层顶边中点经纬度和深度、走向、倾角、长度、宽度、平均滑动或震级代理量。
 2. **BLSE/VCE 线性滑动分布反演**：固定优选几何和网格，求解每个 patch 的分布式滑动。
@@ -15,7 +15,7 @@ ECAT 推荐把常规同震反演分成两步：
 
 | 阶段 | 主要输出 | 不是这个阶段的目标 |
 | --- | --- | --- |
-| 非线性几何 | 几何后验、优选紧凑源、sigma/alpha 后验、拟合诊断 | 最终分布式滑动模型 |
+| 非线性几何 | 几何后验、优选紧凑源、sigma 后验和拟合诊断 | 最终分布式滑动模型 |
 | 线性滑动 | patch slip、模型预测、残差、Mw、VCE 或平滑权重诊断 | 重新搜索几何参数 |
 
 ## 关键约定
@@ -27,7 +27,7 @@ ECAT 推荐把常规同震反演分成两步：
 
 ## 继续阅读
 
-- [标准两步走路线](../getting_started/quickstart_two_step.md)
+- [标准两阶段反演（两步走）](../getting_started/quickstart_two_step.md)
 - [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md)
 - [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md)
 - [Bayesian 联合几何-滑动分布反演](../workflows/05_joint_bayesian_geometry_slip.md)

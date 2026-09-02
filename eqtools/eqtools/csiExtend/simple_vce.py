@@ -179,9 +179,9 @@ def simplified_vce(
         )
     qp_session = None
     if qp_acceleration == 'certified_kkt':
-        from .qp_sequence_fastpath import VCEKKTSession
+        from .qp_sequence_fastpath import CertifiedQPSequenceSession
 
-        qp_session = VCEKKTSession(
+        qp_session = CertifiedQPSequenceSession(
             lsqlin._prepare_qp_constraints(
                 n_params, A_ueq, b_ueq, Aeq, beq, lb, ub
             )
@@ -354,14 +354,15 @@ def simplified_vce(
         if qp_session is None:
             ret = central_qp_solve()
         else:
-            from .qp_sequence_fastpath import solve_vce_qp_candidate
+            from .qp_sequence_fastpath import solve_qp_sequence_candidate
 
-            ret = solve_vce_qp_candidate(
+            ret = solve_qp_sequence_candidate(
                 N_total,
                 q_total,
                 session=qp_session,
                 fallback=central_qp_solve,
                 change_measure=previous_change,
+                route_name="vce_certified_kkt",
             )
         solve_route = ret.get('solve_route')
         if solve_route is None:

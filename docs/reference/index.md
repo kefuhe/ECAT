@@ -25,14 +25,14 @@ Reference 不要求按文件顺序通读。长页面保留完整字段和公式�
 | --- | --- |
 | [观测数据读入](observation_data_readers.md) | 需要复制 GAMMA/HyP3/GMTSAR/optical reader，读取 CSI varres、外部 ASCII SAR 或 GNSS ENU 时 |
 | [SAR Reader](sar_reader.md) | 需要确认 SAR/offset 产品的 reader、mode、projection、正负号和单位转换时 |
-| [Data Corrections](data_corrections.md) | 需要确认 `geodata.polys`、InSAR ramp、GPS frame transform、`poly_bounds` 或 `data_corrections` 语义时 |
+| [反演数据改正项](data_corrections.md) | 需要确认反演中的 `geodata.polys`、InSAR ramp、GPS frame transform、`poly_bounds` 或 `data_corrections` 语义时 |
 | [Downsampling App](downsampling_app.md) | 正在查 `downsample.yml` 字段、执行顺序、输出文件或兼容字段时 |
 | [断层迹线处理](fault_trace_processing.md) | 需要查迹线裁剪/延长/重采样命令、经纬度或最近点 marker、`TracePath` 和文件协议时 |
 | [交互迹线编辑器](interactive_trace_editor.md) | 需要查 `ecat-trace-edit`、降采样交接、节点操作、坐标或 Save As 规则时 |
 | [经度约定与区域配置](longitude_regions.md) | 西半球或跨日界线数据需要设置处理区域、过滤、协方差掩膜或检查图范围时 |
-| [Observation Correction and Grid Export](observation_correction_export.md) | 需要在降采样前归零/去一阶平面、给已确认的不连通相位分量修正整周，或无重采样导出全分辨率 SAR/optical 网格时 |
+| [降采样前观测改正与网格导出](observation_correction_export.md) | 需要在降采样前归零/去一阶平面、给已确认的不连通相位分量修正整周，或无重采样导出全分辨率 SAR/optical 网格时 |
 
-## 标准两步反演
+## 标准两阶段反演
 
 | 页面 | 什么时候读 |
 | --- | --- |

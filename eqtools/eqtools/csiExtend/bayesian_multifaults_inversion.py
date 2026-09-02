@@ -123,6 +123,10 @@ from .quadratic_objective import (
     gaussian_curvature_log_term,
     weighted_residual_quadratic,
 )
+from .posterior_statistics import (
+    OnlineVectorMoments,
+    PosteriorSlipStatistics,
+)
 import warnings
 from .bayesian_utils import det_of_laplace_smooth_lu
 from . import lsqlin
@@ -308,6 +312,31 @@ class _SMCFJQuadraticWorkspace:
     smoothing_blocks: tuple
 
 
+@dataclass(frozen=True)
+class _SMCFJConstraintContract:
+    """Frozen linear constraints used by one SMC-FJ target or replay."""
+
+    A: object
+    b: object
+    Aeq: object
+    beq: object
+    lb: object
+    ub: object
+    n_linear: int
+    revision: int
+
+
+@dataclass(frozen=True)
+class _SMCFJConditionalProblem:
+    """Exact conditional quadratic and blocks used to assemble its score."""
+
+    workspace: _SMCFJQuadraticWorkspace
+    H: np.ndarray
+    q: np.ndarray
+    sigmas: np.ndarray
+    alphas: object
+
+
 class BayesianMultiFaultsInversion(
     DataCorrectionReportMixin,
     DataCorrectionConstraintMixin,
@@ -342,6 +371,9 @@ class BayesianMultiFaultsInversion(
 
         self.update_config(self.config)
         self._initialize_bounds(bounds_config)
+        # Derived posterior fields are process-local and tied to one loaded or
+        # completed sample population. Loading/replacing samples clears them.
+        self._posterior_slip_statistics_cache = {}
 
     def update_config(self, config):
         self.config = config
@@ -1538,6 +1570,7 @@ class BayesianMultiFaultsInversion(
                                          save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
                                          tempering_policy=self.config.smc_tempering)
         self.sampler = final
+        self._posterior_slip_statistics_cache = {}
         if rank == 0:
             self.save2h5(final, filename)
         
@@ -1620,11 +1653,419 @@ class BayesianMultiFaultsInversion(
             tempering_policy=self.config.smc_tempering,
         )
         self.sampler = final
+        self._posterior_slip_statistics_cache = {}
         if rank == 0:
             self.save2h5(final, filename)
         
         return final
     
+    @staticmethod
+    def _posterior_sample_change(previous, current, lower, upper):
+        """Return a dimensionless change used only to gate KKT retries."""
+        if previous is None:
+            return None
+        previous = np.asarray(previous, dtype=float).reshape(-1)
+        current = np.asarray(current, dtype=float).reshape(-1)
+        if current.size == 0:
+            return 0.0
+        span = np.asarray(upper, dtype=float) - np.asarray(lower, dtype=float)
+        span = np.asarray(span, dtype=float).reshape(-1)
+        safe_span = np.where(np.isfinite(span) & (span > 0.0), span, 1.0)
+        return float(np.max(np.abs(current - previous) / safe_span))
+
+    def _compute_smc_fj_posterior_linear_moments(
+            self, samples, *, ddof=0, use_certified_kkt=True):
+        """Replay accepted SMC-FJ samples without re-scoring the target.
+
+        Every sample uses the same conditional ``H, q`` construction and
+        constraints as sampling. Curvature, likelihood, and prior terms are
+        intentionally omitted because the accepted population is already
+        fixed and only its conditional linear solutions are required.
+        """
+        from collections import Counter
+        from .qp_sequence_fastpath import (
+            CertifiedQPSequenceSession,
+            solve_qp_sequence_candidate,
+        )
+
+        self._require_bayesian_sampling_mode(
+            'SMC_FJ', 'compute_posterior_slip_statistics'
+        )
+        self._validate_sampling_ready()
+        contract = self._prepare_smc_fj_constraint_contract()
+        prepared_constraints = lsqlin._prepare_qp_constraints(
+            contract.n_linear,
+            contract.A,
+            contract.b,
+            contract.Aeq,
+            contract.beq,
+            contract.lb,
+            contract.ub,
+        )
+        qp_session = (
+            CertifiedQPSequenceSession(prepared_constraints)
+            if use_certified_kkt
+            else None
+        )
+        hyper_lb, hyper_ub = (
+            self.constraint_manager.get_bounds_for_hyperparameters()
+        )
+        hyper_lb, hyper_ub = (
+            self.constraint_manager._normalise_active_bounds_pair(
+                hyper_lb,
+                hyper_ub,
+                expected_length=int(np.asarray(hyper_lb).size),
+                label='SMC_FJ posterior replay hyperparameter bounds',
+            )
+        )
+
+        fixed_workspace = None
+        if not self.nonlinear_inversion:
+            fixed_workspace = self._build_smc_fj_quadratic_workspace(
+                GL_combined=self.GL_combined
+            )
+
+        moments = OnlineVectorMoments()
+        route_counts = Counter()
+        previous_sample = None
+        for sample_index, sample in enumerate(samples):
+            if self.constraint_manager.state_revision != contract.revision:
+                raise RuntimeError(
+                    "SMC_FJ constraints changed during posterior replay; "
+                    "restart the statistic calculation with a fresh contract"
+                )
+            sample = np.asarray(sample, dtype=float).reshape(-1)
+            workspace = fixed_workspace
+            if self.nonlinear_inversion:
+                for fault_name, fault_config in self.config.faults.items():
+                    if (
+                        fault_name in self.faultnames
+                        and fault_config['geometry']['update']
+                    ):
+                        if not self._try_update_fault_geometry_and_mesh(
+                                fault_name, fault_config, sample,
+                                log_enabled=False):
+                            raise RuntimeError(
+                                "stored SMC-FJ sample "
+                                f"{sample_index} no longer produces a valid "
+                                "fault geometry"
+                            )
+                        self._update_fault_GFs_and_Laplacian(
+                            fault_name,
+                            fault_config,
+                            update_laplacian=self.config.alpha_enabled,
+                            log_enabled=False,
+                        )
+                workspace = self._build_smc_fj_quadratic_workspace()
+
+            problem = self._assemble_smc_fj_conditional_problem(
+                sample, workspace
+            )
+            if problem is None:
+                raise RuntimeError(
+                    f"stored SMC-FJ sample {sample_index} resolves to a "
+                    "non-positive or non-finite sigma/alpha"
+                )
+
+            def central_qp_solve():
+                return self._solve_smc_fj_quadratic_result(
+                    problem.H,
+                    problem.q,
+                    A=contract.A,
+                    b=contract.b,
+                    Aeq=contract.Aeq,
+                    beq=contract.beq,
+                    lb=contract.lb,
+                    ub=contract.ub,
+                )
+
+            if qp_session is None:
+                result = central_qp_solve()
+            else:
+                result = solve_qp_sequence_candidate(
+                    problem.H,
+                    problem.q,
+                    session=qp_session,
+                    fallback=central_qp_solve,
+                    change_measure=self._posterior_sample_change(
+                        previous_sample,
+                        sample,
+                        hyper_lb,
+                        hyper_ub,
+                    ),
+                    route_name="posterior_certified_kkt",
+                )
+            _validate_lsqlin_status(
+                result,
+                context="SMC_FJ posterior conditional replay",
+            )
+            linear_values = np.asarray(
+                lsqlin.cvxopt_to_numpy_matrix(result['x']), dtype=float
+            ).reshape(-1)
+            moments.update(linear_values)
+            route_counts[str(result.get('solve_route', 'unknown'))] += 1
+            previous_sample = sample.copy()
+
+        diagnostics = (
+            qp_session.diagnostics()
+            if qp_session is not None
+            else {"acceleration": "off"}
+        )
+        diagnostics['route_counts'] = dict(sorted(route_counts.items()))
+        return moments.standard_deviation(ddof=ddof), diagnostics
+
+    def compute_posterior_slip_statistics(
+            self, statistic='std', *, ddof=0,
+            representative_model='median', use_cache=True, verbose=True):
+        """Compute a posterior linear-field statistic without treating it as a model.
+
+        FULLSMC statistics come directly from canonicalized sampled linear
+        parameters. SMC-FJ statistics replay the accepted hyperparameter and
+        geometry population and accumulate the constrained conditional
+        optimizers. The latter describes optimizer dispersion; it is not the
+        complete marginal posterior covariance of slip.
+
+        The SMC-FJ replay assembles the same conditional ``H, q`` and consumes
+        the same frozen constraint contract as the sampling target, but does
+        not repeat curvature/log-determinant, likelihood, or prior scoring.
+        ``ddof=0`` preserves the historical NumPy population-standard-
+        deviation convention used by result summaries.
+
+        ``representative_model`` is reactivated after replay, including when
+        replay raises, so nonlinear geometry and published synthetic state do
+        not remain at the final attempted sample. Pass ``None`` only when the
+        caller deliberately owns subsequent state restoration. The process-
+        local cache is cleared whenever a new sample population is loaded or
+        completed.
+        """
+        statistic = str(statistic).lower()
+        if statistic != 'std':
+            raise ValueError("only statistic='std' is currently supported")
+        ddof = int(ddof)
+        if ddof < 0:
+            raise ValueError("ddof must be non-negative")
+        if (
+            isinstance(representative_model, str)
+            and representative_model.lower() == 'std'
+        ):
+            raise ValueError(
+                "representative_model must identify a predictive posterior "
+                "model, not the descriptive 'std' field"
+            )
+        if not hasattr(self, 'sampler') or self.sampler is None:
+            raise RuntimeError("load or run Bayesian samples before statistics")
+        samples = np.asarray(self.sampler.allsamples, dtype=float)
+        if samples.ndim != 2 or samples.shape[0] <= ddof:
+            raise ValueError(
+                "posterior samples must be a two-dimensional population "
+                f"with more than ddof={ddof} rows"
+            )
+
+        revision = getattr(
+            getattr(self, 'constraint_manager', None),
+            'state_revision',
+            None,
+        )
+        cache_key = (
+            id(self.sampler),
+            id(self.sampler.allsamples),
+            samples.shape,
+            self.bayesian_sampling_mode,
+            statistic,
+            ddof,
+            revision,
+        )
+        cache = getattr(self, '_posterior_slip_statistics_cache', {})
+        summary = cache.get(cache_key) if use_cache else None
+        from_cache = summary is not None
+        try:
+            if summary is None:
+                started = time.perf_counter()
+                if self.bayesian_sampling_mode == 'SMC_FJ':
+                    values, solver_diagnostics = (
+                        self._compute_smc_fj_posterior_linear_moments(
+                            samples, ddof=ddof, use_certified_kkt=True
+                        )
+                    )
+                    definition = 'conditional_optimizer_dispersion'
+                else:
+                    moments = OnlineVectorMoments()
+                    for sample in samples:
+                        canonical = np.asarray(
+                            self.transfer_samples(sample), dtype=float
+                        ).reshape(-1)
+                        moments.update(
+                            canonical[self.linear_sample_start_position:]
+                        )
+                    values = moments.standard_deviation(ddof=ddof)
+                    solver_diagnostics = {
+                        'acceleration': 'not_applicable',
+                        'route_counts': {
+                            'sampled_linear_parameters': len(samples)
+                        },
+                    }
+                    definition = 'posterior_sample_dispersion'
+                summary = PosteriorSlipStatistics(
+                    statistic=statistic,
+                    values=np.asarray(values, dtype=float),
+                    sample_count=int(samples.shape[0]),
+                    ddof=ddof,
+                    definition=definition,
+                    elapsed_seconds=time.perf_counter() - started,
+                    solver_diagnostics=solver_diagnostics,
+                )
+                if use_cache:
+                    cache[cache_key] = summary
+                    self._posterior_slip_statistics_cache = cache
+        except Exception as calculation_error:
+            if representative_model is not None:
+                try:
+                    self.returnModel(
+                        model=representative_model,
+                        print_fit_statistics=False,
+                    )
+                except Exception as restoration_error:
+                    raise RuntimeError(
+                        "posterior slip statistic calculation failed and "
+                        "representative-model restoration also failed: "
+                        f"calculation={calculation_error!r}; "
+                        f"restoration={restoration_error!r}"
+                    ) from calculation_error
+            raise
+
+        if representative_model is not None:
+            self.returnModel(
+                model=representative_model,
+                print_fit_statistics=False,
+            )
+        if verbose:
+            cache_note = "cached" if from_cache else "computed"
+            routes = summary.solver_diagnostics.get('route_counts', {})
+            route_note = ", ".join(
+                f"{name}={count}" for name, count in routes.items()
+            )
+            print(
+                f"Posterior slip {statistic}: samples={summary.sample_count}, "
+                f"definition={summary.definition}, elapsed="
+                f"{summary.elapsed_seconds:.3f}s, state={cache_note}"
+                + (f", routes=[{route_note}]" if route_note else "")
+            )
+        return summary
+
+    def _publish_posterior_linear_statistic(self, values):
+        """Temporarily publish canonical linear values for fault-field plots."""
+        values = np.asarray(values, dtype=float).reshape(-1)
+        linear_start = self.linear_sample_start_position
+        manager = getattr(self, 'constraint_manager', None)
+        if manager is not None:
+            expected = int(manager.get_linear_parameter_layout()['width'])
+        else:
+            full_ends = [
+                end for _, end in self.full_slip_positions.values()
+            ] + [end for _, end in self.full_poly_positions.values()]
+            expected = max(full_ends, default=linear_start) - linear_start
+        if values.size != expected:
+            raise ValueError(
+                f"posterior linear statistic has {values.size} values; "
+                f"expected {expected}"
+            )
+        for source in self.multifaults.faults:
+            slip_start, slip_end = self.full_slip_positions[source.name]
+            segment = values[
+                slip_start - linear_start:slip_end - linear_start
+            ]
+            adapter = getattr(self.multifaults, 'adapters', {}).get(
+                source.name
+            )
+            if adapter is not None:
+                adapter.distribute_results(segment)
+            else:
+                component_count = len(
+                    FaultAdapter._canonicalize_slipdir(source.slipdir)
+                )
+                source.slip[:, :component_count] = segment.reshape(
+                    component_count, -1
+                ).T
+
+            poly_start, poly_end = self.full_poly_positions[source.name]
+            poly_values = values[
+                poly_start - linear_start:poly_end - linear_start
+            ]
+            poly_offset = 0
+            for key, width in source.poly.items():
+                if width is not None:
+                    source.polysol[key] = poly_values[
+                        poly_offset:poly_offset + width
+                    ]
+                    poly_offset += width
+        self.mpost = values.copy()
+
+    def _snapshot_published_linear_result(self):
+        """Capture only state changed by publishing a descriptive field."""
+        source_states = []
+        for source in self.multifaults.faults:
+            attributes = self.multifaults.adapters[
+                source.name
+            ].get_result_state_attributes()
+            source_states.append((
+                source,
+                {
+                    name: (
+                        hasattr(source, name),
+                        copy.deepcopy(getattr(source, name, None)),
+                    )
+                    for name in attributes
+                },
+            ))
+        return copy.deepcopy(getattr(self, 'mpost', None)), source_states
+
+    def _restore_published_linear_result(self, snapshot):
+        """Restore a result snapshot without rebuilding geometry or GF state."""
+        mpost, source_states = snapshot
+        self.mpost = mpost
+        for source, state in source_states:
+            for name, (existed, value) in state.items():
+                if existed:
+                    setattr(source, name, value)
+                elif hasattr(source, name):
+                    delattr(source, name)
+
+    def plot_posterior_slip_statistics(
+            self, statistic='std', *, representative_model='median',
+            outdir='output', file_type='png', slip_cmap='cmc.roma_r',
+            show=True, suffix=None, **plot_kwargs):
+        """Plot component dispersion on one representative fault geometry.
+
+        For a two-component fault, the plotted ``total`` field is
+        ``sqrt(std_ss**2 + std_ds**2)``: the norm of component-wise posterior
+        dispersion, not the standard deviation of sampled slip magnitude.
+        The representative predictive result is restored after plotting.
+        """
+        summary = self.compute_posterior_slip_statistics(
+            statistic=statistic,
+            representative_model=representative_model,
+            use_cache=True,
+            verbose=True,
+        )
+        predictive_state = self._snapshot_published_linear_result()
+        self._publish_posterior_linear_statistic(summary.values)
+        try:
+            self.plot_fault_fields(
+                fields=('total',),
+                outdir=outdir,
+                file_type=file_type,
+                slip_cmap=slip_cmap,
+                show=show,
+                suffix=statistic if suffix is None else suffix,
+                **plot_kwargs,
+            )
+        finally:
+            # A descriptive field is never left as the active predictive
+            # result, even when plotting raises. Geometry/GF state already
+            # belongs to representative_model and is intentionally untouched.
+            self._restore_published_linear_result(predictive_state)
+        return summary
+
     def returnModel(
         self,
         model='mean',
@@ -1632,11 +2073,15 @@ class BayesianMultiFaultsInversion(
         print_stat=True,
         *,
         print_fit_statistics=None,
+        representative_model='median',
     ):
         """Activate one posterior representative and distribute its results.
 
         ``print_fit_statistics`` is the canonical result-API spelling;
-        ``print_stat`` remains accepted for existing scripts.
+        ``print_stat`` remains accepted for existing scripts. When
+        ``model='std'``, ``representative_model`` selects the predictive
+        posterior geometry/state on which the descriptive slip-dispersion
+        field is published. It is ignored for ordinary predictive models.
         """
         from scipy.stats import gaussian_kde
         if print_fit_statistics is not None:
@@ -1647,14 +2092,53 @@ class BayesianMultiFaultsInversion(
                 self.target = self.make_smc_fj_target_for_parallel(log_enabled=False)
             else:
                 self.target = self.make_target_for_parallel()
+
+        if isinstance(model, str) and model.lower() == 'std':
+            # Compatibility entry for older scripts. ``std`` is a descriptive
+            # field, not a geometry/scale candidate: compute it through the
+            # dedicated replay path and display it on the requested predictive
+            # representative without embedding that policy in this branch.
+            if representative_model is None:
+                raise ValueError(
+                    "returnModel(model='std') requires a predictive "
+                    "representative_model"
+                )
+            hyper_std = self.sampler.allsamples.std(axis=0)
+            summary = self.compute_posterior_slip_statistics(
+                statistic='std',
+                representative_model=representative_model,
+                use_cache=True,
+                verbose=False,
+            )
+            try:
+                self._clear_bayesian_hyperparameter_context()
+                self._publish_posterior_linear_statistic(summary.values)
+                specs = np.hstack((
+                    hyper_std[:self.linear_sample_start_position],
+                    summary.values,
+                ))
+                self.model = specs
+                return specs
+            except Exception as publication_error:
+                try:
+                    self.returnModel(
+                        model=representative_model,
+                        print_fit_statistics=False,
+                    )
+                except Exception as restoration_error:
+                    raise RuntimeError(
+                        "posterior slip statistic publication failed and "
+                        "representative-model restoration also failed: "
+                        f"publication={publication_error!r}; "
+                        f"restoration={restoration_error!r}"
+                    ) from publication_error
+                raise
         
         if isinstance(model, str):
             if model == 'mean':
                 specs = self.sampler.allsamples.mean(axis=0)
             elif model == 'median':
                 specs = np.median(self.sampler.allsamples, axis=0)
-            elif model == 'std':
-                specs = self.sampler.allsamples.std(axis=0)
             elif model == 'MAP':
                 # Assuming 'logposterior' is the key for log posterior values
                 max_posterior_index = np.argmax(self.sampler.postval)
@@ -1689,21 +2173,10 @@ class BayesianMultiFaultsInversion(
                 self._update_fault_GFs_and_Laplacian(fault.name, fault_config)
         
         if self.bayesian_sampling_mode == 'SMC_FJ':
-            if isinstance(model, str) and model == 'std':
-                mpost = []
-                for isample in self.sampler.allsamples:
-                    self.target(isample)
-                    self._require_current_linear_solution('returnModel(std)')
-                    mpost.append(self.mpost)
-                specs_slip_poly = np.std(mpost, axis=0)
-                specs_full = np.hstack((specs[:self.linear_sample_start_position], specs_slip_poly))
-                self.target(specs[:self.linear_sample_start_position])
-                self._require_current_linear_solution('returnModel(std)')
-            else:
-                self.target(specs)
-                self._require_current_linear_solution(f'returnModel({model})')
-                specs_slip_poly = self.mpost
-                specs_full = np.hstack((specs[:self.linear_sample_start_position], specs_slip_poly))
+            self.target(specs)
+            self._require_current_linear_solution(f'returnModel({model})')
+            specs_slip_poly = self.mpost
+            specs_full = np.hstack((specs[:self.linear_sample_start_position], specs_slip_poly))
             specs = specs_full
             self.model = specs_full
             mpost_tmp = self.mpost.copy()
@@ -2399,7 +2872,11 @@ class BayesianMultiFaultsInversion(
         rank: process rank (default is 0)
         filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
         plot_faults: whether to plot faults (default is True)
-        plot_std: whether to plot standard deviation (default is False)
+        plot_std: whether to compute and plot posterior slip-component
+            dispersion (default is False). For SMC-FJ this re-solves the
+            conditional linear problem for each accepted sample without
+            repeating likelihood or curvature scoring; standard templates
+            therefore expose it as an explicit opt-in product.
         plot_sigmas: whether to plot sigmas (default is True)
         plot_data: whether to plot data (default is True)
         antisymmetric: whether to set the colormap to be antisymmetric (default is True)
@@ -2503,15 +2980,17 @@ class BayesianMultiFaultsInversion(
             )
     
             if plot_std:
-                self.returnModel(model='std', print_fit_statistics=False)  # std mean
-                self.plot_fault_fields(
-                    fields=('total',),
+                std_plot_kwargs = dict(fault_plot_kwargs)
+                std_plot_kwargs['cblabel'] = 'Slip-component dispersion (m)'
+                self.plot_posterior_slip_statistics(
+                    statistic='std',
+                    representative_model=best_model,
                     outdir=fault_output_path,
                     file_type=file_type,
                     slip_cmap=cmap_slip,
                     show=show,
                     suffix='std',
-                    **fault_plot_kwargs,
+                    **std_plot_kwargs,
                 )
             
             # Print hyperparameters summary table
@@ -2713,6 +3192,7 @@ class BayesianMultiFaultsInversion(
             )
 
         self.sampler = data
+        self._posterior_slip_statistics_cache = {}
         self._loaded_smc_tempering_policy = checkpoint_tempering
         self._loaded_smc_samples_id = id(data)
             
@@ -3563,24 +4043,21 @@ class BayesianMultiFaultsInversion(
         self.target = target
         return target
 
-    def make_smc_fj_target_for_parallel(self, log_enabled=False, x0=None, opts=None,
-                smooth_prior_weight=1.0,
-                magnitude_log_prior=False, decay_rate=0.1):
-        self._require_bayesian_sampling_mode(
-            'SMC_FJ', 'make_smc_fj_target_for_parallel'
-        )
-        self._validate_sampling_ready()
+    def _prepare_smc_fj_constraint_contract(self):
+        """Freeze the manager-owned linear constraint layout for one run.
 
+        Sampling targets and posterior conditional replay consume this same
+        contract so a reporting path cannot silently reorder bounds or omit a
+        named equality/inequality constraint.
+        """
         self.constraint_manager._require_activation_flags_reconciled(
-            "SMC_FJ target construction"
+            "SMC_FJ conditional problem construction"
         )
-
-        # The manager is the single source of truth for the linear problem.
-        # This prevents call-site arrays from bypassing named groups, ownership
-        # checks, active-space column validation, or config/runtime precedence.
         A, b = self.constraint_manager.get_combined_inequality_constraints()
         Aeq, beq = self.constraint_manager.get_combined_equality_constraints()
-        n_linear = int(self.constraint_manager.get_linear_parameter_layout()['width'])
+        n_linear = int(
+            self.constraint_manager.get_linear_parameter_layout()['width']
+        )
 
         has_manager_bounds = self.constraint_manager.has_active_linear_bounds()
         lb = ub = None
@@ -3592,6 +4069,29 @@ class BayesianMultiFaultsInversion(
                 expected_length=n_linear,
                 label='SMC_FJ linear bounds',
             )
+        return _SMCFJConstraintContract(
+            A=A,
+            b=b,
+            Aeq=Aeq,
+            beq=beq,
+            lb=lb,
+            ub=ub,
+            n_linear=n_linear,
+            revision=self.constraint_manager.state_revision,
+        )
+
+    def make_smc_fj_target_for_parallel(self, log_enabled=False, x0=None, opts=None,
+                smooth_prior_weight=1.0,
+                magnitude_log_prior=False, decay_rate=0.1):
+        self._require_bayesian_sampling_mode(
+            'SMC_FJ', 'make_smc_fj_target_for_parallel'
+        )
+        self._validate_sampling_ready()
+
+        contract = self._prepare_smc_fj_constraint_contract()
+        A, b = contract.A, contract.b
+        Aeq, beq = contract.Aeq, contract.beq
+        lb, ub = contract.lb, contract.ub
 
         # Get hyperparameter bounds
         hyper_lb, hyper_ub = self.constraint_manager.get_bounds_for_hyperparameters()
@@ -3601,7 +4101,7 @@ class BayesianMultiFaultsInversion(
             expected_length=int(np.asarray(hyper_lb).size),
             label='SMC_FJ hyperparameter bounds',
         )
-        constraint_revision = self.constraint_manager.state_revision
+        constraint_revision = contract.revision
 
         def ensure_current_constraints():
             if self.constraint_manager.state_revision != constraint_revision:
@@ -3857,6 +4357,53 @@ class BayesianMultiFaultsInversion(
             smoothing_blocks=tuple(smoothing_blocks),
         )
 
+    def _assemble_smc_fj_conditional_problem(self, samples, workspace):
+        """Build the exact conditional ``H, q`` shared by solve and score.
+
+        A ``None`` result represents a non-finite or non-positive physical
+        sigma/alpha and is an ordinary rejected candidate. Cardinality and
+        layout mismatches remain visible programming/configuration errors.
+        """
+        sigmas = self._dataset_sigmas_from_samples(samples)
+        if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
+            return None
+        if len(sigmas) != len(workspace.data_blocks):
+            raise ValueError("SMC_FJ sigma/data block cardinality mismatch")
+
+        weighted_blocks = [
+            (block, 1.0 / sigma**2)
+            for block, sigma in zip(workspace.data_blocks, sigmas)
+        ]
+        alphas = None
+        if self.config.alpha_enabled:
+            alphas = self._smoothing_alphas_from_samples(samples)
+            if len(alphas) != len(workspace.smoothing_blocks):
+                raise ValueError(
+                    "SMC_FJ alpha/smoothing block cardinality mismatch"
+                )
+            if np.any(~np.isfinite(alphas)) or np.any(alphas <= 0.0):
+                return None
+            weighted_blocks.extend(
+                (block, 1.0 / alpha_value**2)
+                for block, alpha_value in zip(
+                    workspace.smoothing_blocks, alphas
+                )
+            )
+
+        H, q = assemble_quadratic_objective(
+            weighted_blocks,
+            n_parameters=workspace.G_combined.shape[1],
+        )
+        return _SMCFJConditionalProblem(
+            workspace=workspace,
+            H=H,
+            q=q,
+            sigmas=np.asarray(sigmas, dtype=float),
+            alphas=(
+                None if alphas is None else np.asarray(alphas, dtype=float)
+            ),
+        )
+
     def _compute_likelihoods_smc_fj(
             self, samples, GL_combined=None, A=None, b=None, Aeq=None,
             beq=None, lb=None, ub=None, x0=None, opts=None,
@@ -3888,36 +4435,13 @@ class BayesianMultiFaultsInversion(
         if workspace is None:
             workspace = self._build_smc_fj_quadratic_workspace(GL_combined)
 
-        sigmas = self._dataset_sigmas_from_samples(samples)
-        if np.any(~np.isfinite(sigmas)) or np.any(sigmas <= 0.0):
-            return -np.inf
-        if len(sigmas) != len(workspace.data_blocks):
-            raise ValueError("SMC_FJ sigma/data block cardinality mismatch")
-
-        weighted_blocks = [
-            (block, 1.0 / sigma**2)
-            for block, sigma in zip(workspace.data_blocks, sigmas)
-        ]
-        alpha_faults = None
-        if self.config.alpha_enabled:
-            alpha_faults = self._smoothing_alphas_from_samples(samples)
-            if (
-                len(alpha_faults) != len(workspace.smoothing_blocks)
-                or np.any(~np.isfinite(alpha_faults))
-                or np.any(alpha_faults <= 0.0)
-            ):
-                return -np.inf
-            weighted_blocks.extend(
-                (block, 1.0 / alpha_value**2)
-                for block, alpha_value in zip(
-                    workspace.smoothing_blocks, alpha_faults
-                )
-            )
-
-        H, q = assemble_quadratic_objective(
-            weighted_blocks,
-            n_parameters=workspace.G_combined.shape[1],
+        problem = self._assemble_smc_fj_conditional_problem(
+            samples, workspace
         )
+        if problem is None:
+            return -np.inf
+        H, q = problem.H, problem.q
+        sigmas, alpha_faults = problem.sigmas, problem.alphas
         # Start each candidate transaction with no publishable linear result.
         # A curvature or QP failure must never leave the previous candidate's
         # model marked as current.
@@ -3949,11 +4473,11 @@ class BayesianMultiFaultsInversion(
 
         data_quadratic = sum(
             weighted_residual_quadratic(block, mpost, 1.0 / sigma**2)
-            for block, sigma in zip(workspace.data_blocks, sigmas)
+            for block, sigma in zip(problem.workspace.data_blocks, sigmas)
         )
         sigma_logdet = sum(
             block.matrix.shape[0] * np.log(sigma**2)
-            for block, sigma in zip(workspace.data_blocks, sigmas)
+            for block, sigma in zip(problem.workspace.data_blocks, sigmas)
         )
         data_log_likelihood = -0.5 * (data_quadratic + sigma_logdet)
 
@@ -3975,7 +4499,7 @@ class BayesianMultiFaultsInversion(
                 )
                 + block.matrix.shape[0] * np.log(alpha_value**2)
                 for block, alpha_value in zip(
-                    workspace.smoothing_blocks, alpha_faults
+                    problem.workspace.smoothing_blocks, alpha_faults
                 )
             )
         return (
@@ -4052,6 +4576,22 @@ class BayesianMultiFaultsInversion(
             self, H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
             lb=None, ub=None, x0=None, opts=None):
         """Solve the exact prepared form of the SMC-FJ conditional problem."""
+        ret = self._solve_smc_fj_quadratic_result(
+            H, q, reg=reg, A=A, b=b, Aeq=Aeq, beq=beq,
+            lb=lb, ub=ub, x0=x0, opts=opts,
+        )
+        self.mpost = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
+        return self.mpost
+
+    def _solve_smc_fj_quadratic_result(
+            self, H, q, reg=0, A=None, b=None, Aeq=None, beq=None,
+            lb=None, ub=None, x0=None, opts=None):
+        """Return the trusted solver result for one exact SMC-FJ QP.
+
+        Keeping this central call separate lets posterior replay use the same
+        backend and status validation without publishing transient ``mpost``
+        state or re-evaluating the Bayesian target.
+        """
         opts = {'show_progress': False} if opts is None else dict(opts)
         opts.setdefault('show_progress', False)
         ret = lsqlin.lsqlin_quadratic(
@@ -4060,8 +4600,7 @@ class BayesianMultiFaultsInversion(
         _validate_lsqlin_status(
             ret, context="SMC_FJ constrained quadratic solve"
         )
-        self.mpost = lsqlin.cvxopt_to_numpy_matrix(ret['x'])
-        return self.mpost
+        return ret
     
     def _get_source_param_sizes(self):
         """Return list of source parameter counts for each fault, using adapters when available."""

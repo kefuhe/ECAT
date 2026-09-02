@@ -47,18 +47,14 @@ YAML；线性子问题专属约束会被标为 inactive，bounds 和适用先验
 生效。纯断层小模型可使用 `magnitude_rake` 或 `rake_fixed`；包含 Pressure、
 Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 
-两种模式也共用同一套候选几何刷新顺序。每个有效候选都更新 GF；刚体平移/旋转可复用
-面积与 Laplacian，非刚性变形按真实消费者重建。`alpha` 未参与时不为候选额外计算
-Laplacian，magnitude prior 未参与时不额外物化面积。该判断在每个 MPI rank 本地完成，
-不会在候选循环中增加 collective communication。`none/rigid/deform/remesh` 的含义和各派生量
-刷新规则见[可扰动断层几何：几何变化与派生量刷新](../reference/geometry_perturbation.md#几何变化与派生量刷新)。
+两种模式共用同一套候选几何刷新规则：GF 随有效候选更新，Laplacian 和面积只在当前模型
+真正使用且几何变化使其失效时重建。`none/rigid/deform/remesh` 的含义和刷新范围见
+[可扰动断层几何：几何变化与派生量刷新](../reference/geometry_perturbation.md#几何变化与派生量刷新)。
 
-`alpha.enabled: false` 只表示不构造和评分 Laplacian 平滑块。`SMC_FJ` 仍会从数据法矩阵
-计算消去线性滑动参数所需的 \(-\tfrac12\log|H_d|\) 曲率项；因此无平滑模型必须由数据
-充分约束全部线性参数。实现先在无量纲对角平衡坐标中检查数值秩，再把尺度行列式精确
-加回，因此参数单位差异不会被当成秩亏。单个无效候选会获得低似然而不复用旧线性解；
-只有初始粒子全部无效时，MPI 任务才会一致报错退出。程序不会静默退回另一种 profile
-目标。完整推导、平衡公式和约束近似边界见
+`alpha.enabled: false` 只关闭 Laplacian 平滑项，不会取消 `SMC_FJ` 消去线性滑动参数所需的
+曲率项。因此无平滑模型仍必须由数据充分约束全部线性参数。单个秩亏候选会获得低似然；
+如果初始粒子全部无效，运行会报错退出。此时应检查数据覆盖、sigma/alpha bounds 和线性参数
+可辨识性，而不是放宽数值标准。完整推导和约束近似边界见
 [Bayesian 联合反演参考：为什么消去线性参数会产生 log-determinant](../reference/bayesian_joint_inversion.md#为什么消去线性参数会产生-log-determinant)。
 
 ## 输入和完成标准
@@ -236,11 +232,10 @@ current bottom/初始 mesh 与 frozen reference 分离。它不是 sampler 初�
 `remap`、`use_current_mesh`、`bottom_norm_offset` 或平滑坐标类选项，因为 mesh 阶段不应
 重新定义几何或破坏 patch 对应关系。
 
-创建采样 target 时，`generate_and_deform_mesh` 路径会在每个 MPI rank 本地做一次只读
-就绪检查：准备映射必须存在，逐顶点参数坐标、Gmsh mesh 与当前 face rows 必须匹配，且
-`num_segments/disct_z` 等实际映射参数必须与 YAML 重放设置一致。这个检查不 remap、不变形、
-不重算 GF/GL/area，也不会进入候选循环。简单 mesh、multi-layer mesh 和 whole-mesh 刚性
-变换没有该参数映射依赖，因此不会被要求先建立这组状态。
+创建采样 target 时，`generate_and_deform_mesh` 路径会检查参数映射是否已经建立，以及当前
+mesh 是否与 YAML 中的重放设置匹配。失败信息会指出缺失或错位的状态；简单 mesh、
+multi-layer mesh 和 whole-mesh 刚性变换不依赖这组映射。该检查只发生在采样准备阶段，
+不会修改参考几何。
 
 ### 6. 创建 inversion 并做轻量校验
 
@@ -268,7 +263,6 @@ print(constraint_state["validation"])
 
 ```text
 从全局样本向量取得 geometry slice
-  -> target 构造时对方法、kwargs、reference、参数个数和所需 mesh replay 状态完成无副作用预检
   -> 从 GeometryReference 创建样本状态
   -> update_fault_geometry
   -> update_mesh（仅在扰动方法未自行更新 mesh 时）
@@ -284,10 +278,8 @@ mesh、GF、Laplacian、约束矩阵和协方差保持一致。
 GF 随非线性候选几何更新；Laplacian 和面积由实际消费者触发，不会仅因诊断绘图或未启用的
 先验在每个候选中额外重算。
 
-整网格平移/旋转使用同一次 snapshot 的 `Vertices/Faces` pair；首次验证当前 Faces 与该
-reference 的 row、编号和连接关系一致后，固定拓扑候选复用验证结果，不会逐样本重找边界
-或重建邻接。若采样前又 remesh，应先建立新的 reference，而不是把旧 vertices 与新 Faces
-混用。
+整网格平移/旋转必须使用同一次 snapshot 的 `Vertices/Faces` pair。若采样前又 remesh，
+应建立新的 reference，不能把旧 vertices 与新 Faces 混用。
 
 ## MPI 进程与进程内线程
 
@@ -302,7 +294,7 @@ reference 的 row、编号和连接关系一致后，固定拓扑候选复用验
 | 模式 | 每个样本的主要工作 | 进程数选择重点 |
 | --- | --- | --- |
 | `FULLSMC` | 直接使用样本中的滑动计算似然；几何可变时还会重建 GF | 先看 GF 重建成本，再比较 rank 并行与进程内线程 |
-| `SMC_FJ` | 每个样本都进行一次受约束线性滑动求解；固定几何复用 Gram/cross 块，变化几何只保留当前候选的瞬态块 | GF、协方差度量和求解工作区会随 rank 复制，先看峰值内存 |
+| `SMC_FJ` | 每个样本都进行一次受约束线性滑动求解；固定几何可复用线性子问题的固定部分 | 线性求解工作区会随 rank 复制，先看峰值内存 |
 
 第一次运行先保留 MPI 和数值库默认设置，从 4 个进程开始：
 
@@ -360,12 +352,16 @@ output/
   geometry_correction.pdf
   geometry_correction/
   kde_geometry_sigmas_alpha.png
+  *_median_total_*.pdf
+  *_std_total_*.pdf                 # 仅在 --plot-std 时生成。
   fit_statistics_median.txt / .tsv
   slip_<fault>.gmt / slip_<fault>_center.gmt / slipdir_<fault>.txt
   stat_infos/
 Modeling/
   <dataset>_fit_comparison.pdf
   <dataset>_data.txt / _synth.txt / _resid.txt
+  points/                         # 仅在 --export-point-values 时创建。
+    <dataset>_data.txt / _synth.txt / _resid.txt
 ```
 
 结果阶段先调用标准高层入口。它在 rank 0 加载 HDF5、激活代表模型、更新后验几何与滑动，
@@ -376,6 +372,7 @@ Modeling/
 inversion.extract_and_plot_bayesian_results(
     rank=rank, filename=str(samples_file), model="median",
     plot_faults=not args.no_plot, plot_data=not args.no_plot,
+    plot_std=args.plot_std and not args.no_plot,  # 显式请求 posterior 离散度。
     plot_sigmas=False,   # 后面单独生成 geometry/sigma/alpha 联合 KDE。
     data_poly="config",  # 使用配置解析后的多项式改正设置。
     file_type="pdf",
@@ -386,8 +383,25 @@ inversion.extract_and_plot_bayesian_results(
 随后才可绘制几何改正、联合 KDE，并导出 fault/slip 文件。模板使用
 `collect_fit_statistics(..., rebuild_synth=False)` 复用高层入口已经生成的 synthetic；
 `writeDecim2file(..., triangular=None)` 根据 corner 的 4/6/8 列自动识别输出多边形，不把
-降采样格式硬编码为三角形。`--no-plot` 只关闭图件，仍会激活代表模型并输出统计、GMT 和
-`Modeling/` 文本。比较 MAP、mean 或 median 时，每次都要重新激活对应代表模型后立即导出。
+降采样格式硬编码为三角形。模板默认只保存代表滑动；需要逐分量 posterior 离散度图时增加
+`--plot-std`。SMC-FJ 会为已接受样本重求条件线性解，因此这一产品可能明显耗时，但不会重算
+likelihood、prior 或 Hessian 的曲率/log-determinant。离散度不会替代随后用于 synthetic 和
+文本导出的 median 模型。`--no-plot` 关闭所有图件，但仍会激活代表模型并输出统计、GMT 和
+`Modeling/` 文本。
+
+```bash
+python test_joint_bayesian_three_dip_controls.py --plot-std
+```
+
+需要逐点表格时，在读取已有样本的结果命令后增加 `--export-point-values`。InSAR 表写出
+`lon/lat/value` 和 ENU 投影向量；光学表把 east/north 同行写出。它们位于
+`Modeling/points/`，与默认用于 GMT 着色的多边形文件分开，且不会重新正演：
+
+```bash
+python test_joint_bayesian_bottom_offset.py --export-point-values
+```
+
+比较 MAP、mean 或 median 时，每次都要重新激活对应代表模型后立即导出。
 详细状态规则见 [联合反演参考](../reference/bayesian_joint_inversion.md)，统计公式见
 [Fit Statistics](../reference/fit_statistics.md)。
 

@@ -2,6 +2,8 @@
 
 本文说明线性滑动分布反演中 `BoundLSEMultiFaultsInversion` 的常用运行模式、参数关系和结果检查。完整工作流见 [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md)，可运行案例见 [Dingri 2020：BLSE/VCE 线性滑动反演](../casebook/dingri_blse_vce.md)。
 
+本文统一把 `run_simple_vce()` 实现称为“简化 VCE”；方法名和配置字段仍保留代码中的英文拼写。
+
 ## 阅读路径
 
 - 只想跑通线性滑动反演：先读 workflow 和案例，本页作为方法和结果检查参考。
@@ -122,7 +124,7 @@ e_k^\mathsf{T}e_k=r_k^\mathsf{T}C_k^{-1}r_k,\quad
 \]
 
 基础 \(W_kG_k\) 和 \(W_kd_k\) 在 VCE 迭代前只计算一次；每轮只按
-\(1/\sigma_k\) 缩放。当前 simple VCE 还会预先保存每个数据组和平滑组的
+\(1/\sigma_k\) 缩放。当前简化 VCE 还会预先保存每个数据组和平滑组的
 Gram/cross 块，并在第 \(t\) 轮直接组合
 
 \[
@@ -331,7 +333,7 @@ chi-square 写入论文。逐项公式、保护规则、单位和论文报告边
 
 ### 乘法收敛判据
 
-simple VCE 返回的是绝对方差分量，而不只是分量之间的相对比例。对所有确实在增广系统中
+简化 VCE 返回的是绝对方差分量，而不只是分量之间的相对比例。对所有确实在增广系统中
 有行、且设置为更新的组，统一计算
 
 \[
@@ -364,7 +366,7 @@ simple VCE 返回的是绝对方差分量，而不只是分量之间的相对比
 
 ### H–q 自动求解路由与边界诊断
 
-BLSE、simple VCE 和 SMC-FJ 的条件线性问题使用同一二次目标：
+BLSE、简化 VCE 和 SMC-FJ 的条件线性问题使用同一二次目标：
 
 \[
 \min_m\;\frac12m^\mathsf{T}Hm+q^\mathsf{T}m,
@@ -397,7 +399,7 @@ CVXOPT QP；CVXOPT 失败后才延迟物化同一残差系统并进入 Clarabel�
 
 ### 连续 QP 快速路径（可选）
 
-simple VCE 始终使用上述中央自动路由；用户不需要、也不能逐一指定 Cholesky、CVXOPT
+简化 VCE 始终使用上述中央自动路由；用户不需要、也不能逐一指定 Cholesky、CVXOPT
 或 Clarabel。默认 `qp_acceleration="off"` 不增加跨轮状态。对参数较多、活动约束在
 相邻 VCE 轮次间较稳定的问题，可以显式试用高级加速：
 
@@ -525,6 +527,17 @@ GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的
 或 `writeDecim2file()` 明确导出；leveling 和 cross-fault offset 的 data/synth 文本
 仍随各自拟合产品写入 `data_outdir`。
 
+公共 `test_slip_inv_BLSE.py --mode single` 给出当前推荐的顺序式导出块：GPS 点表保留在
+`Modeling/`；InSAR/opticorr 的默认文本是降采样多边形；显式设置
+`--export-point-values` 后才增加 `Modeling/points/`。InSAR 点表用 `write_los=True` 保留
+ENU 投影向量，opticorr 用 `component=None` 同行写 east/north。三种状态统一使用
+`data`、`synth`、`resid`，而 optical 多边形内部再准确映射到 `*East` / `*North` 选择器。
+高层结果入口已经按 `data_poly="config"` 建好 synthetic，脚本层不应重复正演。
+
+BLSE 和简化 VCE 在一次运行中只产生一个最终滑动解；它们没有 posterior 样本集合，因此
+不存在联合 Bayesian 意义下的逐滑动分量 posterior 标准差。若需要不确定性，应使用相应的
+Bayesian 路径或另行定义并说明不确定性估计，而不是把某个确定性模型当作 `std` 输出。
+
 断层统计由 `inv.print_faults_summary()` 使用统一的 [Fault Summary / 断层概览和统计](fault_summary.md) 接口输出。它会报告 trace 长度、patch/mesh 数、面积、深度范围、平均走向倾角、slip 统计；位移单位模型报告 Moment/Mw，速率单位模型报告 moment rate。如果只想在脚本中拿结构化结果，使用 `inv.get_faults_summary()`。
 
 案例脚本也可额外调用断层和数据对象的方法，例如写出 `slip_<FaultName>.gmt`、`slipdir_<FaultName>.txt`、每条 InSAR 的 `data/synth/resid` 文本文件。Dingri 案例的对应代码见 [脚本对照：导出滑动、滑动方向和模型数据](../casebook/dingri_blse_vce.md#export-slip-and-model-data)。
@@ -569,7 +582,7 @@ BLSE/VCE 支持的约束主要包括：
 ### 求解器与约束保留
 
 BLSE/VCE 默认使用统一 H–q 自动路由。固定权重 BLSE 按数据块累计
-\(H=A^\mathsf{T}A\)、\(q=-A^\mathsf{T}b\)；simple VCE 直接复用本轮由冻结
+\(H=A^\mathsf{T}A\)、\(q=-A^\mathsf{T}b\)；简化 VCE 直接复用本轮由冻结
 Gram/cross 块组合的同一 \(H,q\)。这仍是历史 `lsqlin` 在内部实际求解的二次目标，
 并保留相同参数排列和约束。DES 开启时，BLSE 只从 DES 已变换的 \(G',D'\) 形成
 \(H,q\)，不会与变换前矩阵混用。无约束或仅 bounds 且自由解严格位于边界内时，
@@ -583,7 +596,7 @@ Cholesky 证书通过即可返回同一精确最优解；有活动边界、rake�
    `G.T @ G` 后放大条件数。
 4. 恢复原始参数，并用原始 `bounds/A/b/Aeq/beq` 再检查全部残差。
 
-BLSE 和 simple VCE 正常求解时都不拼接完整增广残差矩阵；只有 QP 失败后，才从同一批
+BLSE 和简化 VCE 正常求解时都不拼接完整增广残差矩阵；只有 QP 失败后，才从同一批
 数据、活动平滑矩阵和 DES 状态延迟重建它并交给 Clarabel。因此加速路径没有删除稳健
 后备所需的信息。后备路径只在原 QP 失败时运行，计算时间可能明显增加。若两个后端都不收敛，
 求解会明确报错；ECAT 不会再通过移除等式或不等式约束来生成一个看似成功的

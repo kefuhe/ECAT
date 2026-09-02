@@ -7,7 +7,7 @@ BLSE/VCE 是非线性几何反演后的标准第二步。几何固定后，建�
 复用该对象扫描平滑权重或运行 VCE；不要在对象创建后原地换 mesh 并期待 `run()` 自动刷新
 GF、Laplacian 和约束。
 
-如果只需要最小可复制脚本，先看 [BLSE/VCE 最小脚本骨架](../examples/blse_minimal_run.md)。如果还不清楚为什么标准流程要先几何、再线性滑动，先读 [标准两步走反演逻辑](../concepts/two_step_inversion.md)。
+如果只需要最小可复制脚本，先看 [BLSE/VCE 最小脚本骨架](../examples/blse_minimal_run.md)。如果还不清楚为什么标准流程要先几何、再线性滑动，先读 [标准两阶段反演逻辑](../concepts/two_step_inversion.md)。
 
 <a id="linear-inputs"></a>
 
@@ -153,9 +153,11 @@ inv.run(penalty_weight=None, alpha=[np.log10(1 / 100.0)])
 inv.extract_and_plot_blse_results(
     plot_faults=True,
     plot_data=True,
+    data_poly="config",
     file_type="png",
     fault_outdir="output",
     data_outdir="Modeling",
+    show=False,
 )
 ```
 
@@ -182,6 +184,12 @@ inv.plot_fault_fields(fields=("total", "ss"), outdir="output", file_type="png")
 Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任一结果入口原有的数据类型
 参与范围。
 
+公共 `test_slip_inv_BLSE.py --mode single` 在该入口之后直接复用已经生成的 synthetic，
+不再调用第二套 `buildsynth()`。默认写出 GPS 点表以及 InSAR/opticorr 降采样多边形；增加
+`--export-point-values` 时，才把 raster 逐点表写到 `Modeling/points/`。InSAR 点表包含 ENU
+投影向量，opticorr 点表同行包含 east/north。`triangular=None` 让 CSI 按 corner 形状选择
+三角形或四边形，避免脚本误把降采样类型写死。
+
 ## 求解模式
 
 | 模式 | 方法 | 用途 |
@@ -201,15 +209,11 @@ VCE 对所有可更新有效组统一估计绝对方差尺度，并以
 `max(abs(log(update_factor))) < tol` 判断乘法收敛；默认 `tol=1e-4`。固定组仍参与
 线性求解，但不参加停止判断。公式、结果字段和单分量情形见
 [BLSE/VCE 参考](../reference/blse_vce.md#乘法收敛判据)。
-当普通 VCE 已稳定运行、且约束问题较大时，可按
-[连续 QP 快速路径](../reference/blse_vce.md#连续-qp-快速路径可选) 显式试用
-`qp_acceleration="certified_kkt"`。中央求解器始终自动区分无约束、仅 bounds 和一般线性
-约束；该选项只额外预测相邻 VCE 轮次的活动集，失败会回退同一中央路线。用户不选择具体
-后端，也不应为了提速删除具有物理意义的 rake 或其他约束。返回结果中的
-`qp_diagnostics["route_counts"]` 可只读检查各路线实际使用次数；命中很少时再查看
-`skips`、`fallbacks`、`disabled_reason` 和 `failure_reasons`。若 rake 与某个分量的单边
-bound 表达了同一符号先验，应按 [rake 与 bounds 的职责划分](../reference/rake_constraints.md#避免用-component-bounds-重复表达-rake-方向)
-检查配置；有独立物理意义的约束仍应保留。
+简化 VCE 稳定后，大型连续 QP 可选用
+`qp_acceleration="certified_kkt"` 评估活动集复用收益。该设置不改变 VCE 公式，快速路径
+未通过证书时会回到中央求解路线；不要为了提速删除具有物理意义的 bounds、rake 或其他
+约束。启用条件、诊断字段和回退含义见
+[连续 QP 快速路径](../reference/blse_vce.md#连续-qp-快速路径可选)。
 
 Smoothing loop 只返回候选表和权衡图：粗糙度统一按未加权 \(L_0\) 计算，且循环结束后
 恢复调用前的活动解。图中的 preferred 点不会自动成为最终模型；选定权重后，用固定平滑
@@ -247,72 +251,18 @@ OpenBLAS 还是两者并存，并在代表性案例上比较 1、4、8、16 线�
 如果需要先区分单进程线程与 MPI rank，读
 [进程、MPI Rank、线程与 CPU 亲和性](../concepts/parallel_process_rank_thread.md)。
 
-## 震间解释
+## 特殊固定几何模型
 
-### Euler/block direct-backslip
+本页主线面向同震固定几何滑动反演。震间和深部加载模型仍使用同一 BLSE/VCE 求解入口，
+但字段定义、符号和前置检查不同：
 
-如果配置了 `interseismic_config.yml:fault_loading`，反演后可计算 Euler/block 震间字段：
+| 场景 | 应使用的说明 |
+| --- | --- |
+| Euler/block direct-backslip，输出 loading、coupling 和 creep | [震间加载、Backslip 与 Coupling](../reference/interseismic_kinematics.md) |
+| 深部自由滑动 patch 作为浅部长期加载代理 | [深部滑动加载代理](../reference/deep_slip_loading_proxy.md) |
 
-```python
-result = inv.calculate_interseismic_fields(
-    "MyFault",
-    slip_component="strikeslip",
-)
-
-inv.print_interseismic_constraint_report("MyFault")
-
-inv.plot_interseismic_field(
-    "MyFault",
-    field="coupling_ratio",
-    cmap="viridis",
-    cblabel="Coupling ratio",
-)
-```
-
-震间接口使用：
-
-```text
-q = backslip_rate
-b = tectonic_loading_rate
-coupling_ratio = -q / b
-creep_rate_signed = b + q
-```
-
-字段定义、右旋/左旋符号和导出方法见 [震间加载、Backslip 与 Coupling](../reference/interseismic_kinematics.md)。设置 `fault_loading.blocks` 时，推荐让 `blocks[0]` 位于 `reference_strike` 右手侧、`blocks[1]` 位于左手侧；`motion_sense` 只用于诊断和约束方向。
-
-### Deep-slip loading proxy
-
-如果长期加载由深部自由滑动 patch 表达，而不是由 Euler/block pair 表达，则不要使用 `calculate_interseismic_fields()` 解释结果。先建立浅部到底部深部 patch 的几何映射，再添加可选约束并导出 deep proxy 字段：
-
-```python
-mapping = inv.preview_deep_slip_loading_mapping(
-    shallow_fault="ShallowFault",
-    deep_faults=["DeepFault"],
-    shallow_selector={"edge": "bottom"},
-    component="strikeslip",
-)
-
-inv.print_deep_slip_loading_report(mapping)
-
-inv.add_deep_slip_loading_constraint(
-    mapping=mapping,
-    state="bottom_continuity",
-)
-
-result = inv.calculate_deep_slip_loading_fields(mapping=mapping)
-coupling = result["fields"]["coupling_to_deep"]
-```
-
-该路径使用：
-
-```text
-b = matched deep slip
-s = shallow_slip_rate
-coupling_to_deep = (b - s) / b
-creep_fraction_to_deep = s / b
-```
-
-完整说明见 [深部滑动加载代理](../reference/deep_slip_loading_proxy.md)。
+不要把 deep-slip proxy 结果交给 Euler/block 的 `calculate_interseismic_fields()` 解释；进入
+相应参考页后按其 preflight 和符号检查执行。
 
 ## 输出
 
@@ -328,8 +278,7 @@ creep_fraction_to_deep = s / b
 - 地震矩和震级摘要；
 - 断层概览统计，可通过 `inv.print_faults_summary()` 或 `inv.get_faults_summary()` 查看；
 - L-curve 或 VCE 诊断结果；
-- 若是 Euler/block 震间模型，可额外导出 loading、backslip、coupling、creep patch GMT 和 center text。
-- 若是 deep-slip loading proxy，可额外导出 `deep_loading_proxy_rate`、`shallow_slip_rate`、`slip_deficit_to_deep_signed`、`coupling_to_deep` patch GMT 和 center text。
+- 特殊震间或深部加载模型的派生字段与导出文件见对应参考页。
 
 ## 检查清单
 
@@ -340,11 +289,7 @@ creep_fraction_to_deep = s / b
 - bounds 与震源机制和符号约定一致。
 - 若使用边界零滑，断层对象已有 `edge_triangles_indices`。
 - 若需要局部 patch 子集，优先在脚本中用 [Fault Patch Indices](../reference/fault_patch_indices.md) helper 生成并保存 patch id。
-- 若使用 Euler/block 震间模型，`blocks` 和 `fault_loading` 应在所有 patch 上计算 loading；cap/backslip selector 只控制约束范围。
-- 若使用 Euler/block 震间模型，`blocks[0] - blocks[1]` 是代数顺序；若 loading 符号异常，优先检查 block 顺序和 `reference_strike` 分支。
-- 若使用 Euler/block 震间模型，正式反演前运行 `inv.print_interseismic_preflight_report()`，确认 loading 符号、block 顺序、cap active/configured patch 数和 `skipped_hard`。
-- 若使用 deep-slip loading proxy，先运行 `inv.print_deep_slip_loading_report(mapping)`，确认浅深映射距离、unique deep patch 数、分量和 near-zero deep loading 警告。
-- 若启用 Euler cap，确认 `interseismic_config.yml:cap_constraints.faults` 不是显式空字典 `{}`；preflight 中 active cap 行应为非零。默认 `hard_overlap: skip` 会让 cap 自动跳过 `full_coupling`、`creep` 等 hard equality patch；默认 `mode: motion_sense` 下，若 cap 行数正常但 `coupling_ratio > max_coupling`，再检查 `bounds_config.yml` 是否同时约束 direct backslip `q` 的符号；固定 loading 场景可用 `mode: loading_sign` 直接按实际 loading 符号约束。
+- 特殊震间或深部加载模型先运行对应 reference 指定的 preflight，确认符号、patch 选择和几何映射后再反演。
 - InSAR `polys` 明确；若包含 GPS，vertical 分量使用方式明确。
 - 做倾角、smoothing 或约束方案循环测试时，按
   [循环统计可复制模式](../examples/script_templates.md#loop-statistics) 在每轮求解后立即保存逐数据集
