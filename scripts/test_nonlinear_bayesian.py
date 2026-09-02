@@ -97,15 +97,18 @@ def remove_orbit_error(sar, order=1, exclude_range=None):
 if __name__ == '__main__':
     # -----------------------------------Parse Arguments--------------------------------------#
     parser = argparse.ArgumentParser(
-        description="Perform Bayesian inversion or plot results. Use mpiexec for parallel execution when running the inversion."
+        description=(
+            "Perform Bayesian inversion or plot results. Use mpiexec for "
+            "parallel execution when running the inversion."
+        )
     )
     parser.add_argument(
         '-r', '--run', action='store_true',
-        help="Run Bayesian inversion (requires mpiexec for parallel execution)."
+        help="Run Bayesian inversion (requires mpiexec for parallel execution).",
     )
     parser.add_argument(
         '--no-plot', action='store_true',
-        help="Disable plotting results after running the script."
+        help="Disable plotting results after running the script.",
     )
     args = parser.parse_args()
 
@@ -132,34 +135,52 @@ if __name__ == '__main__':
     # cogps7_1.buildCd(direction='enu')
     # ----------------------------------Generate SAR Object-----------------------------------#
 
-    # Extract SAR data
-    sar_t012a_file = os.path.join('..', 'InSAR', 'RawInSAR', 'Dingri_2020_T012A', 'stdBased', 'S1_T012A_ifg')
-    sar_t121d_file = os.path.join('..', 'InSAR', 'RawInSAR', 'Dingri_2020_T121D', 'stdBased', 'S1_T121D_ifg')
+    # Replace these input paths when adapting the template to another case.
+    sar_t012a_file = os.path.join(
+        '..', 'InSAR', 'RawInSAR', 'Dingri_2020_T012A',
+        'stdBased', 'S1_T012A_ifg',
+    )
+    sar_t121d_file = os.path.join(
+        '..', 'InSAR', 'RawInSAR', 'Dingri_2020_T121D',
+        'stdBased', 'S1_T121D_ifg',
+    )
 
-    sar_t012a = insar(name='T012A', utmzone=None, ellps='WGS84', lon0=lon0, lat0=lat0, verbose=verbose)
+    sar_t012a = insar(
+        name='T012A', utmzone=None, ellps='WGS84',
+        lon0=lon0, lat0=lat0, verbose=verbose,
+    )
     sar_t012a.read_from_varres(sar_t012a_file, triangular=False, cov=True)
     # Optional: build the diagonal covariance matrix
     # sar_t012a.buildDiagCd()
 
-    sar_t121d = insar(name='T121D', utmzone=None, ellps='WGS84', lon0=lon0, lat0=lat0, verbose=verbose)
+    sar_t121d = insar(
+        name='T121D', utmzone=None, ellps='WGS84',
+        lon0=lon0, lat0=lat0, verbose=verbose,
+    )
     sar_t121d.read_from_varres(sar_t121d_file, triangular=False, cov=True)
 
     gpsdata = []
     sardata = [sar_t012a, sar_t121d]
     geodata = gpsdata + sardata
-    #------------------------------Set ExploreFault Object-------------------------------------#
-    expfault = explorefault('invrc', lat0=lat0, lon0=lon0, config_file='default_config.yml', geodata=geodata, verbose=verbose)
+    # ------------------------------ Set ExploreFault Object ---------------------------#
+    expfault = explorefault(
+        'invrc', lat0=lat0, lon0=lon0,
+        config_file='default_config.yml', geodata=geodata, verbose=verbose,
+    )
     nchains = expfault.nchains
     chain_length = expfault.chain_length
-    expfault.setPriors(bounds=None, initialSample=None, datas=None) # datas for Sar reference
-    expfault.setLikelihood(datas=None, verticals=None) 
+    expfault.setPriors(
+        bounds=None, initialSample=None, datas=None,
+    )  # datas controls the SAR reference convention.
+    expfault.setLikelihood(datas=None, verticals=None)
     # -----------------------------------Run Bayesian Inversion--------------------------------#
     if args.run:
         # Run Bayesian inversion
         expfault.walk(
             nchains=nchains, chain_length=chain_length, comm=comm,
             filename='samples_mag_rake_multifaults.h5', save_every=2,
-            save_at_interval=False, covariance_epsilon=1e-9, amh_a=1.0/9.0, amh_b=8.0/9.0
+            save_at_interval=False, covariance_epsilon=1e-9,
+            amh_a=1.0 / 9.0, amh_b=8.0 / 9.0,
         )
 
     # -----------------------------------Plot Results------------------------------------------#
@@ -167,7 +188,7 @@ if __name__ == '__main__':
         expfault.extract_and_plot_bayesian_results(
             rank=rank, filename='samples_mag_rake_multifaults.h5',
             fault_figsize=None, sigmas_figsize=None, plot_faults=False,
-            plot_sigmas=True, plot_data=False, save_data=True, sar_corner='quad'
+            plot_sigmas=True, plot_data=False, save_data=True, sar_corner='quad',
         )
 
         if rank == 0:
@@ -176,11 +197,12 @@ if __name__ == '__main__':
             expfault.plot_kde_matrix(
                 plot_sigmas=True, plot_faults=False, fill=True, save=True,
                 scatter=False, filename='kde_matrix_sigmas.png', axis_labels=axis_labels,
-                figsize=(5.0, 5.0), hspace=0.1, wspace=0.1
+                figsize=(5.0, 5.0), hspace=0.1, wspace=0.1,
             )
             axis_labels = ['Lon', 'Lat', 'Depth', 'Dip', 'Width', 'Length', 'Strike', 'Slip', 'Rake']
             expfault.plot_kde_matrix(
                 plot_sigmas=False, plot_faults=True, fill=True, save=True,
                 scatter=False, filename='kde_matrix_faults.png', axis_labels=axis_labels,
-                hspace=0.1, wspace=0.2, center_lon_lat=False, figsize=(7.5, 6.5), xtick_rotation=45
+                hspace=0.1, wspace=0.2, center_lon_lat=False,
+                figsize=(7.5, 6.5), xtick_rotation=45,
             )

@@ -62,6 +62,7 @@ if __name__ == '__main__':
     comm.Barrier()
 
     # ----------------------------- Shared Geographic Reference ----------------------
+    # Edit this once; every data set and fault below must use the same origin.
     lon0 = 87.5
     lat0 = 28.5
 
@@ -73,6 +74,7 @@ if __name__ == '__main__':
     # cogps6_4.read_from_enu(gpsfile_6_4, factor=1., minerr=1., header=1, checkNaNs=True)
     # cogps6_4.buildCd(direction='enu')
 
+    # Replace these two paths with the fixed-geometry inversion inputs.
     sar_t012a_file = os.path.join(
         '..', 'InSAR', 'RawInSAR', 'Dingri_2020_T012A', 'stdBased', 'S1_T012A_ifg'
     )
@@ -191,12 +193,9 @@ if __name__ == '__main__':
         # ------------------------ Fault and Slip Text Products -----------------------
         if rank == 0:
             for trifault in trifaults_list:
-                trifault.writeFourEdges2File(
-                    dirname=str(output_dir / 'stat_infos')
-                )
+                trifault.writeFourEdges2File(dirname=str(output_dir / 'stat_infos'))
                 trifault.writePatches2File(
-                    str(output_dir / f'slip_{trifault.name}.gmt'),
-                    add_slip='total',
+                    str(output_dir / f'slip_{trifault.name}.gmt'), add_slip='total',
                 )
                 trifault.writeSlipCenter2File(
                     str(output_dir / f'slip_{trifault.name}_center.gmt'),
@@ -227,7 +226,8 @@ if __name__ == '__main__':
                             result_data.write2file(
                                 f'{result_data.name}_{data_type}.txt', data=data_type,
                                 outDir=str(point_values_dir), write_los=True,
-                                write_err=False, write_header=True, precision=None,
+                                write_err=False, write_header=True,
+                                precision=None,
                             )
                 elif result_data.dtype == 'opticorr':
                     optical_fields = (
@@ -248,5 +248,6 @@ if __name__ == '__main__':
                             result_data.write2file(
                                 f'{result_data.name}_{data_type}.txt', data=data_type,
                                 outDir=str(point_values_dir), component=None,
-                                write_err=False, write_header=True, precision=None,
+                                write_err=False, write_header=True,
+                                precision=None,
                             )

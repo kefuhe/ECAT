@@ -38,41 +38,31 @@ if __name__ == "__main__":
         )
     )
     parser.add_argument(
-        "-r",
-        "--run",
-        action="store_true",
+        "-r", "--run", action="store_true",
         help="Run SMC sampling before post-processing.",
     )
     parser.add_argument(
-        "-c",
-        "--config",
-        default="nonlinear_geometry.yml",
+        "-c", "--config", default="nonlinear_geometry.yml",
         help="New nonlinear geometry YAML file.",
     )
     parser.add_argument(
-        "-s",
-        "--samples",
-        default="samples_mag_rake_multifaults.h5",
+        "-s", "--samples", default="samples_mag_rake_multifaults.h5",
         help="HDF5 sample file to write or read.",
     )
     parser.add_argument(
-        "--no-plot",
-        action="store_true",
+        "--no-plot", action="store_true",
         help="Skip plotting and model-summary post-processing.",
     )
     parser.add_argument(
-        "--no-trends",
-        action="store_true",
+        "--no-trends", action="store_true",
         help="Skip the fault-parameter trend figure.",
     )
     parser.add_argument(
-        "--diagnose-detail",
-        action="store_true",
+        "--diagnose-detail", action="store_true",
         help="Print the detailed convergence table in addition to the summary.",
     )
     parser.add_argument(
-        "--show",
-        action="store_true",
+        "--show", action="store_true",
         help="Show figures interactively. Saved figures are always written.",
     )
     args = parser.parse_args()
@@ -110,41 +100,25 @@ if __name__ == "__main__":
     # ------------------------------ Generate SAR Object -----------------------------#
     # Replace these paths and reader options with the actual case inputs.
     sar_t012a_file = os.path.join(
-        "..",
-        "InSAR",
-        "RawInSAR",
-        "Dingri_2018-12-23_T012A",
-        "stdBased",
-        "S1_T012A_ifg",
+        "..", "InSAR", "RawInSAR", "Dingri_2018-12-23_T012A",
+        "stdBased", "S1_T012A_ifg",
     )
     sar_t121d_file = os.path.join(
-        "..",
-        "InSAR",
-        "RawInSAR",
-        "Dingri_2018-12-23_T121D",
-        "stdBased",
-        "S1_T121D_ifg",
+        "..", "InSAR", "RawInSAR", "Dingri_2018-12-23_T121D",
+        "stdBased", "S1_T121D_ifg",
     )
 
     sar_t012a = insar(
-        name="T012A",
-        utmzone=None,
-        ellps="WGS84",
-        lon0=lon0,
-        lat0=lat0,
-        verbose=False,
+        name="T012A", utmzone=None, ellps="WGS84",
+        lon0=lon0, lat0=lat0, verbose=False,
     )
     sar_t012a.read_from_varres(sar_t012a_file, triangular=True)
     sar_t012a.err *= 1.0
     sar_t012a.buildDiagCd()
 
     sar_t121d = insar(
-        name="T121D",
-        utmzone=None,
-        ellps="WGS84",
-        lon0=lon0,
-        lat0=lat0,
-        verbose=False,
+        name="T121D", utmzone=None, ellps="WGS84",
+        lon0=lon0, lat0=lat0, verbose=False,
     )
     sar_t121d.read_from_varres(sar_t121d_file, triangular=True)
     sar_t121d.err *= 1.0
@@ -156,12 +130,8 @@ if __name__ == "__main__":
 
     # ------------------------------ Set Inversion Object ----------------------------#
     inv = NonlinearGeometrySMCInversion(
-        "invrc",
-        lat0=lat0,
-        lon0=lon0,
-        config_file=args.config,
-        geodata=geodata,
-        verbose=verbose,
+        "invrc", lat0=lat0, lon0=lon0,
+        config_file=args.config, geodata=geodata, verbose=verbose,
     )
     nchains = inv.nchains
     chain_length = inv.chain_length
@@ -172,37 +142,23 @@ if __name__ == "__main__":
     # ------------------------------ Run SMC Inversion -------------------------------#
     if args.run:
         inv.walk(
-            nchains=nchains,
-            chain_length=chain_length,
-            comm=comm,
-            filename=args.samples,
-            save_every=2,
-            save_at_interval=False,
-            covariance_epsilon=1e-9,
-            amh_a=1.0 / 9.0,
-            amh_b=8.0 / 9.0,
-            diagnose=True,
-            diagnose_detail=args.diagnose_detail,
+            nchains=nchains, chain_length=chain_length, comm=comm,
+            filename=args.samples, save_every=2, save_at_interval=False,
+            covariance_epsilon=1e-9, amh_a=1.0 / 9.0, amh_b=8.0 / 9.0,
+            diagnose=True, diagnose_detail=args.diagnose_detail,
         )
 
     # ------------------------------ Plot and Summarize ------------------------------#
     if not args.no_plot:
         inv.extract_and_plot_bayesian_results(
-            rank=rank,
-            filename=args.samples,
-            plot_faults=True,
-            plot_sigmas=True,
-            plot_data=True,
-            plot_data_corrections=True,
-            save_data=True,
-            show=args.show,
-            diagnose=True,
-            diagnose_detail=args.diagnose_detail,
+            rank=rank, filename=args.samples,
+            plot_faults=True, plot_sigmas=True, plot_data=True,
+            plot_data_corrections=True, save_data=True, show=args.show,
+            diagnose=True, diagnose_detail=args.diagnose_detail,
         )
 
         if rank == 0 and not args.no_trends:
             inv.load_samples_from_h5(args.samples)
             inv.plot_fault_parameter_trends(
-                save_path="fault_parameter_trends.png",
-                show=args.show,
+                save_path="fault_parameter_trends.png", show=args.show,
             )
