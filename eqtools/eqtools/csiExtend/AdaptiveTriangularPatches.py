@@ -464,9 +464,9 @@ class AdaptiveTriangularPatches(TriangularPatches):
     
         Parameters:
         - coords (np.ndarray): The coordinates of the iso-depth nodes.
-        - every (float, optional): The interval at which to discretize the coordinates. If provided, overrides num_segments.
-        - num_segments (int, optional): The number of segments to discretize the coordinates into. Ignored if every is provided.
-        - threshold (float, optional): The threshold distance to check the first and last vertex against the nearest r_new point. Default is 2.
+        - every (float, optional): Target spacing on the true planar polyline arc length. If provided, overrides num_segments.
+        - num_segments (int, optional): Historical name for the target output-node count. Ignored if every is provided.
+        - threshold (float, optional): Retained for API compatibility; endpoints are included exactly.
     
         Returns:
         - xyz_new (np.ndarray): The new discretized coordinates in the original coordinate system.
@@ -1596,7 +1596,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
         is_utm : bool
             Whether coordinates in *xydip* are UTM (default False → lon/lat).
         discretization_interval : float, optional
-            Interval for discretizing the top trace before interpolation.
+            Finite positive interval in km for discretizing the top trace
+            before interpolation.
         interpolation_axis : str
             ``'auto'``, ``'x'``, or ``'y'``.
         save_to_file : bool
@@ -1892,7 +1893,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         isocurve (str, np.ndarray, pd.DataFrame): str is the path to a file containing isocurve coordinates. 
             (np.ndarray, pd.DataFrame) is the array or DataFrame containing the isocurve coordinates.
         * coordinates in xydip and isocurve should be in the same coordinate system, i.e., both in lon/lat coordinates.
-        discretization_interval: Interval for discretizing the isocurve. unit is km. if negative integer, it means the number of segments.
+        discretization_interval: Finite positive interval in km for
+            discretizing the isocurve. Use the explicit ``num_segments``
+            argument of lower-level discretization APIs when a point count is
+            required; negative-value overloading is not supported.
         interpolation_axis: Strict interpolation axis: 'x', 'y', or 'auto'.
             Auto applies PCA once to the target isocurve.
         save_to_file: If True, save the results to a file.
@@ -1938,10 +1942,10 @@ class AdaptiveTriangularPatches(TriangularPatches):
         if discretization_interval is not None:
             x, y = self.ll2xy(isocurve.lon.values, isocurve.lat.values)
             iso_xyz = np.vstack((x, y, isocurve.depth.values)).T
-            if discretization_interval > 0:
-                xyi, _ = self.discretize_coords(iso_xyz, discretization_interval)
-            else:
-                xyi, _ = self.discretize_coords(iso_xyz, num_segments=-discretization_interval)
+            xyi, _ = self.discretize_coords(
+                iso_xyz,
+                every=discretization_interval,
+            )
         else:
             xi, yi = self.ll2xy(isocurve.lon.values, isocurve.lat.values)
             xyi = np.vstack((xi, yi)).T
@@ -2285,6 +2289,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         * fault_depth: Depth of the fault. If None, self.depth will be used.
         * update_self: Whether to update the instance variables with the calculated coordinates. Default is True.
         * discretization_interval: Interval for discretizing the trace.
+          The value must be finite and positive and is interpreted in km.
         * is_utm: If True, x/y are CSI projected coordinates in km and must
             match the fault projection. Otherwise coordinates are lon/lat.
         * interpolation_axis: Axis used for interpolation, can be 'auto', 'x' or 'y'. 
@@ -2546,7 +2551,9 @@ class AdaptiveTriangularPatches(TriangularPatches):
         - top_depth: Depth of the top. If None, self.top will be used.
         - bottom_depth: Depth of the bottom. If None, self.depth will be used.
         - update_self: Whether to update the instance variables with the calculated coordinates. Default is True.
-        - discretization_interval: Interval for discretizing the isocurve. unit is km. if negative integer, it means the number of segments.
+        - discretization_interval: Finite positive interval in km for
+          discretizing the isocurve during reinterpolation. Negative-value
+          overloading is not supported.
         - interpolation_axis: Strict axis 'x', 'y', or 'auto'. Auto applies
           PCA once to the target curve. Used only with reinterpolate=True.
         - calculate_strike_along_trace: Used only when reinterpolate=True.

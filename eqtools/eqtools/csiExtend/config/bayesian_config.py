@@ -201,15 +201,11 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     if key in master_mp:
                         follower_mp[key] = master_mp[key]
 
-        # Apply densification config from YAML to faults
-        for ifault in self.faults_list:
-            fault_cfg = self.faults.get(ifault.name, {})
-            densification = fault_cfg.get('geometry', {}).get('densification', None)
-            if densification is not None:
-                if getattr(ifault, 'geometry_ref', None) is not None:
-                    ifault.set_densification(**densification)
-                else:
-                    ifault._pending_densification = densification
+        # Boundary density belongs to the Python geometry-preparation
+        # lifecycle, where it can be materialized before the fixed-topology
+        # mapping is built.  Keeping a second YAML owner would allow config
+        # construction to replace an already prepared GeometryReference.
+        self._reject_config_densification()
 
         # Alpha configuration processing
         if not self.alpha['enabled']:
@@ -230,6 +226,23 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Force set sampling mode
         if self.bayesian_sampling_mode == 'SMC_FJ':
             self.slip_sampling_mode = 'ss_ds'
+
+    def _reject_config_densification(self):
+        """Reject the removed YAML owner of candidate boundary density."""
+        for fault_name, fault_config in getattr(self, 'faults', {}).items():
+            if not isinstance(fault_config, dict):
+                continue
+            geometry = fault_config.get('geometry', {})
+            if isinstance(geometry, dict) and 'densification' in geometry:
+                raise ValueError(
+                    f"Fault '{fault_name}': geometry.densification is not a "
+                    "configuration-file option. Configure candidate boundary "
+                    "density in the Python geometry setup with "
+                    "fault.set_densification(interval=...) or "
+                    "fault.set_densification(num_segments=...), then replay "
+                    "the zero-perturbation geometry before building the "
+                    "fixed-topology mapping."
+                )
 
     def _translate_bayesian_sampling_mode(self):
         """Canonicalize ``bayesian_sampling_mode`` for all internal consumers.
@@ -274,6 +287,93 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 field='rake_angle',
             )
 
+    def _configured_geometry_update_names(self):
+        """Return source names whose local geometry switch is enabled.
+
+        This helper reads only the declarative configuration.  Executable
+        geometry updates are exposed separately through
+        :attr:`resolved_geometry_updates` after method/cardinality preflight.
+        Keeping those two concepts distinct prevents a local switch from
+        silently allocating or consuming samples when the top-level nonlinear
+        mode is disabled.
+        """
+        names = []
+        for fault_name, fault_config in getattr(self, 'faults', {}).items():
+            if fault_name == 'defaults' or not isinstance(fault_config, dict):
+                continue
+            geometry = fault_config.get('geometry', {})
+            if isinstance(geometry, dict) and geometry.get('update', False):
+                names.append(fault_name)
+        return tuple(names)
+
+    def _validate_geometry_activation_contract(self):
+        """Resolve the two-level geometry activation contract.
+
+        ``nonlinear_inversion`` is the global mode switch and each
+        ``faults.<name>.geometry.update`` is a per-source selector.  A local
+        selector cannot be active while the global mode is disabled: accepting
+        that state would let parameter layout, bounds, target evaluation and
+        reporting disagree about the same sample coordinates.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Configured source names selected for geometry preflight.  An empty
+            tuple is the effective fixed-geometry state.
+        """
+        configured = self._configured_geometry_update_names()
+        nonlinear = bool(getattr(self, 'nonlinear_inversion', False))
+        if configured and not nonlinear:
+            names = ', '.join(configured)
+            raise ValueError(
+                "Conflicting Bayesian geometry configuration: "
+                "nonlinear_inversion=false but geometry.update=true for "
+                f"source(s) [{names}]. Geometry sampling requires both the "
+                "top-level nonlinear switch and the per-source update switch. "
+                "Set nonlinear_inversion=true to sample those geometry "
+                "parameters, or set their geometry.update=false for a fixed-"
+                "geometry inversion."
+            )
+        if nonlinear and not configured:
+            self._record_config_diagnostic(
+                'CFG_NO_ACTIVE_GEOMETRY_UPDATE',
+                "nonlinear_inversion=true but no source has "
+                "geometry.update=true; the effective inversion is fixed "
+                "geometry",
+                field='nonlinear_inversion',
+                severity='notice',
+            )
+        return configured if nonlinear else ()
+
+    @property
+    def resolved_geometry_updates(self):
+        """Immutable executable geometry-update plan for all consumers."""
+        return tuple(getattr(self, '_resolved_geometry_updates', ()))
+
+    @property
+    def geometry_updates_active(self):
+        """Whether at least one preflighted geometry update is executable."""
+        return bool(self.resolved_geometry_updates)
+
+    @property
+    def geometry_update_signature(self):
+        """Return the resolved layout/method signature frozen by an inverter.
+
+        The signature is intentionally limited to values that define sampled
+        coordinates and candidate replay.  It is used to detect unsupported
+        post-construction edits before a target is built, never in the hot
+        candidate loop.
+        """
+        return tuple(
+            (
+                update.fault_name,
+                update.method_name,
+                tuple(update.sample_slice),
+                repr(update.method_kwargs),
+            )
+            for update in self.resolved_geometry_updates
+        )
+
     def _validate_perturbation_config(self):
         """
         Validate perturbation methods by matching YAML config against 
@@ -288,6 +388,12 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
 
         # 2. Check if YAML config exists
         if not hasattr(self, 'faults') or not self.faults:
+            self._resolved_geometry_updates = ()
+            return
+
+        active_names = set(self._validate_geometry_activation_contract())
+        if not active_names:
+            self._resolved_geometry_updates = ()
             return
 
         # 3. Build a lookup map: Fault Name -> Fault Instance
@@ -314,7 +420,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 raise ValueError(
                     f"Fault '{fault_name}': 'geometry' must be a mapping."
                 )
-            if not geom_config.get('update', False):
+            if fault_name not in active_names:
                 continue
 
             # An enabled entry must resolve to one executable method.  Missing
@@ -466,12 +572,31 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
     def _validate_geometry_update_contract(resolved):
         """Validate additive reference and cardinality metadata without mutation."""
         contract = resolved.registry_contract
+        fault = resolved.fault_instance
+        reference = getattr(fault, 'geometry_ref', None)
+        call_interval = resolved.method_kwargs.get('discretization_interval')
+        density = (
+            None if reference is None
+            else getattr(reference, 'densification', None)
+        )
+        if (
+            call_interval is not None
+            and density is not None
+            and density.enabled
+        ):
+            raise ValueError(
+                f"Fault '{resolved.fault_name}': geometry method "
+                f"'{resolved.method_name}' declares "
+                "discretization_interval while its GeometryReference has "
+                "active densification. Use the reference-owned "
+                "set_densification(...) policy for Bayesian replay and remove "
+                "discretization_interval from update_fault_geometry."
+            )
+
         if contract.get('schema_version') is None:
             return
 
-        fault = resolved.fault_instance
         requirements = contract.get('reference_requirements') or {}
-        reference = getattr(fault, 'geometry_ref', None)
         if requirements:
             if reference is None:
                 raise ValueError(
@@ -515,18 +640,20 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             return
 
         if kind not in {
-                'scalar_or_movable_nodes', 'scalar_or_dip_controls'}:
+                'scalar_or_movable_nodes',
+                'scalar_or_sampled_dip_controls'}:
             # Additive schemas from plugins remain forward compatible.  An
             # unknown future cardinality is enforced by that method at runtime.
             return
 
         if reference is None:
             return
-        if kind == 'scalar_or_dip_controls':
-            controls = getattr(reference, 'dip_control_points', None)
-            if controls is None:
+        if kind == 'scalar_or_sampled_dip_controls':
+            profile = getattr(reference, 'dip_profile', None)
+            if profile is None:
                 return
-            total_count = len(controls.dip)
+            movable_count = profile.controls.sampled_count
+            count_label = 'sampled dip control'
         else:
             field_name = cardinality.get('reference_field')
             coords = getattr(reference, field_name, None)
@@ -553,27 +680,36 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     )
                 coords = coords[layer_index]
             total_count = len(coords)
-
-        fixed_name = cardinality.get('fixed_nodes_parameter', 'fixed_nodes')
-        fixed_nodes = resolved.method_kwargs.get(fixed_name) or ()
-        # Match current scientific method semantics: only indices that compare
-        # equal to 0..N-1 are fixed.  Negative-index reinterpretation is not
-        # introduced by preflight.
-        movable_count = sum(
-            index not in fixed_nodes for index in range(total_count)
-        )
-        # A scalar remains a convenient broadcast form.  The exact movable
-        # count is also legal, including zero when every node/control is
-        # fixed; both underlying perturbation implementations intentionally
-        # treat that empty vector as a no-op.  This keeps preflight from
-        # narrowing legitimate selector-based workflows.
-        allowed = {1, movable_count}
+            fixed_name = cardinality.get(
+                'fixed_nodes_parameter', 'fixed_nodes'
+            )
+            fixed_nodes = resolved.method_kwargs.get(fixed_name) or ()
+            # Node-selector perturbations still own their existing fixed-node
+            # rule. Dip profiles use explicit sampled/fixed control roles and
+            # never reach this branch.
+            movable_count = sum(
+                index not in fixed_nodes for index in range(total_count)
+            )
+            count_label = 'movable element'
+        # A scalar remains a convenient broadcast form when at least one
+        # element is sampled. An all-fixed dip profile requires an empty
+        # candidate slice; it must not accidentally consume a scalar.
+        allowed = {movable_count} if movable_count == 0 else {1, movable_count}
         if sample_count not in allowed:
             allowed_text = ' or '.join(str(value) for value in sorted(allowed))
+            if movable_count == 0:
+                cardinality_text = (
+                    f"has no {count_label}s and requires an empty "
+                    "sample_positions slice"
+                )
+            else:
+                cardinality_text = (
+                    f"accepts a scalar or one value per {count_label} "
+                    f"({movable_count})"
+                )
             raise ValueError(
                 f"Fault '{resolved.fault_name}': geometry method "
-                f"'{resolved.method_name}' accepts a scalar or one value per "
-                f"movable element ({movable_count}); sample_positions "
+                f"'{resolved.method_name}' {cardinality_text}; sample_positions "
                 f"{list(resolved.sample_slice)} supplies {sample_count}. "
                 f"Expected {allowed_text}."
             )
@@ -595,7 +731,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         import inspect
         from .. import mesh_registry as _mesh_registry
 
-        for resolved in getattr(self, '_resolved_geometry_updates', ()):
+        for resolved in self.resolved_geometry_updates:
             fault_config = self.faults[resolved.fault_name]
             geometry_config = fault_config.get('geometry', {})
             if geometry_config.get('follows'):
@@ -668,6 +804,17 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             return
 
         fault_instance_map = {f.name: f for f in self.multifaults.faults}
+        resolved_updates = getattr(self, '_resolved_geometry_updates', None)
+        if resolved_updates is None:
+            # Focused/internal callers may invoke this normalization step in
+            # isolation. Normal construction reaches it immediately after
+            # perturbation preflight and therefore consumes that resolved
+            # plan instead of resolving activation a second time.
+            active_names = set(self._validate_geometry_activation_contract())
+        else:
+            active_names = {
+                update.fault_name for update in resolved_updates
+            }
 
         for fault_name, fault_config in self.faults.items():
             if fault_name == 'defaults':
@@ -679,8 +826,9 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             method_params = fault_config.setdefault('method_parameters', {})
             origin = fault_config.get('_method_params_origin', {})
 
-            # Rule 1: geometry.update=false — update_mesh won't be called
-            if not geom_config.get('update', False):
+            # Rule 1: source absent from the resolved geometry plan —
+            # update_mesh won't be called by Bayesian candidate replay.
+            if fault_name not in active_names:
                 if origin.get('update_mesh') == 'explicit':
                     self._record_config_diagnostic(
                         'CFG_UNUSED_UPDATE_MESH',
@@ -953,20 +1101,30 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
 
     def _validate_fault_configurations(self):
         """Validate Bayesian fault configurations."""
+        # Resolve the global/local geometry switch before validating sample
+        # slices.  This produces the relevant conflict error instead of a
+        # secondary indexing error from a geometry block that is globally off.
+        active_names = self._validate_geometry_activation_contract()
+
         # 1. Validate Laplacian bounds
         self._validate_laplacian_bounds()
         
         # 2. Validate geometry sampling positions
-        self._validate_geometry_sample_positions()
+        self._validate_geometry_sample_positions(active_names=active_names)
 
-    def _validate_geometry_sample_positions(self):
-        """Validate geometry sampling positions."""
+    def _validate_geometry_sample_positions(self, active_names=None):
+        """Validate sample slices for one resolved activation snapshot."""
         geometry_updating_faults = []
         all_sample_positions = set()
         
+        if active_names is None:
+            # Preserve this validator's focused-call usefulness without
+            # duplicating activation resolution in the normal config flow.
+            active_names = self._validate_geometry_activation_contract()
+        active_names = set(active_names)
         for fault_name, fault_config in self.faults.items():
             geometry_config = fault_config.get('geometry', {})
-            update_geometry = geometry_config.get('update', False)
+            update_geometry = fault_name in active_names
             
             if update_geometry:
                 sample_positions = geometry_config.get('sample_positions', [0, 0])

@@ -464,7 +464,7 @@ class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):
         Parameters:
         -----------
         discretization_interval : float, optional
-            Interval for discretizing the trace.
+            Finite positive interval in km for discretizing the trace.
         interpolation_axis : str
             Axis for interpolation ('auto', 'x', or 'y').
         calculate_strike_along_trace : bool

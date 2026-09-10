@@ -27,7 +27,7 @@ shear_modulus: 3.0e10  # Shear modulus in Pa
 
 # ----------- Bayesian Inversion Parameters ----------- #
 # Parameters related to Bayesian inversion
-nonlinear_inversion: false  # Whether to use nonlinear inversion
+nonlinear_inversion: false  # Global geometry switch; local geometry.update=true requires true
 slip_sampling_mode: ss_ds  # Default SMC_FJ parameterization
 # rake_angle: 0  # Only for FULLSMC with slip_sampling_mode: rake_fixed
 bayesian_sampling_mode: 'SMC_FJ'  # Use FULLSMC for fully sampled slip modes
@@ -137,7 +137,7 @@ des:
 faults:
   defaults:
     geometry:
-      update: false  # Whether to update fault geometry
+      update: false  # Per-source geometry selector; also requires nonlinear_inversion=true
       sample_positions: [0, 0]  # Sample positions for geometry
     method_parameters:
       update_mesh:

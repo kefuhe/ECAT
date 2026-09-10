@@ -21,7 +21,7 @@ trace、top/bottom、layers、mesh 和 patch GMT 的区别，先读
 | --- | --- | --- |
 | 非线性几何反演结果 | [矩形元](#nonlinear-rect) 或 [三角元](#nonlinear-tri) | `geom`、`lon0/lat0`、`top/depth` |
 | 地表迹线和固定倾角 | [固定倾角和显式下倾方向](#trace-dip-single) | trace 文件、`dip_angle`、`dip_direction` |
-| 地表迹线和沿走向变化倾角 | [沿走向变化倾角](#trace-dip-varying) | trace 文件、`xydip` 控制点或剖面倾角 |
+| 地表迹线和沿走向变化倾角 | [倾角剖面模式总览](dip_profile/index.md) | trace 文件、三/四列控制点或 Bayesian profile |
 | 一组候选倾角且要求 patch 一一对应 | [参考网格与固定拓扑](#fixed-topology-dip-search) | 参考倾角、候选倾角、统一的映射和网格参数 |
 | 倾角随深度变化 | [倾角随深度变化](#layered-dip) | trace、深度-倾角剖面或深度函数 |
 | 多条等深线或 slab 几何 | [多条等深线和 Slab 几何](#slab-contours) | 等深线或 Slab2 grid、`lon0/lat0`、裁剪范围 |
@@ -55,7 +55,18 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 - **地表迹线 trace**：CSI 原生状态，`fault.trace(...)` 写入 `xf/yf` 和 `lon/lat`。需要把地表迹线离散为 `xi/yi` 时，推荐使用 `fault.discretize_trace(every=...)`。
 - **三维边界坐标**：csiExtend 状态，`top_coords`、`bottom_coords` 和 `layers` 表示顶部、底部和中间层等深线。需要离散这些三维边界时，推荐使用 `discretize_top_coords(...)`、`discretize_bottom_coords(...)` 或 `discretize_layer_coords(...)`。
 
+三维边界 helper 使用投影平面中的真实折线弧长
+$s_i=\sum_{k=0}^{i-1}\|\mathbf p_{k+1,xy}-\mathbf p_{k,xy}\|_2$ 做线性重采样。
+其 `num_segments` 是保留的历史参数名，数值实际表示输出节点数；不要把它解释为“节点数再加
+一”的线段数。Bayesian dip-profile 的原始折点保护、求值事件与 mapping 节点另有更严格的
+[分层约定](dip_profile/bayesian_mixed.md#稀疏-top-与候选加密)。
+
 `fault.set_top_coords_from_trace(discretized=False)` 默认使用原始 trace；如果传入 `discretized=True`，需要先调用 `fault.discretize_trace(...)` 生成 `xi/yi`。对于需要 top/bottom 点数一一对应的 mesh，优先使用相同的 `num_segments` 离散 top 和 bottom，避免分别按 `every` 离散后点数不同。
+
+`discretize_trace(every=h)` 先在投影 `x/y` 平面按线段长度求真实累计弧长
+$s_i=\sum_{k=0}^{i-1}\|\mathbf p_{k+1}-\mathbf p_k\|_2$。设总长为 $L$，实现取最接近
+$L/h$ 的正整数区间数 $n$，再在 $s_j=jL/n$ 处插值，因此首尾点严格保留，实际等距间隔
+$L/n$ 可能与目标值 $h$ 略有差别。`every` 是目标间隔，不是输出点数；输出点数为 $n+1$。
 
 `fault.discretize(...)` 是 CSI 的 legacy trace 离散化接口，依赖 `xaxis/tol/fracstep`
 等旧参数。新项目不建议使用它；需要地表迹线离散化时使用
@@ -77,7 +88,7 @@ ECAT/eqtools 中有两套常见几何状态，使用时不要混淆：
 | 地表 trace 等距离散 | `fault.discretize_trace(every=...)` | 生成 `xi/yi/loni/lati`；新项目优先使用，不再用 legacy `discretize(...)`。 |
 | 从 trace 生成三维顶部边界 | `fault.set_top_coords_from_trace(discretized=...)` | `discretized=True` 时先运行 `discretize_trace(...)`。 |
 | top/bottom/layer 曲线加密或统一点数 | `discretize_top_coords(...)`、`discretize_bottom_coords(...)`、`discretize_layer_coords(...)` | 适合手动构建 mesh 前统一三维边界点数。 |
-| Bayesian 几何扰动前自动加密稀疏控制点 | `set_densification(...)`、`densify_edges(...)` | 由 `DensificationConfig` 控制，通常放在扰动和物理建底边之间。 |
+| Bayesian 几何扰动前自动加密稀疏控制点 | `set_densification(...)`、`densify_edges(...)` | 由 Python 中的 `DensificationConfig` 控制，通常放在扰动和物理建底边之间；不在 YAML 重复声明。 |
 | 非线性结果沿走向正负方向使用不同长度 | `custom_length=(neg_length, pos_length)` | 目前三角元 `generate_top_bottom_from_nonlinear_soln(...)` 支持；矩形元主流程仍是对称 `length`。 |
 | 由两条等深线外推目标深度或地表迹线 | `FaultGeometryEngine.extrapolate_layer(...)`、`generate_surface_trace(...)` | 这是基于两条等深线的深度外推，不是简单把 trace 端点沿切线延长。 |
 | 从已有 fault object 反提 trace 或等深线 | `fault.setTrace(...)`、`FaultGeometryEngine.extract_contours_from_fault(...)` | `setTrace(...)` 从浅部 patch 顶点反推 trace；等深线详见 [Fault Contours](fault_contours.md)。 |
@@ -327,151 +338,42 @@ fault.initializeslip(values="depth")
 
 ### 模式 B：沿走向变化倾角
 
-推荐先把 trace 转成顶部边界并适度离散，再把多个倾角控制点插值到顶部节点。
-走向处理分成三种可执行模式：
+沿走向变化倾角已经按走向来源和 Bayesian 组合角色拆成独立参考页。先从
+[倾角剖面模式总览](dip_profile/index.md)选择模式：
 
-| 模式 | 设置 | 实际采用的逐节点 strike | 推荐场景 |
-| --- | --- | --- | --- |
-| 单一代表性走向 | `use_average_strike=True` | 所有节点使用同一个 strike；来源为显式 `user` 或自动 `pca` | 初次使用、近直线、走向变化不大 |
-| top edge 自动局部走向 | 三列 `xydip`，并设置 `use_average_strike=False` | 由有序 `top_coords` 的相邻线段自动计算 | 曲线 trace，且几何切线就是所需走向 |
-| 控制点走向插值 | 四列 `xydip` 含 `strike`，并设置 `use_average_strike=False` | 控制点 strike 经过圆周插值后写入每个顶部节点 | 已有分段地质走向或独立走向约束 |
+| 模式 | 适用场景 | 详细设置 |
+| --- | --- | --- |
+| 固定 dip-profile | controls 已确定，只构建一次 BLSE/VCE mesh | [固定几何中的倾角剖面](dip_profile/fixed_geometry.md) |
+| top 局部走向 | 曲线 trace，几何切线就是所需走向 | [局部走向](dip_profile/local_strike.md) |
+| 单一代表性走向 | 近直线断层，全段使用一个 `user`/`pca` strike | [代表性走向](dip_profile/representative_strike.md) |
+| 控制点走向插值 | 已有逐段地质 strike 控制 | [控制点走向](dip_profile/controlled_strike.md) |
+| Bayesian 混合 profile | sampled/fixed controls 与 transition 组合 | [Bayesian 组合](dip_profile/bayesian_mixed.md) |
 
-第一种模式中的 `user` 和 `pca` 是同一“单一代表性走向”模式的两个来源，不另算两套几何。
-第二、三种模式都必须保持 `use_average_strike=False`；若设为 `True`，单一代表性走向会覆盖
-逐节点 strike。
+共同约定是：strike 从北顺时针量取，top 点序定义正走向；正 dip 向其右手侧下倾，负 dip
+向左手侧下倾，`-30° == 150°`。走向按圆周量处理，所以 `350° -> 10°` 经由 `0°`。完整
+公式、输入范围、单位和检查顺序见总览页。
 
-三种模式共同以 `top_coords[0] -> top_coords[-1]` 作为正走向基准，所以初始 trace/top edge
-点序非常重要：它决定 PCA 主轴的定向、自动局部 strike 的正方向，以及控制点 strike 的
-一致性校验。若倾向侧整体相反，应先确认并反转 trace 点序，再重新插值和生成底边。
+旧 Bayesian setter、`fixed_nodes`、`buffer_nodes/buffer_radius` 及 preset 内重复 axis 的逐项
+替换见[旧倾角剖面调用迁移](dip_profile/migration.md)。
 
-`xydip` 有三种等价容器形式：
+固定 dip-profile 只需物化一次 bottom 后调用 `generate_mesh(...)`。不要把 Bayesian 页面中的
+`snapshot()`、`set_densification()`、第二次零扰动和 `remap=True` 整段复制到单个固定几何。
+固定模式下若需要加密，优先在声明 profile 前重采样权威 trace；若要保留稀疏 trace，可在
+唯一一次 bottom 物化时传入正的 `discretization_interval`。候选期则只使用
+`set_densification(...)`。三种路径、优先级和可复制设置见
+[固定几何中的倾角剖面](dip_profile/fixed_geometry.md#按便利性选择一种加密方式)。
 
-1. `numpy.ndarray`：自动局部走向使用三列 `[lon, lat, dip]` 或 `[x, y, dip]`；控制点走向
-   插值使用四列 `[lon, lat, strike, dip]` 或 `[x, y, strike, dip]`。
-2. `pandas.DataFrame`：至少含坐标列和 `dip`；需要第三种模式时再增加 `strike`，也可以带
-   其他说明列。
-3. CSV 路径：第一行必须有同名表头，后续通过 `is_utm` 指明使用
-   `lon/lat` 还是 `x/y`。
-
-这里 `is_utm=True` 沿用历史参数名，实际要求的是与当前 fault object 相同投影下的
-CSI `x/y`，单位 km。最稳妥的来源是 `x, y = fault.ll2xy(lon, lat)`；不要直接传入
-单位为 m 的 UTM easting/northing。
-
-最短的经纬度数组示例：
-
-```python
-dip_points = np.array([
-    [96.00, 21.00, 55.0],
-    [96.20, 21.10, 65.0],
-    [96.45, 21.20, 72.0],
-])
-
-fault.depth = 25.0
-interpolated = fault.interpolate_top_dip_from_relocated_profile(
-    xydip=dip_points,
-    is_utm=False,
-    discretization_interval=2.0,  # km; also rediscretizes top_coords
-    interpolation_axis="auto",   # PCA chooses x or y
-)
-
-# Recommended for a nearly straight trace: state the representative strike
-# explicitly so the geometry is reproducible. This is strike, not dip direction.
-representative_strike = 65.0
-fault.generate_bottom_from_segmented_relocated_dips(
-    fault_depth=fault.depth,
-    use_average_strike=True,
-    average_strike_source="user",
-    user_direction_angle=representative_strike,
-    verbose=True,  # prints the representative strike actually applied
-)
-fault.generate_mesh(top_size=1.0, bottom_size=2.0, show=False, verbose=0)
-fault.initializeslip(values="depth")
-```
-
-`interpolated` 是带 `lon, lat, strike, dip` 的 `DataFrame`。其中 strike 是插值阶段得到的
-逐节点候选值；若后续选择 `use_average_strike=True`，最终底边计算会再用 `user`/`pca` 的单一
-代表性 strike 覆盖这些候选值，`verbose=True` 会打印实际采用值。无论最终选择单一还是逐点
-strike，正倾角都向对应 strike 的右手侧，即 `dip_direction = strike + 90°`。
-
-三列控制点、不使用统一走向时，strike 自动来自 top edge：
-
-```python
-fault.interpolate_top_dip_from_relocated_profile(
-    dip_points,                 # [lon, lat, dip]
-    is_utm=False,
-    interpolation_axis="auto",
-)
-fault.generate_bottom_from_segmented_relocated_dips(
-    fault_depth=fault.depth,
-    use_average_strike=False,   # use local strike computed from top_coords
-)
-```
-
-四列控制点可以同时约束逐点走向。下面的 `350° -> 10°` 会沿短路径经过 `0°` 插值，不会错误地
-穿过 `180°`：
-
-```python
-strike_dip_points = np.array([
-    [96.00, 21.00, 350.0, 55.0],  # lon, lat, strike, dip
-    [96.20, 21.10,   0.0, 65.0],
-    [96.45, 21.20,  10.0, 72.0],
-])
-
-controlled = fault.interpolate_top_dip_from_relocated_profile(
-    strike_dip_points,
-    is_utm=False,
-    interpolation_axis="auto",
-)
-fault.generate_bottom_from_segmented_relocated_dips(
-    fault_depth=fault.depth,
-    use_average_strike=False,   # preserve interpolated control-point strikes
-)
-```
-
-第三种模式会把插值后的 strike 保存到 `fault.top_strike` 并实质用于底边计算。每个插值节点的
-strike 必须与该处 top edge 正点序处于同一方向半平面；反向或垂直会报错。这里仍然是
-**strike 控制点**，不是 `dip_direction` 控制点。
-
-#### 倾角的取值和正负号
-
-多倾角模式需要用 strike 与 dip 的组合表达倾向，公开推荐使用带符号形式：
-
-| 输入 dip | 几何含义 |
-| --- | --- |
-| `(0°, 90°)` | 向正 strike 的右手侧下倾 |
-| `-90°` 或 `90°` | 垂直；左右侧没有水平差别 |
-| `(-90°, 0°)` | 向正 strike 的左手侧下倾；计算时等价于 `strike + 180°` 和 `abs(dip)` |
-| `(90°, 180°)` | 兼容形式，规范化为 `dip - 180°`；例如 `150° == -30°` |
-| `0°` 或 `180°` | 不允许；水平面无法从 top 投影到不同的 `fault_depth` |
-
-因此有效输入域是 `[-90°, 0°) ∪ (0°, 180°)`，但新脚本优先写成
-`[-90°, 0°) ∪ (0°, 90°]`。内部插值把负倾角转换到 `(90°, 180°)`，使倾向换侧时经过
-垂直 `90°`，而不是经过会造成除零的水平 `0°`；插值完成后再恢复为带符号倾角。
-
-Bayesian 高级入口 `set_dip_control_points(...)` +
-`perturb_dips_with_preset_params(...)` 使用同一个连续 `(0°, 180°)` proposal 坐标。参考倾角先
-规范化，再施加扰动；例如 `77° + [-30°, 30°]` 的搜索范围是 `[47°, 107°]`，而等价输入
-`-80°` 和 `100°` 加同一个 `-20°` 扰动都得到 `80°`。扰动后的候选若到达 `0°/180°` 或超出
-该开区间会明确报错，不会回绕或静默换侧。
-
-第三种模式中，控制点 `strike` 始终表示 top edge 的正走向并先接受方向校验；dip 的负号只负责
-选择其左/右下倾侧。不要同时把 strike 加 `180°` 又把 dip 改成负值，否则会发生两次翻转。
-
-#### 节点索引契约
-
-控制点可以按插值轴临时排序，但输出数组始终回到有序 `top_coords` 的节点顺序：
+无论选择哪一种走向来源，输出仍保持以下节点契约：
 
 ```text
-xydip controls
-  -> dip/optional strike interpolation evaluated at top_coords[i]
-  -> top_dip[i] + top_strike[i]
+dip/optional strike evaluated at top_coords[i]
   -> bottom_coords[i] generated only from top_coords[i]
   -> paired top/bottom boundaries enter mesh generation
 ```
 
-这里的 `top_strike/top_dip` 是生成底边时的 reference-node metadata；负 dip 对应的
-`strike + 180°` 只在底边计算的局部副本中应用。最终 mesh/patch 的 canonical 走向和倾角必须
-由实际顶点及 `getpatchgeometry()` 确定，不能直接把这两个元数据字段当作最终 patch 几何。
+`top_strike/top_dip` 是构造阶段元数据。负 dip 的 `strike + 180°` 以及统一代表走向的覆盖只在
+底边生成的局部计算中使用；最终 mesh/patch 的 canonical strike/dip 必须从实际顶点和
+`getpatchgeometry()` 获取。
 
 底边生成完成后，ECAT 按相同索引构造相邻四边形
 `[top[i], top[i+1], bottom[i+1], bottom[i]]`，并沿固定对角线拆成两片三角形。对应法向为：
@@ -1043,4 +945,6 @@ fault.writeSlipCenter2File("output/slip_centers.dat")
 - [Fault Edges](fault_edges.md)
 - [Fault Contours](fault_contours.md)
 - [Perturbable Fault Geometry](geometry_perturbation.md)
+- [倾角剖面模式总览](dip_profile/index.md)
+- [旧倾角剖面调用迁移](dip_profile/migration.md)
 - [CLI 命令参考](cli.md)

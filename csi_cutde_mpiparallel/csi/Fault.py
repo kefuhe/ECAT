@@ -23,7 +23,6 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 from scipy.interpolate import interp1d
-from scipy.integrate import cumulative_trapezoid as cumtrapz
 
 # Personals
 from .SourceInv import SourceInv
@@ -885,10 +884,12 @@ class Fault(SourceInv):
 
     def discretize_trace(self, every, threshold=2):
         """
-        Discretize the fault trace at regular intervals.
+        Discretize the fault trace at approximately regular intervals.
     
         Args:
-            * every (float): Interval at which to discretize the trace.
+            * every (float): Target interval in the projected x/y units. The
+                nearest whole number of intervals is used while preserving
+                both endpoints exactly.
             * threshold (float): Threshold distance to check the first and last vertex. Default is 2 km.
                 Add the first and last vertex in the rupture trace (self.xf, self.yf) if the distance to the nearest r_new point is greater than the threshold.
     
@@ -897,21 +898,27 @@ class Fault(SourceInv):
         """
         x, y = self.xf, self.yf
         # Calculate the length of the curve
-        dx = np.insert(np.diff(x), 0, 0)
-        dy = np.insert(np.diff(y), 0, 0)
-        dr = np.sqrt(dx*dx + dy*dy)
-        r = cumtrapz(dr, initial=0)  # Length of the curve
+        # ``dr`` already contains segment lengths, so arc length is their
+        # cumulative sum.  Applying trapezoidal quadrature to ``dr`` would
+        # incorrectly average adjacent segment lengths and halve the first
+        # segment contribution.
+        dr = np.hypot(np.diff(x), np.diff(y))
+        r = np.concatenate(([0.0], np.cumsum(dr)))
     
         # Create interpolation functions
         fx = interp1d(r, x, kind='linear')
         fy = interp1d(r, y, kind='linear')
     
         # Discretize the curve length at regular intervals
-        num_points = int(np.floor(r[-1] / every))
-        remainder = r[-1] - num_points * every
+        # Choose the nearest whole number of intervals and then add both
+        # endpoints. The old code passed an interval count to linspace as a
+        # point count, which silently dropped one interval.
+        num_intervals = int(np.floor(r[-1] / every))
+        remainder = r[-1] - num_intervals * every
         if remainder >= every / 2:
-            num_points += 1
-        r_new = np.linspace(0, r[-1], num_points)
+            num_intervals += 1
+        num_intervals = max(1, num_intervals)
+        r_new = np.linspace(0, r[-1], num_intervals + 1)
     
         # Check the distance of the first and last vertex to the nearest r_new point
         if r_new[0] - r[0] > threshold:

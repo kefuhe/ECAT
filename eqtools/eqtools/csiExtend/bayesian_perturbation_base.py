@@ -31,6 +31,7 @@ import numpy as np
 # Ensure these files exist in the same directory
 from .AdaptiveLayeredDipTriangularPatches import AdaptiveLayeredDipTriangularPatches
 from . import mesh_registry
+from .dip_profile import DipProfileSpec
 
 
 # =============================================================================
@@ -53,79 +54,6 @@ def _freeze_tuple_of_arrays(seq):
 
 
 @dataclass(frozen=True)
-class DipControlPoints:
-    """Immutable dip-control data with a continuous internal invariant.
-
-    Public construction accepts oriented reference dip in
-    [-90, 0) U (0, 180) degrees. Equivalent signed values are normalized at
-    construction, so dip is always finite and strictly inside (0, 180).
-    The x, y and dip fields are one-dimensional, equal-length, read-only
-    arrays. Coordinates may be lon/lat or projected values as documented by
-    the calling API.
-    """
-    x: np.ndarray
-    y: np.ndarray
-    dip: np.ndarray
-
-    def __post_init__(self):
-        from .fault_angle_conventions import normalize_oriented_reference_dip
-
-        x = np.atleast_1d(np.asarray(self.x, dtype=float))
-        y = np.atleast_1d(np.asarray(self.y, dtype=float))
-        dip = np.atleast_1d(np.asarray(self.dip, dtype=float))
-        if x.ndim != 1 or y.ndim != 1 or dip.ndim != 1:
-            raise ValueError("DipControlPoints x, y and dip must be 1-D arrays")
-        if len(x) == 0 or len(x) != len(y) or len(x) != len(dip):
-            raise ValueError(
-                "DipControlPoints x, y and dip must have the same non-zero length"
-            )
-        if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
-            raise ValueError("DipControlPoints coordinates must be finite")
-        dip = normalize_oriented_reference_dip(
-            dip,
-            name='DipControlPoints.dip',
-        )
-
-        object.__setattr__(self, 'x', _freeze_array(x))
-        object.__setattr__(self, 'y', _freeze_array(y))
-        object.__setattr__(self, 'dip', _freeze_array(dip))
-
-    # --- convenience constructors -------------------------------------------
-    @classmethod
-    def from_coords(cls, coords, dips, is_utm=False, xy2ll_func=None):
-        """Create from an (N,2) coordinate array and a dip array.
-
-        Parameters:
-            coords:     (N, 2) array — lon/lat or x/y.
-            dips:       (N,) array of dip angles.
-            is_utm:     if *True*, convert via *xy2ll_func* first.
-            xy2ll_func: callable(x, y) → (lon, lat). Required when *is_utm*.
-        """
-        coords = np.asarray(coords, dtype=float)
-        if coords.ndim != 2 or coords.shape[1] != 2:
-            raise ValueError("coords must have shape (n, 2)")
-        if is_utm:
-            if xy2ll_func is None:
-                raise ValueError("xy2ll_func is required when is_utm=True")
-            x, y = coords[:, 0], coords[:, 1]
-            lon, lat = xy2ll_func(x, y)
-            return cls(x=lon, y=lat, dip=np.asarray(dips))
-        return cls(x=coords[:, 0], y=coords[:, 1], dip=np.asarray(dips))
-
-    @classmethod
-    def from_file(cls, filename, header=0, is_utm=False, xy2ll_func=None):
-        """Load from a text file (columns: lon lat dip  or  x y dip)."""
-        data = np.atleast_2d(np.loadtxt(filename, skiprows=header))
-        if data.ndim != 2 or data.shape[1] < 3:
-            raise ValueError(
-                "dip control-point file must contain lon/x, lat/y and dip columns"
-            )
-        coords = data[:, :2]
-        dips = data[:, 2]
-        return cls.from_coords(coords, dips, is_utm=is_utm, xy2ll_func=xy2ll_func)
-
-
-@dataclass(frozen=True)
 class DensificationConfig:
     """Configuration for sparse-to-dense coordinate densification.
 
@@ -137,7 +65,9 @@ class DensificationConfig:
     Specify exactly one of *num_segments* or *interval*.
 
     Attributes:
-        num_segments: Fixed number of equal-arc-length segments.
+        num_segments: Historical public name for the target boundary-node
+            count. Original trace vertices and dip-profile events may require
+            more nodes in the vertex-preserving dip path.
         interval:     Arc-length interval in km for discretization.
         enabled:      Master switch.  When False, densification is skipped.
     """
@@ -155,10 +85,28 @@ class DensificationConfig:
                 raise ValueError(
                     "DensificationConfig: when enabled, provide num_segments or interval."
                 )
-        if self.num_segments is not None and self.num_segments < 2:
-            raise ValueError("num_segments must be >= 2")
-        if self.interval is not None and self.interval <= 0:
-            raise ValueError("interval must be > 0")
+        if self.num_segments is not None:
+            if isinstance(self.num_segments, (bool, np.bool_)):
+                raise TypeError("num_segments must be an integer >= 2")
+            try:
+                resolved_count = int(self.num_segments)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TypeError(
+                    "num_segments must be an integer >= 2"
+                ) from exc
+            if resolved_count != self.num_segments or resolved_count < 2:
+                raise ValueError("num_segments must be an integer >= 2")
+        if self.interval is not None:
+            if isinstance(self.interval, (bool, np.bool_)):
+                raise TypeError("interval must be a finite positive distance")
+            try:
+                resolved_interval = float(self.interval)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TypeError(
+                    "interval must be a finite positive distance"
+                ) from exc
+            if not np.isfinite(resolved_interval) or resolved_interval <= 0.0:
+                raise ValueError("interval must be a finite positive distance")
 
 
 @dataclass(frozen=True)
@@ -181,10 +129,13 @@ class GeometryReference:
     layers: object = None                         # tuple[np.ndarray, ...] | None
     vertices: np.ndarray = None                   # (V, 3) | None
     faces: np.ndarray = None                      # (F, 3) | None
-    dip_control_points: DipControlPoints = None   # optional
+    dip_profile: DipProfileSpec = None            # optional along-strike profile
     densification: DensificationConfig = None     # optional
 
     def __post_init__(self):
+        if self.dip_profile is not None and not isinstance(
+                self.dip_profile, DipProfileSpec):
+            raise TypeError("GeometryReference.dip_profile must be DipProfileSpec")
         object.__setattr__(self, 'top_coords', _freeze_array(self.top_coords))
         object.__setattr__(self, 'bottom_coords', _freeze_array(self.bottom_coords))
         object.__setattr__(self, 'layers', _freeze_tuple_of_arrays(self.layers))
@@ -200,9 +151,9 @@ class GeometryReference:
         """Return a new GeometryReference with updated layers."""
         return _dataclass_replace(self, layers=layers)
 
-    def with_dip(self, dip_control_points):
-        """Return a new GeometryReference with updated dip control points."""
-        return _dataclass_replace(self, dip_control_points=dip_control_points)
+    def with_dip_profile(self, dip_profile):
+        """Return a new GeometryReference with an updated dip profile."""
+        return _dataclass_replace(self, dip_profile=dip_profile)
 
     def with_densification(self, densification):
         """Return a new GeometryReference with updated densification config."""
@@ -304,7 +255,8 @@ def track_mesh_update(update_mesh=False, update_laplacian=False, update_area=Fal
         perturbation_cardinality (dict, optional): Structured dynamic length
             contract.  Fixed-length methods normally continue to use
             ``expected_perturbations_count``; dynamic methods use kinds such as
-            ``scalar_or_movable_nodes`` or ``scalar_or_dip_controls``.
+            ``scalar_or_movable_nodes`` or
+            ``scalar_or_sampled_dip_controls``.
         perturbation_items (tuple, optional): Serializable role/unit metadata
             for fixed-position perturbation values.
         baseline_source (str, optional): Source of the unperturbed geometry,
@@ -489,8 +441,48 @@ class PerturbationBase:
         self._mesh_reference_validation_key = None
         self._last_mesh_params = None
         self._last_mesh_raw_call = None
+        # Runtime provenance for boundary materialization.  Configuration
+        # methods replace GeometryReference immutably; object identity then
+        # provides a cheap, unambiguous stale-state check before one-time mesh
+        # mapping without hashing large coordinate arrays per candidate.
+        self._materialized_geometry_ref = None
+        self._materialized_trace_reference = None
+        self._materialized_trace_top_coords = None
 
     # --- Geometry-reference helpers ------------------------------------------
+    def _adopt_geometry_reference(
+            self, new_reference, *, boundary_contract_changed):
+        """Publish an evolved reference and keep runtime provenance coherent.
+
+        ``GeometryReference`` is immutable, so even metadata-only evolution
+        creates a new object.  Runtime preparation records may be promoted to
+        that object only when the top/bottom candidate contract is unchanged.
+        A profile or active density change instead invalidates boundary
+        materialization while deliberately leaving an existing mapping bound
+        to the old reference so preflight can diagnose it as stale.
+        """
+        previous_reference = self.geometry_ref
+        self.geometry_ref = new_reference
+        self._mesh_reference_validation_key = None
+
+        if boundary_contract_changed:
+            self._materialized_geometry_ref = None
+            self._materialized_trace_reference = None
+            self._materialized_trace_top_coords = None
+            return
+
+        if self._materialized_geometry_ref is previous_reference:
+            self._materialized_geometry_ref = new_reference
+        if self._materialized_trace_reference is previous_reference:
+            self._materialized_trace_reference = new_reference
+        generator = getattr(self, 'mesh_generator', None)
+        if (
+            generator is not None
+            and getattr(generator, 'param_mapping_reference', None)
+            is previous_reference
+        ):
+            generator.param_mapping_reference = new_reference
+
     def _require_geometry_ref(self, *field_names):
         """Ensure ``self.geometry_ref`` exists and requested fields are not None.
 
@@ -535,10 +527,13 @@ class PerturbationBase:
                     "rebuild_simple_mesh) before calling perturbations that "
                     "consume the whole mesh (direction, rotation, translation)."
                 )
-            self.geometry_ref = self.geometry_ref.with_vertices(
+            new_reference = self.geometry_ref.with_vertices(
                 self.Vertices.copy(), self.Faces.copy()
             )
-            self._mesh_reference_validation_key = None
+            self._adopt_geometry_reference(
+                new_reference,
+                boundary_contract_changed=False,
+            )
         return self._require_mesh_reference()
 
     def _require_mesh_reference(self, require_current_topology=True):
@@ -781,12 +776,22 @@ class PerturbationBase:
         else:
             print(f"  Average strike:    N/A (< 2 points)")
 
-        # --- Dip control points ---
-        dcp = ref.dip_control_points if ref is not None else None
-        if dcp is not None:
-            print(f"  Dip ctrl points:   {len(dcp.x)} attached")
+        # --- Along-strike dip profile ---
+        profile = ref.dip_profile if ref is not None else None
+        if profile is not None:
+            controls = profile.controls
+            n_sampled = controls.sampled_count
+            n_fixed = len(controls.dip) - n_sampled
+            print(
+                f"  Dip profile:       {n_sampled} sampled / "
+                f"{n_fixed} fixed controls"
+            )
+            print(
+                f"  Profile coordinate:{profile.interpolation_axis:>8}  "
+                f"transitions={len(profile.transition_zones)}"
+            )
         else:
-            print(f"  Dip ctrl points:   None")
+            print(f"  Dip profile:       None")
 
         # --- Densification ---
         dcfg = ref.densification if ref is not None else None
@@ -971,8 +976,8 @@ class PerturbationBase:
         kind = cardinality.get('kind')
         if kind == 'exact':
             return f"exactly {cardinality.get('count')} value(s)"
-        if kind == 'scalar_or_dip_controls':
-            return "one scalar or one value per movable dip control"
+        if kind == 'scalar_or_sampled_dip_controls':
+            return "one scalar or one value per sampled dip control"
         if kind == 'scalar_or_movable_nodes':
             field_name = cardinality.get('reference_field', 'coordinate')
             return f"one scalar or one value per movable {field_name} node"

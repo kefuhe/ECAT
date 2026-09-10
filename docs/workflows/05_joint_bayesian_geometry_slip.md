@@ -49,7 +49,7 @@ Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 
 两种模式共用同一套候选几何刷新规则：GF 随有效候选更新，Laplacian 和面积只在当前模型
 真正使用且几何变化使其失效时重建。`none/rigid/deform/remesh` 的含义和刷新范围见
-[可扰动断层几何：几何变化与派生量刷新](../reference/geometry_perturbation.md#几何变化与派生量刷新)。
+[MeshPolicy、拓扑与派生状态：中央变化映射](../reference/geometry_perturbation/mesh_cache.md#中央变化映射)。
 
 `alpha.enabled: false` 只关闭 Laplacian 平滑项，不会取消 `SMC_FJ` 消去线性滑动参数所需的
 曲率项。因此无平滑模型仍必须由数据充分约束全部线性参数。单个秩亏候选会获得低似然；
@@ -96,6 +96,10 @@ Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 [可扰动断层几何参考](../reference/geometry_perturbation.md)。曲线断层的可复制片段见
 [联合 Bayesian 几何参考与配置短例](../examples/joint_bayesian_geometry_setup.md)。
 
+沿曲线 top 设置 sampled/fixed dip controls、但 transition 位置尚不明确时，应在正式冻结
+top/bottom 前先做[曲率与转换带预分析](../reference/dip_profile/transition_preflight.md)。该步骤
+只读 reference top，输出可审阅 endpoint 建议；不会提前启动 mesh、GF 或 SMC。
+
 ### 3. 冻结一次参考
 
 采样前明确建立一次 reference，并检查：
@@ -115,11 +119,11 @@ fault.geometry_summary()
 
 | 场景 | 模板 |
 | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) |
-| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) |
+| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) |
 
-它们各有一套位于 [`scripts/configs/joint_bayesian/`](../../scripts/configs/joint_bayesian/)
+它们各有一套位于 [`scripts/configs/joint_bayesian/`](https://github.com/kefuhe/eqtools/tree/main/scripts/configs/joint_bayesian/)
 的主配置和 bounds。新用户可以成套复制；需要从当前版本全部默认字段开始时，使用 CLI：
 
 模板中的 `lon0/lat0` 是数据与断层共享的坐标参考。修改案例时，还要一起核对 geodata 顺序、
@@ -140,6 +144,9 @@ bayesian_sampling_mode: SMC_FJ
 slip_sampling_mode: ss_ds
 nchains: 100
 chain_length: 50
+smc_tempering:
+  target_cov: 1.0
+  max_delta_beta: 0.5
 
 faults:
   defaults:
@@ -172,12 +179,22 @@ faults:
         disct_z: 10
 ```
 
+`smc_tempering` 同时适用于 FULLSMC 和 SMC-FJ。默认 `1.0/0.5` 保持标准路径；
+提高 `max_delta_beta` 只放宽每个 stage 的硬上限，仍受权重 COV 约束。公式、有效
+样本量和 checkpoint 一致性见 [SMC 温度调度](../reference/smc_tempering.md)。
+
 三项缺一不可：顶层 `nonlinear_inversion: true`、断层级 `geometry.update: true`，以及
 与方法参数个数匹配的 `sample_positions`。`[0, 1]` 是全局几何采样向量的半开区间，
 不是断层节点编号。
 
+固定几何应同时设置 `nonlinear_inversion: false` 和各 source 的 `geometry.update: false`。
+顶层为 `false`、任一 source 为 `true` 属于矛盾配置，会在初始化阶段报错，不会进入 MPI、
+写入 geometry bounds 或开始采样。顶层为 `true` 但所有 source 都为 `false` 时会给出提示，
+并使用数学等价的固定几何计算路径。
+
 这里的“匹配”由方法契约决定，不等于所有方法都有固定长度。固定组合要求精确个数；
-`fixed_nodes`、可变数量 dip controls 等动态方法接受一个广播标量，或每个可移动项一个值。
+节点选择类动态方法接受一个广播标量，或每个可移动节点一个值。非分层 dip profile 使用
+显式 sampled/fixed controls：只为 sampled controls 分配参数，也允许一个广播标量。
 可先运行 `fault.help("方法名")` 查看 reference 和 sample cardinality，再同步修改
 `sample_positions` 与 bounds。配置初始化会在启动采样前检查这些关系。
 
@@ -224,6 +241,12 @@ top/bottom 建立参数映射；`bottom_norm_offset` 保持默认 `None`。只�
 当前实现就会在 mesh 方法内部调用一次底边扰动：`0.0` 也会执行该调用，非零值还会让
 current bottom/初始 mesh 与 frozen reference 分离。它不是 sampler 初值，也不会作为固定项
 自动叠加到后续样本。
+
+若先调用 `set_densification()`，必须再用零扰动调用一次与采样相同的 dip 方法，然后才创建
+mapping。setter 只替换 reference 中的规则，不会立即改写 current top/bottom。系统现在会在
+mesh 准备阶段检查这条生命周期，并在发现旧边界或旧 reference mapping 时直接报错；不要
+通过关闭检查或手工复制数组绕过。标准顺序和真实弧长、trace/profile/mapping 三层节点定义见
+[混合控制倾角剖面](../reference/dip_profile/bayesian_mixed.md#稀疏-top-与候选加密)。
 
 如果非零 offset 是正式物理基线的一部分，应先用与采样方法一致的方向、固定节点和单位
 显式修改 current bottom，再 `snapshot(...)`，最后以

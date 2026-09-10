@@ -40,6 +40,7 @@ Reference 不要求按文件顺序通读。长页面保留完整字段和公式�
 | [Fault Angle Conventions](../concepts/fault_angle_conventions.md) | 设置 `strike/dip/rake`、让 dip 跨过直立位置或解释 raw/canonical 几何时 |
 | [Linear Slip Config](config_linear_slip.md) | 设置 BLSE/VCE 的主配置、边界配置、GF、Laplacian、poly 和线性约束入口时 |
 | [Fault Geometry Construction](fault_geometry_construction.md) | 从非线性结果或地表迹线构建固定/变化倾角断层，或处理等深线、slab、外部 mesh 和 GMT 时 |
+| [倾角剖面模式总览](dip_profile/index.md) | 需要先区分固定一次、固定拓扑或 SMC 生命周期，再在局部走向、代表性走向和 sampled/fixed/transition 组合之间选择时 |
 | [Fault Summary](fault_summary.md) | 建完断层或完成反演后，快速检查 trace 长度、mesh、面积、走向倾角、slip、Mw 或矩率时 |
 | [Fault Edges](fault_edges.md) | 需要确认 `top/bottom/left/right`、`edge_vertices` 或边界零滑前置条件时 |
 | [Fault Patch Indices](fault_patch_indices.md) | 需要按边界、深度、空间范围或 trace 段生成 patch id，并传给约束或统计接口时 |

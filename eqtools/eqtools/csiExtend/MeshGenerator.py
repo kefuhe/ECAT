@@ -261,6 +261,10 @@ class MeshGenerator:
         # after a complete mapping pass; fixed-topology deformation must not
         # overwrite it with candidate-call arguments.
         self.param_mapping_spec = None
+        # GeometryReference object that owned the boundaries used by the
+        # successful mapping transaction.  None retains compatibility for
+        # manually prepared/legacy mappings that predate provenance tracking.
+        self.param_mapping_reference = None
 
     def set_coordinates(self, top_coords: np.ndarray, bottom_coords: np.ndarray):
         """
@@ -294,9 +298,9 @@ class MeshGenerator:
     
         Parameters:
         - coords (np.ndarray): The coordinates of the iso-depth nodes.
-        - every (float, optional): The interval at which to discretize the coordinates. If provided, overrides num_segments.
-        - num_segments (int, optional): The number of segments to discretize the coordinates into. Ignored if every is provided.
-        - threshold (float, optional): The threshold distance to check the first and last vertex against the nearest r_new point. Default is 2.
+        - every (float, optional): Target spacing on the true planar polyline arc length. If provided, overrides num_segments.
+        - num_segments (int, optional): Historical name for the target output-node count. Ignored if every is provided.
+        - threshold (float, optional): Retained for API compatibility; endpoints are included exactly.
     
         Returns:
         - xyz_new (np.ndarray): The new discretized coordinates in the original coordinate system.

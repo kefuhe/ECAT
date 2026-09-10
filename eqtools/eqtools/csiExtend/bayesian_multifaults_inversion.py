@@ -377,6 +377,9 @@ class BayesianMultiFaultsInversion(
 
     def update_config(self, config):
         self.config = config
+        validator = getattr(self.config, 'validate_sampling_ready', None)
+        if validator is not None:
+            validator()
         # Expand normalized group-space sigma state to ordered data-set space.
         # Sampling still allocates one value per updatable group.
         sigma_layout = self.config.sigmas.get('group_layout')
@@ -463,6 +466,24 @@ class BayesianMultiFaultsInversion(
 
         self._update_faults()
         self._calculate_parameters()
+        self._geometry_update_signature = getattr(
+            self.config, 'geometry_update_signature', ()
+        )
+
+    @property
+    def geometry_updates_active(self):
+        """Whether the resolved sampling contract updates any geometry."""
+        return bool(getattr(self.config, 'resolved_geometry_updates', ()))
+
+    def _iter_resolved_geometry_configs(self):
+        """Yield the sole preflighted geometry plan consumed at runtime.
+
+        Parameter layout, bounds, targets, posterior replay and reporting must
+        all consume this plan.  Reading the raw local ``geometry.update`` flag
+        in those layers would recreate a second activation truth source.
+        """
+        for resolved in getattr(self.config, 'resolved_geometry_updates', ()):
+            yield resolved, self.config.faults[resolved.fault_name]
 
     def _dataset_sigmas_from_samples(self, samples):
         """Resolve one physical sigma scale per data set from a sample.
@@ -616,8 +637,8 @@ class BayesianMultiFaultsInversion(
         else:
             G_cols = sum(fault.Gassembled.shape[1] for fault in self.multifaults.faults)
             self.GL_combined = np.zeros((0, G_cols))
-        self.calculate_sigmas_alpha_positions()
         self.calculate_geometry_positions()
+        self.calculate_sigmas_alpha_positions()
         self.calculate_slip_and_poly_positions()
         self.calculate_linear_sample_start_position()
         self.calculate_sample_slip_only_positions()
@@ -1720,7 +1741,7 @@ class BayesianMultiFaultsInversion(
         )
 
         fixed_workspace = None
-        if not self.nonlinear_inversion:
+        if not self.geometry_updates_active:
             fixed_workspace = self._build_smc_fj_quadratic_workspace(
                 GL_combined=self.GL_combined
             )
@@ -1736,26 +1757,23 @@ class BayesianMultiFaultsInversion(
                 )
             sample = np.asarray(sample, dtype=float).reshape(-1)
             workspace = fixed_workspace
-            if self.nonlinear_inversion:
-                for fault_name, fault_config in self.config.faults.items():
-                    if (
-                        fault_name in self.faultnames
-                        and fault_config['geometry']['update']
-                    ):
-                        if not self._try_update_fault_geometry_and_mesh(
-                                fault_name, fault_config, sample,
-                                log_enabled=False):
-                            raise RuntimeError(
-                                "stored SMC-FJ sample "
-                                f"{sample_index} no longer produces a valid "
-                                "fault geometry"
-                            )
-                        self._update_fault_GFs_and_Laplacian(
-                            fault_name,
-                            fault_config,
-                            update_laplacian=self.config.alpha_enabled,
-                            log_enabled=False,
+            if self.geometry_updates_active:
+                for resolved, fault_config in self._iter_resolved_geometry_configs():
+                    fault_name = resolved.fault_name
+                    if not self._try_update_fault_geometry_and_mesh(
+                            fault_name, fault_config, sample,
+                            log_enabled=False):
+                        raise RuntimeError(
+                            "stored SMC-FJ sample "
+                            f"{sample_index} no longer produces a valid "
+                            "fault geometry"
                         )
+                    self._update_fault_GFs_and_Laplacian(
+                        fault_name,
+                        fault_config,
+                        update_laplacian=self.config.alpha_enabled,
+                        log_enabled=False,
+                    )
                 workspace = self._build_smc_fj_quadratic_workspace()
 
             problem = self._assemble_smc_fj_conditional_problem(
@@ -2163,14 +2181,10 @@ class BayesianMultiFaultsInversion(
         self.model = specs
 
         # Update the model geometry
-        for fault in self.multifaults.faults:
-            # print(f"Fault {fault.name}:")
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-            #     print(f"  Geometry positions: {self.config.faults[fault.name]['geometry']['sample_positions']}")
-                fault_config = self.config.faults[fault.name]
-                # print('specs:', specs)
-                self._update_fault_geometry_and_mesh(fault.name, fault_config, specs)
-                self._update_fault_GFs_and_Laplacian(fault.name, fault_config)
+        for resolved, fault_config in self._iter_resolved_geometry_configs():
+            fault_name = resolved.fault_name
+            self._update_fault_geometry_and_mesh(fault_name, fault_config, specs)
+            self._update_fault_GFs_and_Laplacian(fault_name, fault_config)
         
         if self.bayesian_sampling_mode == 'SMC_FJ':
             self.target(specs)
@@ -2197,8 +2211,11 @@ class BayesianMultiFaultsInversion(
         for fault in self.multifaults.faults:
             # print('-----------------')
             print(f"Fault {fault.name}:")
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                print(f"  Geometry positions: {self.config.faults[fault.name]['geometry']['sample_positions']}")
+            geometry_position = getattr(self, 'geometry_positions', {}).get(
+                fault.name, [0, 0]
+            )
+            if geometry_position[1] > geometry_position[0]:
+                print(f"  Geometry positions: {geometry_position}")
             
             full_slip_start, full_slip_end = self.full_slip_positions[fault.name]
             slip_start, slip_end = full_slip_start, full_slip_end
@@ -2377,11 +2394,16 @@ class BayesianMultiFaultsInversion(
     
             # Current coordinates (red/blue) vs reference geometry (black)
             # Reference coords accessed via geometry_ref (frozen GeometryReference)
+            active_geometry_names = {
+                resolved.fault_name
+                for resolved in self.config.resolved_geometry_updates
+            }
     
             # Plot each fault and output to GMT format if required
             for fault_data in trifaults:
                 fault_name = fault_data.name
-                if self.config.faults[fault_name]['geometry']['update'] and not self.config.faults[fault_name]['geometry'].get('follows'):
+                geometry_active = fault_name in active_geometry_names
+                if geometry_active and not self.config.faults[fault_name]['geometry'].get('follows'):
                     plot_items = [
                         (fault_data.top_coords,                'r', 'top'),
                         (fault_data.geometry_ref.top_coords,   'k', 'top_ref'),
@@ -2558,14 +2580,16 @@ class BayesianMultiFaultsInversion(
                 axis_label_selection += [True] * len(fault_keys)
         
         if plot_geometry:
-            for fault_name in self.faultnames:
-                if self.config.nonlinear_inversion and self.config.faults[fault_name]['geometry']['update']:
-                    if self.config.faults[fault_name]['geometry'].get('follows'):
-                        continue
-                    geometry_keys = [f"{fault_name}_{i}" for i in range(self.config.faults[fault_name]['geometry']['sample_positions'][1] - self.config.faults[fault_name]['geometry']['sample_positions'][0])]
-                    keys += geometry_keys
-                    index += list(range(self.config.faults[fault_name]['geometry']['sample_positions'][0], self.config.faults[fault_name]['geometry']['sample_positions'][1]))
-                    axis_label_selection += [True] * len(geometry_keys)
+            for resolved, fault_config in self._iter_resolved_geometry_configs():
+                if fault_config['geometry'].get('follows'):
+                    continue
+                start, end = resolved.sample_slice
+                geometry_keys = [
+                    f"{resolved.fault_name}_{i}" for i in range(end - start)
+                ]
+                keys += geometry_keys
+                index += list(range(start, end))
+                axis_label_selection += [True] * len(geometry_keys)
         
         if plot_sigmas:
             sigma_updates = group_update_mask(self.config.geodata['sigmas'])
@@ -3135,7 +3159,7 @@ class BayesianMultiFaultsInversion(
         """Print geometry and scale parameters without mixing coordinate spaces."""
 
         posterior = np.asarray(self.sampler.allsamples, dtype=float)
-        resolved_updates = getattr(self.config, '_resolved_geometry_updates', ())
+        resolved_updates = self.config.resolved_geometry_updates
         geometry_rows = build_geometry_parameter_rows(
             resolved_updates,
             active_vector=self.model,
@@ -3264,7 +3288,7 @@ class BayesianMultiFaultsInversion(
 
     def _calculate_samples(self, rake_fixed):
         """Calculate the total number of samples required for the inversion based on the configuration whether rake is fixed or not."""
-        total_samples = 0
+        total_samples = getattr(self, 'total_geometry_parameters', 0)
         for fault in self.multifaults.faults:
             if hasattr(self.multifaults, 'adapters') and fault.name in self.multifaults.adapters:
                 adapter = self.multifaults.adapters[fault.name]
@@ -3282,11 +3306,6 @@ class BayesianMultiFaultsInversion(
             num_poly_samples = np.sum([fault.numberofpolys[ikey] for ikey in fault.numberofpolys], dtype=int)
             # num_poly_samples = np.sum([npoly for npoly in fault.poly.values() if npoly is not None], dtype=int)
             total_samples += num_slip_samples + num_poly_samples
-
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                if not self.config.faults[fault.name]['geometry'].get('follows'):
-                    num_geometry_samples = self.config.faults[fault.name]['geometry']['sample_positions'][1] - self.config.faults[fault.name]['geometry']['sample_positions'][0]
-                    total_samples += num_geometry_samples
 
         if self.sigmas_position is not None:
             total_samples += self.sigmas_position[1] - self.sigmas_position[0]
@@ -3378,8 +3397,11 @@ class BayesianMultiFaultsInversion(
         print("Parameter positions:")
         for fault in self.multifaults.faults:
             print(f"Fault {fault.name}:")
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                print(f"  Geometry positions: {self.config.faults[fault.name]['geometry']['sample_positions']}")
+            geometry_position = getattr(self, 'geometry_positions', {}).get(
+                fault.name, [0, 0]
+            )
+            if geometry_position[1] > geometry_position[0]:
+                print(f"  Geometry positions: {geometry_position}")
             print(f"  Slip positions: {self.slip_positions[fault.name]}")
             print(f"  Poly positions: {self.poly_positions[fault.name]}")
         if self._sigma_update_flag:
@@ -3394,8 +3416,11 @@ class BayesianMultiFaultsInversion(
         for fault in self.multifaults.faults:
             # print('-----------------')
             print(f"Fault {fault.name}:")
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                print(f"  Geometry positions: {self.config.faults[fault.name]['geometry']['sample_positions']}")
+            geometry_position = getattr(self, 'geometry_positions', {}).get(
+                fault.name, [0, 0]
+            )
+            if geometry_position[1] > geometry_position[0]:
+                print(f"  Geometry positions: {geometry_position}")
 
             slip_start, slip_end = self.slip_positions[fault.name]
             slip_start -= total_half
@@ -3429,31 +3454,6 @@ class BayesianMultiFaultsInversion(
         Calculate the positions for sigmas and alpha parameters in the sampling vector.
         Ensures that the total geometry parameters are based on the maximum sampling position.
         """
-        # Determine the maximum geometry parameter position
-        max_geometry_position = 0
-        for fault in self.multifaults.faults:
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                sample_positions = self.config.faults[fault.name]['geometry']['sample_positions']
-                if sample_positions is None or len(sample_positions) != 2:
-                    raise ValueError(f"Invalid sample_positions for fault {fault.name}. It should be a list with two elements [st, ed].")
-                max_geometry_position = max(max_geometry_position, sample_positions[1])
-    
-        # Validate that the geometry sampling positions cover the range from 0 to max_geometry_position
-        covered_positions = set()
-        for fault in self.multifaults.faults:
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                sample_positions = self.config.faults[fault.name]['geometry']['sample_positions']
-                covered_positions.update(range(sample_positions[0], sample_positions[1]))
-    
-        if set(range(max_geometry_position)) != covered_positions:
-            raise ValueError(
-                f"Geometry sampling positions do not fully cover the range from 0 to {max_geometry_position}. "
-                f"Covered positions: {sorted(covered_positions)}"
-            )
-    
-        # Set total_geometry_parameters to the maximum position
-        self.total_geometry_parameters = max_geometry_position
-    
         # Calculate the positions for sigmas
         # n_datasets = len(self.multifaults.faults[0].d)  # Number of data points
         n_sigmas_to_update = self.config.sigmas['updatable_params']  # Number of sigmas to update
@@ -3480,15 +3480,14 @@ class BayesianMultiFaultsInversion(
         self.geometry_positions = {}
         max_geometry_position = 0
     
+        resolved_by_name = {
+            resolved.fault_name: list(resolved.sample_slice)
+            for resolved in self.config.resolved_geometry_updates
+        }
         for fault in self.multifaults.faults:
-            if self.config.nonlinear_inversion and self.config.faults[fault.name]['geometry']['update']:
-                sample_positions = self.config.faults[fault.name]['geometry']['sample_positions']
-                if sample_positions is None or len(sample_positions) != 2:
-                    raise ValueError(f"Invalid sample_positions for fault {fault.name}. It should be a list with two elements [st, ed].")
-                max_geometry_position = max(max_geometry_position, sample_positions[1])
-                self.geometry_positions[fault.name] = sample_positions
-            else:
-                self.geometry_positions[fault.name] = [0, 0]
+            sample_positions = resolved_by_name.get(fault.name, [0, 0])
+            max_geometry_position = max(max_geometry_position, sample_positions[1])
+            self.geometry_positions[fault.name] = sample_positions
     
         # Validate that the geometry sampling positions cover the range from 0 to max_geometry_position
         covered_positions = set()
@@ -3902,12 +3901,23 @@ class BayesianMultiFaultsInversion(
             )
 
     def _validate_sampling_ready(self):
-        """Run configuration-owned nonlinear preflight once per target build."""
-        if not self.nonlinear_inversion:
-            return
+        """Run config preflight and guard the constructor-owned sample layout."""
         validator = getattr(self.config, 'validate_sampling_ready', None)
         if validator is not None:
             validator()
+        current_signature = getattr(
+            self.config, 'geometry_update_signature', ()
+        )
+        frozen_signature = getattr(
+            self, '_geometry_update_signature', current_signature
+        )
+        if current_signature != frozen_signature:
+            raise RuntimeError(
+                "Geometry sampling configuration changed after parameter "
+                "layout construction. Recreate BayesianMultiFaultsInversion "
+                "so geometry, sigma/alpha, and linear sample positions are "
+                "rebuilt together."
+            )
 
     def _freeze_fullsmc_bounds(self):
         """Freeze one effective bounds snapshot for target and proposal use."""
@@ -3944,7 +3954,7 @@ class BayesianMultiFaultsInversion(
         self._require_bayesian_sampling_mode('FULLSMC', 'make_target_for_parallel')
         self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
-        if self.nonlinear_inversion:
+        if self.geometry_updates_active:
             def target(samples):
                 ensure_current_bounds()
                 # Compute log prior
@@ -3952,18 +3962,17 @@ class BayesianMultiFaultsInversion(
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for fault_name, fault_config in self.config.faults.items():
-                    if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        # self._update_fault(fault_name, fault_config, samples)
-                        if not self._try_update_fault_geometry_and_mesh(
-                                fault_name, fault_config, samples,
-                                log_enabled=log_enabled):
-                            return -np.inf
-                        self._update_fault_GFs_and_Laplacian(
-                            fault_name, fault_config,
-                            update_laplacian=self.config.alpha_enabled,
-                            log_enabled=log_enabled,
-                        )
+                for resolved, fault_config in self._iter_resolved_geometry_configs():
+                    fault_name = resolved.fault_name
+                    if not self._try_update_fault_geometry_and_mesh(
+                            fault_name, fault_config, samples,
+                            log_enabled=log_enabled):
+                        return -np.inf
+                    self._update_fault_GFs_and_Laplacian(
+                        fault_name, fault_config,
+                        update_laplacian=self.config.alpha_enabled,
+                        log_enabled=log_enabled,
+                    )
 
                 new_samples = self.transfer_samples(samples)
                 return log_prior + self._compute_likelihoods(new_samples)
@@ -3990,7 +3999,7 @@ class BayesianMultiFaultsInversion(
         )
         self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
-        if self.nonlinear_inversion:
+        if self.geometry_updates_active:
             def target(samples):
                 ensure_current_bounds()
                 # Compute log prior
@@ -3998,12 +4007,12 @@ class BayesianMultiFaultsInversion(
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for fault_name, fault_config in self.config.faults.items():
-                    if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        if not self._try_update_fault_geometry_and_mesh(
-                                fault_name, fault_config, samples,
-                                update_areas=True, log_enabled=log_enabled):
-                            return -np.inf
+                for resolved, fault_config in self._iter_resolved_geometry_configs():
+                    fault_name = resolved.fault_name
+                    if not self._try_update_fault_geometry_and_mesh(
+                            fault_name, fault_config, samples,
+                            update_areas=True, log_enabled=log_enabled):
+                        return -np.inf
 
                 # Compute log magnitude prior
                 # start_time_magnitude_log_prior = time.time()
@@ -4014,13 +4023,13 @@ class BayesianMultiFaultsInversion(
                 # if magnitude_log_prior != 0.0:
                 #     return magnitude_log_prior
 
-                for fault_name, fault_config in self.config.faults.items():
-                    if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        self._update_fault_GFs_and_Laplacian(
-                            fault_name, fault_config,
-                            update_laplacian=self.config.alpha_enabled,
-                            log_enabled=log_enabled,
-                        )
+                for resolved, fault_config in self._iter_resolved_geometry_configs():
+                    fault_name = resolved.fault_name
+                    self._update_fault_GFs_and_Laplacian(
+                        fault_name, fault_config,
+                        update_laplacian=self.config.alpha_enabled,
+                        log_enabled=log_enabled,
+                    )
 
                 new_samples = self.transfer_samples(samples)
                 return log_prior + magnitude_log_prior + self._compute_likelihoods(new_samples)
@@ -4110,7 +4119,7 @@ class BayesianMultiFaultsInversion(
                     "Rebuild the target or call walk_smc_fj() again before sampling."
                 )
 
-        if self.nonlinear_inversion:
+        if self.geometry_updates_active:
             def target(samples):
                 ensure_current_constraints()
                 # Compute log prior
@@ -4118,17 +4127,17 @@ class BayesianMultiFaultsInversion(
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for fault_name, fault_config in self.config.faults.items():
-                    if fault_name in self.faultnames and fault_config['geometry']['update']:
-                        if not self._try_update_fault_geometry_and_mesh(
-                                fault_name, fault_config, samples,
-                                log_enabled=log_enabled):
-                            return -np.inf
-                        self._update_fault_GFs_and_Laplacian(
-                            fault_name, fault_config,
-                            update_laplacian=self.config.alpha_enabled,
-                            log_enabled=log_enabled,
-                        )
+                for resolved, fault_config in self._iter_resolved_geometry_configs():
+                    fault_name = resolved.fault_name
+                    if not self._try_update_fault_geometry_and_mesh(
+                            fault_name, fault_config, samples,
+                            log_enabled=log_enabled):
+                        return -np.inf
+                    self._update_fault_GFs_and_Laplacian(
+                        fault_name, fault_config,
+                        update_laplacian=self.config.alpha_enabled,
+                        log_enabled=log_enabled,
+                    )
 
                 return log_prior + self._compute_likelihoods_smc_fj(samples, A=A, b=b, Aeq=Aeq, beq=beq, \
                                                                  lb=lb, ub=ub, x0=x0, opts=opts, smooth_prior_weight=smooth_prior_weight,

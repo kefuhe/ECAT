@@ -46,10 +46,41 @@ flowchart TD
 候选几何刷新链，差别在采样和似然组织，不在 reference 或 mesh 发布契约。MPI 下每个
 rank 维护自己的候选和缓存，pipeline 不为每个候选增加额外的跨 rank 通信。
 
+非分层沿走向倾角方法在同一候选 pipeline 内再遵守一条更具体的单向流：
+
+```mermaid
+flowchart LR
+    A["冻结 DipProfileSpec<br/>controls / roles / axis / transitions"] --> B["候选 top<br/>可选临时加密"]
+    B --> C["所有位置投影到 top"]
+    A --> C
+    C --> D["统一一维坐标 u<br/>x / y / arc length"]
+    D --> E["按 sample_to_control<br/>只更新 sampled controls"]
+    E --> F["解析相邻 transition<br/>继承左右控制值"]
+    F --> G["插值得到 top_dip"]
+    G --> H["结合 top_strike 和深度<br/>生成 bottom"]
+```
+
+声明顺序负责参数映射，空间顺序只负责插值；两者不会互相覆盖。诊断图也读取同一 resolver
+的不可变结果，因此不会出现“图中投影位置”和“候选实际计算位置”各用一套逻辑。
+
 mesh replay 检查按注册方法的明确契约触发，不从方法后缀或已有数组名称猜测。
 `generate_and_deform_mesh` 需要采样前准备的逐顶点参数映射，因此 target 构造会只读核对
 映射与当前固定拓扑及重放参数；其他 mesh 路径没有声明该依赖时不会参与。该核对每次
 target 构造执行一次，不放入单个样本的 pipeline，也不会替用户自动 remap。
+
+profile 或 densification setter 会用不可变替换生成新的 `GeometryReference`。此时 current
+top/bottom 与已有 parametric mapping 仍属于旧 reference；系统用运行时 provenance 标记这一
+事实。只有候选 pipeline 完整物化新 reference 后，才能执行一次性的
+`generate_and_deform_mesh(remap=True)`。准备好的 mapping 也绑定该 reference；随后若再改
+profile 或 densification，target 构造会拒绝旧 mapping。该标记不进入 YAML、样本向量或
+后验文件，也不在每个候选中散列大数组。
+
+启用非分层 dip-profile 加密时，还区分 trace 节点、profile 求值节点和 mapping 节点。原始
+top 折点只在真实平面弧长上加密，不被全局等距重采样删除；control 与 transition endpoint
+作为求值事件插入同一折线，但不成为 Gmsh top curve 的新几何控制点。未启用加密时保持既有
+top 节点求值语义。固定拓扑 mapping 继续使用 top 和 bottom 各自真实弧长上的归一化位置
+$\xi$，不是按同一绝对弧长配对。完整公式和调用顺序见
+[混合控制倾角剖面](../reference/dip_profile/bayesian_mixed.md)。
 
 ## 四个容易混淆的状态
 
@@ -60,9 +91,9 @@ target 构造执行一次，不放入单个样本的 pipeline，也不会替用�
 | 样本状态 | `GeometryState` | 单个样本内部 | 不需要；由 pipeline 创建 |
 | 候选当前几何 | fault 上物化后的坐标、mesh 和 patches | 单个样本内部 | 不需要；由 pipeline 更新 |
 
-`GeometryReference` 是不可变值对象。`with_dip()`、`with_layers()`、
+`GeometryReference` 是不可变值对象。`with_dip_profile()`、`with_layers()`、
 `with_vertices()` 和 `with_densification()` 会返回新对象；普通用户优先调用断层对象上的
-`snapshot()`、`set_dip_control_points*()` 和 `set_densification()`，不要直接给
+`snapshot()`、`set_dip_profile()` 和 `set_densification()`，不要直接给
 `geometry_ref` 的字段赋值。
 
 ## `snapshot()` 到底保存了什么
@@ -113,8 +144,13 @@ reference。因此 reference 服务的是“为所有样本定义共同零点”
 - `top_coords` 和 `bottom_coords`：边界坐标类扰动的基础。
 - `layers`：多层断层和 layered mesh 的基础。
 - `vertices` 和 `faces`：整体平移、旋转等直接变换现有 mesh 的方法所需。
-- `dip_control_points`：沿走向变化倾角的参考控制点。
+- `dip_profile`：非分层沿走向倾角的 controls、sampled/fixed 角色、一维坐标和过渡区。
 - `densification`：稀疏采样控制点到密集网格边界的加密策略。
+
+非分层 transition 尚未确定时，可以先只建立含 `top_coords` 的最小 reference，运行
+[reference-top 曲率预分析](../reference/dip_profile/transition_preflight.md)，再把审阅后的显式
+endpoints 写入 `dip_profile`。分析结果绑定 top fingerprint，但不是 reference 的新字段，也不
+进入候选状态。
 
 不是所有场景都要捕获全部字段。只移动底边坐标、随后单独重建 mesh 时，
 `snapshot(capture_vertices=False, capture_layers=False)` 已足够；直接变换整个 mesh 时，
@@ -125,7 +161,7 @@ reference。因此 reference 服务的是“为所有样本定义共同零点”
 来自同一次最终 mesh 捕获。只有其中一个字段、或者冻结后又改变了当前 Faces 的 row、编号、
 绕序或连接关系，都不能再解释为同一基线。此时应先完成最终 remesh 和必要检查，再重新
 `snapshot(capture_vertices=True, ...)`；系统不会把 frozen vertices 与当前 Faces 拼在一起。
-这个约束只属于 whole-mesh 方法，不会把只需 top/bottom、layers 或 dip controls 的最小
+这个约束只属于 whole-mesh 方法，不会把只需 top/bottom、layers 或 dip profile 的最小
 reference 变成非法状态。
 
 ## 一个样本内部怎样组合多个操作

@@ -28,11 +28,16 @@ from .perturbations import (
 from .bayesian_perturbation_base import (
     BayesianTriFaultBase,
     GeometryReference,
-    DipControlPoints,
     DensificationConfig,
+)
+from .dip_profile import (
+    DipProfileSpec,
+    build_dip_profile_spec,
+    transform_dip_profile_coordinates,
 )
 from .MeshGenerator import MeshGenerator
 from . import mesh_registry
+from .geom_ops import resample_boundaries_by_normalized_arclength
 
 
 class BayesianAdaptiveTriangularPatches(
@@ -75,7 +80,7 @@ class BayesianAdaptiveTriangularPatches(
         perturbation methods will read from.
 
         Note:
-            If ``geometry_ref`` already exists, its ``dip_control_points`` and
+            If ``geometry_ref`` already exists, its ``dip_profile`` and
             ``densification`` config are **preserved** into the new snapshot.
             Re-calling ``snapshot()`` (e.g. via ``rebuild_simple_mesh``) will
             not lose previously configured dip or densification settings.
@@ -112,10 +117,12 @@ class BayesianAdaptiveTriangularPatches(
                     stacklevel=2,
                 )
 
-        # Preserve existing dip_control_points if already attached
-        dip_cp = None
-        if self.geometry_ref is not None and self.geometry_ref.dip_control_points is not None:
-            dip_cp = self.geometry_ref.dip_control_points
+        # Preserve the entire scientific profile as one unit.  Splitting its
+        # controls, roles, interpolation axis and transitions across snapshots
+        # would permit an internally inconsistent candidate baseline.
+        dip_profile = None
+        if self.geometry_ref is not None:
+            dip_profile = self.geometry_ref.dip_profile
 
         # Preserve existing densification config if already attached
         densification = None
@@ -128,18 +135,17 @@ class BayesianAdaptiveTriangularPatches(
             layers=layers,
             vertices=vertices,
             faces=faces,
-            dip_control_points=dip_cp,
+            dip_profile=dip_profile,
             densification=densification,
         )
         self._mesh_reference_validation_key = None
+        # The captured current boundaries are, by definition, the materialized
+        # zero-perturbation state for this new immutable reference.
+        self._materialized_geometry_ref = self.geometry_ref
+        self._materialized_trace_reference = self.geometry_ref
+        self._materialized_trace_top_coords = self.top_coords.copy()
 
         # Keep legacy attributes in sync (read-only views into the frozen ref)
-
-        # Apply deferred densification config from YAML (set before geometry_ref existed)
-        pending = getattr(self, '_pending_densification', None)
-        if pending is not None:
-            self.set_densification(**pending)
-            del self._pending_densification
 
         if getattr(self, 'verbose', False) and not getattr(self, '_geometry_summary_printed', False):
             self.geometry_summary()
@@ -168,105 +174,158 @@ class BayesianAdaptiveTriangularPatches(
             self.bottom_coords = np.asarray(bottom_coords_ref)
         self.snapshot(capture_vertices=False)
 
-    # --- Dip-control-point setters (unified: always via geometry_ref) ---------
-    def _ensure_geometry_ref_for_dip(self):
-        """Auto-create a minimal geometry_ref if it doesn't exist yet.
+    # --- Along-strike dip-profile setup (unified via geometry_ref) ------------
+    def _ensure_geometry_ref_for_dip_profile(self):
+        """Create the minimal reference needed to attach a dip profile.
 
-        This allows ``set_dip_control_points*()`` to be called before
-        ``snapshot()`` — a common workflow where dip control points are
-        needed to generate bottom_coords before the mesh exists.
-
-        The minimal ref only captures whatever top/bottom coords are
-        currently available (may be None).  A later ``snapshot()`` call
-        will replace this with a complete ref while preserving the
-        attached ``dip_control_points``.
+        A profile may be declared before bottom generation and mesh creation.
+        A later :meth:`snapshot` replaces the coordinate arrays while
+        preserving the complete profile specification.
         """
         if self.geometry_ref is not None:
             return
-        top = getattr(self, 'top_coords', None)
-        bot = getattr(self, 'bottom_coords', None)
+        top = getattr(self, "top_coords", None)
+        bottom = getattr(self, "bottom_coords", None)
         self.geometry_ref = GeometryReference(
             top_coords=top.copy() if top is not None else None,
-            bottom_coords=bot.copy() if bot is not None else None,
+            bottom_coords=bottom.copy() if bottom is not None else None,
         )
 
-    def set_dip_control_points(self, x, y, dip, is_utm=False):
-        """Set dip control points and attach to geometry_ref.
+    def set_dip_profile(
+        self,
+        sampled_controls,
+        fixed_controls=None,
+        *,
+        interpolation_axis="auto",
+        transition_zones=None,
+        is_utm=False,
+    ):
+        """Freeze an along-strike dip profile for candidate generation.
 
         Parameters
         ----------
-        x, y : array-like
-            Control point coordinates. Longitude/latitude by default;
-            set ``is_utm=True`` to pass UTM-x/y in km.
-        dip : array-like
-            Oriented reference dip in degrees. Values in
-            ``[-90, 0) U (0, 180)`` are accepted; for example, ``-80`` and
-            ``100`` are equivalent. The immutable control-point container
-            stores only continuous ``(0, 180)`` values, so later Bayesian
-            proposal increments never need to infer the caller's convention.
+        sampled_controls, fixed_controls : sequence
+            Rows are ``[lon, lat, reference_dip]`` by default or
+            ``[x_km, y_km, reference_dip]`` when ``is_utm=True``.  Only the
+            sampled group consumes candidate values.  Individual controls may
+            instead use ``{'s_km': d, 'dip': angle}`` from the ordered
+            reference-top start or ``{'s_from_end_km': d, 'dip': angle}``
+            from its end.  Declaration order defines sample-vector order;
+            spatial ordering is resolved later.
+        interpolation_axis : {'auto', 'x', 'y', 'arc_length'}
+            One-dimensional coordinate evaluated *after* every position is
+            projected onto the top edge. ``arc_length`` is recommended for a
+            curved or x/y-nonmonotonic trace.
+        transition_zones : sequence of mappings, optional
+            Use ``{'center': [c1, c2], 'half_width': value}`` (symmetric), an
+            asymmetric ``half_width`` mapping with ``lower``/``upper``, or
+             ``{'endpoints': [[c1, c2], [c1, c2]]}``.  Centre form accepts
+             ``metric='axis'`` (default) or ``metric='euclidean'``.  Each
+             centre or endpoint may use ``{'s_km': d}`` or
+             ``{'s_from_end_km': d}`` instead of a coordinate pair.  Each zone
+             accepts ``shape='linear'`` (default) or the opt-in cubic Hermite
+             blend ``shape='smoothstep'``.
         is_utm : bool, default False
-            If True, ``x``/``y`` are interpreted as UTM (km) and converted
-            via ``xy2ll`` before storage. Stored form is always lon/lat.
+            Whether all declared position coordinates are fault-local x/y in
+            kilometres.  The frozen profile itself is stored canonically in
+            longitude/latitude.
+
+        Returns
+        -------
+        DipProfileSpec
+            Immutable profile attached to :attr:`geometry_ref`.
         """
-        self._ensure_geometry_ref_for_dip()
+        self._ensure_geometry_ref_for_dip_profile()
+        profile = build_dip_profile_spec(
+            sampled_controls,
+            fixed_controls,
+            interpolation_axis=interpolation_axis,
+            transition_zones=transition_zones,
+            reference_top_xy=self.geometry_ref.top_coords,
+            xy_to_declaration_frame=None if is_utm else self.xy2ll,
+        )
         if is_utm:
-            lon, lat = self.xy2ll(np.asarray(x, dtype=np.float64),
-                                  np.asarray(y, dtype=np.float64))
-        else:
-            lon, lat = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
-            if np.any(np.abs(lon) > 360) or np.any(np.abs(lat) > 90):
-                warnings.warn(
-                    "Coordinate values exceed lon/lat range (|x|>360 or |y|>90). "
-                    "If passing UTM coordinates, set is_utm=True.",
-                    stacklevel=2,
-                )
-        dcp = DipControlPoints(x=lon, y=lat, dip=np.asarray(dip, dtype=np.float64))
-        self.geometry_ref = self.geometry_ref.with_dip(dcp)
+            profile = transform_dip_profile_coordinates(profile, self.xy2ll)
+        elif (
+            np.any(np.abs(profile.controls.x) > 360.0)
+            or np.any(np.abs(profile.controls.y) > 90.0)
+        ):
+            raise ValueError(
+                "dip-profile coordinates exceed lon/lat bounds; set "
+                "is_utm=True for fault-local projected coordinates"
+            )
+        new_reference = self.geometry_ref.with_dip_profile(profile)
+        # The top is unchanged, but the current bottom has not yet been
+        # regenerated from this newly frozen profile contract.
+        self._adopt_geometry_reference(
+            new_reference,
+            boundary_contract_changed=True,
+        )
+        return profile
 
-    def set_dip_control_points_from_coords(self, coords, dips, is_utm=False):
-        """Set dip control points from a coordinate array."""
-        self._ensure_geometry_ref_for_dip()
-        dcp = DipControlPoints.from_coords(coords, dips, is_utm=is_utm,
-                                            xy2ll_func=self.xy2ll if is_utm else None)
-        self.geometry_ref = self.geometry_ref.with_dip(dcp)
+    def analyze_reference_top_curvature(
+        self,
+        *,
+        spacing_km=0.5,
+        smoothing_method="savgol",
+        smoothing_km=2.0,
+        polyorder=3,
+        min_prominence_ratio=0.05,
+    ):
+        """Run a read-only curvature preflight on the frozen reference top.
 
-    def set_dip_control_points_from_file(self, filename, header=0, is_utm=False):
-        """Set dip control points from a text file (lon lat dip)."""
-        self._ensure_geometry_ref_for_dip()
-        dcp = DipControlPoints.from_file(filename, header=header, is_utm=is_utm,
-                                          xy2ll_func=self.xy2ll if is_utm else None)
-        self.geometry_ref = self.geometry_ref.with_dip(dcp)
+        This setup-time helper does not update ``top_coords``, ``bottom_coords``,
+        mesh state, or caches.  Its result can suggest explicit along-top
+        endpoints for the existing ``transition_zones`` protocol.  A dip
+        profile may first be declared with ``transition_zones=None`` to create
+        the minimal reference needed before bottom generation.
+
+        Parameters
+        ----------
+        spacing_km : float, default 0.5
+            Target uniform arc-length spacing used only by the diagnostic.
+        smoothing_method : {'savgol', 'none'}, default 'savgol'
+            Coordinate smoothing used before curvature differentiation.
+        smoothing_km : float or None, default 2.0
+            Physical Savitzky-Golay window length in kilometres.  It is
+            ignored when ``smoothing_method='none'``.
+        polyorder : int, default 3
+            Savitzky-Golay polynomial order; it must be at least two.
+        min_prominence_ratio : float, default 0.05
+            Candidate-peak prominence divided by the largest absolute
+            curvature.  This filters diagnostic noise and does not define the
+            final transition width.
+
+        Returns
+        -------
+        TopCurvatureAnalysis
+            Immutable analysis tied to the current ordered reference top.
+        """
+        if self.geometry_ref is None or self.geometry_ref.top_coords is None:
+            raise ValueError(
+                "reference top not set. Declare the dip profile or snapshot "
+                "the geometry before curvature analysis."
+            )
+        from .dip_transition_analysis import analyze_top_curvature
+
+        return analyze_top_curvature(
+            self.geometry_ref.top_coords,
+            spacing_km=spacing_km,
+            smoothing_method=smoothing_method,
+            smoothing_km=smoothing_km,
+            polyorder=polyorder,
+            min_prominence_ratio=min_prominence_ratio,
+            xy_to_lonlat=self.xy2ll,
+        )
 
     def refresh_geometry_baseline(self):
-        """Re-snapshot top/bottom coords while preserving dip and densification.
-
-        Use after external modifications to ``self.top_coords`` or
-        ``self.bottom_coords`` that should be reflected in the baseline,
-        without changing dip control points or densification config.
-        """
-        if self.geometry_ref is None or self.geometry_ref.dip_control_points is None:
+        """Re-snapshot coordinates while preserving dip profile and density."""
+        if self.geometry_ref is None or self.geometry_ref.dip_profile is None:
             raise ValueError(
-                "No existing geometry_ref with dip control points to preserve. "
-                "Call set_dip_control_points() and snapshot() first."
+                "No existing geometry_ref with a dip profile to preserve. "
+                "Call set_dip_profile() and snapshot() first."
             )
         self.snapshot()
-
-    def update_dip_baseline(self, x=None, y=None, dip=None):
-        """Update the dip control points baseline in geometry_ref.
-
-        Parameters:
-            x, y, dip: If all three are provided, replace the current dip
-                baseline. If all are None, equivalent to
-                ``refresh_geometry_baseline()`` — re-snapshot coords while
-                preserving existing dip settings. Partial arguments raise
-                ValueError.
-        """
-        if x is not None and y is not None and dip is not None:
-            self.set_dip_control_points(x, y, dip)
-        elif x is None and y is None and dip is None:
-            self.refresh_geometry_baseline()
-        else:
-            raise ValueError("Provide all of x, y, dip or none of them.")
 
     # --- Densification configuration -------------------------------------------
     def set_densification(self, num_segments=None, interval=None, enabled=True):
@@ -278,7 +337,9 @@ class BayesianAdaptiveTriangularPatches(
         Parameters
         ----------
         num_segments : int, optional
-            Target number of segments after densification.
+            Historical name for the target boundary-node count. The dip path
+            will not discard original trace vertices or required profile-event
+            nodes merely to force this count.
         interval : float, optional
             Target spacing (km) between densified points.
         enabled : bool
@@ -287,7 +348,28 @@ class BayesianAdaptiveTriangularPatches(
         if self.geometry_ref is None:
             raise ValueError("geometry_ref not set. Call snapshot() first.")
         cfg = DensificationConfig(num_segments=num_segments, interval=interval, enabled=enabled)
-        self.geometry_ref = self.geometry_ref.with_densification(cfg)
+        previous_reference = self.geometry_ref
+        previous_cfg = previous_reference.densification
+        if previous_cfg == cfg:
+            # Reapplying the same immutable policy is a true no-op.  In
+            # particular, config normalization must not stale a mapping that
+            # was already prepared from this exact contract.
+            return
+
+        new_reference = previous_reference.with_densification(cfg)
+        dormant_change = (
+            not cfg.enabled
+            and (previous_cfg is None or not previous_cfg.enabled)
+        )
+        self._adopt_geometry_reference(
+            new_reference,
+            boundary_contract_changed=not dormant_change,
+        )
+        if dormant_change:
+            # Replacing one disabled/dormant declaration cannot change the
+            # materialized boundaries; no replay or user-facing message is
+            # necessary.
+            return
 
         if getattr(self, 'verbose', False):
             n_ctrl = self.geometry_ref.top_coords.shape[0] if self.geometry_ref.top_coords is not None else '?'
@@ -395,6 +477,18 @@ class BayesianAdaptiveTriangularPatches(
         generator = getattr(self, 'mesh_generator', None)
         if generator is None:
             raise ValueError(prefix + "mesh_generator is unavailable. " + prepare_hint)
+
+        mapping_reference = getattr(generator, 'param_mapping_reference', None)
+        if (
+            mapping_reference is not None
+            and mapping_reference is not self.geometry_ref
+        ):
+            raise ValueError(
+                prefix + "the fixed-topology mapping belongs to an older "
+                "GeometryReference. Replay the zero-perturbation geometry "
+                "after changing the dip profile or densification rule, then "
+                + prepare_hint
+            )
 
         param_coords = getattr(generator, 'param_coords', None)
         gmsh_verts = getattr(generator, 'gmsh_verts', None)
@@ -631,6 +725,20 @@ class BayesianAdaptiveTriangularPatches(
         })
         top_coords = top_coords if top_coords is not None else self.top_coords
         bottom_coords = bottom_coords if bottom_coords is not None else self.bottom_coords
+        reference = self.geometry_ref
+        if (
+            reference is not None
+            and reference.dip_profile is not None
+            and self._materialized_geometry_ref is not reference
+        ):
+            raise ValueError(
+                f"Fault '{self.name}': the dip profile or densification rule "
+                "changed the frozen candidate contract, but current top/bottom "
+                "still belong to the previous materialization. Replay the "
+                "zero-perturbation "
+                "dip method before generate_and_deform_mesh(), for example "
+                "perturb_dips_with_preset_params(np.zeros(n_controls), ...)."
+            )
         if top_coords.shape[0] <= 10 and (self.geometry_ref is None or self.geometry_ref.densification is None):
             import warnings
             warnings.warn(
@@ -661,8 +769,13 @@ class BayesianAdaptiveTriangularPatches(
             self.mesh_generator.gmsh_verts = gmsh_verts
             self.mesh_generator.gmsh_faces = gmsh_faces
 
-            sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
-            sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
+            sep_top_coords, sep_bottom_coords = (
+                resample_boundaries_by_normalized_arclength(
+                    top_coords,
+                    bottom_coords,
+                    num_segments=num_segments,
+                )
+            )
             self.mesh_generator.set_coordinates(sep_top_coords, sep_bottom_coords)
             
             mesh_coords = self.mesh_generator.generate_grid_coordinates(top_coords=self.mesh_generator.top_coords, 
@@ -682,6 +795,7 @@ class BayesianAdaptiveTriangularPatches(
                 'min_dz': min_dz,
                 'projection': projection,
             }
+            self.mesh_generator.param_mapping_reference = self.geometry_ref
             
         else:
             if self.mesh_generator.param_coords is None or remap:
@@ -689,13 +803,28 @@ class BayesianAdaptiveTriangularPatches(
                 if bottom_norm_offset is not None:
                     self.perturb_bottom_coords_along_fixed_direction([bottom_norm_offset])
                 top_coords, bottom_coords = self.top_coords, self.bottom_coords
-                self.mesh_generator.set_coordinates(top_coords, bottom_coords)
+                # Dip controls and transition endpoints may be present only in
+                # the physics working boundary.  The Gmsh top spline remains
+                # defined by the trace-node layer so evaluation events cannot
+                # silently change the reference trace curve.
+                gmsh_top_coords = top_coords
+                if (
+                    self._materialized_trace_reference is self.geometry_ref
+                    and self._materialized_trace_top_coords is not None
+                ):
+                    gmsh_top_coords = self._materialized_trace_top_coords
+                self.mesh_generator.set_coordinates(gmsh_top_coords, bottom_coords)
                 gmsh_verts, gmsh_faces = self.mesh_generator.generate_gmsh_mesh(top_size=top_size, bottom_size=bottom_size, 
                                                                                 show=show, verbose=verbose, save_in_self=True, 
                                                                                 field_size_dict=field_size_dict, mesh_func=mesh_func)
                 
-                sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
-                sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
+                sep_top_coords, sep_bottom_coords = (
+                    resample_boundaries_by_normalized_arclength(
+                        top_coords,
+                        bottom_coords,
+                        num_segments=num_segments,
+                    )
+                )
                 self.mesh_generator.set_coordinates(sep_top_coords, sep_bottom_coords)
                 
                 mesh_coords = self.mesh_generator.generate_grid_coordinates(top_coords=self.mesh_generator.top_coords, 
@@ -718,12 +847,22 @@ class BayesianAdaptiveTriangularPatches(
                     'min_dz': min_dz,
                     'projection': projection,
                 }
+                self.mesh_generator.param_mapping_reference = self.geometry_ref
             else:
                 gmsh_verts = self.mesh_generator.gmsh_verts
                 gmsh_faces = self.mesh_generator.gmsh_faces
         
-        sep_top_coords, _ = self.discretize_coords(top_coords, num_segments=num_segments)
-        sep_bottom_coords, _ = self.discretize_coords(bottom_coords, num_segments=num_segments)
+        # Mapping columns intentionally retain the historical normalized-edge
+        # contract: top and bottom are resampled independently on their own
+        # true arc lengths, then paired by shared xi=j/(N-1).  This correction
+        # does not introduce material-point station pairing.
+        sep_top_coords, sep_bottom_coords = (
+            resample_boundaries_by_normalized_arclength(
+                top_coords,
+                bottom_coords,
+                num_segments=num_segments,
+            )
+        )
         
         new_gmsh_verts = self.mesh_generator.deform_mesh(sep_top_coords, sep_bottom_coords, disct_z=disct_z, 
                                                             bias=bias, min_dz=min_dz, projection=projection)
@@ -809,15 +948,18 @@ class BayesianAdaptiveTriangularPatches(
     def prepare_for_inversion(self, segs=None, sort_axis=0, sort_order='ascend',
                               top_tolerance=0.1, bottom_tolerance=0.1, lonlat=True,
                               buffer_depth=0.1, use_trace=False, discretized=False,
-                              dip_control_coords=None, dip_control_dips=None,
-                              dip_control_file=None, is_utm=False,
+                              dip_sampled_controls=None,
+                              dip_fixed_controls=None,
+                              dip_interpolation_axis='auto',
+                              dip_transition_zones=None,
+                              dip_controls_are_utm=False,
                               densify_num_segments=None, densify_interval=None):
         """One-call convenience setup for Bayesian geometry optimization.
 
         Delegates to ``set_edges_for_bayesian_optimization()`` for geometry
-        setup (all geometry parameters are forwarded), then optionally
-        configures dip control points.  See the individual methods for
-        parameter details.
+        setup (all geometry parameters are forwarded), then optionally freezes
+        one explicit sampled/fixed dip profile. See :meth:`set_dip_profile`
+        for the profile and transition-zone contract.
         """
         self.set_edges_for_bayesian_optimization(
             segs=segs, top_tolerance=top_tolerance, bottom_tolerance=bottom_tolerance,
@@ -826,10 +968,14 @@ class BayesianAdaptiveTriangularPatches(
             densify_num_segments=densify_num_segments, densify_interval=densify_interval,
         )
 
-        if dip_control_file is not None:
-            self.set_dip_control_points_from_file(dip_control_file, is_utm=is_utm)
-        elif dip_control_coords is not None and dip_control_dips is not None:
-            self.set_dip_control_points_from_coords(dip_control_coords, dip_control_dips, is_utm=is_utm)
+        if dip_sampled_controls is not None:
+            self.set_dip_profile(
+                sampled_controls=dip_sampled_controls,
+                fixed_controls=dip_fixed_controls,
+                interpolation_axis=dip_interpolation_axis,
+                transition_zones=dip_transition_zones,
+                is_utm=dip_controls_are_utm,
+            )
     #----------------------------------------------------------------------------------------------------------#
 
 

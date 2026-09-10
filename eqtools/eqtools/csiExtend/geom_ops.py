@@ -1,7 +1,6 @@
 from shapely.geometry import LineString, Point
 import numpy as np
-from scipy.interpolate import interp1d, griddata
-from scipy.integrate import cumulative_trapezoid as cumtrapz
+from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -271,57 +270,218 @@ class PolygonIntersector:
             plt.show()
 
 
+def polyline_arclength(coords):
+    """Return planar cumulative arc length for an ordered 3-D polyline.
+
+    Fault-edge distance is measured in the projected ``x/y`` plane.  The
+    input rows are *nodes*, so ``diff(coords)`` already represents the finite
+    segments that must be summed; applying a quadrature rule to those segment
+    lengths would shorten and shift the coordinate system.
+
+    Parameters
+    ----------
+    coords : array-like, shape (n, 3+)
+        Ordered fault-edge coordinates.
+
+    Returns
+    -------
+    cumulative : ndarray, shape (n,)
+        Distance from the first node, with ``cumulative[0] == 0``.
+    segment_lengths : ndarray, shape (n - 1,)
+        Planar length of each consecutive segment.
+    """
+    values = np.asarray(coords, dtype=float)
+    if values.ndim != 2 or values.shape[0] < 2 or values.shape[1] < 3:
+        raise ValueError("coords must have shape (n>=2, 3+)")
+    if not np.all(np.isfinite(values[:, :3])):
+        raise ValueError("coords must contain only finite values")
+
+    segment_lengths = np.linalg.norm(np.diff(values[:, :2], axis=0), axis=1)
+    scale = max(1.0, float(np.max(np.abs(values[:, :2]))))
+    tolerance = 64.0 * np.finfo(float).eps * scale
+    duplicate = np.flatnonzero(segment_lengths <= tolerance)
+    if duplicate.size:
+        raise ValueError(
+            "coords contains zero-length planar segment(s): "
+            f"{duplicate.tolist()}"
+        )
+    cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    return cumulative, segment_lengths
+
+
+def interpolate_polyline_at_arclength(coords, stations):
+    """Interpolate an ordered polyline at planar arc-length stations."""
+    values = np.asarray(coords, dtype=float)
+    cumulative, _ = polyline_arclength(values)
+    requested = np.asarray(stations, dtype=float)
+    if requested.ndim != 1 or not np.all(np.isfinite(requested)):
+        raise ValueError("stations must be a finite one-dimensional array")
+    tolerance = 64.0 * np.finfo(float).eps * max(1.0, cumulative[-1])
+    if (
+        np.any(requested < -tolerance)
+        or np.any(requested > cumulative[-1] + tolerance)
+    ):
+        raise ValueError("stations must lie within the polyline arc-length range")
+    requested = np.clip(requested, 0.0, cumulative[-1])
+    return np.column_stack([
+        np.interp(requested, cumulative, values[:, column])
+        for column in range(values.shape[1])
+    ])
+
+
+def _regular_arclength_stations(total_length, *, every=None, num_segments=None):
+    """Resolve the established point-count contract to uniform stations."""
+    if every is not None:
+        if (
+            isinstance(every, (bool, np.bool_))
+            or not np.isfinite(every)
+            or every <= 0.0
+        ):
+            raise ValueError("every must be a finite positive distance")
+        # Preserve the established nearest-count convention while ensuring a
+        # valid two-endpoint polyline for lengths shorter than one interval.
+        num_points = int(np.floor(total_length / every))
+        remainder = total_length - num_points * every
+        if remainder >= every / 2.0:
+            num_points += 1
+        num_points = max(2, num_points)
+    elif num_segments is not None:
+        if isinstance(num_segments, (bool, np.bool_)):
+            raise TypeError("num_segments must be an integer >= 2")
+        num_points = int(num_segments)
+        if num_points != num_segments or num_points < 2:
+            raise ValueError("num_segments must be an integer >= 2")
+    else:
+        raise ValueError("Either 'every' or 'num_segments' must be set")
+    return np.linspace(0.0, total_length, num_points)
+
+
+def densify_polyline_preserving_vertices(
+        coords, *, every=None, num_segments=None, required_stations=None):
+    """Densify a polyline while retaining its geometric breakpoints.
+
+    This helper is for the dip-physics working boundary.  Original trace
+    vertices remain hard geometric nodes.  Optional stations (for example dip
+    controls or transition endpoints) are evaluation events: they are inserted
+    on the existing piecewise-linear trace but do not redefine that trace.
+
+    ``num_segments`` retains the package's historical meaning of a target
+    *point count*.  If protected nodes already exceed that target, all protected
+    nodes are kept.  Interval mode subdivides each protected interval using the
+    nearest sensible count; it avoids creating an extra node when an interval
+    is shorter than 1.5 times the requested spacing.
+    """
+    values = np.asarray(coords, dtype=float)
+    cumulative, _ = polyline_arclength(values)
+    total_length = float(cumulative[-1])
+
+    protected = list(cumulative)
+    if required_stations is not None:
+        required = np.asarray(required_stations, dtype=float).reshape(-1)
+        if not np.all(np.isfinite(required)):
+            raise ValueError("required_stations must contain only finite values")
+        tolerance = 64.0 * np.finfo(float).eps * max(1.0, total_length)
+        if (
+            np.any(required < -tolerance)
+            or np.any(required > total_length + tolerance)
+        ):
+            raise ValueError("required_stations must lie on the input polyline")
+        protected.extend(np.clip(required, 0.0, total_length))
+
+    protected = np.sort(np.asarray(protected, dtype=float))
+    # Profile positions may make a lon/lat -> projected-coordinate round trip
+    # before they are projected back onto the same top edge.  A relative 1e-9
+    # station tolerance (sub-millimetre on a hundreds-of-kilometres trace)
+    # prevents that harmless frame roundoff from creating a duplicate node.
+    merge_tolerance = max(
+        64.0 * np.finfo(float).eps * max(1.0, total_length),
+        1e-9 * max(1.0, total_length),
+    )
+    protected = protected[np.r_[True, np.diff(protected) > merge_tolerance]]
+
+    if every is not None:
+        if (
+            isinstance(every, (bool, np.bool_))
+            or not np.isfinite(every)
+            or every <= 0.0
+        ):
+            raise ValueError("every must be a finite positive distance")
+        stations = [protected[0]]
+        for start, stop in zip(protected[:-1], protected[1:]):
+            span = stop - start
+            subdivisions = max(1, int(np.floor(span / every + 0.5)))
+            stations.extend(np.linspace(start, stop, subdivisions + 1)[1:])
+        stations = np.asarray(stations)
+    elif num_segments is not None:
+        if isinstance(num_segments, (bool, np.bool_)):
+            raise TypeError("num_segments must be an integer >= 2")
+        target = int(num_segments)
+        if target != num_segments or target < 2:
+            raise ValueError("num_segments must be an integer >= 2")
+        if len(protected) >= target:
+            stations = protected
+        else:
+            remaining = target - len(protected)
+            spans = np.diff(protected)
+            ideal = remaining * spans / np.sum(spans)
+            extras = np.floor(ideal).astype(int)
+            remainder = remaining - int(np.sum(extras))
+            if remainder:
+                order = np.argsort(-(ideal - extras), kind="stable")
+                extras[order[:remainder]] += 1
+            station_parts = [[protected[0]]]
+            for start, stop, extra in zip(protected[:-1], protected[1:], extras):
+                station_parts.append(
+                    np.linspace(start, stop, int(extra) + 2)[1:].tolist()
+                )
+            stations = np.asarray([
+                station for part in station_parts for station in part
+            ])
+    else:
+        raise ValueError("Either 'every' or 'num_segments' must be set")
+
+    return interpolate_polyline_at_arclength(values, stations)
+
+
 def discretize_coords(coords, every=None, num_segments=None, threshold=2):
     '''
-    Discretize node coordinates along a piecewise-linear curve.
+    Resample node coordinates uniformly along a piecewise-linear curve.
 
     Parameters:
     - coords (np.ndarray): The coordinates of the nodes, shape (N, 3).
-    - every (float, optional): The interval at which to discretize the coordinates. If provided, overrides num_segments.
-    - num_segments (int, optional): The number of segments to discretize the coordinates into. Ignored if every is provided.
-    - threshold (float, optional): The threshold distance to check the first and last vertex against the nearest r_new point. Default is 2.
+    - every (float, optional): Finite positive distance used to discretize the
+      coordinates. If provided, overrides num_segments.
+    - num_segments (int, optional): Historical name for the target point count.
+      Ignored if every is provided.
+    - threshold (float, optional): Retained for API compatibility. Endpoints are
+      now always included exactly, so this value is not used.
 
     Returns:
     - xyz_new (np.ndarray): The new discretized coordinates, shape (M, 3).
     '''
-    x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-    # Calculate the length of the curve
-    dx = np.insert(np.diff(x), 0, 0)
-    dy = np.insert(np.diff(y), 0, 0)
-    dr = np.sqrt(dx*dx + dy*dy)
-    r = cumtrapz(dr, initial=0)  # Length of the curve
+    del threshold  # Endpoints are always included by construction.
+    r, _ = polyline_arclength(coords)
+    r_new = _regular_arclength_stations(
+        r[-1], every=every, num_segments=num_segments,
+    )
 
-    # Create interpolation functions
-    fx = interp1d(r, x, kind='linear')
-    fy = interp1d(r, y, kind='linear')
-    fz = interp1d(r, z, kind='linear')
+    return interpolate_polyline_at_arclength(coords, r_new)
 
-    # Discretize the curve length at equal intervals
-    if every is not None:
-        num_points = int(np.floor(r[-1] / every))
-        remainder = r[-1] - num_points * every
-        if remainder >= every / 2:
-            num_points += 1
-    elif num_segments is not None:
-        num_points = num_segments
-    else:
-        raise ValueError("Either 'every' or 'num_segments' must be set")
 
-    r_new = np.linspace(0, r[-1], num_points)
+def resample_boundaries_by_normalized_arclength(
+        top_coords, bottom_coords, *, num_segments):
+    """Return the established normalized top/bottom mapping boundaries.
 
-    # Check the distance of the first and last vertex against the nearest r_new point
-    if r_new[0] - r[0] > threshold:
-        r_new = np.insert(r_new, 0, r[0])
-    if r[-1] - r_new[-1] > threshold:
-        r_new = np.append(r_new, r[-1])
-
-    # Calculate new x, y, z values
-    x_new = fx(r_new)
-    y_new = fy(r_new)
-    z_new = fz(r_new)
-    xyz_new = np.vstack((x_new, y_new, z_new)).T
-
-    return xyz_new
+    Both edges receive the same point count, but each is sampled on its own
+    true planar arc length.  Consequently column ``j`` means the shared
+    normalized coordinate ``j / (num_segments - 1)``; it does *not* assert a
+    material-point or equal-physical-distance correspondence between edges.
+    This explicit helper protects the current fixed-topology deformation
+    contract from accidental replacement by a different mapping model.
+    """
+    top = discretize_coords(top_coords, num_segments=num_segments)
+    bottom = discretize_coords(bottom_coords, num_segments=num_segments)
+    return top, bottom
 
 def calculate_average_direction(points):
     """

@@ -95,6 +95,7 @@ from .raster import (
     raster_limits,
 )
 from .fault_boundary import plot_fault_boundary_diagnostics
+from .dip_profile import plot_dip_profile_diagnostics, plot_dip_transition_analysis
 
 
 def register_style_directory(path):
@@ -175,6 +176,8 @@ __all__ = [
     'raster_limits',
     # Fault-boundary diagnostics
     'plot_fault_boundary_diagnostics',
+    'plot_dip_profile_diagnostics',
+    'plot_dip_transition_analysis',
     # Backward-compatible wrappers
     'sci_plot_style',
     'set_plot_style',

@@ -74,7 +74,9 @@ controls，再由每个候选的 mesh policy 生成 mesh；两种来源都合法
 - 沿走向变化倾角和随深度变化倾角是不同问题；后者需要 layered-dip 几何。
 - `fault.discretize(...)` 是 CSI legacy trace 离散接口；新项目优先使用 `fault.discretize_trace(...)`。
 - 普通 polyline GMT 不等于 CSI patch GMT；只有后者能直接表示 fault patches。
-- top/bottom 分别按距离重采样可能导致点数不一致；需要配对建 mesh 时，优先使用相同 `num_segments`。
+- top/bottom 分别按距离重采样可能导致点数不一致；需要配对建 mesh 时，优先使用相同
+  `num_segments`。三维边界接口中的该历史参数名实际表示输出节点数，距离由投影平面中相邻
+  节点的真实折线长度直接累计。
 
 ## 继续阅读
 

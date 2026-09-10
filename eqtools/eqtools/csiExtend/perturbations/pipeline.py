@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..bayesian_perturbation_base import GeometryReference, DensificationConfig, DipControlPoints
+from ..bayesian_perturbation_base import GeometryReference, DensificationConfig
+from ..dip_profile import DipProfileSpec
 from .angle_utils import angles_to_radians, normalize_angle_unit
 
 
@@ -53,7 +54,7 @@ class GeometryState:
     layers: list[np.ndarray] | None = None
     vertices: np.ndarray | None = None
     faces: np.ndarray | None = None
-    dip_control_points: DipControlPoints | None = None
+    dip_profile: DipProfileSpec | None = None
     densification: DensificationConfig | None = None
     meta: dict = field(default_factory=dict)
     dirty: set = field(default_factory=set)
@@ -68,7 +69,7 @@ class GeometryState:
             layers=[l.copy() for l in ref.layers] if ref.layers else None,
             vertices=ref.vertices.copy() if ref.vertices is not None else None,
             faces=ref.faces.copy() if ref.faces is not None else None,
-            dip_control_points=ref.dip_control_points,
+            dip_profile=ref.dip_profile,
             densification=ref.densification,
         )
 
@@ -362,6 +363,15 @@ class OffsetStage(Stage):
             elif dirs.shape[1] == 3:
                 coords[mask] += dirs[mask] * vals[:, None]
 
+        if self.target.kind == 'top':
+            # A selective offset has index/direction semantics tied to the
+            # working-node array.  The auxiliary trace-node array can have a
+            # different cardinality, so it cannot be transformed by guessing
+            # an index correspondence.  Falling back to the finished working
+            # top is safe; it only forgoes trace/event separation for this
+            # uncommon composed path.
+            state.meta.pop('trace_top', None)
+
         state.mark_dirty(*_collect_dirty_labels([self.target], state))
         state.mark_mesh_change('deform')
         return state
@@ -401,6 +411,18 @@ class RotateStage(Stage):
                 c = rel[:, 0] + 1j * rel[:, 1]
                 c_rot = c * rotation
                 coords[:, :2] = np.column_stack([c_rot.real, c_rot.imag]) + pivot
+
+        if (
+            any(target.kind == 'top' for target in self.targets)
+            and 'trace_top' in state.meta
+        ):
+            trace_top = state.meta['trace_top']
+            rel = trace_top[:, :2] - pivot
+            c = rel[:, 0] + 1j * rel[:, 1]
+            c_rot = c * rotation
+            trace_top[:, :2] = (
+                np.column_stack([c_rot.real, c_rot.imag]) + pivot
+            )
 
         state.mark_dirty(*_collect_dirty_labels(self.targets, state))
         state.mark_mesh_change('rigid')
@@ -490,6 +512,12 @@ class TranslateStage(Stage):
             for label, idx, coords in target.resolve(state):
                 coords[:, :2] += delta
 
+        if (
+            any(target.kind == 'top' for target in self.targets)
+            and 'trace_top' in state.meta
+        ):
+            state.meta['trace_top'][:, :2] += delta
+
         state.mark_dirty(*_collect_dirty_labels(self.targets, state))
         state.mark_mesh_change('rigid')
         return state
@@ -508,18 +536,15 @@ class DipGeneratorStage(Stage):
     Workflow:
         1. Convert equivalent reference dips to continuous 0--180 coordinates
            and add perturbations there
-        2. Densify top in-state (DensificationConfig and/or discretization_interval)
+        2. Densify top in-state from exactly one density source
         3. Interpolate dip onto densified top nodes
         4. Compute bottom = top + dip_vector * width
 
-    ``interpolation_axis`` accepts ``'auto'``, ``'x'``, ``'y'``, or
-    ``'arc_length'``. The first three operate on fault-local projected x/y;
-    ``'auto'`` PCA-selects one projected axis. ``'arc_length'`` projects control
-    points onto the current top-edge polyline and interpolates along cumulative
-    distance, which avoids x/y ordering ambiguity on curved traces. Buffer
-    augmentation requires a resolved x or y axis and is rejected for
-    ``'arc_length'`` before the candidate state is materialized back onto the
-    fault object.
+    The frozen :class:`~eqtools.csiExtend.dip_profile.DipProfileSpec` owns
+    controls, sampled/fixed roles, interpolation coordinate, and transition
+    zones.  This stage only supplies candidate perturbations and generator
+    options.  A single resolver projects every position-like declaration onto
+    the candidate top edge before constructing the one-dimensional profile.
 
     ``top_strike`` and ``top_dip`` written to ``state.meta`` are reference-node
     values used to generate the bottom edge.  In particular, ``top_dip`` is the
@@ -528,48 +553,61 @@ class DipGeneratorStage(Stage):
     geometry from patch vertices and ``getpatchgeometry()``.
     """
 
-    dip_control_points: DipControlPoints
+    dip_profile: DipProfileSpec
     perturbations: np.ndarray
-    fixed_nodes: list | None = None
     angle_unit: str = 'degrees'
     densify_top: bool = True
     discretization_interval: float | None = None
-    interpolation_axis: str = 'auto'
-    buffer_nodes: np.ndarray | None = None
-    buffer_radius: float | None = None
     use_average_strike: bool = False
     average_strike_source: str = 'pca'
     user_direction_angle: float | None = None
 
-    def _densify_top_only(self, state):
-        """Densify top using DensificationConfig (mirrors densify_edges(top_only=True))."""
+    @staticmethod
+    def _profile_event_stations(resolved):
+        """Return arc stations where the dip profile changes definition.
+
+        Controls and transition endpoints are physics-evaluation events.  They
+        are inserted on the existing trace polyline so the generated bottom
+        resolves plateaus and blends exactly, but they are kept separate from
+        the trace nodes later used as Gmsh geometric controls.
+        """
+        stations = list(np.asarray(resolved.control_s, dtype=float))
+        for zone in resolved.transition_zones:
+            stations.extend([zone.lower_s, zone.upper_s])
+        return np.asarray(stations, dtype=float)
+
+    def _densify_top_only(self, state, *, required_stations=None):
+        """Build trace and dip-working top nodes from one density rule.
+
+        The trace version preserves only reference geometric vertices plus
+        regular inserted nodes.  The working version additionally contains
+        dip-profile events.  Both lie on the same piecewise-linear top; only
+        their node sets differ.
+        """
         cfg = state.densification
         if cfg is None or not cfg.enabled:
-            return
+            return state.top.copy() if state.top is not None else None
 
-        from ..geom_ops import discretize_coords
+        from ..geom_ops import densify_polyline_preserving_vertices
 
         if state.top is None:
-            return
-
-        n_before = state.top.shape[0]
-        if cfg.num_segments is not None and n_before >= cfg.num_segments:
-            return
-        if cfg.interval is not None:
-            dx = np.diff(state.top[:, 0])
-            dy = np.diff(state.top[:, 1])
-            arc_length = np.sum(np.sqrt(dx * dx + dy * dy))
-            target_n = max(2, int(np.floor(arc_length / cfg.interval)))
-            if n_before >= target_n:
-                return
+            return None
 
         kw = {}
         if cfg.num_segments is not None:
             kw['num_segments'] = cfg.num_segments
         elif cfg.interval is not None:
             kw['every'] = cfg.interval
-        state.top = discretize_coords(state.top, **kw)
-        state.mark_dirty('top')
+        original_top = state.top
+        trace_top = densify_polyline_preserving_vertices(original_top, **kw)
+        state.top = densify_polyline_preserving_vertices(
+            original_top,
+            required_stations=required_stations,
+            **kw,
+        )
+        if not np.array_equal(state.top, original_top):
+            state.mark_dirty('top')
+        return trace_top
 
     def apply(self, state, ctx):
         """Perturb controls, interpolate dip, and regenerate candidate bottom.
@@ -578,64 +616,86 @@ class DipGeneratorStage(Stage):
         Control-point values remain immutable, and generated strike/dip arrays
         are stored in ``state.meta`` for publication after all stages succeed.
         """
-        from .dip_ops import (
-            perturb_dip_values,
-            interpolate_dip_onto_coords,
-            generate_bottom_from_dips,
-            augment_control_points_with_buffers,
-            determine_interpolation_axis,
-        )
-        from ..geom_ops import discretize_coords
+        from .dip_ops import compute_strike, generate_bottom_from_dips
+        from ..DipInterpolation import normalize_dip_to_neg90_90
+        from ..dip_profile import resolve_dip_profile
+        from ..geom_ops import densify_polyline_preserving_vertices
 
-        dcp = self.dip_control_points
-        perturbed_dips = perturb_dip_values(
-            dcp.dip, self.perturbations,
-            fixed_nodes=self.fixed_nodes,
+        if not isinstance(self.dip_profile, DipProfileSpec):
+            raise TypeError("DipGeneratorStage.dip_profile must be DipProfileSpec")
+
+        call_interval = self.discretization_interval
+        if call_interval is not None:
+            if isinstance(call_interval, (bool, np.bool_)):
+                raise ValueError(
+                    "discretization_interval must be a finite positive "
+                    "distance in km"
+                )
+            try:
+                call_interval = float(call_interval)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "discretization_interval must be a finite positive "
+                    "distance in km"
+                ) from exc
+            if not np.isfinite(call_interval) or call_interval <= 0.0:
+                raise ValueError(
+                    "discretization_interval must be a finite positive "
+                    "distance in km"
+                )
+
+            density = state.densification
+            if density is not None and density.enabled:
+                raise ValueError(
+                    "Dip geometry has two active densification sources: "
+                    "GeometryReference.densification and the method-level "
+                    "discretization_interval. Use set_densification(...) for "
+                    "Bayesian candidate replay and omit "
+                    "discretization_interval, or use only the method-level "
+                    "interval for a one-off fixed geometry."
+                )
+
+        # Resolve once on the canonical candidate top to locate profile events.
+        # A second resolution below evaluates the same continuous profile on
+        # the final working nodes.  The first pass changes no scientific state.
+        pre_resolved = resolve_dip_profile(
+            self.dip_profile,
+            state.top,
+            self.perturbations,
             angle_unit=self.angle_unit,
         )
+        event_stations = self._profile_event_stations(pre_resolved)
 
+        trace_top = state.top.copy()
         if self.densify_top:
-            self._densify_top_only(state)
+            trace_top = self._densify_top_only(
+                state,
+                required_stations=event_stations,
+            )
 
-        if self.discretization_interval is not None:
-            state.top = discretize_coords(state.top, every=self.discretization_interval)
+        if call_interval is not None:
+            source_top = trace_top
+            trace_top = densify_polyline_preserving_vertices(
+                source_top,
+                every=call_interval,
+            )
+            state.top = densify_polyline_preserving_vertices(
+                source_top,
+                every=call_interval,
+                required_stations=event_stations,
+            )
             state.mark_dirty('top')
 
-        control_xy_dip = np.column_stack([dcp.x, dcp.y, perturbed_dips])
-        valid_axes = {'auto', 'x', 'y', 'arc_length'}
-        if self.interpolation_axis not in valid_axes:
-            raise ValueError(
-                "interpolation_axis must be one of 'auto', 'x', 'y', or "
-                f"'arc_length'; got {self.interpolation_axis!r}"
-            )
-        resolved_axis = self.interpolation_axis
-        if resolved_axis == 'auto':
-            resolved_axis = determine_interpolation_axis(
-                state.top[:, 0],
-                state.top[:, 1],
-            )
-        if (
-            self.buffer_nodes is not None
-            and self.buffer_radius is not None
-            and resolved_axis == 'arc_length'
-        ):
-            raise ValueError("buffer augmentation does not support arc_length")
-
-        if self.buffer_nodes is not None and self.buffer_radius is not None:
-            control_xy_dip = augment_control_points_with_buffers(
-                control_xy_dip,
-                buffer_nodes_lonlat=self.buffer_nodes,
-                buffer_radius=self.buffer_radius,
-                interpolation_axis=resolved_axis,
-                top_coords_2d=state.top[:, :2],
-                ll2xy=ctx.fault.ll2xy,
-                xy2ll=ctx.fault.xy2ll,
-            )
-
-        interpolated_dip, strike = interpolate_dip_onto_coords(
-            control_xy_dip, state.top,
-            interpolation_axis=resolved_axis,
+        resolved = resolve_dip_profile(
+            self.dip_profile,
+            state.top,
+            self.perturbations,
+            angle_unit=self.angle_unit,
         )
+        interpolated_dip = normalize_dip_to_neg90_90(
+            resolved.top_dip_continuous
+        )
+        strike = compute_strike(state.top)
 
         state.bottom = generate_bottom_from_dips(
             state.top, interpolated_dip, strike,
@@ -644,7 +704,7 @@ class DipGeneratorStage(Stage):
             use_average_strike=self.use_average_strike,
             average_strike_source=self.average_strike_source,
             user_direction_angle=self.user_direction_angle,
-            interpolation_axis=resolved_axis,
+            interpolation_axis=resolved.interpolation_axis,
         )
 
         # Preserve the generator's reference-node convention.  Negative dip is
@@ -652,6 +712,8 @@ class DipGeneratorStage(Stage):
         # calculation; final patch geometry is derived later from mesh vertices.
         state.meta['top_strike'] = strike
         state.meta['top_dip'] = interpolated_dip
+        state.meta['resolved_dip_profile'] = resolved
+        state.meta['trace_top'] = trace_top
         state.mark_dirty('top', 'bottom')
         state.mark_mesh_change('deform')
         return state
@@ -836,6 +898,17 @@ def materialize(state: GeometryState, ctx: PipelineContext):
         fault.top_strike = state.meta['top_strike']
     if 'top_dip' in state.meta:
         fault.top_dip = state.meta['top_dip']
+
+    # Publish setup provenance only after the complete candidate has been
+    # materialized.  This is runtime state, not part of the immutable
+    # scientific reference or the user-facing sample vector.
+    if 'resolved_dip_profile' in state.meta:
+        fault._materialized_geometry_ref = ctx.ref
+        fault._materialized_trace_reference = ctx.ref
+        trace_top = state.meta.get('trace_top', state.top)
+        fault._materialized_trace_top_coords = (
+            None if trace_top is None else np.asarray(trace_top).copy()
+        )
 
 
 # ============================================================================

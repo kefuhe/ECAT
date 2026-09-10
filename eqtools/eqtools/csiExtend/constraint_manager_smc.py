@@ -688,8 +688,10 @@ class ConstraintManagerSMC(ConstraintManagerBase):
         ----------
         geometry_bounds : mapping or None
             Source names mapped to uniform or per-parameter bound pairs.
-            Unknown sources and geometry blocks not marked ``update`` are
-            skipped.
+            Unknown sources and blocks absent from the inversion's resolved
+            geometry plan are skipped.  The resolved plan already combines the
+            global ``nonlinear_inversion`` switch with each source's local
+            ``geometry.update`` selector.
         source : str
             Human-readable provenance used in verbose output.
 
@@ -710,9 +712,8 @@ class ConstraintManagerSMC(ConstraintManagerBase):
                     print(f"[!]  Warning: Fault '{fault_name}' not found in faults_list, skipping geometry bounds")
                 continue
                 
-            if (fault_name in self.config.faults and 
-                self.config.faults[fault_name]['geometry']['update']):
-                start, end = self.config.faults[fault_name]['geometry']['sample_positions']
+            start, end = self.geometry_positions.get(fault_name, (0, 0))
+            if end > start:
                 expected_params = end - start
                 
                 lb_vals, ub_vals = self._process_parameter_bounds(
@@ -1371,7 +1372,7 @@ class ConstraintManagerSMC(ConstraintManagerBase):
             self._bounds['ub'][:] = float(global_bounds['ub'])
 
         for fault_name, (lower, upper) in self._bounds['geometry'].items():
-            start, end = self.config.faults[fault_name]['geometry']['sample_positions']
+            start, end = self.geometry_positions[fault_name]
             self._bounds['lb'][start:end] = lower
             self._bounds['ub'][start:end] = upper
         if self._bounds['sigmas'] is not None:

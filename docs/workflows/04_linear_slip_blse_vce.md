@@ -19,7 +19,7 @@ GF、Laplacian 和约束。
 | --- | --- | --- |
 | 非线性几何反演的 `lon/lat/depth/strike/dip/length` | [由非线性结果构建断层](../examples/fault_from_nonlinear_geometry.md) | [Fault Geometry Construction](../reference/fault_geometry_construction.md#nonlinear-result) |
 | 地表迹线 + 单倾角 | [单倾角平面](../examples/fault_trace_preprocessing.md#single-dip) | [Fault Geometry Construction](../reference/fault_geometry_construction.md#trace-dip-single) |
-| 地表迹线 + 多个倾角参考点 | [沿走向变化倾角](../examples/fault_trace_preprocessing.md#multiple-dips) | [Fault Geometry Construction](../reference/fault_geometry_construction.md#trace-dip-varying) |
+| 地表迹线 + 多个倾角参考点，只构建一个固定几何 | [沿走向变化倾角](../examples/fault_trace_preprocessing.md#multiple-dips) | [固定几何中的倾角剖面](../reference/dip_profile/fixed_geometry.md) |
 | 用 BLSE 比较多个倾角且保持 patch 对应 | [固定参考拓扑](../examples/fault_trace_preprocessing.md#fixed-topology) | [固定拓扑倾角搜索](04b_blse_dip_search.md) |
 | ECAT 降采样、外部 SAR 点或 GNSS ENU | [反演前读取 InSAR 与 GNSS](../examples/inversion_data_loading.md) | [观测数据读入参考](../reference/observation_data_readers.md) |
 | BLSE/VCE 配置与约束 | 本页[配置文件来源](#配置文件来源) | [线性滑动配置](../reference/config_linear_slip.md) |

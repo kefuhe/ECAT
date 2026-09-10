@@ -231,6 +231,22 @@ _LAZY_EXPORTS = {
     ),
     "trace_length": (".trace_ops", "trace_length"),
     "trim_trace": (".trace_ops", "trim_trace"),
+    "AlongTopLocation": (
+        ".dip_transition_analysis",
+        "AlongTopLocation",
+    ),
+    "DipTransitionSuggestion": (
+        ".dip_transition_analysis",
+        "DipTransitionSuggestion",
+    ),
+    "TopCurvatureAnalysis": (
+        ".dip_transition_analysis",
+        "TopCurvatureAnalysis",
+    ),
+    "analyze_top_curvature": (
+        ".dip_transition_analysis",
+        "analyze_top_curvature",
+    ),
     "TraceMarker": (".trace_markers", "TraceMarker"),
     "resolve_trace_markers": (".trace_markers", "resolve_trace_markers"),
     "TraceOperation": (".trace_processing", "TraceOperation"),
