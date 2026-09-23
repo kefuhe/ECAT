@@ -73,6 +73,71 @@ def fit_metrics_from_vectors(observed: Any, synthetic: Any) -> dict[str, float |
     }
 
 
+def aggregate_dataset_fit_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    scope: str = "global_observation_vector",
+    model: str | None = None,
+) -> dict[str, Any] | None:
+    """Aggregate dataset rows into the exact concatenated-data fit metrics.
+
+    The aggregation uses the sufficient statistics already computed for each
+    dataset.  It is therefore numerically equivalent to concatenating every
+    observation and prediction vector, without copying those potentially
+    large arrays or rebuilding synthetics.  Dataset RMS/VR values are never
+    averaged.
+
+    Weighted diagnostics are published only when every dataset row contains a
+    complete weighted quadratic.  A single effective standard deviation or
+    reduced misfit is not inferred across heterogeneous sigma groups.
+    """
+
+    dataset_rows = [row for row in rows if row.get("scope") == "dataset"]
+    if not dataset_rows:
+        return None
+
+    n_observations = int(
+        np.sum([int(row["n_observations"]) for row in dataset_rows])
+    )
+    if n_observations <= 0:
+        return None
+
+    ss_res = float(np.sum([float(row["ss_res"]) for row in dataset_rows]))
+    ss_obs = float(np.sum([float(row["ss_obs"]) for row in dataset_rows]))
+    result = {
+        "scope": str(scope),
+        "model": model if model is not None else dataset_rows[0].get("model"),
+        "dataset": None,
+        "data_type": "assembled",
+        "vertical": None,
+        "poly": None,
+        "sigma_group": None,
+        "rms": float(np.sqrt(ss_res / n_observations)),
+        "vr": float((1.0 - ss_res / ss_obs) * 100.0) if ss_obs != 0.0 else 0.0,
+        "ss_res": ss_res,
+        "ss_obs": ss_obs,
+        "n_observations": n_observations,
+    }
+
+    weighted_values = [row.get("weighted_quadratic") for row in dataset_rows]
+    if all(value is not None for value in weighted_values):
+        weighted_quadratic = float(np.sum([float(value) for value in weighted_values]))
+        result.update(
+            {
+                "sigma_scale": None,
+                "base_marginal_std": None,
+                "effective_marginal_std": None,
+                "weighted_quadratic": weighted_quadratic,
+                "weighted_rms": float(
+                    np.sqrt(weighted_quadratic / n_observations)
+                ),
+                "weighted_effective_dof": None,
+                "reduced_weighted_misfit": None,
+            }
+        )
+    return result
+
+
 def solver_fit_metrics(G: Any, m: Any, d: Any) -> dict[str, float | int]:
     """Compute RMS/VR from a solver matrix and vector, matching BLSE output."""
     m_array = np.asarray(m, dtype=float).reshape(-1)
@@ -132,17 +197,26 @@ def format_fit_statistics_table(
     *,
     model: str | None = None,
 ) -> str:
-    """Format dataset fit rows as one compact console table."""
+    """Format dataset rows followed by one optional global fit row."""
     from tabulate import tabulate
 
     dataset_rows = [row for row in rows if row.get("scope") == "dataset"]
+    global_rows = [
+        row
+        for row in rows
+        if row.get("scope") in {
+            "global_observation_vector",
+            "global_solver_vector",
+        }
+    ]
+    display_rows = [*dataset_rows, *global_rows[:1]]
     title = "Data Fit Statistics"
     if model is not None:
         title += f" ({str(model).upper()} model)"
-    if not dataset_rows:
-        return f"{title}\n  No dataset rows available."
+    if not display_rows:
+        return f"{title}\n  No fit rows available."
 
-    weighted = any(row.get("weighted_quadratic") is not None for row in dataset_rows)
+    weighted = any(row.get("weighted_quadratic") is not None for row in display_rows)
     headers = ["Data", "Group", "N"]
     if weighted:
         headers.append("Eff. std")
@@ -151,9 +225,10 @@ def format_fit_statistics_table(
         headers.extend(["Qw", "wRMS", "Approx. red.Q"])
 
     table = []
-    for row in dataset_rows:
+    for row in display_rows:
+        is_global = row.get("scope") != "dataset"
         values = [
-            row.get("dataset", ""),
+            "Global" if is_global else row.get("dataset", ""),
             row.get("sigma_group", "") or "-",
             int(row.get("n_observations", 0)),
         ]
@@ -314,7 +389,15 @@ def format_fit_statistics_report(rows: Sequence[Mapping[str, Any]], *, model: st
     lines = [title, f"  rows: {len(rows)}"]
     for row in rows:
         scope = row.get("scope")
-        label = row.get("dataset") if scope == "dataset" else scope
+        label = (
+            row.get("dataset")
+            if scope == "dataset"
+            else (
+                "Global"
+                if scope in {"global_observation_vector", "global_solver_vector"}
+                else scope
+            )
+        )
         details = []
         if row.get("data_type") is not None:
             details.append(f"type={row.get('data_type')}")

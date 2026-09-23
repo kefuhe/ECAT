@@ -27,7 +27,6 @@ from pathlib import Path
 
 os.environ.setdefault("CUTDE_USE_BACKEND", "cpp")
 
-import numpy as np
 from csi import gps, insar
 
 from eqtools.csiExtend.BayesianAdaptiveTriangularPatches import (
@@ -216,8 +215,7 @@ if __name__ == '__main__':
                 )
         elif result_data.dtype == 'insar':
             # InSAR: polygons or point tables
-            corner = getattr(result_data, 'corner', None)
-            has_corner = corner is not None and np.asarray(corner).size > 0
+            has_corner = result_data.corner_mode is not None
             point_outdir = point_values_dir if has_corner else modeling_dir
             for data_type in ('data', 'synth', 'resid'):
                 if has_corner:
@@ -234,8 +232,7 @@ if __name__ == '__main__':
                     )
         elif result_data.dtype == 'opticorr':
             # Optical: east/north components
-            corner = getattr(result_data, 'corner', None)
-            has_corner = corner is not None and np.asarray(corner).size > 0
+            has_corner = result_data.corner_mode is not None
             point_outdir = point_values_dir if has_corner else modeling_dir
             optical_fields = (
                 ('data', 'dataEast', 'dataNorth'),

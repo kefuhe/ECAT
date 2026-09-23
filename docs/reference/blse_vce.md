@@ -223,7 +223,8 @@ inv.print_scale_parameters()
 ```
 
 `run(report=None)` 在 `verbose=True` 时默认打印紧凑尺度表，在 `verbose=False` 时默认静默。
-显式 `report="compact"` 只打印尺度表，`report="full"` 还打印拟合表，`report="none"`
+显式 `report="compact"` 只打印尺度表，`report="full"` 还打印带末行 `Global` 的拟合表，
+并在存在有效未加权 \(L_0\) 时打印独立的 `Model Regularization` 段落；`report="none"`
 始终关闭最终报告。`verbose` 只控制求解过程信息，并原样传入中央约束求解器；它不会改变
 活动权重或解。
 
@@ -437,7 +438,7 @@ BLSE 与简化 VCE 共用同一 `report` 策略；`verbose` 只控制各自的�
 | --- | --- |
 | `verbose=True` | BLSE 打印中央求解器信息；VCE 还打印初始化和逐轮收敛信息 |
 | `report="compact"` | BLSE 打印固定尺度表；VCE 打印最终方差分量表 |
-| `report="full"` | 相应尺度表后再打印一次当前模型拟合表 |
+| `report="full"` | 相应尺度表后打印当前模型拟合表；有有效 \(L_0\) 时再打印模型正则化段落 |
 | `report="none"` | 不打印最终表，适合批处理 |
 | `report=None` | `verbose=True` 时等价于 `compact`，否则等价于 `none` |
 
@@ -591,7 +592,8 @@ inv.extract_and_plot_blse_results(
 )
 ```
 
-该出口默认打印一次拟合表。若只需要数字、不绘图，改为单独调用
+该出口默认打印一次含 `Global` 末行的拟合表，并在有效平滑矩阵存在时另列全局未加权
+roughness。若只需要数字、不绘图，改为单独调用
 `returnModel(print_fit_statistics=True)`；不要把两个打印入口连续使用。
 
 `data_poly="config"` 是推荐默认值：它逐数据集跟随已经解析的 `geodata.polys`。只有在明确诊断 source/slip-only 贡献时才传 `data_poly=None`；`data_poly="include"` 用于强制请求包含已求解改正项的预测。
@@ -611,8 +613,10 @@ GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的
 仍随各自拟合产品写入 `data_outdir`。
 
 公共 `test_slip_inv_BLSE.py --mode single` 与 `test_slip_inv_VCE.py` 给出当前推荐的顺序式导出块：GPS 点表保留在
-`Modeling/`。模板只用 corner 是否为空区分表示：没有 corner 时调用 `write2file()` 写点表；
-有 corner 时调用 `writeDecim2file(..., triangular=None)` 写降采样多边形。后一种情况下显式
+`Modeling/`。模板读取 CSI 的只读 `corner_mode` 区分表示：`None` 时调用 `write2file()` 写点表；
+`triangle`、`legacy_rectangle` 或 `quadrilateral` 时调用
+`writeDecim2file(..., triangular=None)` 写降采样多边形。非空但不合法的 corner 会在 CSI
+边界报错，不会静默回退为点输出。多边形情况下显式
 设置 `--export-point-values`，才会在 `Modeling/points/` 额外生成中心点表。InSAR 点表用
 `write_los=True` 保留 ENU 投影向量，opticorr 用 `component=None` 同行写 east/north。
 三种状态统一使用 `data`、`synth`、`resid`，而 optical 多边形内部再准确映射到
@@ -645,7 +649,10 @@ df = inv.fit_statistics_to_dataframe(rows)
 ```
 
 `collect_fit_statistics()` 负责计算；`fit_statistics_to_dataframe()` 只负责把已有
-rows 转为 DataFrame。逐数据集和全局统计的公式、poly 语义及通用循环模板见
+rows 转为 DataFrame。控制台把 `global_solver_vector` 显示为 `Global`，且不会再用一条
+`Roughness/RMS/VR` 摘要重复同一 RMS/VR。roughness 属于模型空间，单独使用当前求解
+发布的未加权 \(L_0\)；多 alpha 情形不会猜测逐组 roughness。逐数据集和全局统计的公式、
+poly 语义及通用循环模板见
 [Fit Statistics](fit_statistics.md)。
 
 ## 约束检查
@@ -703,7 +710,8 @@ BLSE 和简化 VCE 正常求解时都不拼接完整增广残差矩阵；只有 
 - bounds、rake、Euler、零滑、边界零滑或自定义线性约束。
 - sigma/alpha 模式和最终权重。
 - smoothing loop 或 VCE 诊断结果。
-- 每个数据集的 RMS、normalized RMS 或 variance reduction。
+- 每个数据集及精确 Global 行的 RMS、normalized RMS 或 variance reduction。
+- 若存在有效 \(L_0\)，报告全局未加权 RMS roughness；VCE 组级平滑 `Qw` 仍从分量表读取。
 - 断层概览统计，包括 trace 长度、mesh/patch 数、面积、深度范围、主要滑动区；位移模型报告地震矩和 Mw，速率模型报告矩率。字段见 [Fault Summary](fault_summary.md)。
 - 滑动模型、滑动方向和 data/synth/resid 输出路径。
 

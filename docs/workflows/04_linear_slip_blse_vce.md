@@ -190,8 +190,9 @@ sigma/alpha 数值仍由 scale parameter report 给出；结构表不会从配�
 
 `clon/clat/cdepth` 对应非线性几何结果中的 `lon/lat/depth`，含义是断层顶边中点三维坐标。`fault.top` 和 `fault.depth` 是线性滑动面扩展后的顶部、底部深度，不能混写。
 
-上例读取普通四叉树/矩形 `.rsp`，所以使用 `triangular=False`；trirb 或其他三角形结果必须改为
-`triangular=True`。`cov=True` 会读取完整 `.cov`，此时不要再调用 `buildDiagCd()` 覆盖它；若没有
+上例保留 `triangular=False`，用于断言输入应为矩形；三角形输入也可用
+`triangular=True` 断言。两者都不是解析开关，省略时 reader 会按 `.rsp` 列契约自动识别，
+冲突时则报错。`cov=True` 会读取完整 `.cov`，此时不要再调用 `buildDiagCd()` 覆盖它；若没有
 `.cov`，使用 `cov=False`，读入后再调用 `buildDiagCd()`。完整分流见
 [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)。
 
@@ -344,6 +345,9 @@ OpenBLAS 还是两者并存，并在代表性案例上比较 1、4、8、16 线�
 
 - VCE 尺度表中的 `State`、`Variance (v)`、物理 `Scale (s)`、`1/s`、`Qw` 和
   `Approx. red.Q`；固定组继续显示，但不应被解释为已估计分量；
+- `Data Fit Statistics` 中的逐数据集行和精确 `Global` 末行；Global RMS/VR 不是逐行平均；
+- alpha 已启用且存在有效未加权 \(L_0\) 时，独立的 `Model Regularization` 段落显示
+  全局 RMS roughness、平滑行数和 alpha 组数；多组情形不猜测逐组 roughness；
 - 滑动平面图和地图图件；
 - data/synthetic/residual 文件；
 - `output/slip_<FaultName>.gmt`；

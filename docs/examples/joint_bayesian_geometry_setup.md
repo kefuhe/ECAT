@@ -5,13 +5,14 @@
 `update_mesh` 阶段变形同一套 mesh topology。数据对象 `geodata` 的构造见
 [反演前读取 InSAR 与 GNSS](inversion_data_loading.md)。
 
-完整模板位于 `scripts/`：
+ECAT 当前保留三类参数化的配套配置和接口说明，但对应 Python 开发模板暂未随集成仓库
+分发。下表用于对齐场景与配置，不表示存在可直接运行的同名脚本：
 
 | 场景 | Python | 主配置 | Bounds |
 | --- | --- | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) | [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
-| 多个倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) | [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) | [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
+| 标量底边位移示例 | 暂未随 ECAT 分发 | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) | [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
+| 多个倾角控制点示例（模板使用 3 点） | 暂未随 ECAT 分发 | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) | [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
+| 组合扰动示例（当前方法使用 4 个参数） | 暂未随 ECAT 分发 | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) | [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
 
 下面聚焦 reference、mesh 和配置之间必须一致的接口关系。数据路径、迹线、断层物理参数和
 mesh 参数应在使用前核对；`lon0/lat0` 是数据与断层共享的坐标参考，应保持同一来源。
@@ -356,6 +357,6 @@ geometry:
 
 ## 下一步
 
-配置对齐后，使用本页开头的完整模板进行装配检查和采样。代表模型回填、拟合统计、
+配置对齐后，按本页接口组织自己的案例脚本，再进行装配检查和采样。代表模型回填、拟合统计、
 fault/slip 与 `Modeling/` 导出的状态要求见
 [联合反演结果参考](../reference/bayesian_joint_inversion.md#标准结果入口与脚本层导出)。

@@ -2454,19 +2454,12 @@ class BayesianMultiFaultsInversion(
         if (not isinstance(model, str)) or (model not in ('std', 'STD', 'Std')):
             self._publish_fit_hyperparameter_context(specs)
             self._active_result_model_source = describe_bayesian_value_source(model)
-            # Predict the data and print the RMS and VR
-            # Caluculate RMS and VR for the solution and print the results
-            rms = np.sqrt(np.mean((np.dot(self.G_combined, mpost_tmp) - self.observations)**2))
-            vr = (1 - np.sum((np.dot(self.G_combined, mpost_tmp) - self.observations)**2) / np.sum(self.observations**2)) * 100
-            vr = max(vr, 0.0)  # Ensure VR is not negative
-            # self.combine_GL_poly()
-            roughness = np.dot(self.GL_combined_poly, mpost_tmp)
-            roughness = np.sqrt(np.mean(roughness**2))
-
-            # Calculate and print fit statistics
             if print_stat:
                 self.calculate_and_print_fit_statistics(model=model)
-                print(f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%')
+                self._print_model_regularization(
+                    model_vector=mpost_tmp,
+                    smoothing_matrix=self.GL_combined_poly,
+                )
 
         return specs
 

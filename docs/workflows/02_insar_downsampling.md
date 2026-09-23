@@ -544,12 +544,12 @@ from csi.insar import insar
 sar = insar("TrackA", lon0=lon0, lat0=lat0, verbose=False)
 sar.read_from_varres(
     "Downsample/track_ifg",
-    triangular=False,
     cov=True,
 )
 ```
 
-`trirb` 或三角 `from_rsp` 输出必须显式改为：
+CSI 会从 `.rsp` 列契约自动识别三角形、旧式矩形或完整四边形。已知输出必须是三角形时，
+可选地把 `triangular=True` 作为校验提示：
 
 ```python
 sar.read_from_varres(
@@ -559,10 +559,9 @@ sar.read_from_varres(
 )
 ```
 
-这里不能用 `triangular=None` 让 CSI reader 自动区分三角形与矩形。若调用方不知道 `.rsp`
-类型，可先用 `read_csi_varres_result(prefix, geometry="auto")` 检查，再把
-`checked.geometry == "triangle"` 的结果传给 `triangular`。该检查接口不读取 `.cov`；完整
-协方差仍由 `read_from_varres(..., cov=True)` 载入。没有 `.cov` 时改用 `cov=False`，然后
+默认 `triangular=None` 即自动模式；显式布尔值与文件冲突时会报错。只想检查文件而不构建
+CSI 对象时，可用 `read_csi_varres_result(prefix, geometry="auto")`。该检查接口不读取
+`.cov`；完整协方差仍由 `read_from_varres(..., cov=True)` 载入。没有 `.cov` 时改用 `cov=False`，然后
 调用 `buildDiagCd()`；`cov=True` 后不要再用对角阵覆盖它。
 
 完整可复制代码见[反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)，精确

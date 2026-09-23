@@ -1341,8 +1341,7 @@ downsampler；底层构造 `G_total = [G_1 G_2 ...]`，并以
 
 ### 将 SAR 降采样结果读回反演
 
-`std/data` 或矩形 `from_rsp` 使用 `triangular=False`；`trirb` 或三角 `from_rsp` 必须使用
-`triangular=True`：
+CSI reader 会从 `.rsp` 列契约自动识别三角形、旧式矩形或完整四边形：
 
 ```python
 from csi.insar import insar
@@ -1350,14 +1349,13 @@ from csi.insar import insar
 sar = insar("TrackA", lon0=lon0, lat0=lat0, verbose=False)
 sar.read_from_varres(
     "Downsample/track_ifg",
-    triangular=False,  # trirb 或三角 from_rsp 改为 True
     cov=True,
 )
 ```
 
-共同前缀不带 `.txt/.rsp/.cov`。CSI reader 不用 `None` 自动区分三角与矩形；需要自动检查时，
-先调用 `read_csi_varres_result(prefix, geometry="auto")`，再把识别结果显式传给
-`triangular`。`cov=True` 后不要调用 `buildDiagCd()` 覆盖完整协方差；没有 `.cov` 时才使用
+共同前缀不带 `.txt/.rsp/.cov`。默认 `triangular=None` 是自动模式；显式 `True/False`
+只校验调用方预期，不能覆盖文件实际布局。只需检查文件时可调用
+`read_csi_varres_result(prefix, geometry="auto")`。`cov=True` 后不要调用 `buildDiagCd()` 覆盖完整协方差；没有 `.cov` 时才使用
 `cov=False` 并建立对角阵。完整示例见
 [反演前读取 InSAR 与 GNSS 数据](../examples/inversion_data_loading.md)，字段契约见
 [观测数据读入参考](observation_data_readers.md#csi-varres)。

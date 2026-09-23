@@ -500,6 +500,13 @@ df = inversion.fit_statistics_to_dataframe(rows)
 `returnModel()`，随后立即收集对应统计。完整公式和输出字段见
 [Fit Statistics](fit_statistics.md)。
 
+标准结果打印按三个责任分开：Bayesian scale table 显示活动 sigma/alpha 及其采样坐标；
+`Data Fit Statistics` 显示逐数据集结果并以精确 `Global` 行收尾；只有实际存在未加权
+平滑矩阵 \(L_0\) 时，才另列 `Model Regularization`。RMS/VR 不再在 roughness 行中
+重复。SMC_FJ 和 FULLSMC 共用这一显示结构，但仍按各自的条件线性解或完整样本路径计算
+活动模型；显示层不会把两种求解语义合并。多 alpha 情形只显示一个全局
+\(\sqrt{\operatorname{mean}[(L_0m)^2]}\)，不会从 alpha 分组猜测平滑行归属。
+
 ### 采样空间与条件线性空间
 
 正式采样前应显式检查一次结构布局：
@@ -631,10 +638,10 @@ if rank == 0:
 连同对应标签一起跳过。除此之外，标签顺序仍必须与参数顺序一致。
 
 代表模型激活后，公共模板再调用 CSI 现有的 `writeFourEdges2File()`、
-`writePatches2File()`、`writeSlipCenter2File()`、`writeSlipDirection2File()`。InSAR 文本通过
-corner 是否为空选择表示：点输入调用 `write2file()`，有 corner 的数据调用
-`writeDecim2file(..., triangular=None)`。`data`、`synth` 和 `resid` 均为有效选择；`None`
-会按 corner 形状自动判断三角形、完整四边形或旧式对角格式。synthetic 本身由上面的高层
+`writePatches2File()`、`writeSlipCenter2File()`、`writeSlipDirection2File()`。raster 文本通过
+CSI 的只读 `corner_mode` 选择表示：点输入调用 `write2file()`，有效多边形调用
+`writeDecim2file(..., triangular=None)`。`data`、`synth` 和 `resid` 均为有效选择；writer
+按同一个中央契约处理三角形、完整四边形或旧式对角格式。synthetic 本身由上面的高层
 入口依据 `verticals`/`polys` 生成，脚本不再按 SAR/opticorr 类型自行复制一套正演逻辑。
 
 三份公共模板默认只保存代表滑动；传入 `--plot-std` 后，才额外计算并保存 posterior
@@ -682,7 +689,7 @@ if args.export_std_gmt:
 STD 分量不是物理滑动方向，因此不要据此调用 `writeSlipDirection2File()`；输出文件名也应保留
 `_std`，避免与 median/MAP 等可预测结果混淆。
 
-有 corner 的 raster 在 `Modeling/` 写可由 GMT 直接着色的降采样多边形；没有 corner 的
+`corner_mode` 有效的 raster 在 `Modeling/` 写可由 GMT 直接着色的降采样多边形；没有 corner 的
 输入直接在该目录写点表。仅对前一种数据，显式传入 `--export-point-values` 后模板才额外
 创建 `Modeling/points/`：InSAR 的每行包含位置、标量值和 ENU 投影向量；`opticorr` 的每行
 包含位置及 east/north 两个分量。三种状态均为 `data`、`synth`、`resid`。这是同一代表模型

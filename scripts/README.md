@@ -27,9 +27,6 @@ Windows 下 Python 脚本自己的 `-r` 等选项必须写成
 | --- | --- | --- |
 | 新版 Bayesian 非线性几何反演 | [`test_nonlinear_geometry_smc.py`](test_nonlinear_geometry_smc.py) | [非线性几何工作流](../docs/workflows/03_nonlinear_geometry_bayesian.md) |
 | 复现 legacy `explorefault` 案例 | [`test_nonlinear_bayesian.py`](test_nonlinear_bayesian.py) | [非线性几何配置](../docs/reference/config_nonlinear_geometry.md) |
-| 联合 Bayesian：单一底边位移 | [`test_joint_bayesian_bottom_offset.py`](test_joint_bayesian_bottom_offset.py) | [联合 Bayesian 工作流](../docs/workflows/05_joint_bayesian_geometry_slip.md) |
-| 联合 Bayesian：多个倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](test_joint_bayesian_three_dip_controls.py) | [联合几何设置短例](../docs/examples/joint_bayesian_geometry_setup.md) |
-| 联合 Bayesian：组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](test_joint_bayesian_custom_perturbation.py) | [可扰动断层几何参考](../docs/reference/geometry_perturbation.md) |
 | 单次固定权重 BLSE 线性滑动反演 | [`test_slip_inv_BLSE.py`](test_slip_inv_BLSE.py) 的 `--mode single` | [BLSE/VCE 工作流](../docs/workflows/04_linear_slip_blse_vce.md) |
 | 单次 VCE 线性滑动反演 | [`test_slip_inv_VCE.py`](test_slip_inv_VCE.py) | [BLSE/VCE 工作流](../docs/workflows/04_linear_slip_blse_vce.md) |
 | 紧凑 smoothing scan | [`test_slip_inv_BLSE.py`](test_slip_inv_BLSE.py) 的 `--mode loop` | [BLSE/VCE 参考](../docs/reference/blse_vce.md#smoothing-scan) |
@@ -39,6 +36,10 @@ Windows 下 Python 脚本自己的 `-r` 等选项必须写成
 | 地表 ENU 位移正演 | [`test_surface_displacement_forward.py`](test_surface_displacement_forward.py) | [正演短例](../docs/examples/surface_forward_grid.md) |
 | SAR LOS 正演与 GeoTIFF 输出 | [`test_sar_los_surface_forward.py`](test_sar_los_surface_forward.py) | [地表位移正演参考](../docs/reference/surface_displacement_forward.md) |
 | BLSE 棋盘格分辨率检查 | [`test_BLSE_Inv_Checkboard.py`](test_BLSE_Inv_Checkboard.py) | [BLSE/VCE 工作流](../docs/workflows/04_linear_slip_blse_vce.md) |
+
+三类联合 Bayesian 开发模板当前未随 ECAT 集成仓库分发；配套 YAML、底层接口和
+模型组织原则仍分别保留在[联合几何设置短例](../docs/examples/joint_bayesian_geometry_setup.md)
+与[联合 Bayesian 工作流](../docs/workflows/05_joint_bayesian_geometry_slip.md)中。
 
 普通 BLSE、平滑搜索、倾角搜索和联合敏感性各自保留独立模板，便于按科研场景演进。共同的配置、约束和拟合统计语义统一放在 BLSE/reference，不在每个脚本中重复定义。
 
@@ -82,12 +83,11 @@ east/north，且对应 `verticals` 必须为 `false`。两者都可用标量表�
 
 ## 联合 Bayesian 模板
 
-三份联合模板分别展示标量底边位移、三个倾角控制点和一个四参数组合扰动实例。控制点数量
-与采样参数个数由所选扰动方法决定，不是联合框架的固定要求。`lon0/lat0` 由数据和断层共同
-使用，应保持同一来源；geodata 顺序、reference、mesh 和配置 source 名也必须彼此一致。
-配套配置位于
-[`configs/joint_bayesian/`](configs/joint_bayesian/)，复制时让 Python、主配置和 bounds
-保持成套：
+ECAT 当前保留标量底边位移、三个倾角控制点和四参数组合扰动三类参数化的配套配置，
+但不分发同名 Python 开发模板。控制点数量与采样参数个数由所选扰动方法决定，不是联合
+框架的固定要求。自建脚本中的 `lon0/lat0` 应由数据和断层共同使用；geodata 顺序、
+reference、mesh 和配置 source 名也必须彼此一致。配套配置位于
+[`configs/joint_bayesian/`](configs/joint_bayesian/)：
 
 | 场景 | 主配置 | Bounds |
 | --- | --- | --- |
@@ -95,17 +95,10 @@ east/north，且对应 `verticals` 必须为 `false`。两者都可用标量表�
 | 多倾角控制点示例（模板使用 3 点） | [`three_dip_controls.yml`](configs/joint_bayesian/three_dip_controls.yml) | [`three_dip_controls_bounds.yml`](configs/joint_bayesian/three_dip_controls_bounds.yml) |
 | 组合扰动示例（当前方法使用 4 个参数） | [`custom_perturbation.yml`](configs/joint_bayesian/custom_perturbation.yml) | [`custom_perturbation_bounds.yml`](configs/joint_bayesian/custom_perturbation_bounds.yml) |
 
-三份模板默认绘制 median 代表滑动；只有显式传入 `--plot-std` 才额外求解并绘制 posterior
-滑动分量离散度。该统计在 SMC-FJ 中需要对已接受样本重求条件线性解，适合结果确定后按需
-生成。完成后会恢复 median 代表模型，再生成几何改正、geometry/sigma/alpha KDE、拟合统计
-和 fault/slip 文件。`output/` 保存断层、统计与后验产品，`Modeling/` 保存数据拟合图以及
-raster 的 data/synth/resid 文本：有 corner 时默认写多边形，没有 corner 时默认写点表。
-`--export-point-values` 只为有 corner 的数据在 `Modeling/points/` 额外写中心点表。
-`--no-plot` 只跳过图件，不跳过代表模型回填和文本导出。
-STD patch/center GMT 属于高级、按需产品，公共模板不再复制临时状态切换；个人案例需要时
-按[联合 Bayesian 参考](../docs/reference/bayesian_joint_inversion.md#标准结果入口与脚本层导出)
-中的 `try/finally` 示例增加独立开关。
-脚本末尾另给可选的定制滑动图调用，用户可直接修改视角、范围和色标。
+联合结果脚本应先恢复代表模型，再生成几何改正、geometry/sigma/alpha KDE、拟合统计和
+fault/slip 文件。posterior 滑动离散度在 SMC-FJ 中需要对已接受样本重求条件线性解，适合
+结果确定后按需生成。完整状态约定、文本导出和可选图件见
+[联合 Bayesian 参考](../docs/reference/bayesian_joint_inversion.md#标准结果入口与脚本层导出)。
 
 路径处理统一使用 Python `pathlib`，不绑定 Windows 盘符或 POSIX 绝对路径。当前公开支持的
 平台和环境要求以[安装说明](../docs/getting_started/installation.md)为准；若环境只提供
@@ -116,7 +109,7 @@ STD patch/center GMT 属于高级、按需产品，公共模板不再复制临�
 | 文件 | 定位 |
 | --- | --- |
 | [`process_data_downsampling.py`](process_data_downsampling.py) | 从源码树直接调用降采样 CLI 的薄入口；已安装 ECAT 时优先使用 `ecat-downsample`。 |
-| [`test_BLSE_Inv_Checkboard_simple.py`](test_BLSE_Inv_Checkboard_simple.py) | 既有 checkerboard 简化变体，用于复现对应旧脚本组织。 |
-| [`test_BLSE_Inv_Checkboard_general.py`](test_BLSE_Inv_Checkboard_general.py) | 既有 checkerboard general 变体，不作为新用户默认入口。 |
+| [`generate_requirements.py`](generate_requirements.py) | ECAT 发布维护入口，用于审计并生成统一依赖清单；普通反演用户无需调用。 |
 
-兼容脚本不会被隐藏，但也不与当前推荐模板混在同一学习路径中。复制前先确认它使用的配置类、数据布局和输出接口是否与当前项目一致。
+checkerboard 的 simple/general 历史变体当前未随 ECAT 分发；公开入口统一使用
+[`test_BLSE_Inv_Checkboard.py`](test_BLSE_Inv_Checkboard.py)。

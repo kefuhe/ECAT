@@ -95,6 +95,7 @@ if __name__ == "__main__":
     #     checkNaNs=True,
     # )
     # cogps.buildCd(direction="enu")
+    gpsdata = []  # Replace with [cogps] after enabling the GPS block above.
 
     # InSAR observations
     # Replace these paths and reader options with the actual case inputs.
@@ -123,7 +124,8 @@ if __name__ == "__main__":
 
     # The geodata order must match geodata.verticals, geodata.faults,
     # geodata.polys and geodata.sigmas in nonlinear_geometry.yml.
-    geodata = [sar_t012a, sar_t121d]
+    insardata = [sar_t012a, sar_t121d]
+    geodata = gpsdata + insardata
 
     # =================== Nonlinear geometry inversion ===================
     inv = NonlinearGeometrySMCInversion(
@@ -151,6 +153,7 @@ if __name__ == "__main__":
             rank=rank, filename=args.samples,
             plot_faults=True, plot_sigmas=True, plot_data=True,
             plot_data_corrections=True, save_data=True, show=args.show,
+            sar_corner="auto",
             diagnose=True, diagnose_detail=args.diagnose_detail,
         )
 

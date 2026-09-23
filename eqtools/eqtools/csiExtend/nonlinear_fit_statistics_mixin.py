@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 
 from .fit_statistics import (
+    aggregate_dataset_fit_rows,
     data_fit_vectors,
     fit_metrics_from_vectors,
     fit_statistics_rows_to_dataframe,
@@ -80,7 +81,7 @@ class NonlinearFitStatisticsMixin:
         *,
         model="median",
         include_dataset=True,
-        include_global=False,
+        include_global=True,
         include_dataset_average=False,
         include_weighted=False,
         rebuild_synth=False,
@@ -92,9 +93,9 @@ class NonlinearFitStatisticsMixin:
         been overwritten since ``returnModel``; this repeats prediction for the
         same active vector but does not sample or solve a new model.
 
-        Standalone geometry SMC has no assembled global solver vector, so
-        ``include_global`` is accepted for interface consistency and produces
-        no additional row.
+        The global row is the exact observation-space aggregate of the
+        dataset sufficient statistics.  It does not require an assembled
+        solver matrix and never averages dataset RMS or VR values.
         """
         self._require_active_fit_model(model)
         datas = list(getattr(self, "datas", []))
@@ -109,7 +110,8 @@ class NonlinearFitStatisticsMixin:
         sigmas = self._fit_dataset_sigmas() if include_weighted else {}
         sigma_groups = self._fit_sigma_groups() if include_weighted else {}
         rows = []
-        if include_dataset:
+        dataset_rows = []
+        if include_dataset or include_global or include_dataset_average:
             for data, vertical in zip(datas, verticals):
                 observed, synthetic = data_fit_vectors(data, vertical=vertical)
                 row = {
@@ -133,28 +135,37 @@ class NonlinearFitStatisticsMixin:
                                 sigma=sigma,
                             )
                         )
-                rows.append(row)
+                dataset_rows.append(row)
 
-        if include_dataset_average and rows:
-            dataset_rows = [row for row in rows if row["scope"] == "dataset"]
-            if dataset_rows:
-                rows.append(
-                    {
-                        "scope": "dataset_average",
-                        "model": model,
-                        "dataset": None,
-                        "data_type": None,
-                        "vertical": None,
-                        "poly": None,
-                        "rms": float(np.mean([row["rms"] for row in dataset_rows])),
-                        "vr": float(np.mean([row["vr"] for row in dataset_rows])),
-                        "ss_res": float(np.sum([row["ss_res"] for row in dataset_rows])),
-                        "ss_obs": float(np.sum([row["ss_obs"] for row in dataset_rows])),
-                        "n_observations": int(
-                            np.sum([row["n_observations"] for row in dataset_rows])
-                        ),
-                    }
-                )
+        if include_dataset:
+            rows.extend(dataset_rows)
+
+        if include_dataset_average and dataset_rows:
+            rows.append(
+                {
+                    "scope": "dataset_average",
+                    "model": model,
+                    "dataset": None,
+                    "data_type": None,
+                    "vertical": None,
+                    "poly": None,
+                    "rms": float(np.mean([row["rms"] for row in dataset_rows])),
+                    "vr": float(np.mean([row["vr"] for row in dataset_rows])),
+                    "ss_res": float(np.sum([row["ss_res"] for row in dataset_rows])),
+                    "ss_obs": float(np.sum([row["ss_obs"] for row in dataset_rows])),
+                    "n_observations": int(
+                        np.sum([row["n_observations"] for row in dataset_rows])
+                    ),
+                }
+            )
+        if include_global:
+            global_row = aggregate_dataset_fit_rows(
+                dataset_rows,
+                scope="global_observation_vector",
+                model=model,
+            )
+            if global_row is not None:
+                rows.append(global_row)
         return rows
 
     @staticmethod
@@ -174,7 +185,7 @@ class NonlinearFitStatisticsMixin:
         *,
         model="median",
         include_dataset=True,
-        include_global=False,
+        include_global=True,
         include_dataset_average=False,
         include_weighted=False,
         rebuild_synth=False,
@@ -206,7 +217,7 @@ class NonlinearFitStatisticsMixin:
         rows = self.collect_fit_statistics(
             model=model,
             include_dataset=True,
-            include_global=False,
+            include_global=True,
             include_weighted=True,
             rebuild_synth=False,
         )

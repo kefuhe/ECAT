@@ -23,6 +23,14 @@ from .projection import (
     projection_from_heading_incidence,
     projection_from_look_incidence,
 )
+from .decimation_geometry import (
+    LEGACY_RECTANGLE,
+    QUADRILATERAL,
+    TRIANGLE,
+    classify_corner_array,
+    resolve_rsp_corner_mode,
+    validate_triangular_hint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +81,11 @@ class insar(SourceInv):
         self.xycorner = None
         self.Cd = None
 
-        # All done
-        return
+    @property
+    def corner_mode(self):
+        """Return the validated spatial-support mode for this data set."""
+        expected_rows = None if self.lon is None else len(self.lon)
+        return classify_corner_array(self.corner, expected_rows=expected_rows)
     
     def generateVelFrom3DDisp(self, lon, lat, enudisp, los=None, factor=1.0):
         '''
@@ -410,7 +421,7 @@ class insar(SourceInv):
         # All done
         return
 
-    def read_from_varres(self, filename, factor=1.0, step=0.0, header=2, cov=False, triangular=False):
+    def read_from_varres(self, filename, factor=1.0, step=0.0, header=2, cov=False, triangular=None):
         '''
         Read the InSAR LOS rates from the VarRes output.
 
@@ -422,7 +433,11 @@ class insar(SourceInv):
             * step          : Add a value to the velocity.
             * header        : Size of the header.
             * cov           : Read an additional covariance file (binary float32, Nd*Nd elements).
-            * triangular    : If True, read triangular downsampling scheme. Default is False.
+            * triangular    : Optional legacy layout check. ``None`` (default)
+                              detects triangle/rectangle geometry from the
+                              ``.rsp`` column count. ``True`` or ``False``
+                              requires a matching triangular or rectangular
+                              layout.
 
         Returns:
             * None
@@ -451,19 +466,7 @@ class insar(SourceInv):
         first_data_line = B[header].split()
         num_columns = len(first_data_line)
         
-        # Determine format based on number of columns
-        if triangular:
-            # 3 vertices: xind yind x1 y1 x2 y2 x3 y3 lon1 lat1 lon2 lat2 lon3 lat3
-            # Total: 2 + 6 + 6 = 14 columns
-            quad_full_format = False
-        elif num_columns == 10:
-            # Legacy diagonal format: xind yind ULx ULy LRx LRy ULlon ULlat LRlon LRlat
-            quad_full_format = False
-        elif num_columns == 18:
-            # Full quadrilateral: xind yind ULx ULy URx URy LRx LRy LLx LLy ULlon ULlat URlon URlat LRlon LRlat LLlon LLlat
-            quad_full_format = True
-        else:
-            raise ValueError(f"Unexpected .rsp format: {num_columns} columns detected (expected 10, 14, or 18)")
+        corner_mode = resolve_rsp_corner_mode(num_columns, triangular)
 
         # Loop over the A, there is a header line header
         for i in range(header, len(A)):
@@ -475,14 +478,14 @@ class insar(SourceInv):
             self.los.append([np.float32(tmp[8]), np.float32(tmp[9]), np.float32(tmp[10])])
             
             tmp = B[i].split()
-            if triangular:
-                # Triangle: 3 vertices (lon, lat pairs starting from column 2)
+            if corner_mode == TRIANGLE:
+                # Triangle: xind yind lon1 lat1 lon2 lat2 lon3 lat3
                 self.corner.append([
                     np.float32(tmp[2]), np.float32(tmp[3]),   # vertex 1
                     np.float32(tmp[4]), np.float32(tmp[5]), # vertex 2
                     np.float32(tmp[6]), np.float32(tmp[7])  # vertex 3
                 ])
-            elif quad_full_format:
+            elif corner_mode == QUADRILATERAL:
                 # Full quadrilateral: UL, UR, LR, LL (lon, lat pairs starting from column 10)
                 self.corner.append([
                     np.float32(tmp[10]), np.float32(tmp[11]), # upper-left
@@ -517,13 +520,13 @@ class insar(SourceInv):
 
         # Compute corner to xy
         self.xycorner = np.zeros(self.corner.shape)
-        if triangular:
+        if corner_mode == TRIANGLE:
             # 3 vertices
             for i in range(3):
                 x, y = self.ll2xy(self.corner[:,i*2], self.corner[:,i*2+1])
                 self.xycorner[:,i*2] = x
                 self.xycorner[:,i*2+1] = y
-        elif quad_full_format:
+        elif corner_mode == QUADRILATERAL:
             # 4 complete vertices (UL, UR, LR, LL)
             for i in range(4):
                 x, y = self.ll2xy(self.corner[:,i*2], self.corner[:,i*2+1])
@@ -3868,9 +3871,6 @@ class insar(SourceInv):
             * None
         '''
     
-        # Open the file
-        fout = open(os.path.join(outDir, filename), 'w')
-    
         # Which data do we add as colors
         if data in ('data', 'd', 'dat', 'Data'):
             values = self.vel
@@ -3881,43 +3881,48 @@ class insar(SourceInv):
         elif data in ('transformation', 'trans', 't'):
             values = self.transformation
     
-        # Auto-detect format if not specified
-        if triangular is None:
-            if self.corner.shape[1] == 6:
-                triangular = True
-                quad_full_format = False
-            elif self.corner.shape[1] == 8:
-                triangular = False
-                quad_full_format = True
-            elif self.corner.shape[1] == 4:
-                triangular = False
-                quad_full_format = False
-            else:
-                raise ValueError(f"Unexpected corner shape: {self.corner.shape[1]} columns (expected 4, 6, or 8)")
-        else:
-            quad_full_format = False
+        corner_mode = self.corner_mode
+        if corner_mode is None:
+            raise ValueError(
+                "No decimation corner geometry is available; use write2file() "
+                "for point observations"
+            )
+        validate_triangular_hint(
+            corner_mode,
+            triangular,
+            context="in-memory corner geometry",
+        )
+        corner_array = np.asarray(self.corner)
+        if len(values) != corner_array.shape[0]:
+            raise ValueError(
+                "corner row count does not match selected output values: "
+                f"{corner_array.shape[0]} != {len(values)}"
+            )
+
+        # Open the file only after validating the geometry/value contract.
+        fout = open(os.path.join(outDir, filename), 'w')
     
         # Iterate over the data and corner
-        for i, (corner, d) in enumerate(zip(self.corner, values)):
+        for i, (corner, d) in enumerate(zip(corner_array, values)):
             # Make a line
             string = '> -Z{} # {} {} {} \n'.format(d, self.los[i,0], self.los[i,1], self.los[i,2]) if write_los else '> -Z{} \n'.format(d)
             fout.write(string)
     
             # Write the corners
-            if triangular:
+            if corner_mode == TRIANGLE:
                 # Triangle: 3 vertices (lon, lat pairs)
                 fout.write('{} {} \n'.format(corner[0], corner[1]))
                 fout.write('{} {} \n'.format(corner[2], corner[3]))
                 fout.write('{} {} \n'.format(corner[4], corner[5]))
                 fout.write('{} {} \n'.format(corner[0], corner[1]))  # Close the triangle
-            elif quad_full_format:
+            elif corner_mode == QUADRILATERAL:
                 # Full quadrilateral: 4 complete vertices (UL, UR, LR, LL)
                 fout.write('{} {} \n'.format(corner[0], corner[1]))  # upper-left
                 fout.write('{} {} \n'.format(corner[2], corner[3]))  # upper-right
                 fout.write('{} {} \n'.format(corner[4], corner[5]))  # lower-right
                 fout.write('{} {} \n'.format(corner[6], corner[7]))  # lower-left
                 fout.write('{} {} \n'.format(corner[0], corner[1]))  # Close the quadrilateral
-            else:
+            elif corner_mode == LEGACY_RECTANGLE:
                 # Legacy diagonal format: upper-left + lower-right
                 ullon, ullat = corner[0], corner[1]
                 lrlon, lrlat = corner[2], corner[3]

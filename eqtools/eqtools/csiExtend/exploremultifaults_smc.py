@@ -31,6 +31,7 @@ from scipy.stats import norm, uniform
 from csi import SourceInv
 from csi import planarfault
 from csi import gps, insar, leveling, crossfaultoffset
+from csi.decimation_geometry import LEGACY_RECTANGLE, QUADRILATERAL, TRIANGLE
 from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 from .SMC_MPI import SMC_samples_parallel_mpi
 from .smc_tempering import (
@@ -1642,7 +1643,7 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
                                         plot_faults=True, plot_sigmas=True, plot_data=True,
                                         antisymmetric=True, res_use_data_norm=True, cmap='jet',
                                         model='median', fault_figsize=(7.5, 6.5), sigmas_figsize=(2.625, 2.625),
-                                        save_data=True, sar_corner=None,
+                                        save_data=True, sar_corner='auto',
                                         print_fit_statistics=True):
         """
         Extract and plot the Bayesian results.
@@ -1660,7 +1661,10 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
         fault_figsize: figure size for fault KDE plots (default is A4 size (7.5, 6.5))
         sigmas_figsize: figure size for sigmas KDE plots (default is A4 size (2.625, 2.625))
         save_data: whether to save the data to a file (default is True)
-        sar_corner (None, 'tri', 'quad'): sar corner type (default is None)
+        sar_corner ('auto', None, 'point', 'tri', 'quad'): SAR output mode.
+            ``'auto'`` preserves valid decimation polygons; ``None`` or
+            ``'point'`` writes point values. Legacy ``'tri'`` and ``'quad'``
+            values validate an explicitly expected polygon type.
         print_fit_statistics: whether to print the structured fit table
         """
         if model == 'std':
@@ -1714,13 +1718,39 @@ class explorefault(NonlinearFitStatisticsMixin, SourceInv):
                 if not os.path.exists('Modeling'):
                     os.makedirs('Modeling')
                 # Save SAR data
-                if sar_corner is not None:
-                    for i, sardata in enumerate(cosar_list):
-                        corner_flag = True if sar_corner=='tri' else False
+                for i, sardata in enumerate(cosar_list):
+                    corner_mode = sardata.corner_mode
+                    if sar_corner in (None, 'point', 'points'):
+                        write_polygons = False
+                    elif sar_corner == 'auto':
+                        write_polygons = corner_mode is not None
+                    elif sar_corner == 'tri':
+                        if corner_mode != TRIANGLE:
+                            raise ValueError(
+                                f"{sardata.name}: sar_corner='tri' requires "
+                                f"triangular decimation geometry, got {corner_mode!r}"
+                            )
+                        write_polygons = True
+                    elif sar_corner == 'quad':
+                        if corner_mode not in (LEGACY_RECTANGLE, QUADRILATERAL):
+                            raise ValueError(
+                                f"{sardata.name}: sar_corner='quad' requires "
+                                "rectangular or quadrilateral decimation geometry, "
+                                f"got {corner_mode!r}"
+                            )
+                        write_polygons = True
+                    else:
+                        raise ValueError(
+                            "sar_corner must be 'auto', 'point', 'tri', 'quad', or None"
+                        )
+
+                    if write_polygons:
                         for itype in ['data', 'synth', 'resid']:
-                            sardata.writeDecim2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling', triangular=corner_flag)
-                else:
-                    for i, sardata in enumerate(cosar_list):
+                            sardata.writeDecim2file(
+                                f'{sardata.name}_{itype}.txt', itype,
+                                outDir='Modeling', triangular=None,
+                            )
+                    else:
                         for itype in ['data', 'synth', 'resid']:
                             sardata.write2file(f'{sardata.name}_{itype}.txt', itype, outDir='Modeling')
                 # Save GPS data

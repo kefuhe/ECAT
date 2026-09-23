@@ -13,8 +13,7 @@
 
 | 手头数据 | CSI 入口 | 需要同时准备 |
 | --- | --- | --- |
-| ECAT `std/data` 四叉树或矩形 `from_rsp` | `insar.read_from_varres(..., triangular=False)` | 同前缀 `.txt/.rsp`，使用协方差时再准备 `.cov` |
-| ECAT `trirb` 或三角 `from_rsp` | `insar.read_from_varres(..., triangular=True)` | 同前缀 `.txt/.rsp`，使用协方差时再准备 `.cov` |
+| ECAT `std/data`、`trirb` 或 `from_rsp` | `insar.read_from_varres(...)` 自动识别单元 | 同前缀 `.txt/.rsp`，使用协方差时再准备 `.cov` |
 | 外部整理的 SAR 点数据 | `insar.read_from_ascii(...)` | 七列 `lon lat data err Elos Nlos Ulos` |
 | GNSS ENU 点数据 | `gps.read_from_enu(...)` | 九列 `station lon lat E N U sE sN sU` |
 
@@ -25,8 +24,8 @@
 
 ## 1. 读取 ECAT 降采样结果
 
-`read_from_varres()` 接收共同前缀，不带 `.txt/.rsp/.cov` 后缀。`std/data` 四叉树和复用
-矩形模板的 `from_rsp` 输出使用矩形单元：
+`read_from_varres()` 接收共同前缀，不带 `.txt/.rsp/.cov` 后缀，并按 `.rsp` 列数自动识别
+三角形、旧式矩形或完整四边形：
 
 ```python
 from csi.insar import insar
@@ -36,12 +35,11 @@ lon0, lat0 = 100.0, 30.0
 sar_qtree = insar("track_qtree", lon0=lon0, lat0=lat0, verbose=False)
 sar_qtree.read_from_varres(
     "InSAR/downsample/track_qtree_ifg",
-    triangular=False,
     cov=True,
 )
 ```
 
-`trirb` 或复用三角模板的 `from_rsp` 输出使用三角单元，必须显式传入 `triangular=True`：
+已知输入必须是三角单元时，可以把旧参数作为校验提示保留：
 
 ```python
 sar_trirb = insar("track_trirb", lon0=lon0, lat0=lat0, verbose=False)
@@ -52,14 +50,13 @@ sar_trirb.read_from_varres(
 )
 ```
 
-这里不能写 `triangular=None` 期待自动识别。当前 CSI
-`insar.read_from_varres()` 的默认值是 `False`；只有矩形 `.rsp` 会在 10 列 legacy
-和 18 列 full-corner 之间自动判断。三角 `.rsp` 需要 `triangular=True`。
+默认 `triangular=None` 才是自动模式。显式 `True` 或 `False` 不再控制解析分支，只校验
+自动识别结果是否符合调用方预期；冲突时立即报错。读入后可打印
+`sar_trirb.corner_mode` 核对实际类型。
 
 <a id="detect-varres-geometry"></a>
 
-如果调用方确实不知道几何类型，可先用只读接口识别，再把结果交给 CSI。
-下面片段仍需要前面的 `from csi.insar import insar` 和共同投影原点：
+只想检查文件而不构建 CSI 对象时，可使用只读接口：
 
 ```python
 from eqtools.csiExtend.downsample import read_csi_varres_result
@@ -67,23 +64,17 @@ from eqtools.csiExtend.downsample import read_csi_varres_result
 prefix = "InSAR/downsample/track_ifg"
 checked = read_csi_varres_result(prefix, data_type="sar", geometry="auto")
 
-sar = insar("track", lon0=lon0, lat0=lat0, verbose=False)
-sar.read_from_varres(
-    prefix,
-    triangular=(checked.geometry == "triangle"),
-    cov=True,
-)
+print(checked.geometry, checked.cell_count)
 ```
 
 `read_csi_varres_result()` 只检查 `.txt/.rsp` 并保留单元顶点，不读取 `.cov`；真正用于
-反演的协方差仍由后面的 `read_from_varres(..., cov=True)` 读取。
+反演时仍直接调用 `read_from_varres(..., cov=True)`。
 
 如果没有完整协方差文件，可以改为：
 
 ```python
 sar_qtree.read_from_varres(
     "InSAR/downsample/track_qtree_ifg",
-    triangular=False,
     cov=False,
 )
 sar_qtree.buildDiagCd()

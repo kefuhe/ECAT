@@ -80,8 +80,9 @@ inv.returnModel()
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
 
-这段代码假定两个数据集都是普通四叉树/矩形 `.rsp`。trirb 或其他三角 `.rsp` 必须把对应调用改为
-`triangular=True`。`cov=True` 已读取完整 `.cov`，不要再调用 `buildDiagCd()`；没有 `.cov`
+这段代码假定两个数据集都是普通四叉树/矩形 `.rsp`，因此保留 `triangular=False` 作为
+类型断言。三角 `.rsp` 可用 `triangular=True` 断言，也可省略该参数由列契约自动识别。
+`cov=True` 已读取完整 `.cov`，不要再调用 `buildDiagCd()`；没有 `.cov`
 时才使用 `cov=False` 并建立对角阵。
 
 ## VCE

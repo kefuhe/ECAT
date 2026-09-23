@@ -19,6 +19,7 @@ from .config.config_utils import get_observation_unit_info
 from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
 from .fault_summary import print_faults_summary, summarize_faults
 from .fit_statistics import (
+    aggregate_dataset_fit_rows,
     data_fit_vectors,
     fit_metrics_from_vectors,
     fit_statistics_rows_to_dataframe,
@@ -609,11 +610,16 @@ class FaultAnalysisMixin:
         Collection never refactorizes covariance or changes the active model.
         """
         rows = []
+        dataset_rows = []
         data_objects, verticals, polys = self._get_fit_geodata_config()
         target_faults = self._select_faults(faults)
         weight_context = self._fit_weight_context() if include_weighted else None
 
-        if include_dataset:
+        if (
+            include_dataset
+            or include_dataset_average
+            or (include_global and include_weighted)
+        ):
             for data, vertical, config_poly in zip(data_objects, verticals, polys):
                 resolved_poly = resolve_data_poly(config_poly, requested=data_poly)
                 if rebuild_synth:
@@ -645,7 +651,7 @@ class FaultAnalysisMixin:
                             sigma=sigma,
                             effective_dof=effective_dof,
                         )
-                rows.append(
+                dataset_rows.append(
                     {
                         "scope": "dataset",
                         "model": model,
@@ -659,28 +665,49 @@ class FaultAnalysisMixin:
                     }
                 )
 
-        if include_dataset_average and rows:
-            dataset_rows = [row for row in rows if row.get("scope") == "dataset"]
-            if dataset_rows:
-                rows.append(
-                    {
-                        "scope": "dataset_average",
-                        "model": model,
-                        "dataset": None,
-                        "data_type": None,
-                        "vertical": None,
-                        "poly": None,
-                        "rms": float(np.mean([row["rms"] for row in dataset_rows])),
-                        "vr": float(np.mean([row["vr"] for row in dataset_rows])),
-                        "ss_res": float(np.sum([row["ss_res"] for row in dataset_rows])),
-                        "ss_obs": float(np.sum([row["ss_obs"] for row in dataset_rows])),
-                        "n_observations": int(np.sum([row["n_observations"] for row in dataset_rows])),
-                    }
-                )
+        if include_dataset:
+            rows.extend(dataset_rows)
+
+        if include_dataset_average and dataset_rows:
+            rows.append(
+                {
+                    "scope": "dataset_average",
+                    "model": model,
+                    "dataset": None,
+                    "data_type": None,
+                    "vertical": None,
+                    "poly": None,
+                    "rms": float(np.mean([row["rms"] for row in dataset_rows])),
+                    "vr": float(np.mean([row["vr"] for row in dataset_rows])),
+                    "ss_res": float(np.sum([row["ss_res"] for row in dataset_rows])),
+                    "ss_obs": float(np.sum([row["ss_obs"] for row in dataset_rows])),
+                    "n_observations": int(
+                        np.sum([row["n_observations"] for row in dataset_rows])
+                    ),
+                }
+            )
 
         if include_global:
             global_row = self._collect_global_solver_fit_statistics(model=model)
             if global_row is not None:
+                weighted_global = aggregate_dataset_fit_rows(
+                    dataset_rows,
+                    model=model,
+                )
+                if (
+                    weighted_global is not None
+                    and weighted_global.get("weighted_quadratic") is not None
+                ):
+                    for key in (
+                        "sigma_scale",
+                        "base_marginal_std",
+                        "effective_marginal_std",
+                        "weighted_quadratic",
+                        "weighted_rms",
+                        "weighted_effective_dof",
+                        "reduced_weighted_misfit",
+                    ):
+                        global_row[key] = weighted_global.get(key)
                 rows.append(global_row)
 
         return rows
@@ -759,6 +786,94 @@ class FaultAnalysisMixin:
             }
         return None
 
+    def _collect_model_regularization(
+        self,
+        *,
+        model_vector=None,
+        smoothing_matrix=None,
+    ):
+        """Return the active unweighted-L0 roughness diagnostic.
+
+        This method reports one global model-space quantity only.  It does not
+        infer per-group roughness from alpha groups because those groups do not
+        define smoothing-row ownership in the general multi-source case.
+        """
+        if model_vector is None:
+            model_vector = getattr(self, "mpost", None)
+        if smoothing_matrix is None:
+            smoothing_matrix = getattr(self, "current_smoothing_matrix", None)
+        if model_vector is None or smoothing_matrix is None:
+            return None
+
+        shape = getattr(smoothing_matrix, "shape", None)
+        if shape is None or len(shape) != 2:
+            raise ValueError("active smoothing matrix must be two-dimensional")
+        n_rows, n_columns = (int(shape[0]), int(shape[1]))
+        if n_rows == 0:
+            return None
+
+        model_array = np.asarray(model_vector, dtype=float).reshape(-1)
+        if n_columns != model_array.size:
+            raise ValueError(
+                "active smoothing matrix columns do not match the model vector"
+            )
+        roughness_vector = smoothing_matrix.dot(model_array)
+        roughness = float(
+            np.sqrt(np.mean(np.asarray(roughness_vector, dtype=float) ** 2))
+        )
+
+        collect_scales = getattr(self, "collect_scale_parameters", None)
+        n_groups = None
+        if callable(collect_scales):
+            scale_rows = collect_scales()
+            n_groups = sum(row.get("kind") == "alpha" for row in scale_rows)
+
+        return {
+            "roughness": roughness,
+            "n_rows": n_rows,
+            "n_groups": n_groups,
+        }
+
+    def _format_model_regularization(
+        self,
+        *,
+        model_vector=None,
+        smoothing_matrix=None,
+    ):
+        """Format the active model-space diagnostic separately from data fit."""
+        result = self._collect_model_regularization(
+            model_vector=model_vector,
+            smoothing_matrix=smoothing_matrix,
+        )
+        if result is None:
+            return None
+        group_text = (
+            ""
+            if result["n_groups"] is None
+            else f', groups={result["n_groups"]}'
+        )
+        return (
+            "Model Regularization\n"
+            "  Global L0 RMS roughness: "
+            f'{result["roughness"]:.6g} '
+            f'(rows={result["n_rows"]}{group_text})'
+        )
+
+    def _print_model_regularization(
+        self,
+        *,
+        model_vector=None,
+        smoothing_matrix=None,
+    ):
+        """Print model regularization only when an active L0 exists."""
+        report = self._format_model_regularization(
+            model_vector=model_vector,
+            smoothing_matrix=smoothing_matrix,
+        )
+        if report is not None:
+            print("\n" + report)
+        return report
+
     @staticmethod
     def fit_statistics_to_dataframe(rows: Sequence[Mapping]):
         """Return a compact pandas DataFrame for fit-statistics rows."""
@@ -810,7 +925,7 @@ class FaultAnalysisMixin:
             model=model,
             data_poly="config",
             include_dataset=True,
-            include_global=False,
+            include_global=True,
             include_weighted=True,
             rebuild_synth=True,
         )

@@ -557,8 +557,7 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                     data='data',
                 )
             elif data.dtype == 'opticorr':
-                corner = getattr(data, 'corner', None)
-                has_corner = corner is not None and np.asarray(corner).size > 0
+                has_corner = data.corner_mode is not None
                 if has_corner:
                     for component in ('East', 'North'):
                         data.writeDecim2file(
@@ -583,8 +582,7 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                     data='data'
                 )
             else:
-                corner = getattr(data, 'corner', None)
-                has_corner = corner is not None and np.asarray(corner).size > 0
+                has_corner = data.corner_mode is not None
                 if has_corner:
                     data.writeDecim2file(
                         f'{data.name}_{suffix}.txt',

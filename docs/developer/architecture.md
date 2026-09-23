@@ -115,6 +115,11 @@ fault 和 geodata 是非线性与线性反演的共同交接对象，应按同�
 保存可复制代码，reference 保存完整模式和边界条件。降采样 workflow 的末尾可以保留一次最短
 “读回反演”代码，因为它属于该任务的直接输出交接点。
 
+降采样空间支撑的所有权属于 CSI 数据对象。`insar` 与 `opticorr` 通过只读
+`corner_mode` 发布 `triangle`、`legacy_rectangle`、`quadrilateral` 或 `None`；reader、
+writer 和 eqtools 模板都消费这一个分类结果。eqtools 不再根据 `corner.shape` 建立平行规则，
+也不把非法 corner 静默当作点数据。`triangular=True/False` 只保留为旧调用的类型断言。
+
 案例证据只有在脚本、数据入口和必要说明已经公开时才能写入用户手册。公开短例一律使用
 通用文件名和占位数值；只有稳定、可访问且具有明确教学目标的完整案例才进入 `casebook/`。
 

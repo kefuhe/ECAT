@@ -121,17 +121,19 @@ fault.geometry_summary()
 
 ### 4. 从模板生成主配置和 bounds
 
-希望直接修改完整科研脚本时，可先从三个参数化实例中选择。它们不是框架支持范围的固定
-清单，控制点数量和采样参数个数由所选扰动方法决定：
+ECAT 当前保留三个参数化实例的配套 YAML 与接口说明，但对应 Python 开发模板暂未随
+集成仓库分发。它们不是框架支持范围的固定清单，控制点数量和采样参数个数仍由所选
+扰动方法决定：
 
 | 场景 | 模板 |
 | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) |
-| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) |
+| 标量底边位移示例 | 暂未随 ECAT 分发 |
+| 多个沿走向倾角控制点示例（模板使用 3 点） | 暂未随 ECAT 分发 |
+| 组合扰动示例（当前方法使用 4 个参数） | 暂未随 ECAT 分发 |
 
 它们各有一套位于 [`scripts/configs/joint_bayesian/`](../../scripts/configs/joint_bayesian/)
-的主配置和 bounds。新用户可以成套复制；需要从当前版本全部默认字段开始时，使用 CLI：
+的主配置和 bounds。用户可复制配置并按本页接口组织自己的案例脚本；需要从当前版本全部
+默认字段开始时，使用 CLI：
 
 模板中的 `lon0/lat0` 是数据与断层共享的坐标参考。修改案例时，还要一起核对 geodata 顺序、
 迹线与断层物理参数、reference 建立时机和首次构网参数。
@@ -339,18 +341,18 @@ GF 随非线性候选几何更新；Laplacian 和面积由实际消费者触发�
 | `FULLSMC` | 直接使用样本中的滑动计算似然；几何可变时还会重建 GF | 先看 GF 重建成本，再比较 rank 并行与进程内线程 |
 | `SMC_FJ` | 每个样本都进行一次受约束线性滑动求解；固定几何可复用线性子问题的固定部分 | 线性求解工作区会随 rank 复制，先看峰值内存 |
 
-第一次运行先保留 MPI 和数值库默认设置，从 4 个进程开始：
+自己的联合反演脚本完成等价的只读装配检查后，第一次采样可保留 MPI 和数值库默认设置，
+从 4 个进程开始：
 
 ```bash
-python test_joint_bayesian_bottom_offset.py --check-only
-mpiexec -n 4 python test_joint_bayesian_bottom_offset.py --run
+python your_joint_bayesian_case.py --check-only
+mpiexec -n 4 python your_joint_bayesian_case.py --run
 ```
 
-`--check-only` 仍会读取真实数据、构建 reference/mesh 和 inversion；它用于在采样前校验完整
-装配，不是只检查 YAML 语法。模板不附带可直接完成科研反演的观测数据，运行前必须替换
-reader、迹线、投影中心和配置占位值。
+上述参数名表示本工作流建议的脚本契约；用户自有脚本如采用不同 CLI，应执行等价步骤。
+装配检查需要读取真实数据、构建 reference/mesh 和 inversion，而不只是检查 YAML 语法。
 
-三份模板都提供 `--smooth-prior-weight`，默认值 `1.0`。它只在 `SMC_FJ` 已完成当前样本的
+该类脚本可提供 `--smooth-prior-weight`，默认值 `1.0`。它只在 `SMC_FJ` 已完成当前样本的
 受约束线性求解后，缩放该模型的平滑先验对后验分数的贡献；它不改变该样本使用的 `alpha`，
 也不改变线性解本身。大于 `1.0` 可作为“对粗糙模型给出更低后验分数”的受控敏感性试验；
 不要把它与扩大 `alpha` 边界或固定 `alpha` 混为同一操作。若配置禁用了 `alpha` 平滑项，
@@ -368,7 +370,7 @@ reader、迹线、投影中心和配置占位值。
 或 `mpirun`，相应替换命令中的可执行文件名。
 
 希望采样结束后照常保存几何改正、KDE 和拟合图，但不弹出窗口时，在启动 MPI 前设置
-`MPLBACKEND=Agg`，不要传 `--no-plot`。三份模板已经对保存图使用 `show=False`；`Agg` 会由
+`MPLBACKEND=Agg`，不要传 `--no-plot`。脚本应对保存图使用 `show=False`；`Agg` 会由
 各 rank 继承，也不改变 likelihood、线性求解或采样结果。只有明确不需要任何图件时才使用
 `--no-plot`，统计、GMT 和 `Modeling/` 文本仍会输出。
 
@@ -387,8 +389,8 @@ reader、迹线、投影中心和配置占位值。
 
 ## 输出和检查
 
-三份公共模板默认把断层、统计和后验图放在 `output/`，把观测、合成值、残差和数据拟合图
-放在 `Modeling/`：
+建议把断层、统计和后验图放在 `output/`，把观测、合成值、残差和数据拟合图放在
+`Modeling/`：
 
 ```text
 output/
@@ -431,10 +433,10 @@ posterior 离散度图时增加
 `--plot-std`。SMC-FJ 会为已接受样本重求条件线性解，因此这一产品可能明显耗时，但不会重算
 likelihood、prior 或 Hessian 的曲率/log-determinant。离散度不会替代随后用于 synthetic 和
 文本导出的 median 模型。`--no-plot` 关闭所有图件，但仍会激活代表模型并输出统计、GMT 和
-`Modeling/` 文本。
+`Modeling/` 文本。若用户脚本提供同名选项，可按下式调用：
 
 ```bash
-python test_joint_bayesian_three_dip_controls.py --plot-std
+python your_joint_bayesian_case.py --plot-std
 ```
 
 没有 corner 的 raster 输入默认就在 `Modeling/` 写点表。有 corner 的降采样数据需要额外
@@ -443,7 +445,7 @@ python test_joint_bayesian_three_dip_controls.py --plot-std
 `Modeling/points/`，与用于 GMT 着色的多边形文件分开，且不会重新正演：
 
 ```bash
-python test_joint_bayesian_bottom_offset.py --export-point-values
+python your_joint_bayesian_case.py --export-point-values
 ```
 
 比较 MAP、mean 或 median 时，每次都要重新激活对应代表模型后立即导出。

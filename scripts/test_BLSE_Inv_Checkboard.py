@@ -221,8 +221,7 @@ def main():
     # Preserve decimation polygons when corner geometry exists; point-mode
     # InSAR and optical inputs are exported directly as point tables.
     for sardata in insardata:
-        corner = getattr(sardata, "corner", None)
-        has_corner = corner is not None and np.asarray(corner).size > 0
+        has_corner = sardata.corner_mode is not None
         for data_type in ("data", "synth", "resid"):
             if has_corner:
                 sardata.writeDecim2file(
@@ -243,8 +242,7 @@ def main():
                 )
 
     for optical_offsets in opticaldata:
-        corner = getattr(optical_offsets, "corner", None)
-        has_corner = corner is not None and np.asarray(corner).size > 0
+        has_corner = optical_offsets.corner_mode is not None
         for data_type in ("data", "synth", "resid"):
             if has_corner:
                 mode = {"data": "data", "synth": "synth", "resid": "res"}[

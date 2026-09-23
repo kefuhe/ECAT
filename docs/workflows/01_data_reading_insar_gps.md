@@ -13,14 +13,13 @@
 
 | 手头数据 | 下一步 | 精确格式 |
 | --- | --- | --- |
-| ECAT `std/data` 四叉树或矩形 `from_rsp` | `read_from_varres(..., triangular=False)` | [观测数据读入参考](../reference/observation_data_readers.md#csi-varres) |
-| ECAT `trirb` 或三角 `from_rsp` | `read_from_varres(..., triangular=True)` | [观测数据读入参考](../reference/observation_data_readers.md#csi-varres) |
+| ECAT `std/data`、`trirb` 或 `from_rsp` | `read_from_varres(...)` 自动识别三角形、旧矩形或完整四边形 | [观测数据读入参考](../reference/observation_data_readers.md#csi-varres) |
 | 外部抽样后的 SAR 点 | 整理七列后用 `read_from_ascii(...)` | [外部 ASCII SAR](../reference/observation_data_readers.md#external-ascii-sar) |
 | GNSS ENU 点 | 整理九列后用 `read_from_enu(...)` | [GNSS ENU](../reference/observation_data_readers.md#gnss-enu) |
 | GAMMA、GMTSAR、HyP3、GeoTIFF、NetCDF/HDF5 或 offset 栅格 | 先用 reader 转换并降采样 | [InSAR 降采样](02_insar_downsampling.md) |
 
-已得到降采样文件时，按[读入短例](../examples/inversion_data_loading.md#varres-loading)选择矩形或三角分支；
-不知道单元类型时，先用[只读识别片段](../examples/inversion_data_loading.md#detect-varres-geometry)。
+已得到降采样文件时，按[读入短例](../examples/inversion_data_loading.md#varres-loading)直接读取；
+需要在不构建 CSI 对象时检查文件，可用[只读识别片段](../examples/inversion_data_loading.md#detect-varres-geometry)。
 文件能读入后，还需[组成 geodata](../examples/inversion_data_loading.md#assemble-geodata)并完成本页末尾的检查，
 才能作为反演输入。未知文件不能只凭扩展名选择 `triangular`。
 
@@ -42,14 +41,13 @@ from csi.insar import insar
 sar = insar("TrackA", lon0=lon0, lat0=lat0, verbose=False)
 sar.read_from_varres(
     "InSAR/downsample/track_ifg",
-    triangular=False,
     cov=True,
 )
 ```
 
-trirb 或三角 `from_rsp` 结果必须改为 `triangular=True`。CSI 的这个 reader 不接受 `triangular=None` 自动分流；
-矩形模式只会在两种矩形 `.rsp` 列布局之间自动判断。若 `.cov` 不存在，使用 `cov=False`，
-然后调用 `buildDiagCd()`；已经用 `cov=True` 读取完整协方差后不要再覆盖它。
+reader 默认按 `.rsp` 列契约自动识别三角形、旧式矩形或完整四边形。已知类型时仍可传
+`triangular=True/False`，但它只用于校验预期；与文件冲突会报错。若 `.cov` 不存在，使用
+`cov=False`，然后调用 `buildDiagCd()`；已经用 `cov=True` 读取完整协方差后不要再覆盖它。
 
 ## 2. 外部 SAR 点和 GNSS ENU
 

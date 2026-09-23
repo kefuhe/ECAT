@@ -43,6 +43,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     h5py = None
 
 from csi import SourceInv, planarfault
+from csi.decimation_geometry import LEGACY_RECTANGLE, QUADRILATERAL, TRIANGLE
 
 from .config.nonlinear_geometry_config import NonlinearGeometryConfig
 from .config.parameter_groups import attach_group_parameters, resolve_group_layout
@@ -3162,7 +3163,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         fault_figsize=(7.5, 6.5),
         sigmas_figsize=(2.625, 2.625),
         save_data=True,
-        sar_corner=None,
+        sar_corner="auto",
         plot_data_corrections=True,
         data_corrections_figsize=(3.5, 3.5),
         modeling_dir="Modeling",
@@ -3180,6 +3181,10 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         old high-level workflow name, while using the new parameter registry
         and plotting helpers internally. ``print_fit_statistics`` controls the
         single structured data-fit table printed after model activation.
+        ``sar_corner="auto"`` preserves polygon output whenever an InSAR
+        object carries valid decimation geometry.  ``None`` or ``"point"``
+        requests point output; legacy ``"tri"`` and ``"quad"`` values only
+        validate an explicitly expected polygon type.
         """
         if rank != 0:
             return None
@@ -3319,19 +3324,42 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 grouped[dtype].append(data)
         return grouped
 
-    def _save_modeled_data_files(self, grouped_data, *, modeling_dir, sar_corner=None):
+    def _save_modeled_data_files(self, grouped_data, *, modeling_dir, sar_corner="auto"):
         out_dir = Path(modeling_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         for sardata in grouped_data["insar"]:
-            if sar_corner is not None and hasattr(sardata, "writeDecim2file"):
-                triangular = sar_corner == "tri"
+            corner_mode = sardata.corner_mode
+            if sar_corner in (None, "point", "points"):
+                write_polygons = False
+            elif sar_corner == "auto":
+                write_polygons = corner_mode is not None
+            elif sar_corner == "tri":
+                if corner_mode != TRIANGLE:
+                    raise ValueError(
+                        f"{sardata.name}: sar_corner='tri' requires triangular "
+                        f"decimation geometry, got {corner_mode!r}"
+                    )
+                write_polygons = True
+            elif sar_corner == "quad":
+                if corner_mode not in (LEGACY_RECTANGLE, QUADRILATERAL):
+                    raise ValueError(
+                        f"{sardata.name}: sar_corner='quad' requires rectangular "
+                        f"or quadrilateral decimation geometry, got {corner_mode!r}"
+                    )
+                write_polygons = True
+            else:
+                raise ValueError(
+                    "sar_corner must be 'auto', 'point', 'tri', 'quad', or None"
+                )
+
+            if write_polygons:
                 for data_type in ["data", "synth", "resid"]:
                     sardata.writeDecim2file(
                         f"{sardata.name}_{data_type}.txt",
                         data_type,
                         outDir=str(out_dir),
-                        triangular=triangular,
+                        triangular=None,
                     )
             elif hasattr(sardata, "write2file"):
                 for data_type in ["data", "synth", "resid"]:

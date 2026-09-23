@@ -124,25 +124,25 @@ source 名匹配，列表顺序负责 source 和参数块顺序；两者应分�
 
 ## 联合 Bayesian 模板怎么选
 
-联合 Bayesian 是已经跑通两步走之后的高级路线。三份模板分别展示三类参数化实例；它们
-不是框架支持范围的固定清单，控制点数量和采样参数个数由所选扰动方法决定：
+联合 Bayesian 是已经跑通两步走之后的高级路线。ECAT 当前保留三类参数化实例的配套
+配置与接口说明，但 Python 开发模板暂未随集成仓库分发。控制点数量和采样参数个数仍由
+所选扰动方法决定：
 
 | 要搜索的几何 | 脚本 | 配套配置 |
 | --- | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) + [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
-| 多个倾角参考点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) + [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) + [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
+| 标量底边位移示例 | 暂未随 ECAT 分发 | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) + [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
+| 多个倾角参考点示例（模板使用 3 点） | 暂未随 ECAT 分发 | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) + [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
+| 组合扰动示例（当前方法使用 4 个参数） | 暂未随 ECAT 分发 | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) + [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
 
-初学者可以复制成套文件；熟练用户也可先运行 `ecat-generate-config` 和
-`ecat-generate-boundary`，再对照模板修改生成文件。CLI 生成的是当前版本的完整配置，
-配套文件则把一个具体场景的 Python、参数顺序和 bounds 对齐。
+先用 `ecat-generate-config` 和 `ecat-generate-boundary` 生成当前版本的完整配置，再以本页
+和[联合 Bayesian 工作流](../workflows/05_joint_bayesian_geometry_slip.md)组织自己的案例脚本。
+上表配套文件用于核对具体参数化的参数顺序和 bounds，不包含真实观测数据或断层路径。
 
-### 复制模板
+### 复制配套配置
 
 Linux 或 WSL 的 Bash：
 
 ```bash
-cp scripts/test_joint_bayesian_bottom_offset.py my_case/
 cp scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
 cp scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
 ```
@@ -150,24 +150,12 @@ cp scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config
 Windows PowerShell：
 
 ```powershell
-Copy-Item scripts/test_joint_bayesian_bottom_offset.py my_case/
 Copy-Item scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
 Copy-Item scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
 ```
 
-进入案例目录后，各系统使用同样的运行命令：
-
-```bash
-python test_joint_bayesian_bottom_offset.py --check-only
-mpiexec -n 4 python test_joint_bayesian_bottom_offset.py --run
-python test_joint_bayesian_bottom_offset.py
-# 需要额外逐点表时：
-python test_joint_bayesian_bottom_offset.py --export-point-values
-```
-
-这些是完整的可编辑起点，不是附带真实观测数据的一键演示。`--check-only` 仍会
-读取数据、构建 fault/reference/mesh 和 inversion，只跳过采样与绘图；因此必须先替换数据
-路径、迹线、投影中心和配置占位值。
+这些配置不是附带真实观测数据的一键演示。用户脚本仍需明确读取数据、构建
+fault/reference/mesh 和 inversion，并在正式采样前完成等价的只读装配检查。
 
 如果环境只提供 `python3` 或 MPI 发行版只提供 `mpirun`，分别替换命令中的 `python`
 或 `mpiexec` 即可；这不是脚本或配置格式的差异。
@@ -180,7 +168,14 @@ fault/slip GMT 与代表滑动图，后者保存数据拟合图以及 raster dat
 corner 的 raster 写多边形，没有 corner 的输入直接写点表。需要 posterior 滑动分量离散度
 图时显式增加 `--plot-std`；有 corner 的数据需要额外中心点表时增加
 `--export-point-values`，输出进入 `Modeling/points/`。两者都不改变反演或默认代表模型。
+模板不自行推断 corner 数组形状，而是读取 CSI 的 `corner_mode`；因此 InSAR 与 optical
+共用三角形、旧式矩形、完整四边形和点数据的判别规则。
 模板末尾另给可选的 `plot_multifaults_slip(...)` 调用，便于修改发表图的视角、范围和色标。
+
+新版非线性几何模板也使用相同的数据装配习惯：`gpsdata` 与 `insardata` 分别声明，最后以
+`geodata = gpsdata + insardata` 组成配置顺序。结果入口默认
+`sar_corner="auto"`；有合法 corner 的 InSAR 保存降采样多边形，没有 corner 的输入保存
+点表，GPS 继续保存 EN/ENU 点表。模板不要求用户手工判断三角形或矩形。
 
 降采样通常不需要复制 Python：先用 `ecat-generate-downsample` 生成 YAML，再运行 `ecat-downsample`。完整命令见 [InSAR 降采样](../workflows/02_insar_downsampling.md)。`scripts/process_data_downsampling.py` 只是在源码树中调用同一 CLI 的薄入口。
 

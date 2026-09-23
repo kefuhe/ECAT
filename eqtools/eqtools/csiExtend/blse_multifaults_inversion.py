@@ -555,7 +555,8 @@ class BoundLSEMultiFaultsInversion(
             Final reporting policy. ``None`` selects ``'compact'`` when
             ``verbose=True`` and ``'none'`` otherwise. ``'compact'`` prints
             the exact active sigma/alpha scales and row multipliers;
-            ``'full'`` additionally prints fit statistics.
+            ``'full'`` additionally prints fit statistics and, when an active
+            unweighted smoothing matrix exists, model regularization.
     
         Returns:
         --------
@@ -678,6 +679,7 @@ class BoundLSEMultiFaultsInversion(
                 print('\n' + self.format_scale_parameters())
             if resolved_report == 'full':
                 self.calculate_and_print_fit_statistics()
+                self._print_model_regularization()
             return
         else:
             alpha_layout = self.config.alpha['group_layout']
@@ -817,6 +819,7 @@ class BoundLSEMultiFaultsInversion(
             print('\n' + self.format_scale_parameters())
         if resolved_report == 'full':
             self.calculate_and_print_fit_statistics()
+            self._print_model_regularization()
 
     @staticmethod
     def _resolve_vce_component_contract(
@@ -974,8 +977,8 @@ class BoundLSEMultiFaultsInversion(
             Final reporting policy. ``None`` selects ``'compact'`` when
             ``verbose=True`` and ``'none'`` otherwise. ``'compact'`` prints
             one variance-component table; ``'full'`` additionally prints the
-            current model's fit table. Iteration progress remains controlled
-            only by ``verbose``.
+            current model's fit table and available model regularization.
+            Iteration progress remains controlled only by ``verbose``.
         qp_acceleration : {'off', 'certified_kkt'}, optional
             Optional VCE-local active-set acceleration. The central solver
             always routes the problem automatically. The default ``'off'``
@@ -1264,6 +1267,7 @@ class BoundLSEMultiFaultsInversion(
             print("\n" + self.format_scale_parameters())
         if resolved_report == 'full':
             self.calculate_and_print_fit_statistics()
+            self._print_model_regularization()
 
         return vce_result
 
@@ -1815,11 +1819,18 @@ class BoundLSEMultiFaultsInversion(
             'current_smoothing_matrix',
             self.GL_combined_poly,
         )
-        roughness_vec = np.dot(active_smoothing, self.mpost)
-        roughness = np.sqrt(np.mean(roughness_vec**2)) if roughness_vec.size > 0 else 0.0
+        regularization = self._collect_model_regularization(
+            model_vector=self.mpost,
+            smoothing_matrix=active_smoothing,
+        )
+        roughness = (
+            0.0 if regularization is None else regularization['roughness']
+        )
         if print_stat:
-            output = f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
-            print(output)
+            self._print_model_regularization(
+                model_vector=self.mpost,
+                smoothing_matrix=active_smoothing,
+            )
         return roughness, rms, vr
     
     def calculate_and_print_fit_statistics(self):

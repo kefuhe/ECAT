@@ -284,7 +284,6 @@ from csi.insar import insar
 sar = insar("track_a", lon0=100.0, lat0=30.0, verbose=False)
 sar.read_from_varres(
     "downsampled/track_a_ifg",
-    triangular=False,
     cov=True,
 )
 ```
@@ -297,21 +296,26 @@ track_a_ifg.rsp
 track_a_ifg.cov
 ```
 
-`triangular` 的行为是：
+CSI 会根据 `.rsp` 的列契约自动识别单元：
 
-| `.rsp` 类型 | 参数 | 自动行为 |
+| `.rsp` 列数 | `corner_mode` | 内存 `corner` 宽度 |
 | --- | --- | --- |
-| 四叉树/矩形 | `triangular=False` | 会在 legacy 10 列和 full-corner 18 列矩形布局之间判断 |
-| trirb 或其他三角形 `.rsp` | `triangular=True` | 按三角形顶点读取 |
+| 8 | `triangle` | 6（三个 lon/lat 顶点） |
+| 10 | `legacy_rectangle` | 4（左上、右下） |
+| 18 | `quadrilateral` | 8（四个完整顶点） |
 
-`insar.read_from_varres()` 的默认值是 `triangular=False`，不支持用 `None` 自动区分三角形与
-矩形。`cov=True` 会读取完整 `.cov`；此后不要再调用 `buildDiagCd()` 覆盖完整协方差。若没有
+`insar.read_from_varres()` 和 `opticorr.read_from_varres()` 默认使用
+`triangular=None` 自动分流。显式传入 `True` 或 `False` 只表示调用方对类型的预期；若与
+文件列契约冲突会立即报错，不会按提示强行误读。读入后可检查只读属性
+`data.corner_mode`。点数据没有 corner 时该属性为 `None`；非空但形状、行数或有限性不合法
+时会报错，而不会静默降级为点数据。
+
+`cov=True` 会读取完整 `.cov`；此后不要再调用 `buildDiagCd()` 覆盖完整协方差。若没有
 `.cov`，使用：
 
 ```python
 sar.read_from_varres(
     "downsampled/track_a_ifg",
-    triangular=False,
     cov=False,
 )
 sar.buildDiagCd()
@@ -330,13 +334,13 @@ result = read_csi_varres_result(
 print(result.geometry, result.available_components, result.cell_count)
 ```
 
-这个纯读取接口会从 `.rsp` 自动识别 `rectangle` 或 `triangle`，保持 `.txt/.rsp` 行序和
-polygon 顶点，但不读取 `.cov`，适合导出与检查。若还要建立 CSI 反演对象，可显式传回：
+这个纯读取接口也会从 `.rsp` 自动识别 `rectangle` 或 `triangle`，保持 `.txt/.rsp` 行序和
+polygon 顶点，但不读取 `.cov`，适合无需构建 CSI 对象的导出与检查。正常反演不需要先调
+它再把结果传回 CSI；直接读取即可：
 
 ```python
 sar.read_from_varres(
     "downsampled/track_a_ifg",
-    triangular=(result.geometry == "triangle"),
     cov=True,
 )
 ```

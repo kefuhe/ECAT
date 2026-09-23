@@ -35,21 +35,24 @@
 | 独立非线性几何 SMC | `returnModel(model=...)` | `collect_fit_statistics()` | `extract_and_plot_bayesian_results()` |
 | 历史多断层 `explorefault` 路线 | `returnModel(model=...)` | `collect_fit_statistics()` | 历史 Bayesian 结果入口 |
 
-这些路线现在共享 dataset row 的字段、RMS/VR 和可选协方差加权统计定义。线性及联合
-Bayesian 对象还能提供 `global_solver_vector`；独立几何 SMC 没有一个固定的组装线性
-求解向量，因此接受 `include_global` 以保持调用形状一致，但不会伪造全局行。新脚本仍应
-优先使用新版 `NonlinearGeometrySMCInversion`；旧多断层路线保留用于复现已有参数组织。
+这些路线现在共享 dataset row、Global row、RMS/VR 和可选协方差加权统计定义。线性及
+联合 Bayesian 在维度一致时以当前组装求解向量生成 `global_solver_vector`；独立几何 SMC
+没有固定的组装线性矩阵，因而从逐数据集的观测数、残差平方和与观测平方和精确汇总
+`global_observation_vector`。两种 Global 行使用同一公式，都不是逐数据集 RMS/VR 的
+算术平均。新脚本仍应优先使用新版 `NonlinearGeometrySMCInversion`；旧多断层路线保留
+用于复现已有参数组织。
 
 三套 Bayesian 一站式结果入口统一使用 `model=` 选择代表模型，并使用
 `print_fit_statistics=` 控制拟合表。联合 Bayesian 的 `best_model`、各类 `returnModel()`
 历史上的 `print_stat` / `print_stats` 仍作为兼容关键字保留；公开脚本和新代码使用统一
 拼写。相同关键字只统一结果责任，不会把不同求解器的参数注册或前向模型强行合并。
 
-### 拟合表与尺度参数表的边界
+### 尺度、数据拟合与模型正则化的边界
 
 逐数据集拟合表回答“当前模型如何拟合观测”；尺度参数表回答“这一活动模型使用什么
-sigma/alpha，以及它来自固定、VCE 更新还是 Bayesian 采样”。两者共享同一个已激活模型，
-但不应合并成一张宽表：
+sigma/alpha，以及它来自固定、VCE 更新还是 Bayesian 采样”；模型正则化段落回答
+“当前模型在实际发布的未加权 \(L_0\) 下有多粗糙”。三者共享同一个已激活模型，但不应
+合并成一张宽表：
 
 - 拟合表保留 `RMS`、`VR`、`Eff. std`、`Qw` 和 `wRMS`；
 - 尺度表以物理 `Scale (s)` 为主值，并显式列出 `State`、`Value source`、`log10(s)`
@@ -58,11 +61,35 @@ sigma/alpha，以及它来自固定、VCE 更新还是 Bayesian 采样”。两�
 - VCE 额外列出 `Variance (v)` 和组级 `Approx. red.Q`，但没有采样坐标或 posterior
   标准差；估计组的来源为 `-`，只有固定组记录输入来源；
 - BLSE 只列本次求解实际采用的固定尺度、输入来源和行乘数；关闭 alpha 时不显示假 alpha；
+- 数据拟合表末行统一显示 `Global`，其 RMS/VR 由全体观测的充分统计量精确汇总；
+- `Model Regularization` 单独显示全局 \(L_0\) RMS roughness、平滑行数和活动 alpha
+  组数；alpha 关闭、无有效平滑行或独立几何 SMC 时不显示这一段；
+- 多断层或多 alpha 只报告一个全局未加权 roughness。当前不会在没有精确平滑行归属时
+  猜测逐组 roughness；VCE 已有的平滑组 `Qw` 仍留在 VCE 分量表；
 - 格式化器只读取活动结果和保存的 posterior，不重算 synthetic、likelihood、GF 或
   Laplacian，也不改变 HDF5 样本。
 
 完整字段和 `log_scaled` 对照见
 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md#统一结果表中的名称)。
+
+典型的完整报告按下列顺序出现；数值仅示意列布局：
+
+```text
+BLSE scale parameters
+Kind   Group      Members    State   Value source                  Scale (s)   log10(s)   Row mult. (1/s)
+sigma  ascending  TrackA     fixed   config sigmas.initial_value      0.03      -1.5229              33.3333
+alpha  all        MainFault  fixed   run alpha                        0.01      -2                  100
+
+Data Fit Statistics (BLSE model)
+Data    Group         N   Eff. std      RMS   VR (%)       Qw    wRMS   Approx. red.Q
+TrackA  ascending  1200       0.03    0.028      94.2     1185    0.994              -
+Global  -          1200          -    0.028      94.2     1185    0.994              -
+
+Model Regularization
+  Global L0 RMS roughness: 0.0067 (rows=780, groups=1)
+```
+
+若 alpha 关闭或没有平滑行，最后两行整体不出现；独立几何 SMC 也只显示尺度表和数据拟合表。
 
 ## 符号和残差
 
@@ -257,18 +284,19 @@ GPS 排列与 CSI 的 `d/G/Cd` 及 frame transform 行一致。RMS 和 VR 对同
 
 ## 逐数据集、平均行和全局行
 
-`collect_fit_statistics()` 可以返回三种 scope：
+`collect_fit_statistics()` 可以返回四种 scope：
 
 | `scope` | 计算对象 | 正确解释 |
 | --- | --- | --- |
 | `dataset` | 一个数据对象的实际观测向量 | 论文中常用的逐数据集拟合 |
 | `dataset_average` | 各数据集 RMS 和 VR 的算术平均 | 仅作屏幕快速比较，不是总拟合 |
 | `global_solver_vector` | 当前组装的 \(Gm-d\) | 完整线性求解向量的总体拟合 |
+| `global_observation_vector` | dataset rows 的观测数与两个平方和之和 | 无固定全局矩阵时的精确总体拟合 |
 
 `dataset_average` 默认关闭。其 `rms` 和 `vr` 是逐数据集标量的算术平均，不按数据量
 加权；该行同时保存的 `ss_res/ss_obs/n_observations` 是成员求和，不能反过来用这些和
-重建该行的平均 RMS/VR。需要正式总体量时使用 `global_solver_vector`，不要把逐数据集
-平均当作全局结果。
+重建该行的平均 RMS/VR。需要正式总体量时使用任一 Global scope，不要把逐数据集平均
+当作全局结果。控制台把两种 Global scope 都显示为 `Global`，内部 scope 仍保留其来源。
 
 `include_global=True` 时，线性路线尝试使用：
 
@@ -280,8 +308,24 @@ np.dot(self.G, self.mpost) - self.d
 np.dot(self.G_combined, self.mpost) - self.observations
 ```
 
-若当前对象没有完整组装矩阵，或维度与当前模型不一致，ECAT 省略全局行，不用另一套
-代理统计静默替代。
+独立几何 SMC 没有上述组装矩阵，此时精确使用：
+
+\[
+N=\sum_k n_k,\qquad
+SS_{\mathrm{res}}=\sum_k r_k^\mathsf Tr_k,\qquad
+SS_{\mathrm{obs}}=\sum_k d_k^\mathsf Td_k,
+\]
+
+\[
+\operatorname{RMS}_{\mathrm{Global}}
+=\sqrt{SS_{\mathrm{res}}/N},\qquad
+\operatorname{VR}_{\mathrm{Global}}
+=100\left(1-SS_{\mathrm{res}}/SS_{\mathrm{obs}}\right).
+\]
+
+若每个数据集都有活动协方差尺度，还会精确相加 \(Q_w=\sum_kQ_{w,k}\) 并给出
+\(\mathrm{wRMS}=\sqrt{Q_w/N}\)。异质 sigma 组没有唯一 `Eff. std`，跨组也不推断
+`Approx. red.Q`，所以 Global 行的这两列保持 `-`。
 
 ## 当前模型合同
 
@@ -312,7 +356,7 @@ BLSE 应使用 `run()` 返回后的同步状态。显式调用 `returnModel(mpos
 成为新的活动解；`self.mpost`、分发到各源的参数、拟合统计和 solver RMS/VR 都使用该向量，
 不会再出现只临时分发、随后用旧向量计算全局量的半状态。
 
-`returnModel()` 返回的 `roughness` 是当前求解发布的未缩放平滑矩阵 \(L_0\) 下
+BLSE `returnModel()` 返回的 `roughness` 是当前求解发布的未缩放平滑矩阵 \(L_0\) 下
 
 \[
 \operatorname{roughness}=\sqrt{\operatorname{mean}[(L_0m)^2]}.
@@ -326,6 +370,10 @@ BLSE 应使用 `run()` 返回后的同步状态。显式调用 `returnModel(mpos
 模型。启用逐数据集统计时，扫描还会恢复观测对象原有的 synthetic 字段，避免模型状态和
 数据拟合状态分别停留在不同候选。
 
+标准控制台不再把 roughness、RMS 和 VR 混成一条重复摘要：RMS/VR 只出现在
+`Data Fit Statistics` 的 `Global` 行；存在真实 \(L_0\) 时，roughness 只出现在独立的
+`Model Regularization` 段落。这个展示调整不改变 BLSE `returnModel()` 的数值返回值。
+
 ## 结构化接口
 
 | 方法 | 责任 |
@@ -335,7 +383,7 @@ BLSE 应使用 `run()` 返回后的同步状态。显式调用 `returnModel(mpos
 | `fit_statistics_to_dataframe(rows)` | 把已有 rows 转成 DataFrame，不重新计算 |
 | `format_fit_statistics_report(rows)` | 把已有 rows 渲染为文本，不重新计算 |
 | `write_fit_statistics_report(...)` | 写出已有 rows，或在未传 rows 时按显式参数采集后写出 |
-| `calculate_and_print_fit_statistics()` | 当前模型的交互式紧凑控制台表 |
+| `calculate_and_print_fit_statistics()` | 当前模型的逐数据集行和末尾 Global 行 |
 
 独立几何 SMC 的采集器默认只读取 `returnModel()` 已经写回的完整 synthetic。若其他操作覆盖了
 data 对象，可显式传 `rebuild_synth=True`：它只重复当前向量的预测，不会选择另一组样本，
@@ -361,7 +409,8 @@ df = inv.fit_statistics_to_dataframe(rows)
 inv.write_fit_statistics_report("output", rows=rows)
 ```
 
-`collect_fit_statistics()` 默认重建逐数据集 synthetic；全局行独立使用当前 solver vector。
+`collect_fit_statistics()` 默认重建逐数据集 synthetic；有完整 solver vector 时全局行直接
+使用它，独立几何 SMC 则从同一批 dataset rows 的充分统计量精确汇总。
 结构化 rows 默认不新增 weighted 字段，只有 `include_weighted=True` 时才扩展，避免破坏
 已有 DataFrame 消费者。
 
@@ -390,7 +439,8 @@ inv.extract_and_plot_blse_results(
 )
 ```
 
-`report="compact"` 只打印 VCE 分量表；`"full"` 立即追加当前模型拟合表；`"none"`
+`report="compact"` 只打印 VCE 分量表；`"full"` 立即追加当前模型拟合表和可用的模型
+正则化段落；`"none"`
 用于静默批处理。若紧接着又调用默认打印的 extraction，`full` 会使拟合表出现两次；
 标准脚本通常使用 `compact + extraction`。
 

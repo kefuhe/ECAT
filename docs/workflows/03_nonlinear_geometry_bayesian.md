@@ -26,6 +26,9 @@
 - rake
 
 输出应是优选几何、不确定性摘要和拟合诊断。分布式滑动后续用 BLSE/VCE 反演。
+标准拟合表逐数据集显示 RMS/VR 和可用的协方差加权量，末行 `Global` 由所有数据集的
+观测数、残差平方和与观测平方和精确汇总，不是逐行平均。独立几何 SMC 不含分布式滑动
+平滑矩阵，因此不会显示虚假的 roughness 或 `Model Regularization` 段落。
 
 ## 入口
 
@@ -84,7 +87,9 @@ asc.read_from_varres("../InSAR/downsample/S1T056A_ifg", cov=True)
 dsc = insar("S1T034D_ifg", lon0=lon0, lat0=lat0, verbose=False)
 dsc.read_from_varres("../InSAR/downsample/S1T034D_ifg", cov=True)
 
-geodata = [asc, dsc]
+gpsdata = []  # 启用 GPS 读取块后改为 [gnss]
+insardata = [asc, dsc]
+geodata = gpsdata + insardata
 
 inv = NonlinearGeometrySMCInversion(
     "geometry_search",
@@ -113,6 +118,7 @@ inv.extract_and_plot_bayesian_results(
     plot_data=True,
     plot_data_corrections=True,
     print_fit_statistics=True,
+    sar_corner="auto",
 )
 
 if rank == 0:
@@ -122,6 +128,12 @@ if rank == 0:
         show=False,
     )
 ```
+
+`sar_corner="auto"` 是默认输出策略：有合法降采样 corner 的 InSAR 保留三角形或四边形
+多边形文件，没有 corner 的点数据写普通点表。旧值 `"tri"`、`"quad"` 只用于校验已知
+类型；`None` 或 `"point"` 显式请求点表。这个选择只改变文件表示，不改变似然、预测或代表
+模型。GPS 始终走自己的 EN/ENU 点表输出；启用模板中的 GPS 块时，只需把对象加入
+`gpsdata` 并同步 YAML 中各个 `geodata` 列表的顺序。
 
 <a id="geometry-results-to-linear-inversion"></a>
 
