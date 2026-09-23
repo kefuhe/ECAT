@@ -9,6 +9,7 @@
 | SAR 读取 | [eqtools/csiExtend/sarUtils](https://github.com/kefuhe/eqtools/tree/main/eqtools/csiExtend/sarUtils) |
 | 降采样 CLI | [eqtools/cli_tools/process_data_downsampling.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/cli_tools/process_data_downsampling.py) |
 | 降采样配置校验 | [eqtools/csiExtend/downsample/config.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/downsample/config.py) |
+| 断层迹线数值、marker、处理对象与文件 I/O | [trace_ops.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_ops.py)、[trace_markers.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_markers.py)、[trace_processing.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_processing.py)、[trace_io.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_io.py) |
 | 非线性几何反演 | [eqtools/csiExtend/exploremultifaults_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/exploremultifaults_smc.py) |
 | Bayesian 联合几何-滑动反演 | [eqtools/csiExtend/bayesian_multifaults_inversion.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/bayesian_multifaults_inversion.py) |
 | 可扰动三角断层几何 | [eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py) |
@@ -75,6 +76,16 @@
 新增内容时先判断用户意图，再决定落点。一个功能通常只需要“一篇 workflow + 一个短例 + 一篇
 reference 的相关小节”，不要为每个函数建立独立学习路线，也不要把完整参数表重复到 workflow。
 
+同一短代码块可以在 workflow 与 example 之间少量重复，前提是它就是任务交接所需的最小
+片段；完整配置、长 Python 流程或运行脚本应有单一规范入口，其他页面只解释本层判断并链接。
+只有稳定、可复用且同时服务多条工作流的产品契约才值得建立跨工作流页面；单个项目的任务
+编排、目录习惯或运行队列不进入公共手册。
+
+“完整脚本模板”和“公开验证案例”必须分开命名：模板提供可修改结构，可以要求用户替换
+数据和占位值；casebook 页面只有在 ECAT-Cases 已公开脚本、数据入口、运行命令、预期输出
+和已知限制时才称为公开案例。`--check-only` 等运行边界也应按真实代码说明它是否仍读取数据、
+构建对象或写出文件。
+
 高级联合 Bayesian 几何-滑动反演应放在 Advanced Workflows 中，不应归入入门两步走的非线性几何页面。`geometry_perturbation` 只解释联合 Bayesian 中的可扰动断层几何，不作为普通断层几何预处理教程。
 
 ## 约束内容怎样分层
@@ -96,9 +107,9 @@ fault 和 geodata 是非线性与线性反演的共同交接对象，应按同�
 
 | 层级 | 负责回答 | 当前规范入口 |
 | --- | --- | --- |
-| workflow | 我手里是哪类输入，下一步走哪条路线 | 数据读取、降采样、非线性几何、BLSE/VCE 页面 |
-| example | 最短可复制代码怎么写 | `inversion_data_loading.md`、`fault_from_nonlinear_geometry.md`、`fault_trace_preprocessing.md` |
-| reference | 列格式、坐标、自动识别边界和参数契约是什么 | `observation_data_readers.md`、`fault_geometry_construction.md` |
+| workflow | 我手里是哪类输入，下一步走哪条路线 | 数据读取、降采样、迹线预处理、非线性几何、BLSE/VCE 页面 |
+| example | 最短可复制代码怎么写 | `inversion_data_loading.md`、`fault_trace_processing.md`、`fault_from_nonlinear_geometry.md`、`fault_trace_preprocessing.md` |
+| reference | 列格式、坐标、marker、自动识别边界和参数契约是什么 | `observation_data_readers.md`、`fault_trace_processing.md`、`fault_geometry_construction.md` |
 
 同一段完整代码不要同时在多篇 workflow 中复制维护。workflow 保留路线表和关键骨架，example
 保存可复制代码，reference 保存完整模式和边界条件。降采样 workflow 的末尾可以保留一次最短

@@ -14,14 +14,15 @@ Bayesian 候选参考，也不要求固定拓扑参数映射。若要比较多�
 | 固定拓扑 | 多个候选是否保持同一组 `Faces`、patch 身份和参数映射 |
 | 几何扰动 | sampled controls 是否随候选参数改变 |
 
-只运行一个已经选定的几何时，使用本页的 `generate_mesh(...)` 路线即可。只有多个候选需要
-逐 patch 对照时，才需要 `snapshot()` 和 `generate_and_deform_mesh(...)`。
+只运行一个已经选定的几何时，使用本页的 `generate_mesh(...)` 路线即可。多个候选需要逐
+patch 对照时使用 `generate_and_deform_mesh(...)`；是否 `snapshot()` 取决于 reference 是
+独立边界还是生成型 dip profile，不能一概而论。
 
 | 任务 | `snapshot()` | `set_densification()` 后重放 | mesh 入口 |
 | --- | --- | --- | --- |
 | 单个固定几何 BLSE/VCE | 不需要 | 不需要 | `generate_mesh(...)` |
-| BLSE/VCE 固定拓扑几何比较 | 需要 | 启用候选期加密时需要 | 首次 `remap=True`，候选 `remap=False` |
-| SMC-FJ 倾角扰动 | 需要 | 启用候选期加密时需要 | 准备期 `remap=True`，采样期 `remap=False` |
+| BLSE/VCE 独立 top/bottom 的固定拓扑比较 | 需要 | 启用候选期加密时需要 | 首次 `remap=True`，候选 `remap=False` |
+| 生成型 dip-profile 的固定拓扑比较或 SMC-FJ | 不 snapshot 派生 bottom；使用 `set_dip_profile()` | 启用候选期加密时需要 | 准备期 `remap=True`，候选期 `remap=False` |
 
 ## 最小固定几何代码
 

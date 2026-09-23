@@ -137,9 +137,10 @@ solver : strike=200, dip=70, side_flipped=True
 
 ### 高级多倾角 Bayesian 扰动
 
-`set_dip_control_points(...)` 配合 `perturb_dips_with_preset_params(...)` 时，控制点 dip 可以使用
-带符号形式或与之等价的 `0–180°` 形式。setter 会立即校验坐标、长度和倾角域，并在只读
-`DipControlPoints` 中统一保存连续 `(0, 180)` 值；proposal 随后只做加法，不再猜测原始表达，
+`set_dip_profile(...)` 配合 `perturb_dips_with_preset_params(...)` 时，sampled/fixed controls
+中的 dip 可以使用带符号形式或与之等价的 `0–180°` 形式。setter 会立即校验坐标、长度和
+倾角域，并在只读 profile 中统一保存连续 `(0, 180)` 值；proposal 随后只对 sampled
+controls 做加法，不再猜测原始表达，
 因此可以连续跨过直立面：
 
 ```text
@@ -158,3 +159,5 @@ reference -80° == 100°；二者加 -20° 后都得到 80°
 - [Bayesian 非线性几何反演](../workflows/03_nonlinear_geometry_bayesian.md)
 - [非线性几何结果到 fault object](../examples/fault_from_nonlinear_geometry.md)
 - [Fault Geometry Construction](../reference/fault_geometry_construction.md)
+- [倾角剖面模式总览](../reference/dip_profile/index.md)
+- [旧倾角剖面调用迁移](../reference/dip_profile/migration.md)

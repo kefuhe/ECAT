@@ -24,6 +24,25 @@ GF、Laplacian 和约束。
 | ECAT 降采样、外部 SAR 点或 GNSS ENU | [反演前读取 InSAR 与 GNSS](../examples/inversion_data_loading.md) | [观测数据读入参考](../reference/observation_data_readers.md) |
 | BLSE/VCE 配置与约束 | 本页[配置文件来源](#配置文件来源) | [线性滑动配置](../reference/config_linear_slip.md) |
 
+<a id="input-handoff"></a>
+
+### 把三个输入接成同一个问题
+
+| 已准备的内容 | 在本阶段如何使用 | 创建 inversion 前核对 |
+| --- | --- | --- |
+| [数据读入短例](../examples/inversion_data_loading.md#assemble-geodata)得到的 `geodata` | 传给构造函数的 `geodata` | 共同投影原点、单位、协方差和配置数据顺序 |
+| [几何交接短例](../examples/fault_from_nonlinear_geometry.md#geometry-handoff)得到的 `rect` 或 `tri` | 将选定对象放入 `faults_list`，不重复建一套占位几何 | mesh 已完成，断层名与主配置及 bounds 一致 |
+| 本页生成并修改的主配置与 bounds | 分别传给 `config` 和 `bounds_config` | 实际数据与断层名称、GF、平滑和约束均已核对 |
+
+一个或多个断层直接按求解参数块顺序放入列表即可：`faults_list = [fault]`，多断层则写成
+`faults_list = [west_fault, east_fault]`。不需要为了保序先建 `OrderedDict` 再转回列表；对象
+的 `name` 用于匹配配置 source 名，列表位置用于确定 source/参数块顺序。
+
+第一次装配时，可按下方典型脚本或[最小 BLSE 脚本](../examples/blse_minimal_run.md)的顺序组织。
+如果已经建立 `geodata` 和 fault，就替换其中的数据与构网部分，继续使用自己的对象；
+不要把示例中的坐标、数据文件名或 `MyFault/MainFault` 当作本项目的默认值。
+先完成一次固定权重求解与输出检查，再进入 VCE 或参数搜索。
+
 ## 运行与诊断入口
 
 | 你要确认的问题 | 推荐入口 | 相关参考 |
@@ -34,9 +53,9 @@ GF、Laplacian 和约束。
 | 如何计算 Euler/block 模式的震间 loading/backslip/coupling | [Interseismic Kinematics](../reference/interseismic_kinematics.md) | [线性滑动配置](../reference/config_linear_slip.md#震间配置) |
 | 如何用深部自由滑动作为浅部加载代理 | [Deep Slip Loading Proxy](../reference/deep_slip_loading_proxy.md) | [Fault Patch Indices](../reference/fault_patch_indices.md) |
 | sigma 和 alpha 如何解释 | [Sigmas and Alpha](../reference/sigmas_alpha.md) | [BLSE/VCE 参考](../reference/blse_vce.md) |
-| 固定几何后如何选择平滑强度 | [固定几何平滑搜索](04a_blse_smoothing_search.md) | [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-loop) |
-| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [Fit Statistics](../reference/fit_statistics.md) |
-| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | 参见该工作流中的顺序式示例 |
+| 固定几何后如何选择平滑强度 | [固定几何 L-curve](04a_blse_l_curve.md) | [L-curve 模板](../../scripts/test_BLSE_L_Curve.py), [BLSE/VCE 参考](../reference/blse_vce.md#smoothing-scan) |
+| 迹线已定但需要用 BLSE 比较倾角 | [固定拓扑倾角搜索](04b_blse_dip_search.md) | [倾角模板](../../scripts/test_dip_search_BLSE.py), [Fit Statistics](../reference/fit_statistics.md) |
+| 如何检查倾角选择是否依赖平滑强度 | [倾角 × 平滑敏感性](04c_blse_dip_smoothing_search.md) | [联合模板](../../scripts/test_dip_smoothing_search_BLSE.py) |
 
 ## 目标
 
@@ -149,6 +168,8 @@ inv = BoundLSEMultiFaultsInversion(
     verbose=True,
 )
 
+# 求解前核对 L 中的 source/slip/poly 列；sigma/alpha 是尺度控制，不占 L。
+inv.print_parameter_positions()
 inv.run(penalty_weight=None, alpha=[np.log10(1 / 100.0)])
 inv.extract_and_plot_blse_results(
     plot_faults=True,
@@ -160,6 +181,12 @@ inv.extract_and_plot_blse_results(
     show=False,
 )
 ```
+
+`print_parameter_positions()` 只读 constraint manager 已解析的线性布局。需要程序化检查时
+使用 `collect_parameter_layout()` 返回的 rows，不要解析终端表格。求解后的活动
+sigma/alpha 数值仍由 scale parameter report 给出；结构表不会从配置初值猜测结果。完整
+`S/L` 语义和各诊断入口的职责见
+[参数列布局与诊断接口](../concepts/observation_matrix_layout.md#参数列布局与诊断接口)。
 
 `clon/clat/cdepth` 对应非线性几何结果中的 `lon/lat/depth`，含义是断层顶边中点三维坐标。`fault.top` 和 `fault.depth` 是线性滑动面扩展后的顶部、底部深度，不能混写。
 
@@ -184,18 +211,61 @@ inv.plot_fault_fields(fields=("total", "ss"), outdir="output", file_type="png")
 Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任一结果入口原有的数据类型
 参与范围。
 
-公共 `test_slip_inv_BLSE.py --mode single` 在该入口之后直接复用已经生成的 synthetic，
-不再调用第二套 `buildsynth()`。默认写出 GPS 点表以及 InSAR/opticorr 降采样多边形；增加
-`--export-point-values` 时，才把 raster 逐点表写到 `Modeling/points/`。InSAR 点表包含 ENU
-投影向量，opticorr 点表同行包含 east/north。`triangular=None` 让 CSI 按 corner 形状选择
-三角形或四边形，避免脚本误把降采样类型写死。
+公共 `test_slip_inv_BLSE.py --mode single` 与 `test_slip_inv_VCE.py` 在该入口之后直接复用已经生成的 synthetic，
+不再调用第二套 `buildsynth()`。GPS 与没有 corner 的 InSAR/opticorr 输入直接写点表；有
+corner 的 raster 默认写降采样多边形，增加 `--export-point-values` 后才在
+`Modeling/points/` 额外写中心点表。InSAR 点表包含 ENU 投影向量，opticorr 点表同行包含
+east/north。多边形调用的 `triangular=None` 让 CSI 按 corner 形状选择三角形或四边形，
+避免脚本误把降采样类型写死。
+
+## 棋盘格分辨率检查
+
+固定几何、约束和数据读入方式已经确认后，可复制
+[`test_BLSE_Inv_Checkboard.py`](../../scripts/test_BLSE_Inv_Checkboard.py) 检查空间分辨率：
+
+```bash
+python test_BLSE_Inv_Checkboard.py
+```
+
+模板按下列顺序运行：
+
+```text
+固定 fault/mesh + InSAR/GPS/optical 观测几何与活动分量
+  -> 生成 checkerboard truth
+  -> 正演 synthetic
+  -> 按数据名加噪并更新对角 Cd
+  -> synthetic 替换原观测
+  -> BLSE 恢复
+  -> truth/recovery、拟合图和 data/synth/resid 文件
+```
+
+这是一个串行模板，不使用 MPI rank。随机种子只固定加噪复现性，不改变反演公式。
+有 corner 的 InSAR/optical 结果保留为降采样多边形；没有 corner 的点模式输入直接写点表，
+GPS 写站点 ENU 表，optical 点表同行写 east/north。
+
+启用 GPS 时，取消脚本中 GPS 读取块的注释，把对象加入 `gpsdata`，并在 `noise_config` 中用
+完全相同的数据名称设置噪声。配置中的 `geodata.data`、`verticals`、`faults`、`polys` 以及
+sigma 顺序必须继续与脚本中的 `geodata` 一致。若 U 为 NaN 或对应
+`verticals: false`，checkerboard 只替换并加噪 E、N，按 `direction="en"` 重建 Cd，原 U
+保持不变；只有 U 有效且配置允许时才处理 ENU。启用 optical 块时，把对象加入
+`opticaldata`，用同名 `noise_config` 项设置标量或 `east/north` 噪声，并把对应
+`verticals` 项设为 `false`。
+
+GPS 使用标量噪声时，各站、各活动分量独立抽样，但 E/N/U 共用同一标准差；它不是整条
+ENU 向量共享一个随机数。垂向误差明显更大时，可在同一个 `noise_config` 中给 GPS 数据名
+配置 `east/north/up` 三个标准差。optical 的 east/north 也独立抽样。可复制调用方式及
+对角 `Cd` 的同步规则见
+[checkerboard 模板说明](../examples/script_templates.md#非线性正演和分辨率检查模板)。
+
+若明确知道近断层像元存在解缠、失相干或无法解析的破裂带，可以在创建 inversion 前启用
+脚本中的过滤示例，但它会改变覆盖范围和最终分辨率结论，不能当作通用预处理默认值。
 
 ## 求解模式
 
 | 模式 | 方法 | 用途 |
 | --- | --- | --- |
 | 固定平滑 | `run(alpha=[...])` 或 `run(penalty_weight=[...])` | 复现已选模型 |
-| L-curve / smoothing loop | `simple_run_loop(...)` | 诊断平滑与数据拟合权衡 |
+| L-curve / smoothing loop | `scan_penalty_weights(...)` | 返回候选摘要和逐数据集长表，诊断平滑与数据拟合权衡 |
 | VCE | `run_simple_vce()` | 估计数据和约束权重 |
 
 三种模式共用同一套约束配置和管理器。`bounds_config.yml` 中的边界、rake、
@@ -214,6 +284,10 @@ VCE 对所有可更新有效组统一估计绝对方差尺度，并以
 未通过证书时会回到中央求解路线；不要为了提速删除具有物理意义的 bounds、rake 或其他
 约束。启用条件、诊断字段和回退含义见
 [连续 QP 快速路径](../reference/blse_vce.md#连续-qp-快速路径可选)。
+
+BLSE、VCE、L-curve、倾角搜索和 checkerboard 模板均为单 Python 进程任务，直接执行
+`python <script>.py`；不要用 `mpiexec` 或 SMC 启动脚本。数值线性代数仍可使用底层线程，
+其设置与 MPI rank 是两层不同的并行机制。
 
 Smoothing loop 只返回候选表和权衡图：粗糙度统一按未加权 \(L_0\) 计算，且循环结束后
 恢复调用前的活动解。图中的 preferred 点不会自动成为最终模型；选定权重后，用固定平滑
@@ -298,6 +372,22 @@ OpenBLAS 还是两者并存，并在代表性案例上比较 1、4、8、16 线�
 - BLSE 的 `run()` 和 VCE 的 `run_simple_vce()` 返回时已分发最新模型；统计应紧跟在该轮求解之后。`fit_statistics_to_dataframe()` 只转换已有 rows，不会重新求解或重建另一套模型。
 - VCE 或 L-curve 结果被保存，而不只是保留最终图。
 
+## 结果判读与后续分析 {#result-checks}
+
+先确认上述输出和检查清单，再判断滑动特征是否稳定。拟合好坏应结合逐数据集残差、
+模型约束和敏感性分析解释，不设跨案例通用的 RMS 合格阈值。
+
+| 观察到的现象 | 优先核对 | 下一步 |
+| --- | --- | --- |
+| 滑动集中在模型边界 | 网格范围、边界零滑和数据覆盖 | 比较合理的边界与网格方案，记录滑动特征是否稳定 |
+| 残差呈大尺度或局部系统结构 | 数据改正项、固定几何、观测投影 | 对照 data/synth/resid，回到对应的数据或几何检查 |
+| 结果随平滑强度明显变化 | 拟合与未加权粗糙度的权衡 | 做[固定几何 L-curve](04a_blse_l_curve.md)，选定后显式求解并导出 |
+| VCE 权重异常或结果不稳定 | 协方差、分组、固定组和约束 | 对照固定权重 BLSE 基线，保存迭代诊断后再解释权重 |
+
+报告时保留数据、几何、网格、约束与权重设置，并按
+[推荐报告内容](../reference/blse_vce.md#recommended-reporting)保存逐数据集统计和模型输出。
+进入联合 Bayesian 前，先确认固定几何基线及其局限；固定几何结果本身不包含几何不确定性的传播。
+
 ## 下一步
 
 - 要从最短代码开始，转到 [BLSE/VCE 最小脚本骨架](../examples/blse_minimal_run.md)。
@@ -306,7 +396,7 @@ OpenBLAS 还是两者并存，并在代表性案例上比较 1、4、8、16 线�
 - 要用深部自由滑动作为加载代理，查 [深部滑动加载代理](../reference/deep_slip_loading_proxy.md)。
 - 要解释 trace 长度、mesh、面积、slip 和 Mw 统计，查 [Fault Summary](../reference/fault_summary.md)。
 - 要确认 RMS/VR 公式、poly include 语义或输出结构化拟合表，查 [Fit Statistics](../reference/fit_statistics.md)。
-- 要在固定几何上选择平滑强度，查 [BLSE 固定几何平滑参数搜索](04a_blse_smoothing_search.md)。
+- 要在固定几何上选择平滑强度，查 [BLSE 固定几何 L-curve](04a_blse_l_curve.md)。
 - 要在保持 patch 身份一致的条件下比较一组倾角，查 [BLSE 固定拓扑倾角搜索](04b_blse_dip_search.md)。
 - 要检查倾角与平滑耦合，查 [倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md)。
 - 如果固定几何不足以表达滑动分布不确定性，查高级路线 [Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)。

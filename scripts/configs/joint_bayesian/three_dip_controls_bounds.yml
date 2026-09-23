@@ -1,0 +1,20 @@
+# Three dip increments in degrees, in dip_controls input-row order.
+# If Python declares ["wm", "wm", "east"], provide two bounds in first-label
+# order [wm, east] and change the main-config sample slice to [0, 2].
+# Per-parameter bounds use explicit lower/upper arrays. A list of four or three
+# [lb, ub] rows is not a supported ECAT bounds representation.
+lb: -10.0
+ub: 10.0
+
+geometry:
+  MainFault:
+    lb: [-15.0, -15.0, -15.0]
+    ub: [15.0, 15.0, 15.0]
+
+strikeslip:
+  MainFault: [-10.0, 10.0]
+dipslip:
+  MainFault: [-10.0, 10.0]
+
+sigmas: [-3.0, 3.0]
+alpha: [-3.0, 3.0]

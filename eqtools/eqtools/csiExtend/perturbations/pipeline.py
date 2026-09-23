@@ -426,6 +426,12 @@ class RotateStage(Stage):
 
         state.mark_dirty(*_collect_dirty_labels(self.targets, state))
         state.mark_mesh_change('rigid')
+        if (
+            any(target.kind == 'top' for target in self.targets)
+            and 'top_strike' in state.meta
+        ):
+            from .dip_ops import compute_strike
+            state.meta['top_strike'] = compute_strike(state.top)
         return state
 
     def _resolve_pivot(self, state, ctx):
@@ -556,6 +562,7 @@ class DipGeneratorStage(Stage):
     dip_profile: DipProfileSpec
     perturbations: np.ndarray
     angle_unit: str = 'degrees'
+    perturbation_layout: object | None = None
     densify_top: bool = True
     discretization_interval: float | None = None
     use_average_strike: bool = False
@@ -663,6 +670,7 @@ class DipGeneratorStage(Stage):
             state.top,
             self.perturbations,
             angle_unit=self.angle_unit,
+            perturbation_layout=self.perturbation_layout,
         )
         event_stations = self._profile_event_stations(pre_resolved)
 
@@ -691,6 +699,7 @@ class DipGeneratorStage(Stage):
             state.top,
             self.perturbations,
             angle_unit=self.angle_unit,
+            perturbation_layout=self.perturbation_layout,
         )
         interpolated_dip = normalize_dip_to_neg90_90(
             resolved.top_dip_continuous
@@ -948,7 +957,10 @@ def run_pipeline(
     """
     ref = fault.geometry_ref
     if ref is None:
-        raise ValueError("fault.geometry_ref is not set. Call snapshot() first.")
+        raise ValueError(
+            "fault.geometry_ref is not set. Call set_dip_profile() for a "
+            "generated dip profile, or snapshot() for independent geometry."
+        )
 
     ctx = PipelineContext(fault=fault, ref=ref, angle_unit=angle_unit)
     state = GeometryState.from_ref(ref)

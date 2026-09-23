@@ -36,6 +36,9 @@ mpiexec -n 4 python your_smc_script.py
 rank 和案例运行都正常，就先保留简单命令；出现两个 `0 1`、启动器冲突、过量线程
 或性能不升反降时，再进入
 [安装与运行故障排查](../getting_started/troubleshooting.md#7-mpi-或-mpiexec-失败)。
+需要把受控线程设置保存成可编辑启动器时，复制
+[Windows 与 WSL 的 MPI 启动脚本](../examples/mpi_launcher_scripts.md)；它们实现相同的
+rank/线程合同，不包含厂商专属 pinning 或科学配置。
 
 ## 2. 一分钟理解五个概念
 

@@ -86,18 +86,25 @@ Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 | 导入、裁切或人工修整后的 mesh 是权威几何 | 从当前 mesh 提取并排序的 top/bottom | `set_edges_for_bayesian_optimization()` |
 | top 必须严格来自迹线、bottom 来自 mesh | trace top + mesh bottom | 上述入口加 `use_trace=True` |
 | 直接变换整个已有 mesh | top/bottom + `Vertices/Faces` | 最终参考 mesh 后 `snapshot(capture_vertices=True, capture_layers=False)` |
-| 多层或变化倾角 | layers 或 dip controls + top/bottom | 设置对应字段后按方法需求显式 `snapshot(...)` |
+| 多层边界 | layers 与对应边界 | 设置 layers 后按方法需求显式 `snapshot(...)` |
+| 非分层生成型倾角 profile | top + dip profile + 可选 density | `set_dip_profile()` 后物化一次零扰动；不 snapshot 派生 bottom |
 
-曲线形状本身不要求先生成 mesh。若曲线 top 已由迹线确定、bottom 已由显式倾角或控制点
-确定，它属于第一行：直接冻结 top/bottom，然后只生成一次参数化 mesh。只有实际 mesh
-边界才是零扰动权威输入时，才需要临时/外部 mesh 和 edge extraction。
+曲线形状本身不要求先生成 mesh。若 top/bottom 已作为独立边界经过检查，它属于第一行；若
+bottom 应由 sampled/fixed controls 对每个候选重新生成，则属于最后一行，不能把一次生成结果
+snapshot 成另一套基线。只有实际 mesh 边界才是零扰动权威输入时，才需要临时/外部 mesh
+和 edge extraction。
+
+`set_dip_profile()` 只在尚无 reference 时捕获当前 top；若已有 reference，它会保留 frozen
+top 并只替换 profile。不要先改 current candidate top、再重复调用 setter 来暗中换基线。
+确实开始新 run 且要采用当前完整 top/bottom 时，使用有意的高级基线刷新入口，并重建 target
+和固定拓扑 mapping。
 
 完整场景表和 `ref*` 接口见
 [可扰动断层几何参考](../reference/geometry_perturbation.md)。曲线断层的可复制片段见
 [联合 Bayesian 几何参考与配置短例](../examples/joint_bayesian_geometry_setup.md)。
 
-沿曲线 top 设置 sampled/fixed dip controls、但 transition 位置尚不明确时，应在正式冻结
-top/bottom 前先做[曲率与转换带预分析](../reference/dip_profile/transition_preflight.md)。该步骤
+沿曲线 top 设置 sampled/fixed dip controls、但 transition 位置尚不明确时，应在最终声明
+profile 和建立 mapping 前先做[曲率与转换带预分析](../reference/dip_profile/transition_preflight.md)。该步骤
 只读 reference top，输出可审阅 endpoint 建议；不会提前启动 mesh、GF 或 SMC。
 
 ### 3. 冻结一次参考
@@ -119,11 +126,11 @@ fault.geometry_summary()
 
 | 场景 | 模板 |
 | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) |
-| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) |
+| 多个沿走向倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) |
 
-它们各有一套位于 [`scripts/configs/joint_bayesian/`](https://github.com/kefuhe/eqtools/tree/main/scripts/configs/joint_bayesian/)
+它们各有一套位于 [`scripts/configs/joint_bayesian/`](../../scripts/configs/joint_bayesian/)
 的主配置和 bounds。新用户可以成套复制；需要从当前版本全部默认字段开始时，使用 CLI：
 
 模板中的 `lon0/lat0` 是数据与断层共享的坐标参考。修改案例时，还要一起核对 geodata 顺序、
@@ -182,6 +189,9 @@ faults:
 `smc_tempering` 同时适用于 FULLSMC 和 SMC-FJ。默认 `1.0/0.5` 保持标准路径；
 提高 `max_delta_beta` 只放宽每个 stage 的硬上限，仍受权重 COV 约束。公式、有效
 样本量和 checkpoint 一致性见 [SMC 温度调度](../reference/smc_tempering.md)。
+新 stage/final HDF5 还会保存样本列布局；历史文件仍可只读查看，但用于续算或 prior reseed
+前必须显式确认其布局。完整兼容规则见
+[Bayesian 联合反演参考](../reference/bayesian_joint_inversion.md#样本文件和覆盖语义)。
 
 三项缺一不可：顶层 `nonlinear_inversion: true`、断层级 `geometry.update: true`，以及
 与方法参数个数匹配的 `sample_positions`。`[0, 1]` 是全局几何采样向量的半开区间，
@@ -194,7 +204,10 @@ faults:
 
 这里的“匹配”由方法契约决定，不等于所有方法都有固定长度。固定组合要求精确个数；
 节点选择类动态方法接受一个广播标量，或每个可移动节点一个值。非分层 dip profile 使用
-显式 sampled/fixed controls：只为 sampled controls 分配参数，也允许一个广播标量。
+显式 sampled/fixed controls：默认只为 sampled controls 分配参数，也允许一个广播标量；
+需要让若干 controls 共享同一倾角增量时，可在 `set_dip_profile()` 中声明
+`perturbation_groups`，此时切片长度必须等于唯一标签数。完整映射表和可复制设置见
+[sampled/fixed/transition 组合](../reference/dip_profile/bayesian_mixed.md#参数角色和顺序)。
 可先运行 `fault.help("方法名")` 查看 reference 和 sample cardinality，再同步修改
 `sample_positions` 与 bounds。配置初始化会在启动采样前检查这些关系。
 
@@ -242,10 +255,10 @@ top/bottom 建立参数映射；`bottom_norm_offset` 保持默认 `None`。只�
 current bottom/初始 mesh 与 frozen reference 分离。它不是 sampler 初值，也不会作为固定项
 自动叠加到后续样本。
 
-若先调用 `set_densification()`，必须再用零扰动调用一次与采样相同的 dip 方法，然后才创建
-mapping。setter 只替换 reference 中的规则，不会立即改写 current top/bottom。系统现在会在
-mesh 准备阶段检查这条生命周期，并在发现旧边界或旧 reference mapping 时直接报错；不要
-通过关闭检查或手工复制数组绕过。标准顺序和真实弧长、trace/profile/mapping 三层节点定义见
+生成型 dip profile 应先完成 `set_dip_profile()` 和可选 `set_densification()`，再用与采样相同
+的方法只物化一次零扰动候选，然后创建 mapping。setter 不立即改写 current top/bottom；若
+改变 reference 后未重放，mesh 准备会拒绝旧边界或旧 mapping。不要 snapshot 派生 bottom，
+也不要用第二次零扰动补偿错误顺序。标准顺序和 trace/profile/mapping 三层节点定义见
 [混合控制倾角剖面](../reference/dip_profile/bayesian_mixed.md#稀疏-top-与候选加密)。
 
 如果非零 offset 是正式物理基线的一部分，应先用与采样方法一致的方向、固定节点和单位
@@ -270,6 +283,13 @@ print(constraint_state["sampling_mode"])
 print(constraint_state["inactive_constraints"])
 print(constraint_state["validation"])
 ```
+
+参数布局表是采样前的结构合同：`S` 表示 SMC 实际保存的采样向量，
+`L` 表示条件线性求解向量。`FULLSMC` 的 slip/poly 在 `S` 中；`SMC_FJ`
+只在 `S` 中采样 geometry 与活动 sigma/alpha，每个候选再求解 `L`。固定尺度组
+会显示但不占用切片。需要程序化核查时读取
+`collect_parameter_layout()` 的 rows，不要解析终端字符。完整字段与诊断职责见
+[参数列布局与诊断接口](../concepts/observation_matrix_layout.md#参数列布局与诊断接口)。
 
 这里的 `constraint_state` 是约束诊断副本，不是断层 `geometry_ref`。还应先对 bounds 的
 极值或少量代表样本做 mesh、GF、Laplacian、面积和残差检查，再启动正式 SMC。
@@ -405,8 +425,9 @@ inversion.extract_and_plot_bayesian_results(
 
 随后才可绘制几何改正、联合 KDE，并导出 fault/slip 文件。模板使用
 `collect_fit_statistics(..., rebuild_synth=False)` 复用高层入口已经生成的 synthetic；
-`writeDecim2file(..., triangular=None)` 根据 corner 的 4/6/8 列自动识别输出多边形，不把
-降采样格式硬编码为三角形。模板默认只保存代表滑动；需要逐分量 posterior 离散度图时增加
+有 corner 的 raster 才调用 `writeDecim2file(..., triangular=None)`，并由 CSI 自动识别输出
+多边形；没有 corner 的点输入直接调用 `write2file()`。模板默认只保存代表滑动；需要逐分量
+posterior 离散度图时增加
 `--plot-std`。SMC-FJ 会为已接受样本重求条件线性解，因此这一产品可能明显耗时，但不会重算
 likelihood、prior 或 Hessian 的曲率/log-determinant。离散度不会替代随后用于 synthetic 和
 文本导出的 median 模型。`--no-plot` 关闭所有图件，但仍会激活代表模型并输出统计、GMT 和
@@ -416,9 +437,10 @@ likelihood、prior 或 Hessian 的曲率/log-determinant。离散度不会替代
 python test_joint_bayesian_three_dip_controls.py --plot-std
 ```
 
-需要逐点表格时，在读取已有样本的结果命令后增加 `--export-point-values`。InSAR 表写出
-`lon/lat/value` 和 ENU 投影向量；光学表把 east/north 同行写出。它们位于
-`Modeling/points/`，与默认用于 GMT 着色的多边形文件分开，且不会重新正演：
+没有 corner 的 raster 输入默认就在 `Modeling/` 写点表。有 corner 的降采样数据需要额外
+中心点表时，在读取已有样本的结果命令后增加 `--export-point-values`。InSAR 表写出
+`lon/lat/value` 和 ENU 投影向量；光学表把 east/north 同行写出。额外点表位于
+`Modeling/points/`，与用于 GMT 着色的多边形文件分开，且不会重新正演：
 
 ```bash
 python test_joint_bayesian_bottom_offset.py --export-point-values
@@ -437,7 +459,8 @@ python test_joint_bayesian_bottom_offset.py --export-point-values
 - 滑动后验均值、中位数和可信区间是否受几何扰动主导。
 - 每条数据的残差、sigma 后验和权重是否合理。
 - 超参数摘要中 geometry 的角色/单位是否与配置一致，sigma/alpha 的 `Scale (s)`、
-  `Sampling`、`State` 和 `Row mult. (1/s)` 是否能逐组对上；不要把 `log10(s)` 当成物理尺度。
+  `Value source`、`Sample coord.`、`State` 和 `Row mult. (1/s)` 是否能逐组对上；不要把
+  `log10(s)` 当成物理尺度。
 - `SMC_FJ` 中线性约束是否按预期生效。
 - `inactive_constraints` 是否只包含当前模式预期不消费的配置项。
 - 是否出现重复的 constrained linear solve 失败告警；若有，应先检查约束可行性。

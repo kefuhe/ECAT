@@ -20,6 +20,12 @@ SAR products, replace only that reader block as long as the resulting object
 provides ``lon``, ``lat``, ``los``, and flat valid-pixel indices.
 """
 
+# Editing guide
+# Edit User-editable parameters; customize the reader/model blocks as needed.
+# Relative paths in this template start from the script directory.
+# Customize figures in plotting calls or local figure settings; keep execution order.
+# Template selection and setup: docs/examples/script_templates.md
+
 import argparse
 import os
 from pathlib import Path
@@ -174,7 +180,7 @@ def run_forward_and_save(*, plot=True, show=False):
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    # --------------------- Read fault models --------------------- #
+    # ======================== Read fault models =========================
     faults = {}
     for info in FAULT_FILES:
         fault_type = info["type"].lower()
@@ -192,7 +198,7 @@ def run_forward_and_save(*, plot=True, show=False):
         faults[info["name"]] = fault
         print(f"Read fault {info['name']}: {fault_path}, patches={fault.numpatch}")
 
-    # --------------------- Process each SAR image --------------------- #
+    # ====================== Process each SAR image ======================
     for image_name, files in HYP3_IMAGES.items():
         print(f"\nImage {image_name}")
 

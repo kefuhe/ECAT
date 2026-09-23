@@ -1,0 +1,15 @@
+# One sampled geometry value: global bottom-edge offset in km.
+lb: -10.0
+ub: 10.0
+
+geometry:
+  MainFault: [-15.0, 15.0]
+
+strikeslip:
+  MainFault: [-10.0, 10.0]
+dipslip:
+  MainFault: [-10.0, 10.0]
+
+sigmas: [-3.0, 3.0]
+alpha: [-3.0, 3.0]
+

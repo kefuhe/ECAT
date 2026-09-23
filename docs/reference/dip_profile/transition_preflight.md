@@ -183,8 +183,8 @@ fault.set_dip_profile(
 拒绝旧建议，要求重新分析；它不会把旧弧长位置错配到新的 reference。
 
 最后仍应调用 [`plot_dip_profile_diagnostics()`](bayesian_mixed.md#只读诊断) 验证 controls、
-transition 和连续 dip profile，再生成零扰动 bottom、冻结正式 reference、建立 mesh，并进入
-Bayesian 配置。
+transition 和连续 dip profile。审阅完成后先让最终 setter 固化 profile 和可选 density，再
+物化一次零扰动 bottom、建立 mesh/mapping，并进入 Bayesian 配置；不要 snapshot 派生 bottom。
 
 ## 怎样判断建议是否可用
 

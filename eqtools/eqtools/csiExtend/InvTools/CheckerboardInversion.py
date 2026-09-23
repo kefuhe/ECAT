@@ -4,6 +4,7 @@ import os
 import logging
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
+from collections.abc import Mapping
 from typing import Union, Dict, List, Optional, Any
 from pathlib import Path
 
@@ -143,8 +144,8 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
     # =================================================================
     # 2. Forward modeling and data injection (enhanced version)
     # =================================================================
-    def _determine_noise_sigma(self, noise_sigma: Union[float, List[float], Dict[str, float]], 
-                               data_index: int, data_name: str) -> float:
+    def _determine_noise_sigma(self, noise_sigma: Union[float, List[Any], Dict[str, Any]],
+                               data_index: int, data_name: str) -> Any:
         """Determine noise level for specific dataset.
         
         Args:
@@ -153,12 +154,13 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
             data_name: Name of current dataset
             
         Returns:
-            Noise sigma value for this dataset
+            Noise specification for this dataset. GPS data may use a mapping
+            with ``east``, ``north`` and, when active, ``up`` values.
         """
         if isinstance(noise_sigma, dict):
             isigma = noise_sigma.get(data_name, 0.0)
             if self.verbose:
-                if isigma == 0.0:
+                if not isinstance(isigma, Mapping) and isigma == 0.0:
                     logger.warning(f"    No noise specified for '{data_name}' in dict; defaulting to 0.0")
             return isigma
         elif isinstance(noise_sigma, list):
@@ -188,42 +190,239 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
             return verticals_conf
         return True
     
-    def _inject_noise_and_update_weights(self, data: Any, sigma: float, update_weight: bool) -> None:
+    @staticmethod
+    def _gps_uses_vertical(data: Any, requested_vertical: bool) -> bool:
+        """Return the active GPS component layout used by CSI."""
+        return bool(
+            requested_vertical
+            and not np.isnan(np.asarray(data.vel_enu)[:, 2]).any()
+        )
+
+    @staticmethod
+    def _resolve_component_noise_sigmas(
+        sigma: Any,
+        components: tuple[str, ...],
+        *,
+        data_kind: str,
+        allowed_components: Optional[tuple[str, ...]] = None,
+    ) -> np.ndarray:
+        """Resolve scalar or named independent-component noise levels."""
+        if isinstance(sigma, Mapping):
+            allowed = set(allowed_components or components)
+            unknown = set(sigma) - allowed
+            missing = set(components) - set(sigma)
+            if unknown:
+                raise ValueError(
+                    f"{data_kind} noise component mapping contains unsupported "
+                    f"keys: {sorted(unknown)}; use {', '.join(components)}"
+                )
+            if missing:
+                raise ValueError(
+                    f"{data_kind} noise component mapping is missing active "
+                    "components: "
+                    f"{sorted(missing)}"
+                )
+            values = np.asarray([sigma[name] for name in components], dtype=float)
+        else:
+            values = np.full(len(components), float(sigma), dtype=float)
+
+        if not np.isfinite(values).all() or np.any(values < 0.0):
+            raise ValueError(
+                f"{data_kind} noise standard deviations must be finite and "
+                "non-negative"
+            )
+        return values
+
+    @classmethod
+    def _resolve_gps_noise_sigmas(cls, sigma: Any, vertical: bool) -> np.ndarray:
+        """Return one standard deviation for each active CSI GPS component."""
+        components = ("east", "north", "up") if vertical else ("east", "north")
+        return cls._resolve_component_noise_sigmas(
+            sigma,
+            components,
+            data_kind="GPS",
+            allowed_components=("east", "north", "up"),
+        )
+
+    @classmethod
+    def _resolve_optical_noise_sigmas(cls, sigma: Any) -> np.ndarray:
+        """Return east/north noise levels for a CSI opticorr dataset."""
+        return cls._resolve_component_noise_sigmas(
+            sigma,
+            ("east", "north"),
+            data_kind="Optical",
+        )
+
+    def _prepare_synthetic_plan(
+        self,
+        noise_sigma: Union[float, List[Any], Dict[str, Any]],
+        update_weight: bool,
+    ) -> list[tuple[Any, bool, Any]]:
+        """Validate all dataset layouts and noise specifications before mutation."""
+        plan = []
+        for index, data in enumerate(self.geodata):
+            sigma = self._determine_noise_sigma(
+                noise_sigma,
+                index,
+                data.name,
+            )
+            use_vertical = self._get_vertical_setting(index)
+
+            if data.dtype == "gps":
+                use_vertical = self._gps_uses_vertical(data, use_vertical)
+                resolved_sigma = self._resolve_gps_noise_sigmas(
+                    sigma,
+                    use_vertical,
+                )
+            elif data.dtype == "opticorr":
+                if use_vertical:
+                    raise ValueError(
+                        f"Optical dataset '{data.name}' must use verticals: false "
+                        "for checkerboard inversion"
+                    )
+                use_vertical = False
+                resolved_sigma = self._resolve_optical_noise_sigmas(sigma)
+            else:
+                if isinstance(sigma, Mapping):
+                    raise TypeError(
+                        "Component noise mappings are supported only for GPS "
+                        "and opticorr data"
+                    )
+                resolved_sigma = float(sigma)
+                if not np.isfinite(resolved_sigma) or resolved_sigma < 0.0:
+                    raise ValueError(
+                        f"Noise standard deviation for '{data.name}' must be "
+                        "finite and non-negative"
+                    )
+
+            if isinstance(resolved_sigma, np.ndarray):
+                has_noise = bool(np.any(resolved_sigma > 0.0))
+                if update_weight and has_noise and np.any(resolved_sigma <= 0.0):
+                    raise ValueError(
+                        f"Active {data.dtype} noise standard deviations must be "
+                        "positive when update_weight=True"
+                    )
+                if (
+                    data.dtype == "opticorr"
+                    and has_noise
+                    and np.any(resolved_sigma <= 0.0)
+                ):
+                    raise ValueError(
+                        "Active opticorr noise standard deviations must be "
+                        "positive when optical noise is enabled"
+                    )
+                if has_noise and not hasattr(data, "add_random_noise"):
+                    raise AttributeError(
+                        f"CSI {data.dtype}.add_random_noise() is required for "
+                        "checkerboard noise injection; update the CSI package"
+                    )
+
+            plan.append((data, use_vertical, resolved_sigma))
+
+        return plan
+
+    def _inject_noise_and_update_weights(
+        self,
+        data: Any,
+        sigma: Any,
+        update_weight: bool,
+        *,
+        vertical: bool = True,
+    ) -> None:
         """Add noise to synthetic data and optionally update weights.
         
         Args:
             data: Dataset object
-            sigma: Noise standard deviation
+            sigma: Noise standard deviation. GPS data may instead use an
+                ``east``/``north``/``up`` component mapping.
             update_weight: Whether to update weight matrix
+            vertical: Include the GPS up component when it is active
         """
-        if sigma <= 0:
-            return
-            
-        if self.verbose:
-            logger.info(f"    Injecting noise sigma={sigma} into '{data.name}'")
-        
         try:
-            data.add_random_noise(sigma=sigma, data='synth')
-            
-            if update_weight:
-                if hasattr(data, 'err'):
-                    data.err[:] = sigma
-                if hasattr(data, 'buildDiagCd'):
+            if data.dtype == 'gps':
+                component_sigmas = (
+                    np.asarray(sigma, dtype=float)
+                    if isinstance(sigma, np.ndarray)
+                    else self._resolve_gps_noise_sigmas(sigma, vertical)
+                )
+                if not np.any(component_sigmas > 0.0):
+                    return
+                if self.verbose:
+                    logger.info(
+                        "    Injecting GPS noise sigma=%s into '%s'",
+                        component_sigmas.tolist(),
+                        data.name,
+                    )
+                data.add_random_noise(
+                    sigma_east=component_sigmas[0],
+                    sigma_north=component_sigmas[1],
+                    sigma_up=component_sigmas[2] if vertical else None,
+                    data="synth",
+                )
+                if update_weight:
+                    n_components = 3 if vertical else 2
+                    data.err_enu[:, :n_components] = component_sigmas
+                    data.buildCd(direction='enu' if vertical else 'en')
+            elif data.dtype == 'opticorr':
+                component_sigmas = (
+                    np.asarray(sigma, dtype=float)
+                    if isinstance(sigma, np.ndarray)
+                    else self._resolve_optical_noise_sigmas(sigma)
+                )
+                if not np.any(component_sigmas > 0.0):
+                    return
+                if self.verbose:
+                    logger.info(
+                        "    Injecting optical noise sigma=%s into '%s'",
+                        component_sigmas.tolist(),
+                        data.name,
+                    )
+                data.add_random_noise(
+                    sigma_east=component_sigmas[0],
+                    sigma_north=component_sigmas[1],
+                    data="synth",
+                )
+                if update_weight:
+                    data.err_east[:] = component_sigmas[0]
+                    data.err_north[:] = component_sigmas[1]
                     data.buildDiagCd()
-        except Exception as e:
-            logger.warning(f"Failed to add noise or update weights for '{data.name}': {e}")
+            else:
+                sigma = float(sigma)
+                if sigma <= 0:
+                    return
+                if self.verbose:
+                    logger.info(f"    Injecting noise sigma={sigma} into '{data.name}'")
+                data.add_random_noise(sigma=sigma, data='synth')
+                if update_weight:
+                    if hasattr(data, 'err'):
+                        data.err[:] = sigma
+                    if hasattr(data, 'buildDiagCd'):
+                        data.buildDiagCd()
+        except Exception:
+            logger.exception(
+                "Failed to add noise or update weights for '%s'",
+                data.name,
+            )
+            raise
     
-    def _replace_observation_with_synthetic(self, data: Any) -> None:
+    def _replace_observation_with_synthetic(
+        self,
+        data: Any,
+        *,
+        vertical: bool = True,
+    ) -> None:
         """Replace observation values with synthetic data.
         
         Args:
             data: Dataset object
+            vertical: Include the GPS up component when it is active
         """
-        if data.dtype == 'opticorr':
-            if hasattr(data, 'synth_east'): 
-                data.east = data.synth_east.copy()
-            if hasattr(data, 'synth_north'): 
-                data.north = data.synth_north.copy()
+        if data.dtype == 'gps':
+            n_components = 3 if vertical else 2
+            data.vel_enu[:, :n_components] = data.synth[:, :n_components]
+        elif data.dtype == 'opticorr':
+            data.east = data.east_synth.copy()
+            data.north = data.north_synth.copy()
         elif data.dtype == 'crossfaultoffset':
             if hasattr(data, 'synth_parallel') and data.synth_parallel is not None:
                 data.fault_parallel = data.synth_parallel.copy()
@@ -237,7 +436,7 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
             else:
                 logger.warning(f"Dataset '{data.name}' has no 'synth' attribute")
     
-    def apply_synthetics(self, noise_sigma: Union[float, List[float], Dict[str, float]] = 0.0, 
+    def apply_synthetics(self, noise_sigma: Union[float, List[Any], Dict[str, Any]] = 0.0,
                         update_weight: bool = True, save_dir: Optional[str] = 'Modeling') -> None:
         """
         Generate synthetic data -> add noise -> replace observation values -> (optional) update weights 
@@ -247,7 +446,9 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
             noise_sigma: Noise standard deviation.
                 - float: Use same noise for all data.
                 - list: Noise values in order of geodata.
-                - dict: {'T012A': 0.005, 'GPS': 0.002} Specify by name.
+                - dict: ``{'T012A': 0.005, 'GPS': 0.002}`` specifies each
+                  dataset by name. GPS and opticorr values may be component
+                  mappings using their active east/north(/up) components.
             update_weight: Whether to update data weight matrix (Cd) based on new noise.
                           Recommended as True to ensure inversion weights match actual noise level.
             save_dir: Directory to save output. None to skip saving.
@@ -255,28 +456,39 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
         if self.verbose:
             logger.info(f"\n--> [Forward Modeling] Generating synthetics...")
 
+        # Resolve every dataset first so an invalid mixed-data specification
+        # cannot fail only after earlier observations have already been replaced.
+        plan = self._prepare_synthetic_plan(noise_sigma, update_weight)
+
         # Backup slip information before processing (moved outside loop - bug fix)
         faults_checkslip = [f.slip.copy() for f in self.faults if hasattr(f, 'slip')]
 
-        for i, data in enumerate(self.geodata):
+        # Build every synthetic before replacing any observation values.
+        for data, use_vertical, _ in plan:
+            data.buildsynth(
+                faults=self.faults,
+                direction='sd',
+                poly=None,
+                vertical=use_vertical,
+            )
+
+        for data, use_vertical, sigma in plan:
             try:
-                # 1. Determine noise level for this data
-                sigma = self._determine_noise_sigma(noise_sigma, i, data.name)
-
-                # 2. Determine whether to compute vertical component
-                use_vertical = self._get_vertical_setting(i)
-
-                # 3. Forward modeling (G * m_true)
-                # poly=None: Only compute tectonic deformation
-                data.buildsynth(faults=self.faults, direction='sd', poly=None, vertical=use_vertical)
+                # Add noise and optionally rebuild the data covariance.
+                self._inject_noise_and_update_weights(
+                    data,
+                    sigma,
+                    update_weight,
+                    vertical=use_vertical,
+                )
                 
-                # 4. Add noise and update weights
-                self._inject_noise_and_update_weights(data, sigma, update_weight)
+                # Replace observation values with synthetic data.
+                self._replace_observation_with_synthetic(
+                    data,
+                    vertical=use_vertical,
+                )
                 
-                # 5. Replace observation values with synthetic
-                self._replace_observation_with_synthetic(data)
-                
-                # 6. Save files
+                # Save files when requested.
                 if save_dir:
                     self._save_data_to_file(data, save_dir, suffix='data')
                     
@@ -338,13 +550,31 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
             out_path = Path(out_dir)
             out_path.mkdir(parents=True, exist_ok=True)
             
-            if data.dtype == 'opticorr':
-                for idir in ['east', 'north']:
-                    data.writeDecim2file(
-                        f'{data.name}_{suffix}_{idir}.txt', 
-                        f'data{idir}', 
-                        outDir=str(out_path), 
-                        triangular=True
+            if data.dtype == 'gps':
+                data.write2file(
+                    f'{data.name}_{suffix}.txt',
+                    outDir=str(out_path),
+                    data='data',
+                )
+            elif data.dtype == 'opticorr':
+                corner = getattr(data, 'corner', None)
+                has_corner = corner is not None and np.asarray(corner).size > 0
+                if has_corner:
+                    for component in ('East', 'North'):
+                        data.writeDecim2file(
+                            f'{data.name}_{suffix}_{component.lower()}.txt',
+                            f'data{component}',
+                            outDir=str(out_path),
+                            triangular=None,
+                        )
+                else:
+                    data.write2file(
+                        f'{data.name}_{suffix}.txt',
+                        data='data',
+                        outDir=str(out_path),
+                        component=None,
+                        write_err=False,
+                        write_header=True,
                     )
             elif data.dtype in ('leveling', 'crossfaultoffset'):
                 data.write2file(
@@ -353,11 +583,24 @@ class CheckerboardInversion(BoundLSEMultiFaultsInversion):
                     data='data'
                 )
             else:
-                data.writeDecim2file(
-                    f'{data.name}_{suffix}.txt', 
-                    'data', 
-                    outDir=str(out_path)
-                )
+                corner = getattr(data, 'corner', None)
+                has_corner = corner is not None and np.asarray(corner).size > 0
+                if has_corner:
+                    data.writeDecim2file(
+                        f'{data.name}_{suffix}.txt',
+                        'data',
+                        outDir=str(out_path),
+                        triangular=None,
+                    )
+                else:
+                    data.write2file(
+                        f'{data.name}_{suffix}.txt',
+                        data='data',
+                        outDir=str(out_path),
+                        write_los=True,
+                        write_err=False,
+                        write_header=True,
+                    )
         except Exception as e:
             logger.warning(f"Failed to save data file for '{data.name}': {e}")
 

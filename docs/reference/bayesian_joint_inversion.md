@@ -252,6 +252,22 @@ Laplacian，非刚性变化则按依赖关系更新。候选评分不会复用�
 
 在 `SMC_FJ` 中，约束矩阵 `A` 的列只对应线性参数块，即滑动和 poly 参数；不包含 geometry、sigma 或 alpha。这个边界很重要，否则容易把几何先验和线性约束混写。
 
+## SMC 温度调度
+
+FULLSMC 和 SMC-FJ 从同一配置读取固定的 COV tempering policy：
+
+```yaml
+smc_tempering:
+  target_cov: 1.0
+  max_delta_beta: 0.5
+```
+
+`target_cov` 控制相邻过渡分布之间的增量权重退化，`max_delta_beta` 是单个 stage 的
+额外硬上限。二者只决定 beta 序列和重采样时机，不改变 geometry、sigma、alpha、
+线性参数布局或最终目标后验。标准运行保持默认值；非默认值会改变有限粒子下的采样
+路径，必须做重复运行和后验稳定性对照。完整公式、ESS 关系、短尾 stage 和 checkpoint
+规则见 [SMC 温度调度](smc_tempering.md)。
+
 ## 几何更新
 
 联合几何更新同时受顶层开关、断层开关和参数切片控制：
@@ -278,6 +294,19 @@ faults:
         disct_z: 10
 ```
 
+有效状态按下面的协议解析，而不是由各模块分别读取原始开关：
+
+| `nonlinear_inversion` | `geometry.update` | 有效状态 |
+| --- | --- | --- |
+| `false` | `false` | 固定几何 |
+| `true` | `false` | 当前 source 固定；若没有其他启用 source，则整体使用固定几何路径 |
+| `true` | `true` | 更新当前 source |
+| `false` | `true` | 配置错误，初始化立即停止 |
+
+解析后的更新计划是 geometry/sigma/alpha/linear 参数位置、bounds、FULLSMC/SMC-FJ target、
+后验重放和结果报告的共同输入。因此，固定几何时 geometry bounds 不会占用尺度参数或线性
+参数位置，报告也不会把 sigma 值解释成几何参数。
+
 `sample_positions` 使用半开区间；`[0, 1]` 表示从全局几何样本向量取一个量，不表示
 断层节点范围。所有启用断层的几何位置必须从 0 开始连续覆盖，也可以让多个断层显式
 共享同一段位置。
@@ -290,9 +319,16 @@ YAML 只写方法名和固定 kwargs。bounds 文件中同名 `geometry` 项限�
 初始化时会先把每个启用项解析为一个未执行的调用，并依次检查：配置结构、真实 fault
 对象上的注册方法、Python kwargs 签名、方法声明的 reference 需求，以及采样切片长度。
 这个 preflight 不执行扰动、不生成 mesh，也不改 reference。固定参数方法要求精确长度；
-带 `fixed_nodes` 的方法允许一个广播标量，或按冻结 reference 中的可移动节点/倾角控制点
-数量给值。全部节点固定时，空切片仍是合法 no-op；新扩展若尚未声明结构化契约，则保留
+带 `fixed_nodes` 的节点选择方法允许一个广播标量，或按冻结 reference 中的可移动节点
+数量给值。非分层 dip profile 改用显式 sampled/fixed control 角色，只按 sampled control
+计数；还可在 profile 中用 `perturbation_groups` 让若干 sampled controls 共享加性增量，
+此时切片长度严格等于唯一标签数。全部 fixed 时只接受空切片。新扩展若尚未声明结构化契约，则保留
 方法自身的运行时检查，不会被核心错误锁成固定参数个数。
+
+解析结果同时冻结真实 bound method、几何方法 kwargs、mesh/GF/Laplacian 重放 kwargs 和
+参数切片。候选循环只消费这份执行计划，不再重新读取 YAML。非分层 dip profile 若使用
+显式分组，还会把 sampled-control 到独立参数的映射编译一次并随计划传入；用户不需要、也
+不能在 YAML 中提供内部 layout 参数。
 
 构造 `FULLSMC` 或 `SMC_FJ` target 时还会执行一次 mesh replay 就绪检查。只有
 `generate_and_deform_mesh` 这类声明了固定拓扑参数映射依赖的方法进入该检查；简单 mesh、
@@ -300,6 +336,16 @@ YAML 只写方法名和固定 kwargs。bounds 文件中同名 `geometry` 项限�
 完整准备、顶点数和 face-row connectivity 仍与当前 mesh 对齐，并核对候选重放实际使用的
 `num_segments`、`disct_z` 等映射参数。它不生成或变形 mesh，也不进入每个候选的执行循环；
 MPI 下每个 rank 只在本地 target 构造时检查自己的状态，跟随断层不重复检查主断层映射。
+
+样本布局在 inversion 构造时确定。构造后若修改全局/断层几何开关、参数切片或扰动方法，
+必须重新创建 inversion，使 bounds、target 与报告一起重建；target preflight 会拒绝使用
+与构造时不一致的几何计划。target 建立后若再次 `snapshot()`、替换 dip profile、修改
+densification 或以其他方式采用新的 `GeometryReference`，旧 target 也会立即拒绝计算。
+凡是以 `GeometryReference` 为 baseline 的 dip、平移、旋转、方向、端点、composite 和
+分层等 geometry family，统一使用这一引用身份保护；它不会在候选循环中重新哈希 mesh
+数组，也不会改变各 family 的扰动公式或参数个数。显式声明
+`baseline_source="current_geometry"` 的历史方法仍按既有契约运行，不会被伪装成
+reference-based 方法。
 
 无 mesh 后缀的方法需要独立 `update_mesh`；方法名含 `_simpleMesh`、`_DeformMesh` 或
 `_multiLayerMesh` 时，方法内部已负责 mesh。完整配置步骤见
@@ -370,7 +416,8 @@ print(snapshot["validation"])
 1. 数据对象顺序和 `geodata` 配置一致。
 2. `bayesian_sampling_mode` 和 `slip_sampling_mode` 与科学问题一致。
 3. 每个可扰动断层已建立 `geometry_ref`，且参考字段满足所选方法。
-4. 顶层 `nonlinear_inversion` 和断层级 `geometry.update` 都已启用。
+4. 需要几何采样时，顶层 `nonlinear_inversion` 和相应断层级 `geometry.update` 都已启用；
+   固定几何时二者都关闭。
 5. `sample_positions` 从 0 连续覆盖，并与方法期望的扰动参数个数一致。
 6. `update_fault_geometry.method` 是该断层对象当前可发现的方法。
 7. geometry bounds 的顺序、单位和参考零点已记录。
@@ -392,6 +439,36 @@ print(snapshot["validation"])
 `walk(..., filename=...)` 在 rank 0 把最终 sampler 写入指定 HDF5；底层 SMC 在启用最终
 保存时还会在当前工作目录写 `samples_final.h5`，启用间隔保存时还可能写 stage 文件。
 这些入口使用 HDF5 写入模式创建文件，同名文件会被替换，不表示从旧样本断点续跑。
+
+上述三类文件使用同一个 checkpoint 写入合同。除样本和 tempering policy 外，新文件还保存
+一个带完整性摘要的 sample-layout manifest，记录 Bayesian/slip 模式、列宽、geometry
+方法与切片、每个 geometry 参数的物理单位、显式 dip 分组映射、sigma/alpha 组映射，
+以及 FULLSMC 的 slip/poly 块。角度单位会规范化为 `degrees` 或 `radians`：`deg` 与
+`degrees` 等价，但把同宽样本从度重新解释为弧度会被拒绝。
+`load_from_h5()` 会先核对列宽，再核对 manifest；即使两个文件列数相同，只要控制点分组、
+尺度组、参数顺序、参考几何或采样模式不同，也会拒绝误读。该 manifest 保护的是**样本列的
+科学解释**，不是 observations、prior、bounds 和全部求解器选项的完整复现实验包。
+
+没有 manifest 的历史文件在列宽一致时仍可用于只读绘图和统计，并发出一次明确警告；不能
+默认用于续算或 prior reseed。只有独立核实旧文件的 geometry、sigma/alpha、slip 和 poly
+列布局完全一致后，才可在相应入口显式传入：
+
+```python
+legacy = inversion.load_from_h5("legacy_samples.h5")
+inversion.walk(
+    samples=legacy,
+    allow_legacy_unverified=True,
+)
+```
+
+`resample_prior_from_samples_file()` 使用同一保护；其显式确认参数也叫
+`allow_legacy_unverified`。新格式文件若 manifest 不匹配，不提供绕过开关。
+把历史无 manifest 样本原样另存不会自动使其变成 `verified`，新文件仍保持无 manifest
+状态；该验证来源绑定到具体的内存样本矩阵，而不是“最后一次加载”的全局状态，因此依次
+加载多个文件不会改变先前样本的续算和另存判定。只有当前布局下实际生成的新 SMC 状态才
+写入当前 manifest。checkpoint 中
+`covsmpl` 和 `resmpl` 是可选的阶段状态：有数组时精确保存和恢复，没有时省略数据集并
+恢复为 `None`；核心样本、后验值、beta 和 stage 仍是必需字段。
 
 公共联合模板显式使用 `save_at_interval=False`，但仍应同时管理 `--samples` 指向的文件和
 当前目录的 `samples_final.h5`。正式重跑前应选择新的文件名或输出目录，或者先归档旧的
@@ -423,6 +500,30 @@ df = inversion.fit_statistics_to_dataframe(rows)
 `returnModel()`，随后立即收集对应统计。完整公式和输出字段见
 [Fit Statistics](fit_statistics.md)。
 
+### 采样空间与条件线性空间
+
+正式采样前应显式检查一次结构布局：
+
+```python
+layout = inversion.collect_parameter_layout()
+inversion.print_parameter_positions()
+```
+
+FULLSMC 只有 `S`：geometry、采样 sigma/alpha、slip/source 和 poly 都属于实际保存的样本
+坐标。`rake_fixed` 时表中显示紧凑 magnitude 块，并注明走滑/倾滑由固定 rake 派生；
+`magnitude_rake` 则分别显示 magnitude 和 rake。
+
+SMC_FJ 同时显示 `S` 和 `L`。`S` 只含 geometry 与参与采样的 sigma/alpha；`L` 从局部
+零开始编号，表示每个候选内部求解的 slip/source 和 poly。表头中的 `global offset` 给出
+`L` 在展开完整模型时的起点，因此不应把 `L[0]` 误当作 HDF5 样本第 0 列。固定尺度组
+不占 `S`，但仍显示为 `Use=fixed`。
+
+`collect_parameter_layout()` 返回结构化 rows，适合测试或导出；
+`format_parameter_layout()` 返回文本；`print_parameter_positions()` 是唯一推荐的打印入口。
+进入 `walk()` 后只打印一行 mode/宽度摘要，不重复整张 preflight 表。完整字段和与
+`geometry_summary()`、约束快照、尺度结果报告的职责划分见
+[参数列布局与诊断接口](../concepts/observation_matrix_layout.md#参数列布局与诊断接口)。
+
 对非 `std` 代表模型，`returnModel()` 还会按 likelihood 使用的同一
 single/individual/grouped 索引展开每个数据集的物理 sigma。因而
 `include_weighted=True` 的 `Qw` 与 `wRMS` 使用的正是该代表模型的完整协方差度量；
@@ -436,17 +537,33 @@ single/individual/grouped 索引展开每个数据集的物理 sigma。因而
 `sigmas` / `alpha` 快捷属性不会在配置态和结果态之间猜测。三类结果均已处理
 `log_scaled`，不要再次应用 `10**`。
 
+同一活动代表模型的尺度表也可结构化读取或重新打印：
+
+```python
+inversion.returnModel(model="MAP", print_fit_statistics=False)
+scale_rows = inversion.collect_scale_parameters()
+print(inversion.format_scale_parameters())
+```
+
+未先激活 predictive 代表模型时，这些入口会拒绝输出，而不会从配置或 posterior 摘要
+猜测一个活动尺度。
+
 高层结果入口随后打印两类相互独立的超参数表：
 
 1. `Bayesian geometry parameters`：按真实采样索引列出 fault、扰动方法、参数角色、单位、
    代表值和 posterior 标准差；共享 sample slice 只出现一次并列出所有消费 fault。
-2. `Bayesian scale parameters`：按规范 sigma/alpha 参数组列出固定或采样状态、采样坐标、
-   物理 `Scale (s)`、两种 posterior 标准差以及 `1/s`。
+2. `Bayesian scale parameters`：按规范 sigma/alpha 参数组列出固定或采样状态、活动值来源、
+   `Sample coord.`、物理 `Scale (s)`、两种 posterior 标准差以及 `1/s`。
 
-这里 `Sampling=log10(s)` 时，原始样本列仍保存在 HDF5/KDE 中；控制台的 `Scale (s)`
+这里 `Sample coord.=log10(s)` 时，原始样本列仍保存在 HDF5/KDE 中；控制台的 `Scale (s)`
 才是当前 likelihood 和条件线性解使用的物理 sigma/alpha。固定组不会因为不占采样向量而
 从表中消失，也不会伪造 `Post. SD(s)=0`。表格生成只读取 `group_layout`、活动物理映射和
 posterior 样本，不再次调用 target 或重建几何。
+
+`Value source` 记录当前被激活的是 posterior mean coordinate、median coordinate、MAP
+sample、marginal-mode coordinate 或显式模型向量；固定组显示配置来源。尤其在
+`log10(s)` 采样时，mean 行表示“先在采样坐标取均值，再激活对应物理尺度”，不是物理
+尺度样本的算术均值。
 
 posterior `std` 向量只是逐参数离散度，不是一组可预测参数。高层入口用 `plot_std=True`
 绘制滑动分量离散度，但 `model` / `best_model` 必须选择 `mean`、`median`、`MAP`、
@@ -515,10 +632,10 @@ if rank == 0:
 
 代表模型激活后，公共模板再调用 CSI 现有的 `writeFourEdges2File()`、
 `writePatches2File()`、`writeSlipCenter2File()`、`writeSlipDirection2File()`。InSAR 文本通过
-`writeDecim2file(..., triangular=None)` 导出，`data`、`synth` 和 `resid` 均是该接口的
-有效选择；`None` 会按 corner 形状自动判断三角形、完整四边形或旧式对角格式。synthetic
-本身由上面的高层入口依据 `verticals`/`polys` 生成，脚本不再按 SAR/opticorr 类型自行
-复制一套正演逻辑。
+corner 是否为空选择表示：点输入调用 `write2file()`，有 corner 的数据调用
+`writeDecim2file(..., triangular=None)`。`data`、`synth` 和 `resid` 均为有效选择；`None`
+会按 corner 形状自动判断三角形、完整四边形或旧式对角格式。synthetic 本身由上面的高层
+入口依据 `verticals`/`polys` 生成，脚本不再按 SAR/opticorr 类型自行复制一套正演逻辑。
 
 三份公共模板默认只保存代表滑动；传入 `--plot-std` 后，才额外计算并保存 posterior
 滑动分量离散度。该开关还受 `--no-plot` 约束。离散度绘制完成后，高层入口会恢复所选代表
@@ -565,11 +682,11 @@ if args.export_std_gmt:
 STD 分量不是物理滑动方向，因此不要据此调用 `writeSlipDirection2File()`；输出文件名也应保留
 `_std`，避免与 median/MAP 等可预测结果混淆。
 
-默认 `Modeling/` 文本仍是可由 GMT 直接着色的降采样多边形。显式传入
-`--export-point-values` 后，模板才额外创建 `Modeling/points/`：InSAR 的每行包含位置、标量值
-和 ENU 投影向量；`opticorr` 的每行包含位置及 east/north 两个分量。三种状态均为
-`data`、`synth`、`resid`。这是同一代表模型的另一种输出表示，不会改变 likelihood、重建 GF
-或再次计算 synthetic。
+有 corner 的 raster 在 `Modeling/` 写可由 GMT 直接着色的降采样多边形；没有 corner 的
+输入直接在该目录写点表。仅对前一种数据，显式传入 `--export-point-values` 后模板才额外
+创建 `Modeling/points/`：InSAR 的每行包含位置、标量值和 ENU 投影向量；`opticorr` 的每行
+包含位置及 east/north 两个分量。三种状态均为 `data`、`synth`、`resid`。这是同一代表模型
+的另一种输出表示，不会改变 likelihood、重建 GF 或再次计算 synthetic。
 
 `plot_faults_geometry_correction(...)` 比较当前代表几何与 `geometry_ref`，因此必须放在代表
 模型激活之后。它的 `filename` 是图件路径，`output_dir` 是参考/改正边界文本目录，两者不是

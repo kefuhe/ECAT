@@ -1,0 +1,73 @@
+# Joint Bayesian SMC_FJ configuration: three along-strike dip increments.
+# The three sampled values follow the input-row order of dip_controls in the
+# paired Python script; arc_length only controls their spatial interpolation.
+
+nonlinear_inversion: true
+bayesian_sampling_mode: SMC_FJ
+slip_sampling_mode: ss_ds
+nchains: 100
+chain_length: 50
+smc_tempering:
+  target_cov: 1.0       # Standard incremental-weight COV target
+  max_delta_beta: 0.5   # Usually keep; 0.75 is an advanced schedule test
+use_bounds_constraints: true
+use_rake_angle_constraints: false
+
+units:
+  observation: m
+
+clipping_options:
+  enabled: false
+
+geodata:
+  verticals: [true, true]
+  polys: null
+  faults: null
+  sigmas:
+    mode: individual
+    update: true
+    initial_value: 0.0
+    log_scaled: true
+
+alpha:
+  enabled: true
+  mode: single
+  update: true
+  initial_value: -2.0
+  log_scaled: true
+
+faults:
+  defaults:
+    geometry:
+      update: false
+      sample_positions: [0, 0]
+    method_parameters:
+      update_GFs:
+        method: cutde
+        options: {}
+      update_Laplacian:
+        method: Mudpy
+        bounds: [free, locked, free, free]
+        topscale: 0.25
+        bottomscale: 0.03
+
+  MainFault:
+    geometry:
+      update: true
+      # Default template: three independent controls. If Python declares
+      # ["wm", "wm", "east"], use [0, 2] and two geometry bounds instead.
+      sample_positions: [0, 3]
+    method_parameters:
+      update_fault_geometry:
+        method: perturb_dips_with_preset_params
+        # Controls, roles, coordinate, transitions, and optional perturbation
+        # groups are frozen by
+        # fault.set_dip_profile(...) in the Python setup.
+        angle_unit: degrees
+        use_average_strike: false
+      update_mesh:
+        method: generate_and_deform_mesh
+        top_size: 3.0
+        bottom_size: 6.0
+        num_segments: 25
+        disct_z: 10

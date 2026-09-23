@@ -14,7 +14,8 @@ DipProfileSpec
 ├── sampled_controls      # 消费候选参数
 ├── fixed_controls        # 保持参考 dip
 ├── interpolation_axis    # auto | x | y | arc_length
-└── transition_zones      # 定义渐变范围与形状，不增加参数
+├── transition_zones      # 定义渐变范围与形状，不增加参数
+└── perturbation_groups   # 可选；让多个 sampled controls 共享一个增量
 ```
 
 所有 position-like 输入都先投影到有序 top 折线 \(\Gamma(s)\)：
@@ -67,7 +68,9 @@ L_0-d,&\texttt{s\_from\_end\_km}=d.
 
 里程声明先在 reference top 上物化为二维锚点，再进入与普通坐标完全相同的候选投影和插值
 流程。它不会随候选 top 总长度重新解释，也不会增加 Bayesian 参数。若重新定义 reference
-top 并希望里程位置随之改变，应重新调用 `set_dip_profile()`。
+top 并希望里程位置随之改变，应先明确建立新的 reference top，再重新调用
+`set_dip_profile()`。只在已有对象上重复调用 setter 会替换 profile，但会继续使用现有冻结
+top；它不会采用某个 current candidate top。
 
 `is_utm` 只解释普通二维坐标行；`s_km` 和 `s_from_end_km` 始终是沿 reference top 的 km。
 位置来源、插值轴和转换带宽度是三个独立概念：
@@ -84,7 +87,7 @@ top 并希望里程位置随之改变，应重新调用 `set_dip_profile()`。
 ```python
 import numpy as np
 
-fault.set_dip_profile(
+profile = fault.set_dip_profile(
     sampled_controls=[
         [lon_s0, lat_s0, 70.0],
         {"s_km": 12.0, "dip": 55.0},
@@ -94,23 +97,101 @@ fault.set_dip_profile(
     ],
     interpolation_axis="arc_length",
     transition_zones=None,
+    perturbation_groups=None,
     is_utm=False,
 )
 ```
 
-sampled controls 的声明顺序定义样本向量、bounds 和结果列顺序；空间排序只用于插值。若
-`sample_to_control[j] = c`，则：
+sampled controls 的声明顺序定义样本向量、bounds 和结果列顺序；空间排序只用于插值。设从
+全局样本向量取得的局部切片为 \(\boldsymbol\theta=\mathbf x[a:b]\)，且第 \(i\) 个 sampled
+control 使用局部参数 \(g(i)\)，则：
 
 \[
-d_c^{\mathrm{candidate}}=
+d_i^{\mathrm{candidate}}=
 \begin{cases}
-d_c^{\mathrm{ref}}+\Delta d_j,&c\text{ 为 sampled},\\
-d_c^{\mathrm{ref}},&c\text{ 为 fixed}.
+d_i^{\mathrm{ref}}+\theta_{g(i)},&i\text{ 为 sampled},\\
+d_i^{\mathrm{ref}},&i\text{ 为 fixed}.
 \end{cases}
 \]
 
-一个候选值可以广播到全部 sampled controls；也可以逐 sampled control 给值。全部 fixed 时
-候选切片必须为空。
+默认不设置 `perturbation_groups`：切片长度为 1 时沿用已有标量广播，切片长度等于 sampled
+controls 数 \(M\) 时逐点独立；其他长度直接报错。全部 fixed 时必须使用空切片。
+
+当多个 sampled controls 需要共享同一个增量时，在 `set_dip_profile()` 中按 sampled controls
+声明顺序给出标签：
+
+```python
+profile = fault.set_dip_profile(
+    sampled_controls=[
+        [lon_west, lat_west, 80.0],
+        [lon_middle, lat_middle, 75.0],
+        [lon_east, lat_east, 100.0],
+    ],
+    perturbation_groups=["wm", "wm", "east"],
+    interpolation_axis="arc_length",
+    is_utm=False,
+)
+```
+
+唯一标签按首次出现排序，因此这里的两个独立参数依次是 `wm`、`east`，内部映射为
+`[0, 0, 1]`。两个西—中控制点共享的是同一个**加性倾角增量**，不是同一个最终倾角：
+
+\[
+d_{\mathrm{west}}=80^\circ+\theta_{\mathrm{wm}},\qquad
+d_{\mathrm{middle}}=75^\circ+\theta_{\mathrm{wm}}.
+\]
+
+所以两者仍保留参考倾角的 5° 差异。每个候选展开后，所有最终倾角都必须有限且位于
+\((0^\circ,180^\circ)\)；系统不会静默裁剪越界值。
+
+三个 sampled controls 的完整切片规则如下。表中的 \(K\) 是实际独立参数数，不是 control
+数；不需要再设置一个单独的 `mode`：
+
+| `perturbation_groups` | 切片长度 | \(K\) / 解析结果 |
+| --- | ---: | --- |
+| 未设置 | 3 | \(K=3\)，`individual` |
+| 未设置 | 1 | \(K=1\)，`single`，兼容现有标量广播 |
+| `["wm", "wm", "east"]` | 2 | \(K=2\)，`grouped` |
+| `["all", "all", "all"]` | 1 | \(K=1\)，显式 `single` |
+| `["west", "middle", "east"]` | 3 | \(K=3\)，显式 `individual` |
+| `["wm", "wm", "east"]` | 3 | 报错：显式分组必须恰好提供 2 个参数 |
+| 未设置 | 2 | 报错：不能猜测哪两个 controls 应共享参数 |
+
+标签必须是非空字符串，数量必须等于 sampled controls 数；fixed controls 不写标签。标签只
+定义当前 fault 内的局部映射，不会自动让不同 fault 共享参数。跨 fault 共享仍使用相同的全局
+`sample_positions` 切片。
+
+Bayesian preflight 会把以上映射编译为只读 layout。候选的两次 profile 求值（事件位置与
+最终加密节点）都直接使用该 layout，不再逐候选重新解析标签。若采样前重新设置 profile，
+应重建 inversion；若 target 已经建立后替换 profile，旧 target 会因 reference 身份改变而
+拒绝继续执行。
+
+上例对应的 YAML 和 bounds 为：
+
+```yaml
+faults:
+  MainFault:
+    geometry:
+      update: true
+      sample_positions: [0, 2]  # [wm, east]
+    method_parameters:
+      update_fault_geometry:
+        method: perturb_dips_with_preset_params
+        angle_unit: degrees
+        use_average_strike: false
+```
+
+```yaml
+geometry:
+  MainFault:
+    lb: [-10.0, -15.0]  # wm, east
+    ub: [10.0, 15.0]
+```
+
+`sample_positions` 仍是全局半开切片，不是 control 索引。
+`geometry_summary()` 负责显示 sampled control 到 `wm/east` 的局部映射；
+`print_parameter_positions()` 只显示 `dip_change[wm]`、`dip_change[east]` 进入全局
+采样向量 `S` 的切片。两项合起来核对局部分组与全局编址，不重复输出。
 
 ## transition 三种声明
 
@@ -257,13 +338,18 @@ dip-profile 诊断检查分辨率；窄 transition 通常至少保留约 4--6 �
 
 ## 固定拓扑或 SMC 的完整可复制设置
 
-下面是候选重放路径，不是普通固定几何的必经步骤。只有启用 `set_densification()` 时，第二次
-零扰动物化才是必需的；未启用候选期加密时可同时省略 setter 和第二次物化。
+生成型 dip profile 的权威 reference 是“稀疏 top + profile + 可选密度策略”。bottom 是
+每个候选的派生输出，不应先生成、再 snapshot 回 reference。全部 setter 完成后只需物化一次
+零扰动候选，然后建立一次 mesh/mapping：
+
+下面代码假定对象尚未建立 reference；此时 `set_dip_profile()` 捕获当前 top。若对象已有
+reference，setter 只更新 profile 并保留其中的 top。不要把修改 `fault.top_coords` 后再次调用
+setter 当成重设基线的方式。
 
 ```python
 import numpy as np
 
-fault.set_dip_profile(
+profile = fault.set_dip_profile(
     sampled_controls=sampled_controls,
     fixed_controls=fixed_controls,
     interpolation_axis="arc_length",
@@ -278,22 +364,13 @@ fault.set_dip_profile(
     is_utm=False,
 )
 
-fault.perturb_dips_with_preset_params(
-    perturbations=np.zeros(len(sampled_controls)),
-    angle_unit="degrees",
-    # 不传 discretization_interval：候选密度由 reference 统一拥有。
-    use_average_strike=False,
-)
-fault.snapshot(capture_vertices=False, capture_layers=False)
-
-# 稀疏 top：规则属于冻结 reference，在每个候选内临时执行。
+# 可选：规则先进入冻结 generator reference。
 fault.set_densification(interval=2.0)
 
-# 重新物化零扰动候选，使一次性的 mesh/mapping 也从同一条加密路径建立。
+# 唯一一次零扰动物化；不传 discretization_interval，也不再 snapshot。
 fault.perturb_dips_with_preset_params(
-    perturbations=np.zeros(len(sampled_controls)),
+    perturbations=np.zeros(profile.perturbation_parameter_count),
     angle_unit="degrees",
-    # 不传 discretization_interval：避免第二个加密来源。
     use_average_strike=False,
 )
 fault.generate_and_deform_mesh(
@@ -308,10 +385,10 @@ fault.generate_and_deform_mesh(
 )
 ```
 
-第二次零扰动不可省略：否则初始 mapping 和候选 mapping 会采用不同边界分辨率。当前实现会
-在创建 mapping 时检查这一生命周期；若 profile 或 densification 已换成新的冻结
-`GeometryReference`、但 current top/bottom 尚未从它物化，会直接报错并要求先重放，而不是
-静默建立错位 mapping。
+若不需要候选期加密，只省略 `set_densification(...)`；零扰动物化仍负责给首次 mapping
+提供与候选同源的 top/bottom。当前实现会检查 current 边界与
+`GeometryReference` 的物化来源；profile 或密度策略改变后未重放就创建 mapping，会明确
+报错。不要用 snapshot 把派生 bottom 提升成第二套基线，也不要用第二次零扰动补偿错误顺序。
 
 对应 YAML 只声明候选参数、方法和 mesh 重放，不重复声明边界密度：
 
@@ -374,8 +451,8 @@ geometry:
     ub: [15.0, 10.0]
 ```
 
-profile 的 controls、roles、axis 和 transitions 只在 Python setup 中声明一次；preset YAML
-不保存第二份副本。
+profile 的 controls、roles、axis、transitions 和可选 perturbation groups 只在 Python setup
+中声明一次；preset YAML 不保存第二份副本。
 
 无论 setup 使用 lon/lat 还是 fault-local x/y，profile 在内部规范保存为 lon/lat；
 `is_utm=True` 只解释这一次 setup 输入，候选 preset 不再重复解释坐标系。

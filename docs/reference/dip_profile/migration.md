@@ -21,8 +21,8 @@ buffer 参数和 preset 中重复的轴设置不保留兼容字段；迁移应�
 | `buffer_nodes + buffer_radius` | `transition_zones` | 明确选择 `axis` 或 `euclidean` 距离语义 |
 | preset 中的 `interpolation_axis` | `set_dip_profile(interpolation_axis=...)` | profile 冻结后不在 YAML 重复 |
 | preset 中的 `is_utm` | `set_dip_profile(is_utm=...)` | 坐标系只属于 setup 输入边界 |
-| `update_xydip_ref=True` | 显式 `set_dip_profile()`，必要时再 `snapshot()` | 候选过程不改写基线 |
-| `update_dip_baseline()` | `set_dip_profile()` 或 `refresh_geometry_baseline()` | 分别表示换 profile、只刷新坐标 |
+| `update_xydip_ref=True` | 显式 `set_dip_profile()`；生成型 profile 不 snapshot 派生 bottom | 候选过程不改写 top/profile 基线 |
+| `update_dip_baseline()` | `set_dip_profile()` 或高级 `refresh_geometry_baseline()` | setter 只换 profile 并保留已有 frozen top；后者才有意重设完整 current top/bottom 基线 |
 | `prepare_for_inversion(..., dip_control_coords=..., dip_control_dips=...)` | `prepare_for_inversion(..., dip_sampled_controls=...)` | controls 改为统一三列表 |
 
 ## 哪些替换可以逐点对齐
@@ -217,13 +217,15 @@ update_fault_geometry:
   use_average_strike: false
 ```
 
-controls、fixed 角色、axis 和 transition 已由 Python 中的 `set_dip_profile()` 冻结。这样采样
-准备阶段只有一个 profile 定义，不会出现 Python 与 YAML 各保存一套但彼此错位。
+controls、fixed 角色、axis、transition 和可选 `perturbation_groups` 已由 Python 中的
+`set_dip_profile()` 冻结。这样采样准备阶段只有一个 profile 定义，不会出现 Python 与 YAML
+各保存一套但彼此错位。
 
 ## 迁移验收
 
 1. 零扰动 bottom 的点数、点序、深度和倾向侧符合预期。
-2. `sample_positions` 与 sampled controls 数量一致，bounds 顺序逐项核对。
+2. 未分组时 `sample_positions` 为一个广播值或与 sampled controls 数量一致；显式分组时与
+   唯一标签数一致。bounds 按 sampled 声明顺序或 group 首次出现顺序逐项核对。
 3. 用 `plot_dip_profile_diagnostics()` 核对原始位置、投影位置、S/F 角色和 transition。
 4. 对一个手工非零候选逐控制点核对绝对 dip。
 5. 固定拓扑流程再核对 patch 数量、Faces 和参数位置；重网格流程则重新计算依赖几何的

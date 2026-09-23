@@ -14,6 +14,17 @@ SAR 标量与 projection 的合同见
 HyP3、GMTSAR 或 optical reader 时，直接查
 [SAR 与光学观测读入脚本](../reference/observation_data_readers.md)。
 
+## 按当前进度继续
+
+| 当前状态 | 本页下一步 |
+| --- | --- |
+| 只有原始产品 | 从下面的 reader/mode 选择开始，再生成并编辑配置 |
+| 已有 YAML，需要检查读入 | [运行模式与 quick-look](#4-四种运行模式)；先核对投影、单位和异常值 |
+| quick-look 已检查，准备正式处理 | [协方差与降采样](#6-协方差和正式降采样)；需要参考改正时先完成第 5 节 |
+| 已有正式输出文件 | [输出检查](#downsampled-output-files) → [读回反演](#read-downsampled-output) |
+
+各步骤的配置开关与执行边界仍以第 4 节为准；运行 `-c/-d` 前应同时检查 YAML 中另一个阶段是否已启用。
+
 ## 1. 选择 reader 和 mode
 
 | 输入 | reader | 常用 mode |

@@ -138,6 +138,56 @@ C_d=\operatorname{blockdiag}(C_{d,1},\ldots,C_{d,K}).
 同一数据集的 `dataname`、观测切片、GF 行、`Cd` 块、sigma 映射和输出标签必须指向
 同一个块。当前独立数据集模型不表示跨数据集非零协方差。
 
+## 参数列布局与诊断接口
+
+参数位置报告描述的是已经由配置、source adapter 和约束管理器解析完成的布局，不会重新
+分配参数或改变求解器。报告使用半开区间 `[start:end)`，并明确区分两种坐标空间：
+
+- `S` 是 SMC 实际保存和扰动的采样向量；
+- `L` 是线性求解器消费的模型向量。BLSE/VCE 只有 `L`；SMC_FJ 的 `L` 是每个候选内部
+  求解的条件线性向量，FULLSMC 的 slip/poly 则直接位于 `S`。
+
+```python
+layout = inversion.collect_parameter_layout()
+print(inversion.format_parameter_layout())
+
+# 等价的人读入口
+inversion.print_parameter_positions()
+```
+
+`collect_parameter_layout()` 返回与求解对象分离的字典，包括 `mode`、`spaces`、`rows` 和
+`notes`。每个 row 至少包含 `kind`、`owner`、`space`、`start/stop`、`count`、`use` 和
+`content`。`use` 区分 `sample`、`solve`、`estimate`、`fixed`、`configured` 和 `derived`。
+控制台文本面向人工检查；需要程序读取时应使用结构化 rows，不要解析终端字符。
+
+典型 SMC_FJ 报告会把两类空间分开：
+
+```text
+Parameter layout | mode=SMC_FJ | sampled=4 | linear=1567
+S=SMC sampled vector; L=conditional linear vector (global offset 4)
+
+Kind   Owner/group   Range       N     Use    Content
+geom   MainFault     S[0:2)      2     sample  dip_change[wm], dip_change[east]
+sigma  all           S[2:3)      1     sample  log10(s); members=...
+alpha  all           S[3:4)      1     sample  log10(s); members=MainFault
+slip   MainFault     L[0:1564)   1564  solve   strikeslip[782], dipslip[782]
+poly   Main/T033A    L[1564:1567) 3    solve   offset, x_ramp, y_ramp
+```
+
+该结构表不承担其他诊断职责：
+
+| 需要检查的内容 | 对应入口 |
+| --- | --- |
+| reference top、控制点、transition、mesh 和加密状态 | `fault.geometry_summary()` |
+| 方法参数、可用 kwargs 和 YAML 片段 | `fault.help(method)`，仅用于交互式查询 |
+| bounds、rake、等式/不等式约束 | `get_constraint_snapshot(validate=True)` |
+| 活动物理 sigma/alpha、posterior SD 或 VCE 结果 | scale parameter report |
+| RMS、VR、Qw 和 wRMS | fit statistics report |
+
+因此结构报告中的固定 sigma/alpha 没有采样位置，但仍保留一行；BLSE/VCE 在求解前只显示
+配置状态，成功求解后的准确活动值应读取尺度结果报告。未知 source 物理单位显示 `-`，
+不会从参数名称猜测；数据改正项标为 `raw coordinates`，其物理解释见数据改正文档。
+
 ## 用户检查清单
 
 ```python

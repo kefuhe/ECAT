@@ -152,6 +152,17 @@ reference。因此 reference 服务的是“为所有样本定义共同零点”
 endpoints 写入 `dip_profile`。分析结果绑定 top fingerprint，但不是 reference 的新字段，也不
 进入候选状态。
 
+生成型非分层 dip profile 的最小权威输入是 `top_coords + dip_profile`，再加可选
+`densification`。bottom 是每个候选的派生输出，不属于必须 snapshot 的独立输入；把零扰动
+bottom snapshot 回 reference 会把生成器输出误提升成第二套基线。独立 top/bottom、layers
+和 whole-mesh 模式仍按各自权威状态显式 snapshot。
+
+`set_dip_profile()` 不等同于“每次都冻结当前 top”。对象还没有 `geometry_ref` 时，它会捕获
+当前 top，建立最小 generator reference；已经存在 reference 时，它只替换 profile，并继续
+使用原来冻结的 top，不会把某个已物化候选静默提升为新基线。确实要开始一轮采用新 top 的
+独立计算时，应在候选循环之外明确刷新完整基线；只有 profile 定义也改变时才重新声明；
+`refresh_geometry_baseline()` 只服务于这种有意的高级重设，不属于普通候选流程。
+
 不是所有场景都要捕获全部字段。只移动底边坐标、随后单独重建 mesh 时，
 `snapshot(capture_vertices=False, capture_layers=False)` 已足够；直接变换整个 mesh 时，
 必须在最终参考 mesh 建好后使用
@@ -178,10 +189,11 @@ GeometryReference
 ```
 
 因此组合旋转和平移的含义是 `translate(rotate(reference))`，而不是每一步都重新读取
-reference，也不是从上一样本继续累加。当前公开 pipeline 支持“坐标 stages → mesh policy”
-和直接 whole-mesh 变换；“先由控制点生成新 mesh，再对该候选 mesh 做额外顶点变换”尚不是
-通用公开配置。不要把这两种基线来源手工混在一个样本里；需要这种 mixed 流程时，应使用
-有明确阶段契约的专用 composite 方法。
+reference，也不是从上一样本继续累加。公开方法
+`perturb_dips_with_preset_params_and_rigid_transform()` 支持“由 top/profile 生成 candidate
+bottom，再同时旋转和平移 candidate top/bottom，最后由独立 mesh policy 更新固定拓扑”。
+它不等同于先生成一张新 mesh 再额外旋转其 vertices。不要把边界生成 reference 与已有
+whole-mesh reference 手工混合；其他 mixed 流程仍应使用有明确阶段契约的专用 composite。
 
 ## 入口由权威状态决定
 

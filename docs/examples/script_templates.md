@@ -4,19 +4,65 @@
 提供短代码片段。第一次使用先按科研任务选择模板，再进入对应 workflow 理解输入、输出和
 检查项，不需要从头阅读全部 reference。
 
+<a id="editing-template"></a>
+
+## 复制后从哪里修改
+
+推荐模板开头的 `Editing guide` 提示首次修改项和相对路径基准。按阶段阅读分隔标题，
+可选数据、诊断和定制绘图使用段内小标题；参数仍就近放在所属步骤。
+
+| 修改需求 | 脚本中的位置 | 需要一起核对 |
+| --- | --- | --- |
+| 换一组观测 | `Data` 中的路径和 reader 调用 | 输入格式、单位、投影原点和协方差 |
+| 加 GPS 或 optical | 启用完整可选块，再加入对应数据列表 | `geodata` 顺序及 YAML 对应设置；checkerboard 还需配置 `noise_config` |
+| 改断层几何 | `Fault geometry and mesh` 或 `Reference fault geometry` | source 名与 YAML/bounds 对应，几何单位、方向及网格设置 |
+| 改搜索范围或求解设置 | `Search settings` 或相应 inversion 段 | 平滑参数表示方式、配置分组和参数顺序 |
+| 改图件 | 结果段的绘图调用或本地绘图设置 | 视角、范围、色标与保存位置；正演模板的常用选项集中在顶部 |
+
+BLSE/VCE、参数搜索和 checkerboard 模板中的相对路径基于**当前工作目录**；新版非线性
+SMC 模板也使用这一基准。联合 Bayesian 和两个地表正演模板的主要路径基于**脚本目录**。
+复制脚本后先确认相应目录布局，再运行；YAML 内部路径仍按对应配置接口的规则解析。
+BLSE/VCE 中的 `verbose` 还控制可选边界诊断图，打开日志时应一并留意该段。
+
+大型 SMC 已有独立的
+[Windows PowerShell 与 WSL/Linux MPI 启动模板](mpi_launcher_scripts.md)。启动器和科研
+脚本保持分离：前者只设置 rank、线程与工作目录，后者继续按顺序组织数据、断层、配置、
+反演和输出，便于直接阅读修改。
+
 ## BLSE 模板怎么选
 
 | 当前任务 | 模板 | 先读 |
 | --- | --- | --- |
 | 用已经选定的几何和平滑强度运行一次 BLSE | [`test_slip_inv_BLSE.py`](../../scripts/test_slip_inv_BLSE.py) 的 `--mode single` | [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md) |
-| 固定几何，只搜索平滑强度 | [`test_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_smoothing_search_BLSE.py) | [固定几何平滑参数搜索](../workflows/04a_blse_smoothing_search.md) |
-| 固定平滑强度，只搜索倾角 | [`test_dip_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py) | [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md) |
-| 已完成前两项，需要检查倾角和平滑耦合 | [`test_dip_smoothing_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_smoothing_search_BLSE.py) | [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md) |
+| 固定几何，由 VCE 估计 sigma/alpha 后运行一次线性反演 | [`test_slip_inv_VCE.py`](../../scripts/test_slip_inv_VCE.py) | [BLSE/VCE 线性滑动分布反演](../workflows/04_linear_slip_blse_vce.md) |
+| 固定几何，构建 BLSE L-curve | [`test_BLSE_L_Curve.py`](../../scripts/test_BLSE_L_Curve.py) | [固定几何 L-curve](../workflows/04a_blse_l_curve.md) |
+| 固定平滑强度，只搜索倾角 | [`test_dip_search_BLSE.py`](../../scripts/test_dip_search_BLSE.py) | [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md) |
+| 已完成前两项，需要检查倾角和平滑耦合 | [`test_dip_smoothing_search_BLSE.py`](../../scripts/test_dip_smoothing_search_BLSE.py) | [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md) |
 
-既有 `test_slip_inv_BLSE.py --mode loop` 继续保留，适合已有案例脚本直接做传统
-`simple_run_loop()`。新的 smoothing-only 模板提供更明确的候选列表、逐数据集统计和
-独立输出，二者不互相替代。两种搜索都用未加权 \(L_0\) 报告 roughness；传统 loop 会
-恢复进入前的活动状态，选中候选后仍需用 `run(penalty_weight=...)` 正式求解。
+既有 `simple_run_loop()` 作为兼容入口继续保留。新实验优先复制独立的
+`test_BLSE_L_Curve.py`：它直接调用 `scan_penalty_weights()`，输出候选摘要、逐数据集长表和
+三联诊断图，并同时保存单幅 roughness–RMS L-curve；不会让单次 BLSE 模板同时承担参数
+搜索职责。规范扫描用未加权 \(L_0\) 报告
+roughness，并恢复进入前的活动模型和必要的数据合成状态；选中候选后仍需用
+`run(penalty_weight=...)` 正式求解。旧接口的迁移写法见
+[BLSE/VCE 参考](../reference/blse_vce.md#smoothing-scan)。
+通用 `test_slip_inv_BLSE.py --mode loop` 同样直接调用规范扫描入口；它保留较紧凑的默认
+输出，而独立 L-curve 模板集中提供科研绘图选项和更完整的工作流说明。
+
+单次固定权重结果使用 `python test_slip_inv_BLSE.py --mode single`；单次 VCE 使用
+`python test_slip_inv_VCE.py`。两者默认输出滑动图、fault/slip 文件和
+data/synth/resid 文本；只有需要逐点 InSAR/opticorr 表格时才增加
+`--export-point-values`。BLSE/VCE 只给一个最终线性解，不能把联合 Bayesian 的 posterior
+滑动标准差图机械套到该模板。
+
+这些 BLSE/VCE 模板、L-curve/倾角搜索模板和 checkerboard 模板都按单 Python 进程运行，
+不要用 `mpiexec` 或 SMC 启动脚本包裹它们。需要调节 CPU 使用量时，应测试 BLAS/CUTDE 的
+线程设置；MPI rank 只属于 SMC/Bayesian 采样模板。
+
+两个单次模板都使用默认 compact 尺度报告，不再紧接着重复打印同一张表。需要稍后单独
+核对当前活动 sigma/alpha 时，可调用 `inversion.print_scale_parameters()`；它不会重新
+运行 BLSE 或 VCE。VCE 模板读取独立的 `default_config_VCE.yml`，可选的 certified KKT
+加速以一行注释保留，默认仍关闭。
 
 ## 非线性、正演和分辨率检查模板
 
@@ -28,6 +74,54 @@
 | 在 SAR 有效像元计算并输出 LOS | [`test_sar_los_surface_forward.py`](../../scripts/test_sar_los_surface_forward.py) | [地表位移正演参考](../reference/surface_displacement_forward.md) |
 | 检查 BLSE 空间分辨率 | [`test_BLSE_Inv_Checkboard.py`](../../scripts/test_BLSE_Inv_Checkboard.py) | [BLSE/VCE 工作流](../workflows/04_linear_slip_blse_vce.md) |
 
+当前 checkerboard 模板是**串行 InSAR/GPS/optical 分辨率检查**。它读取观测几何与活动分量，生成
+truth 滑动、正演并加入可复现噪声，再用同一固定网格进行 BLSE 恢复。GPS 会根据 YAML 的
+`verticals` 与输入 U 分量是否有效选择 EN 或 ENU；启用脚本中的 GPS 块时，还需同步调整
+`gpsdata`、`noise_config` 和 YAML 数据顺序。optical 使用 CSI `opticorr` 的 east/north
+双分量接口，对应 YAML 的 `verticals` 必须为 `false`。不要用 MPI 启动该模板。
+
+GPS 的标量噪声不是整条 ENU 向量共用一次随机扰动。对每个站点、每个活动分量都会独立
+抽取高斯噪声，只是共用同一个标准差。例如 `{"GNSS": 0.002}` 表示 E/N（以及启用时的
+U）各自使用 0.002。若垂向误差更大，直接按分量给出标准差：
+
+```python
+np.random.seed(2026)
+noise_config = {
+    "GNSS": {
+        "east": 0.002,
+        "north": 0.002,
+        "up": 0.006,
+    },
+    "Optical": {"east": 0.05, "north": 0.08},
+    "T012A": 0.003,
+    "T121D": 0.005,
+}
+inversion.apply_synthetics(
+    noise_sigma=noise_config,
+    update_weight=True,
+    save_dir="Modeling",
+)
+```
+
+`noise_sigma=0.003` 表示所有数据集使用同一个标量；列表按 `geodata` 顺序；按数据名的字典
+最适合混合数据。字典中的 InSAR 值为标量，GPS 可写标量或 `east/north/up`，opticorr 可写
+标量或 `east/north`。`update_weight=True` 会把这些标准差同步写入活动分量并重建对角
+`Cd`，因此噪声模型和反演权重一致，此时每个活动分量的标准差必须为正。GPS EN 模式只
+消费 `east/north`；U 不进入观测向量、噪声或协方差，原 U 列保持不变。该入口表示各站或
+像元、各分量相互独立的对角噪声；
+若研究问题需要站间或分量间相关噪声，应显式构造完整协方差，而不能用这个短例代替。
+
+当前线性与 checkerboard 模板直接以列表声明断层：
+
+```python
+faults_list = [fault_em1]
+# 多断层时按希望的 source/参数块顺序排列：
+# faults_list = [west_fault, east_fault]
+```
+
+中间不需要先建立 `OrderedDict` 再立即转回列表。断层对象自身的 `name` 负责与 YAML 中的
+source 名匹配，列表顺序负责 source 和参数块顺序；两者应分别明确，不应靠字典绕转表达。
+
 ## 联合 Bayesian 模板怎么选
 
 联合 Bayesian 是已经跑通两步走之后的高级路线。三份模板分别展示三类参数化实例；它们
@@ -35,9 +129,9 @@
 
 | 要搜索的几何 | 脚本 | 配套配置 |
 | --- | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset.yml) + [`bottom_offset_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
-| 多个倾角参考点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls.yml) + [`three_dip_controls_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation.yml) + [`custom_perturbation_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) + [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
+| 多个倾角参考点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) + [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) + [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
 
 初学者可以复制成套文件；熟练用户也可先运行 `ecat-generate-config` 和
 `ecat-generate-boundary`，再对照模板修改生成文件。CLI 生成的是当前版本的完整配置，
@@ -48,17 +142,17 @@
 Linux 或 WSL 的 Bash：
 
 ```bash
-cp <eqtools-checkout>/scripts/test_joint_bayesian_bottom_offset.py my_case/
-cp <eqtools-checkout>/scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
-cp <eqtools-checkout>/scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
+cp scripts/test_joint_bayesian_bottom_offset.py my_case/
+cp scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
+cp scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
 ```
 
 Windows PowerShell：
 
 ```powershell
-Copy-Item <eqtools-checkout>\scripts\test_joint_bayesian_bottom_offset.py my_case/
-Copy-Item <eqtools-checkout>\scripts\configs\joint_bayesian\bottom_offset.yml my_case/default_config.yml
-Copy-Item <eqtools-checkout>\scripts\configs\joint_bayesian\bottom_offset_bounds.yml my_case/bounds_config.yml
+Copy-Item scripts/test_joint_bayesian_bottom_offset.py my_case/
+Copy-Item scripts/configs/joint_bayesian/bottom_offset.yml my_case/default_config.yml
+Copy-Item scripts/configs/joint_bayesian/bottom_offset_bounds.yml my_case/bounds_config.yml
 ```
 
 进入案例目录后，各系统使用同样的运行命令：
@@ -67,6 +161,8 @@ Copy-Item <eqtools-checkout>\scripts\configs\joint_bayesian\bottom_offset_bounds
 python test_joint_bayesian_bottom_offset.py --check-only
 mpiexec -n 4 python test_joint_bayesian_bottom_offset.py --run
 python test_joint_bayesian_bottom_offset.py
+# 需要额外逐点表时：
+python test_joint_bayesian_bottom_offset.py --export-point-values
 ```
 
 这些是完整的可编辑起点，不是附带真实观测数据的一键演示。`--check-only` 仍会
@@ -80,12 +176,15 @@ python test_joint_bayesian_bottom_offset.py
 公开支持的平台和环境要求以[安装说明](../getting_started/installation.md)为准。
 
 联合模板的默认结果分为 `output/` 和 `Modeling/`：前者保存几何改正、联合 KDE、拟合统计、
-fault/slip GMT 与标准滑动图，后者保存数据拟合图和 InSAR data/synth/resid 文本。模板末尾
-另给可选的 `plot_multifaults_slip(...)` 调用，便于修改发表图的视角、范围和色标。
+fault/slip GMT 与代表滑动图，后者保存数据拟合图以及 raster data/synth/resid 文本。有
+corner 的 raster 写多边形，没有 corner 的输入直接写点表。需要 posterior 滑动分量离散度
+图时显式增加 `--plot-std`；有 corner 的数据需要额外中心点表时增加
+`--export-point-values`，输出进入 `Modeling/points/`。两者都不改变反演或默认代表模型。
+模板末尾另给可选的 `plot_multifaults_slip(...)` 调用，便于修改发表图的视角、范围和色标。
 
 降采样通常不需要复制 Python：先用 `ecat-generate-downsample` 生成 YAML，再运行 `ecat-downsample`。完整命令见 [InSAR 降采样](../workflows/02_insar_downsampling.md)。`scripts/process_data_downsampling.py` 只是在源码树中调用同一 CLI 的薄入口。
 
-旧 CovDiag checkerboard 变体仍列在 [`scripts/README.md`](../../scripts/README.md)，用于复现已有项目；新用户先从上表的单一 checkerboard 入口开始。
+旧 checkerboard 变体仍列在 [`scripts/README.md`](../../scripts/README.md)，用于复现已有项目；新用户先从上表的单一 checkerboard 入口开始。
 
 ## 推荐学习顺序
 

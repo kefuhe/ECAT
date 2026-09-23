@@ -7,6 +7,18 @@
 - 想对照真实事件脚本和数据：读 [案例选择表](../casebook/index.md)。
 - 想查完整字段、参数和接口：回到 [参考手册入口地图](../reference/index.md)。
 
+## 复制前确认使用前提
+
+| 示例形式 | 复制方式 |
+| --- | --- |
+| 本页有公共初始化的顺序示例 | 先执行公共初始化，再选择对应分支；分支不一定可单独运行 |
+| 使用已有 fault、geodata 或 inversion 的对象片段 | 先按输入说明建立对象，再执行片段 |
+| scripts 完整模板 | 成套复制脚本和配套配置，按模板导航替换输入与占位值 |
+| 真实事件练习 | 使用 casebook 指向的事件数据、脚本与配置 |
+
+不同短例中的坐标、名称和路径是各自的占位值。串成同一项目时，统一 `lon0/lat0`、
+断层名、`geodata` 顺序和配置引用；不要直接拼接不同事件或不同示例的数值。
+
 ## 示例地图
 
 ### 反演主线与完整脚本入口
@@ -17,8 +29,9 @@
 | 从地表迹线构建单倾角、多参考点倾角或固定拓扑断层 | [地表迹线和倾角构建](fault_trace_preprocessing.md) | `lon/lat` trace、投影原点和倾角信息 |
 | 从非线性几何结果构建矩形元或三角元断层 | [非线性几何结果到 fault object](fault_from_nonlinear_geometry.md) | `clon/clat/cdepth/strike/dip/length` |
 | 在 BLSE、非线性几何和联合 Bayesian 脚本间选择 | [可运行脚本模板导航](script_templates.md) | 已明确当前要复现、调平滑、检查几何还是传播联合不确定性 |
+| 在 Windows 或 WSL 受控运行大型 MPI SMC | [Windows 与 WSL 的 MPI 启动脚本](mpi_launcher_scripts.md) | 已激活 ECAT 环境，并确认 `mpiexec` 与 mpi4py 配套 |
 | 运行一个最小 BLSE/VCE 线性滑动脚本 | [BLSE/VCE 最小脚本骨架](blse_minimal_run.md) | 已建好的 fault、geodata 和配置 |
-| 用同一套三角 patch 比较一组 BLSE 倾角 | [固定拓扑倾角搜索 workflow](../workflows/04b_blse_dip_search.md) 与 [标准脚本](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py) | 地表迹线、候选倾角、geodata 和 BLSE 配置 |
+| 用同一套三角 patch 比较一组 BLSE 倾角 | [固定拓扑倾角搜索 workflow](../workflows/04b_blse_dip_search.md) 与 [标准脚本](../../scripts/test_dip_search_BLSE.py) | 地表迹线、候选倾角、geodata 和 BLSE 配置 |
 | 在 YAML 基线之上试验 coarse、patch 或 rake 约束 | [约束配置与运行时调整短例](constraint_config_runtime.md) | 已初始化的 BLSE/VCE 或 `SMC_FJ + ss_ds` inversion |
 | 为联合 Bayesian 建立曲线断层参考并对齐 YAML/bounds | [联合 Bayesian 几何参考与配置](joint_bayesian_geometry_setup.md) | 已检查的迹线、投影原点和 geodata |
 | 从滑动模型生成密集地表 ENU 位移 | [地表形变正演最小例子](surface_forward_grid.md) | CSI patch GMT 或已有 fault object |

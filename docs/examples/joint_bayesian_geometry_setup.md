@@ -9,9 +9,9 @@
 
 | 场景 | Python | 主配置 | Bounds |
 | --- | --- | --- | --- |
-| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset.yml) | [`bottom_offset_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
-| 多个倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls.yml) | [`three_dip_controls_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
-| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation.yml) | [`custom_perturbation_bounds.yml`](https://github.com/kefuhe/eqtools/blob/main/scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
+| 标量底边位移示例 | [`test_joint_bayesian_bottom_offset.py`](../../scripts/test_joint_bayesian_bottom_offset.py) | [`bottom_offset.yml`](../../scripts/configs/joint_bayesian/bottom_offset.yml) | [`bottom_offset_bounds.yml`](../../scripts/configs/joint_bayesian/bottom_offset_bounds.yml) |
+| 多个倾角控制点示例（模板使用 3 点） | [`test_joint_bayesian_three_dip_controls.py`](../../scripts/test_joint_bayesian_three_dip_controls.py) | [`three_dip_controls.yml`](../../scripts/configs/joint_bayesian/three_dip_controls.yml) | [`three_dip_controls_bounds.yml`](../../scripts/configs/joint_bayesian/three_dip_controls_bounds.yml) |
+| 组合扰动示例（当前方法使用 4 个参数） | [`test_joint_bayesian_custom_perturbation.py`](../../scripts/test_joint_bayesian_custom_perturbation.py) | [`custom_perturbation.yml`](../../scripts/configs/joint_bayesian/custom_perturbation.yml) | [`custom_perturbation_bounds.yml`](../../scripts/configs/joint_bayesian/custom_perturbation_bounds.yml) |
 
 下面聚焦 reference、mesh 和配置之间必须一致的接口关系。数据路径、迹线、断层物理参数和
 mesh 参数应在使用前核对；`lon0/lat0` 是数据与断层共享的坐标参考，应保持同一来源。
@@ -60,7 +60,8 @@ np.testing.assert_allclose(fault.top_coords, fault.geometry_ref.top_coords)
 np.testing.assert_allclose(fault.bottom_coords, fault.geometry_ref.bottom_coords)
 
 fault.geometry_summary()
-fault.help("perturb_bottom_coords_along_fixed_direction")
+# 仅在查询可用 kwargs/YAML 时调用，不是常规 preflight：
+# fault.help("perturb_bottom_coords_along_fixed_direction")
 ```
 
 本例不需要先调用 `generate_mesh()`，也不需要
@@ -178,6 +179,12 @@ print(constraint_state["validation"])
 # inversion.walk(nchains=100, chain_length=50)
 ```
 
+上述三类输出不重复：`geometry_summary()` 检查 fault-local reference、控制点和
+mesh；`print_parameter_positions()` 检查 geometry/scale/slip/poly 在全局参数空间中的
+位置；约束快照检查 bounds、rake 与等式/不等式约束。`SMC_FJ` 报告中
+`S` 是真正采样向量，`L` 是每个候选内部求解的线性向量。详细字段见
+[参数列布局与诊断接口](../concepts/observation_matrix_layout.md#参数列布局与诊断接口)。
+
 断层参考快照和约束诊断快照是两件不同的事。前者在构造 `fault` 时建立；后者在
 `inversion` 初始化后用于检查 bounds 与线性约束。
 `walk()` 构造 `FULLSMC`/`SMC_FJ` target 时还会只读检查一次参数化 mesh 映射；若准备
@@ -185,8 +192,9 @@ print(constraint_state["validation"])
 
 ## 任意数量倾角控制点（以三个为例）
 
-若用户提供 `N` 个 `lon/lat/dip` 参考点，应先用 `N` 个零增量生成正式参考 bottom，再冻结。
-下面以 `N = 3` 为例：
+若用户提供 `N` 个 `lon/lat/dip` 参考点，且对象尚无 reference，`set_dip_profile()` 会捕获
+当前 top 并冻结 profile；已有 reference 时则保留其中的 top，只替换 profile。随后用 `N` 个
+零增量物化一次初始 bottom。bottom 是派生输出，不再 snapshot。下面以 `N = 3` 为例：
 
 ```python
 dip_controls = np.array([
@@ -195,17 +203,25 @@ dip_controls = np.array([
     [LON_2, LAT_2, DIP_2],
 ])
 
-fault.set_dip_control_points_from_coords(
-    coords=dip_controls[:, :2],
-    dips=dip_controls[:, 2],
-    is_utm=False,  # 只说明本次输入为 lon/lat；reference 内部规范保存。
+# 也可只替换个别位置而不改变其他行：
+# dip_controls = [
+#     [LON_0, LAT_0, DIP_0],
+#     {"s_km": 12.0, "dip": DIP_1},
+#     {"s_from_end_km": 0.0, "dip": DIP_2},
+# ]
+
+fault.set_dip_profile(
+    sampled_controls=dip_controls,
+    fixed_controls=None,
+    interpolation_axis="arc_length",
+    transition_zones=None,
+    is_utm=False,
 )
 fault.perturb_dips_with_preset_params(
-    perturbations=np.zeros(3),       # 零增量生成权威参考 bottom。
-    interpolation_axis="arc_length",  # 沿弯曲 top 的累计弧长插值。
-    fixed_nodes=None, angle_unit="degrees", use_average_strike=False,
+    perturbations=np.zeros(3),       # 从权威 top/profile 物化初始 bottom。
+    angle_unit="degrees",
+    use_average_strike=False,
 )
-fault.snapshot(capture_vertices=False, capture_layers=False)
 ```
 
 本例的三个增量在 YAML 中使用半开区间 `[0, 3)`：
@@ -218,8 +234,6 @@ geometry:
 method_parameters:
   update_fault_geometry:
     method: perturb_dips_with_preset_params
-    interpolation_axis: arc_length
-    fixed_nodes: null
     angle_unit: degrees
     use_average_strike: false
 ```
@@ -233,11 +247,66 @@ geometry:
     ub: [15.0, 15.0, 15.0]
 ```
 
-参数顺序仍是 `dip_controls` 的输入行顺序；`arc_length` 只把控制点投影到当前 top 并按
+参数顺序仍是 `sampled_controls` 的输入行顺序；`arc_length` 先把所有位置投影到 top，再按
 空间弧长插值，不重排后验列名或 bounds。`N` 个控制点生成 `N - 1` 个连续插值区间，本例
 三个控制点对应两个区间。proposal 可按
 用户意图跨过 90°，但绝对倾角必须保持在 `(0°, 180°)`。
 
+若西、中两个 sampled controls 需要共享同一个增量，只在 Python profile 声明中增加：
+
+```python
+fault.set_dip_profile(
+    sampled_controls=dip_controls,
+    perturbation_groups=["wm", "wm", "east"],
+    interpolation_axis="arc_length",
+    is_utm=False,
+)
+```
+
+此时唯一标签顺序为 `["wm", "east"]`，所以 YAML 改用 `[0, 2]`，bounds 也各含两个值。
+共享的是增量；若 west/middle 的参考倾角不同，候选最终倾角仍不同。省略分组时继续使用
+原来的 `[0, 3]` 逐点模式，或 `[0, 1]` 标量广播。完整有效/报错组合见
+[sampled/fixed/transition 组合](../reference/dip_profile/bayesian_mixed.md#参数角色和顺序)。
+
+## 倾角剖面后整体旋转和平移
+
+需要同时搜索倾角剖面和断层整体位置时，改用一个有固定顺序的公开组合方法，不要在
+候选函数外手工追加旋转或平移。以下是上一节三点独立模式的替代设置：
+
+```python
+fault.perturb_dips_with_preset_params_and_rigid_transform(
+    perturbations=np.zeros(3 + 3),  # 3 个 dip + rotation + dx + dy
+    pivot="midpoint",
+    angle_unit="degrees",
+)
+fault.generate_and_deform_mesh(..., remap=True)
+```
+
+```yaml
+geometry:
+  update: true
+  sample_positions: [0, 6]
+
+method_parameters:
+  update_fault_geometry:
+    method: perturb_dips_with_preset_params_and_rigid_transform
+    pivot: midpoint
+    angle_unit: degrees
+    use_average_strike: false
+  update_mesh:
+    method: generate_and_deform_mesh
+    num_segments: 25
+    disct_z: 10
+    remap: false
+```
+
+参数顺序严格为 `[dip_change(s)..., rotation, dx, dy]`。若三个 controls 使用
+`["wm", "wm", "east"]`，则 \(K=2\)，切片长度改为 \(K+3=5\)，bounds 也使用五个
+下界和五个上界。完整向量必须为有限数值；NaN 或正负无穷会在几何和缓存状态改变前报错。
+pivot 来自冻结 reference top，density 和 profile 事件节点不会移动它；`midpoint` 指所有
+frozen top 节点二维坐标的算术均值，不是迹线弧长中点。
+完整公式、单位和 grouped 示例见
+[坐标、刚体与组合几何扰动](../reference/geometry_perturbation/coordinate_composite.md#倾角剖面后接刚体旋转和平移)。
 ## 改成其他扰动方法时检查六处
 
 组合扰动模板使用 `[bottom_offset, rotation, dx, dy]` 这一方法专属的四参数实例。更换方法时
@@ -280,7 +349,7 @@ geometry:
 | 当前 mesh 的实际边界 | `set_edges_for_bayesian_optimization(...)` | 导入、裁切或人工修整后的 mesh 边界作为基线 |
 | 最终 mesh 顶点 | 建完最终参考 mesh 后 `snapshot(capture_vertices=True, capture_layers=False)` | 整体平移、旋转或直接顶点变换 |
 | 多层边界 | 设置 `layers` 后 `snapshot(capture_vertices=False, capture_layers=True)` | `_multiLayerMesh` 和 layered-dip |
-| 倾角控制点 | `set_dip_control_points*()`，完成 bottom 后再 `snapshot()` | 沿走向变化倾角 |
+| 倾角 profile | `set_dip_profile()`，可选 density，再物化一次零扰动 | 非分层沿走向变化倾角、固定控制和过渡区 |
 
 完整的接口时机、重新设基线规则和 legacy `ref*` 入口见
 [可扰动断层几何参考](../reference/geometry_perturbation.md)。

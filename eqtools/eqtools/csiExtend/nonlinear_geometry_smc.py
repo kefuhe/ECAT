@@ -63,6 +63,8 @@ from .data_vector_layout import (
 from .fault_angle_conventions import canonicalize_compact_fault_angles
 from .hyperparameter_reporting import (
     build_scale_parameter_rows,
+    collapse_member_scales_to_groups,
+    describe_bayesian_value_source,
     format_scale_parameter_report,
 )
 from .logging_utils.mpi_logging import ensure_default_logging
@@ -2528,6 +2530,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                     model_entry.get("sigmas", {}),
                     std_by_index=std_by_index,
                     theta=theta,
+                    value_source=describe_bayesian_value_source(model),
                 )
             )
         lines.extend(
@@ -2544,7 +2547,9 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         rows = self._compact_model_summary_rows(model_entry, theta=theta, std_by_index=std_by_index)
         descriptive_std = str(model).lower() == "std"
         scale_rows = [] if descriptive_std else self._scale_parameter_rows(
-            model_entry.get("sigmas", {}), theta=theta
+            model_entry.get("sigmas", {}),
+            theta=theta,
+            value_source=describe_bayesian_value_source(model),
         )
         lines = [
             "",
@@ -2567,6 +2572,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                     scale_rows,
                     title="Sigma parameters (Bayesian physical scale)",
                     show_index=True,
+                    show_value_source=True,
+                    show_sampling_space=True,
                     show_posterior_uncertainty=True,
                     tablefmt="simple",
                 ),
@@ -2865,19 +2872,32 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             lines.append("")
         return lines
 
-    def _format_sigma_model_summary(self, sigmas, *, std_by_index, theta=None):
+    def _format_sigma_model_summary(
+        self,
+        sigmas,
+        *,
+        std_by_index,
+        theta=None,
+        value_source=None,
+    ):
         if not sigmas:
             return []
-        rows = self._scale_parameter_rows(sigmas, theta=theta)
+        rows = self._scale_parameter_rows(
+            sigmas,
+            theta=theta,
+            value_source=value_source,
+        )
         return format_scale_parameter_report(
             rows,
             title="Sigma parameters (Bayesian physical scale)",
             show_index=True,
+            show_value_source=True,
+            show_sampling_space=True,
             show_posterior_uncertainty=True,
             tablefmt="simple",
         ).splitlines() + [""]
 
-    def _scale_parameter_rows(self, active_sigmas, *, theta=None):
+    def _scale_parameter_rows(self, active_sigmas, *, theta=None, value_source=None):
         """Return canonical physical sigma rows without changing model state."""
 
         sigmas = getattr(self, "sigmas", None)
@@ -2904,11 +2924,10 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 default_value=1.0,
             )
 
-        active_scales = {
-            group: float(active_sigmas[members[0]])
-            for group, members in layout.get("members_by_group", {}).items()
-            if members
-        }
+        active_scales = collapse_member_scales_to_groups(
+            layout=layout,
+            active_scales_by_member=active_sigmas,
+        )
         specs_by_group_index = {
             int(spec.metadata["sigma_param_index"]): spec
             for spec in getattr(self, "sigma_parameter_specs", [])
@@ -2936,6 +2955,15 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 # parameter families.
                 sample_offset = None
 
+        if value_source is None:
+            active_model = getattr(self, "_active_result_model", None)
+            if active_model is None:
+                raise RuntimeError(
+                    "No active Bayesian representative source is available for "
+                    "the sigma report"
+                )
+            value_source = describe_bayesian_value_source(active_model)
+
         rows = build_scale_parameter_rows(
             kind="sigma",
             layout=layout,
@@ -2944,6 +2972,18 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             log_scaled=bool(sigmas.get("log_scaled", False)),
             posterior_samples=posterior_samples,
             sample_index_offset=sample_offset,
+            value_source_by_group={
+                group: (
+                    value_source
+                    if bool(layout["update_by_group"][index])
+                    else (
+                        "config sigmas.values [log10(s)]"
+                        if bool(sigmas.get("log_scaled", False))
+                        else "config sigmas.values [s]"
+                    )
+                )
+                for index, group in enumerate(layout.get("group_names", ()))
+            },
         )
         if sample_offset is None and specs_by_group_index:
             for group_index, row in enumerate(rows):

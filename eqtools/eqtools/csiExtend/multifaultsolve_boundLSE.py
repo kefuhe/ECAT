@@ -245,7 +245,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
     def _blse_quadratic_scan_context(self):
         """Provide one call-local cache for a fixed-geometry BLSE scan.
 
-        The cache is intentionally scoped to :meth:`simple_run_loop`.  It is
+        The cache is intentionally scoped to :meth:`scan_penalty_weights`
+        (and its legacy ``simple_run_loop`` wrapper).  It is
         never retained across independent ``run()`` calls, where users may
         legitimately have changed geometry, Green's functions, covariance, or
         smoothing.  Nested diagnostic transactions restore the outer context.
@@ -1182,7 +1183,8 @@ class multifaultsolve_boundLSE(multifaultsolve, FaultAnalysisMixin):
         # CVXOPT's historical lsqlin path immediately converted the augmented
         # residual matrix into H=A.T@A and q=-A.T@b.  Accumulate those exact
         # terms blockwise so the normal path does not materialize or copy A.
-        # A scan-local cache is used only by simple_run_loop and only without
+        # A scan-local cache is used only by the fixed-geometry penalty scan
+        # and only without
         # DES; independent run() calls always rebuild from current state.
         use_scan_cache = (
             not use_des

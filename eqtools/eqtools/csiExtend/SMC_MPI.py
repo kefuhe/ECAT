@@ -18,13 +18,12 @@ from multiprocessing import Pool
 from joblib import Parallel, delayed
 from numpy.random import RandomState
 from scipy.optimize import brentq
-import h5py
 
 from .smc_progress import SMCProgressReporter
 from .smc_tempering import (
     resolve_smc_tempering_policy,
-    write_smc_tempering_metadata,
 )
+from .smc_checkpoint import write_smc_checkpoint
 
 
 _INITIAL_DIMENSION_FACTORS = (
@@ -833,7 +832,8 @@ def SMC_samples(opt,samples, NT1, NT2):
 def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_stage=True,
                              save_interval=1, save_at_interval=False,
                             covariance_epsilon = 1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
-                            *, tempering_policy=None):
+                            *, tempering_policy=None,
+                            sample_layout_manifest=None):
     '''
     Sequential Monte Carlo technique
     < a subset of CATMIP by Sarah Minson>
@@ -962,13 +962,12 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             )
 
             if save_at_interval and samples.stage[-1] % save_interval == 0:
-                with h5py.File(f'samples_stage_{samples.stage[-1]}.h5', 'w') as f:
-                    for key, value in samples._asdict().items():
-                        f.create_dataset(key, data=value)
-                    write_smc_tempering_metadata(
-                        f.attrs,
-                        tempering_policy,
-                    )
+                write_smc_checkpoint(
+                    f'samples_stage_{samples.stage[-1]}.h5',
+                    samples,
+                    tempering_policy=tempering_policy,
+                    sample_layout_manifest=sample_layout_manifest,
+                )
         else:
             samples = None
 
@@ -990,10 +989,12 @@ def SMC_samples_parallel_mpi(opt,samples, NT1, NT2, comm=None, save_at_final_sta
             progress.complete_stage()
 
     if rank == 0 and save_at_final_stage:
-        with h5py.File('samples_final.h5', 'w') as f:
-            for key, value in samples._asdict().items():
-                f.create_dataset(key, data=value)
-            write_smc_tempering_metadata(f.attrs, tempering_policy)
+        write_smc_checkpoint(
+            'samples_final.h5',
+            samples,
+            tempering_policy=tempering_policy,
+            sample_layout_manifest=sample_layout_manifest,
+        )
 
     if rank == 0:
         progress.complete(stage=samples.stage[-1], beta=samples.beta[-1])

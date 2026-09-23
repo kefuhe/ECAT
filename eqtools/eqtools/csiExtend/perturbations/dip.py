@@ -39,6 +39,7 @@ class DipPerturbationMixin:
         fixed_controls,
         interpolation_axis,
         transition_zones,
+        perturbation_groups,
         *,
         is_utm,
     ):
@@ -49,6 +50,7 @@ class DipPerturbationMixin:
             fixed_controls,
             interpolation_axis=interpolation_axis,
             transition_zones=transition_zones,
+            perturbation_groups=perturbation_groups,
             reference_top_xy=self.geometry_ref.top_coords,
             xy_to_declaration_frame=None if is_utm else self.xy2ll,
         )
@@ -62,10 +64,12 @@ class DipPerturbationMixin:
     ):
         """Resolve the frozen profile without changing fault or mesh state.
 
-        ``perturbations`` is scalar or contains one additive value per sampled
-        control. Omission resolves the reference profile. ``top_coords`` is a
-        fault-local top edge; omission uses the frozen reference top edge.
-        The returned immutable object is the same representation consumed by
+        ``perturbations`` follows the frozen profile layout: without explicit
+        groups it is scalar or one additive value per sampled control; with
+        groups it contains exactly one value per unique label. Omission
+        resolves the reference profile. ``top_coords`` is a fault-local top
+        edge; omission uses the frozen reference top edge. The returned
+        immutable object is the same representation consumed by
         :class:`DipGeneratorStage` and by diagnostics.
         """
         self._require_geometry_ref("top_coords", "dip_profile")
@@ -73,7 +77,10 @@ class DipPerturbationMixin:
         if top_coords is None:
             top_coords = self.geometry_ref.top_coords
         if perturbations is None:
-            perturbations = np.zeros(profile.controls.sampled_count, dtype=float)
+            perturbations = np.zeros(
+                profile.perturbation_parameter_count,
+                dtype=float,
+            )
         return _resolve_dip_profile(
             profile,
             top_coords,
@@ -89,6 +96,7 @@ class DipPerturbationMixin:
         fixed_controls=None,
         interpolation_axis="auto",
         transition_zones=None,
+        perturbation_groups=None,
         angle_unit="degrees",
         discretization_interval=None,
         is_utm=False,
@@ -116,6 +124,7 @@ class DipPerturbationMixin:
             fixed_controls,
             interpolation_axis,
             transition_zones,
+            perturbation_groups,
             is_utm=is_utm,
         )
         if is_utm:
@@ -151,7 +160,10 @@ class DipPerturbationMixin:
     @track_mesh_update(
         description="Resolve the frozen dip profile and regenerate the bottom edge.",
         params_info={
-            "perturbations": "Scalar or one change per sampled dip control",
+            "perturbations": (
+                "Scalar, one change per sampled control, or one per frozen "
+                "dip-profile perturbation group"
+            ),
         },
         reference_requirements={"fields": ("top_coords", "dip_profile")},
         perturbation_cardinality={"kind": "scalar_or_sampled_dip_controls"},
@@ -166,13 +178,15 @@ class DipPerturbationMixin:
         use_average_strike=False,
         average_strike_source="pca",
         user_direction_angle=None,
+        _resolved_perturbation_layout=None,
     ):
         """Regenerate bottom geometry from ``geometry_ref.dip_profile``.
 
-        Controls, roles, interpolation axis, and transition zones come only
-        from the frozen profile. Candidate values map through the profile's
-        explicit ``sample_to_control`` index. For Bayesian replay, configure
-        density with ``set_densification(...)`` and leave
+        Controls, roles, interpolation axis, transition zones, and any shared
+        perturbation groups come only from the frozen profile. Candidate values
+        are expanded through that frozen layout before mapping to sampled
+        controls. For Bayesian replay, configure density with
+        ``set_densification(...)`` and leave
         ``discretization_interval`` unset; the method-level interval is only a
         one-call convenience and cannot coexist with reference-owned density.
         """
@@ -182,6 +196,7 @@ class DipPerturbationMixin:
             dip_profile=self._project_reference_dip_profile(),
             perturbations=perturbations,
             angle_unit=angle_unit,
+            perturbation_layout=_resolved_perturbation_layout,
             densify_top=True,
             discretization_interval=discretization_interval,
             use_average_strike=use_average_strike,
@@ -195,7 +210,10 @@ class DipPerturbationMixin:
         update_mesh=True,
         description="Resolve the frozen dip profile and rebuild a simple mesh.",
         params_info={
-            "perturbations": "Scalar or one change per sampled dip control",
+            "perturbations": (
+                "Scalar, one change per sampled control, or one per frozen "
+                "dip-profile perturbation group"
+            ),
             "kwargs": "Simple-mesh generation parameters",
         },
         reference_requirements={"fields": ("top_coords", "dip_profile")},
@@ -214,6 +232,7 @@ class DipPerturbationMixin:
         use_average_strike=False,
         average_strike_source="pca",
         user_direction_angle=None,
+        _resolved_perturbation_layout=None,
     ):
         """Regenerate bottom geometry and rebuild the simple triangular mesh."""
         from .pipeline import DipGeneratorStage, SimpleMeshPolicy, run_pipeline
@@ -222,6 +241,7 @@ class DipPerturbationMixin:
             dip_profile=self._project_reference_dip_profile(),
             perturbations=perturbations,
             angle_unit=angle_unit,
+            perturbation_layout=_resolved_perturbation_layout,
             densify_top=True,
             discretization_interval=discretization_interval,
             use_average_strike=use_average_strike,

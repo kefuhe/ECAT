@@ -100,12 +100,11 @@ geodata:
 alpha:
   enabled: true  # Whether to enable smoothing
   mode: single  # single | individual | grouped
-  # For grouped mode, replace faults: null below with one fault-name list per
-  # group, for example: [[FaultA, FaultB], [FaultC]].
+  # Grouped mode requires stable names, for example:
+  # groups: {main: [FaultA, FaultB], branch: [FaultC]}
   update: true  # bool, or one bool per fault/group
   initial_value: -2.0  # Scalar or fault/group-aligned list; log10(alpha)
-  log_scaled: true  # true: sample log10(alpha)
-  faults: null  # null=all smoothing faults; grouped mode requires list-of-lists"""
+  log_scaled: true  # true: sample log10(alpha)"""
 
     # Add DES configuration if requested
     if include_des_config:

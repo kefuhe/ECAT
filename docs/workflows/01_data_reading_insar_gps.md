@@ -19,6 +19,11 @@
 | GNSS ENU 点 | 整理九列后用 `read_from_enu(...)` | [GNSS ENU](../reference/observation_data_readers.md#gnss-enu) |
 | GAMMA、GMTSAR、HyP3、GeoTIFF、NetCDF/HDF5 或 offset 栅格 | 先用 reader 转换并降采样 | [InSAR 降采样](02_insar_downsampling.md) |
 
+已得到降采样文件时，按[读入短例](../examples/inversion_data_loading.md#varres-loading)选择矩形或三角分支；
+不知道单元类型时，先用[只读识别片段](../examples/inversion_data_loading.md#detect-varres-geometry)。
+文件能读入后，还需[组成 geodata](../examples/inversion_data_loading.md#assemble-geodata)并完成本页末尾的检查，
+才能作为反演输入。未知文件不能只凭扩展名选择 `triangular`。
+
 ## 1. 已降采样的 CSI varres 数据
 
 共同前缀通常对应：

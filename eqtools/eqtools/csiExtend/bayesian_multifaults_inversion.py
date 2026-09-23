@@ -50,8 +50,11 @@ import pathlib
 import time
 import glob
 import logging
+import hashlib
+import weakref
 from collections import namedtuple
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from typing import List
 
 # Third-party scientific computing imports
@@ -91,7 +94,12 @@ from .SMC_MPI import SMC_samples_parallel_mpi
 from .smc_tempering import (
     DEFAULT_SMC_TEMPERING_POLICY,
     read_smc_tempering_metadata,
-    write_smc_tempering_metadata,
+)
+from .smc_checkpoint import (
+    SAMPLE_LAYOUT_SCHEMA_VERSION,
+    canonical_sample_layout_json,
+    read_sample_layout_manifest,
+    write_smc_checkpoint,
 )
 from .config.bayesian_config import (
     BayesianMultiFaultsInversionConfig,
@@ -114,6 +122,8 @@ from .covariance_utils import gaussian_log_likelihood
 from .hyperparameter_reporting import (
     build_geometry_parameter_rows,
     build_scale_parameter_rows,
+    collapse_member_scales_to_groups,
+    describe_bayesian_value_source,
     format_geometry_parameter_report,
     format_scale_parameter_report,
 )
@@ -123,10 +133,21 @@ from .quadratic_objective import (
     gaussian_curvature_log_term,
     weighted_residual_quadratic,
 )
+from .perturbations.angle_utils import normalize_angle_unit
 from .posterior_statistics import (
     OnlineVectorMoments,
     PosteriorSlipStatistics,
 )
+from .parameter_layout_reporting import (
+    build_geometry_layout_rows,
+    build_linear_layout_rows,
+    build_sampled_source_rows,
+    build_scale_layout_rows,
+    describe_data_correction_blocks,
+    format_parameter_layout_report,
+    make_parameter_layout_report,
+)
+from .config.config_utils import get_observation_unit_info
 import warnings
 from .bayesian_utils import det_of_laplace_smooth_lu
 from . import lsqlin
@@ -337,6 +358,32 @@ class _SMCFJConditionalProblem:
     alphas: object
 
 
+@dataclass(frozen=True)
+class _GeometryTargetContract:
+    """Immutable geometry execution plan and reference identity snapshot.
+
+    The resolved updates contain detached method/mesh/GF/Laplacian arguments.
+    ``references`` deliberately stores object identities rather than hashes
+    for updates whose registered baseline is ``GeometryReference``.  That
+    object is immutable, and every legitimate replacement adopts a new object.
+    Candidate checks are therefore constant-time per protected source and
+    never hash mesh arrays in the hot loop.  Legacy methods explicitly based
+    on ``current_geometry`` retain their separate contract.
+    """
+
+    updates: tuple
+    references: tuple
+
+
+@dataclass(frozen=True)
+class _SMCCheckpointProvenance:
+    """Metadata bound to one in-memory SMC sample-coordinate array."""
+
+    allsamples_ref: object
+    layout_status: str
+    tempering_policy: object
+
+
 class BayesianMultiFaultsInversion(
     DataCorrectionReportMixin,
     DataCorrectionConstraintMixin,
@@ -345,6 +392,17 @@ class BayesianMultiFaultsInversion(
     FigureProductMixin,
     FaultAnalysisMixin,
 ):
+    """Public orchestration facade for joint geometry-and-slip inversion.
+
+    This class coordinates resolved configuration, constraints, SMC lifecycle,
+    candidate geometry execution, conditional linear solves, and result
+    publication. Numerical kernels and reusable product families remain in
+    their owning helpers or mixins; the section boundaries below make the
+    facade's lifecycle explicit without changing its public API.
+    """
+
+    # Construction, resolved configuration, and geometry contracts
+
     def __init__(self, config="default_config.yml", multifaults=None, geodata=None, faults_list=None, gfmethods=None, 
                  bounds_config='bounds_config.yml', interseismic_config=None, verbose=True, parallel_rank=None):
         if isinstance(config, str):
@@ -374,6 +432,7 @@ class BayesianMultiFaultsInversion(
         # Derived posterior fields are process-local and tied to one loaded or
         # completed sample population. Loading/replacing samples clears them.
         self._posterior_slip_statistics_cache = {}
+        self._smc_checkpoint_provenance = {}
 
     def update_config(self, config):
         self.config = config
@@ -427,12 +486,11 @@ class BayesianMultiFaultsInversion(
             if alpha_mode == 'grouped':
                 alpha_groups = self.config.alpha.get('groups')
                 if alpha_groups is None:
-                    alpha_groups = {
-                        f'Event_{index}': members
-                        for index, members in enumerate(
-                            self.config.alpha.get('faults', [])
-                        )
-                    }
+                    raise ValueError(
+                        "Grouped alpha requires named alpha.groups; the "
+                        "anonymous alpha.faults/Event_* compatibility path "
+                        "has been removed. Rebuild the inversion configuration."
+                    )
             alpha_layout = attach_group_parameters(
                 resolve_group_layout(
                     smoothing_names,
@@ -475,15 +533,50 @@ class BayesianMultiFaultsInversion(
         """Whether the resolved sampling contract updates any geometry."""
         return bool(getattr(self.config, 'resolved_geometry_updates', ()))
 
-    def _iter_resolved_geometry_configs(self):
+    def _iter_resolved_geometry_updates(self, updates=None):
         """Yield the sole preflighted geometry plan consumed at runtime.
 
         Parameter layout, bounds, targets, posterior replay and reporting must
         all consume this plan.  Reading the raw local ``geometry.update`` flag
         in those layers would recreate a second activation truth source.
         """
-        for resolved in getattr(self.config, 'resolved_geometry_updates', ()):
-            yield resolved, self.config.faults[resolved.fault_name]
+        source = (
+            getattr(self.config, 'resolved_geometry_updates', ())
+            if updates is None else updates
+        )
+        yield from source
+
+    def _freeze_geometry_target_contract(self):
+        """Freeze one target-owned execution plan and reference identities."""
+        updates = tuple(self._iter_resolved_geometry_updates())
+        references = tuple(
+            (
+                resolved.fault_name,
+                resolved.fault_instance,
+                getattr(resolved.fault_instance, 'geometry_ref', None),
+            )
+            for resolved in updates
+            if getattr(resolved, 'fault_instance', None) is not None
+            and self._geometry_baseline_source(resolved) == 'geometry_ref'
+        )
+        return _GeometryTargetContract(updates=updates, references=references)
+
+    @staticmethod
+    def _geometry_baseline_source(resolved):
+        """Return the registered scientific baseline for one update plan."""
+        contract = getattr(resolved, 'registry_contract', None) or {}
+        return str(contract.get('baseline_source') or 'geometry_ref')
+
+    @staticmethod
+    def _ensure_current_geometry_target_contract(contract):
+        """Reject use of a target after any frozen reference is replaced."""
+        for fault_name, fault, reference in contract.references:
+            if getattr(fault, 'geometry_ref', None) is not reference:
+                raise RuntimeError(
+                    f"Fault '{fault_name}' geometry reference changed after "
+                    "target construction. Rebuild the target or call the "
+                    "mode-specific walk method again before sampling."
+                )
 
     def _dataset_sigmas_from_samples(self, samples):
         """Resolve one physical sigma scale per data set from a sample.
@@ -592,11 +685,10 @@ class BayesianMultiFaultsInversion(
             str(group): list(members)
             for group, members in members_by_group.items()
         }
-        self.current_alpha_group_values = {
-            group: self.current_smoothing_alphas[members[0]]
-            for group, members in self.current_alpha_group_members.items()
-            if members
-        }
+        self.current_alpha_group_values = collapse_member_scales_to_groups(
+            layout=layout,
+            active_scales_by_member=self.current_smoothing_alphas,
+        )
 
     def _clear_bayesian_hyperparameter_context(self):
         """Invalidate physical hyperparameters before activating a model."""
@@ -605,6 +697,7 @@ class BayesianMultiFaultsInversion(
         self.current_smoothing_weights = {}
         self.current_alpha_group_members = {}
         self.current_alpha_group_values = {}
+        self._active_result_model_source = None
 
     def _update_faults(self):
         # Update the faults based on the configuration parameters and method parameters for each fault 
@@ -655,6 +748,8 @@ class BayesianMultiFaultsInversion(
         ]
 
         self.combine_GL_poly()
+
+    # Bounds and constraint facade
 
     def _initialize_bounds(self, bounds_config='bounds_config.yml'):
         """Initialize and transactionally compile configured constraints."""
@@ -1400,6 +1495,8 @@ class BayesianMultiFaultsInversion(
         else:
             raise ValueError(f"Invalid constraint type '{constraint_type}'. Please use 'equality' or 'inequality'.")
 
+    # Sampling lifecycle and posterior linear statistics
+
     @classmethod
     def from_config(cls, config: BayesianMultiFaultsInversionConfig):
         return cls(config)
@@ -1414,6 +1511,48 @@ class BayesianMultiFaultsInversion(
         config = BayesianMultiFaultsInversionConfig(**kwargs)
         return cls(config)
 
+    def _register_smc_checkpoint_provenance(
+            self, samples, *, layout_status, tempering_policy):
+        """Bind checkpoint metadata to this sample matrix without retaining it.
+
+        The scientific column layout belongs to ``allsamples`` rather than to
+        whichever checkpoint happened to be loaded most recently.  A weak
+        reference avoids retaining large historical populations solely for
+        provenance bookkeeping.
+        """
+        allsamples = getattr(samples, 'allsamples', None)
+        if allsamples is None:
+            return
+        registry = getattr(self, '_smc_checkpoint_provenance', None)
+        if registry is None:
+            registry = {}
+            self._smc_checkpoint_provenance = registry
+        for key, provenance in tuple(registry.items()):
+            if provenance.allsamples_ref() is None:
+                registry.pop(key, None)
+        registry[id(allsamples)] = _SMCCheckpointProvenance(
+            allsamples_ref=weakref.ref(allsamples),
+            layout_status=layout_status,
+            tempering_policy=tempering_policy,
+        )
+
+    def _get_smc_checkpoint_provenance(self, samples):
+        """Return metadata only when it belongs to this exact sample matrix."""
+        allsamples = getattr(samples, 'allsamples', None)
+        if allsamples is None:
+            return None
+        registry = getattr(self, '_smc_checkpoint_provenance', None)
+        if not registry:
+            return None
+        key = id(allsamples)
+        provenance = registry.get(key)
+        if provenance is None:
+            return None
+        if provenance.allsamples_ref() is not allsamples:
+            registry.pop(key, None)
+            return None
+        return provenance
+
     def _validate_smc_tempering_resume(self, samples):
         """Reject ambiguous non-default continuation from a beta checkpoint."""
         if samples is None or samples.allsamples is None:
@@ -1423,13 +1562,12 @@ class BayesianMultiFaultsInversion(
             return
 
         configured = self.config.smc_tempering
-        loaded = None
-        if getattr(self, '_loaded_smc_samples_id', None) == id(samples):
-            loaded = getattr(
-                self,
-                '_loaded_smc_tempering_policy',
-                None,
-            )
+        provenance = self._get_smc_checkpoint_provenance(samples)
+        loaded = (
+            provenance.tempering_policy
+            if provenance is not None
+            else None
+        )
         if loaded is None:
             if configured != DEFAULT_SMC_TEMPERING_POLICY:
                 raise ValueError(
@@ -1447,10 +1585,31 @@ class BayesianMultiFaultsInversion(
                 f"{configured.as_public_config()}."
             )
 
+    def _validate_smc_layout_resume(
+            self, samples, *, allow_legacy_unverified=False):
+        """Protect continuation from an unverified historical column layout."""
+        if samples is None or samples.allsamples is None:
+            return
+        provenance = self._get_smc_checkpoint_provenance(samples)
+        if provenance is None:
+            return
+        if (
+            provenance.layout_status == 'legacy_unverified'
+            and not allow_legacy_unverified
+        ):
+            raise ValueError(
+                "Cannot continue or reseed from this historical SMC file "
+                "because it has no sample-layout manifest. Read-only "
+                "inspection remains available. If you have independently "
+                "verified the exact geometry, sigma/alpha, slip, and poly "
+                "column layout, pass allow_legacy_unverified=True explicitly."
+            )
+
     def walk(self, nchains=None, chain_length=None, samples=None, magprior=False, comm=None, filename='samples_smc.h5',
              save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
              sliplb=None, slipub=None, rake_angle=None, rake_sigma=None, rake_range=None, magposteriors=False,
-             log_enabled=False, decay_rate=0.1, run_bayesian=True, **kwargs):
+             log_enabled=False, decay_rate=0.1, run_bayesian=True,
+             allow_legacy_unverified=False, **kwargs):
         """
         General entry point for SMC sampling, dispatching to the appropriate method based on the bayesian_sampling_mode.
     
@@ -1476,6 +1635,9 @@ class BayesianMultiFaultsInversion(
         log_enabled (bool): If True, enable logging. Default is False.
         decay_rate (float): Decay rate for magnitude posteriors. Default is 0.1.
         run_bayesian (bool): If True, run the Bayesian process. Default is True.
+        allow_legacy_unverified (bool): Explicitly allow continuation from a
+            historical HDF5 file that has no sample-layout manifest. It does
+            not bypass mismatches in new-format files.
         **kwargs: Additional keyword arguments for specific methods.
     
         Returns:
@@ -1487,20 +1649,25 @@ class BayesianMultiFaultsInversion(
             return self.walk_smc_fj(nchains=nchains, chain_length=chain_length, samples=samples, comm=comm, filename=filename,
                                  save_every=save_every, save_at_interval=save_at_interval, save_at_final=save_at_final,
                                  covariance_epsilon=covariance_epsilon, amh_a=amh_a, amh_b=amh_b, log_enabled=log_enabled,
-                                 decay_rate=decay_rate, run_bayesian=run_bayesian, **kwargs)
+                                 decay_rate=decay_rate, run_bayesian=run_bayesian,
+                                 allow_legacy_unverified=allow_legacy_unverified,
+                                 **kwargs)
         elif mode == 'FULLSMC':
             return self.walk_smc(nchains=nchains, chain_length=chain_length, samples=samples, magprior=magprior, comm=comm,
                                  filename=filename, save_every=save_every, save_at_interval=save_at_interval,
                                  save_at_final=save_at_final, covariance_epsilon=covariance_epsilon, amh_a=amh_a, amh_b=amh_b,
                                  sliplb=sliplb, slipub=slipub, rake_angle=rake_angle, rake_sigma=rake_sigma, rake_range=rake_range,
-                                 magposteriors=magposteriors, log_enabled=log_enabled, decay_rate=decay_rate, run_bayesian=run_bayesian, **kwargs)
+                                 magposteriors=magposteriors, log_enabled=log_enabled, decay_rate=decay_rate, run_bayesian=run_bayesian,
+                                 allow_legacy_unverified=allow_legacy_unverified,
+                                 **kwargs)
         else:
             raise ValueError(f"Unknown bayesian_sampling_mode: {mode}")
 
     def walk_smc(self, nchains=None, chain_length=None, samples=None, magprior=False, comm=None, filename='samples_smc.h5',
                  save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
                  sliplb=None, slipub=None, rake_angle=None, rake_sigma=None, rake_range=None, magposteriors=False,
-                 log_enabled=False, decay_rate=0.1, run_bayesian=True):
+                 log_enabled=False, decay_rate=0.1, run_bayesian=True,
+                 allow_legacy_unverified=False):
         """
         Perform a Sequential Monte Carlo (SMC) sampling walk.
     
@@ -1526,6 +1693,8 @@ class BayesianMultiFaultsInversion(
         log_enabled (bool): If True, enable logging. Default is False.
         decay_rate (float): Decay rate for magnitude posteriors. Default is 0.1.
         run_bayesian (bool): If True, run the Bayesian process. Default is True.
+        allow_legacy_unverified (bool): Explicitly allow continuation from a
+            historical HDF5 file without a sample-layout manifest.
     
         Returns:
         final (NT2): A named tuple containing the final samples, their posterior values, beta, stage, and None for acceptance and swap.
@@ -1548,11 +1717,8 @@ class BayesianMultiFaultsInversion(
             return None
     
         if rank == 0:
-            self.print_parameter_discribution()
-            # print('Total samples:', self.total_samples)
-            # self.print_parameter_positions()
-            print('Number of MCMC samples:', self.mcmc_samples)
-            self.print_mcmc_parameter_positions()
+            print('Number of data: {}'.format(self.multifaults.Nd))
+            print(self.format_parameter_layout(summary_only=True))
     
         if (
             self.constraint_manager.state_revision
@@ -1584,12 +1750,19 @@ class BayesianMultiFaultsInversion(
             else:
                 samples = NT2(None, None, None, None, None, None)
 
+        self._validate_smc_layout_resume(
+            samples,
+            allow_legacy_unverified=allow_legacy_unverified,
+        )
         self._validate_smc_tempering_resume(samples)
     
         # run the SMC sampling
         final = SMC_samples_parallel_mpi(opt, samples, NT1, NT2, comm, save_at_final, 
                                          save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
-                                         tempering_policy=self.config.smc_tempering)
+                                         tempering_policy=self.config.smc_tempering,
+                                         sample_layout_manifest=(
+                                             self._build_sample_layout_manifest()
+                                         ))
         self.sampler = final
         self._posterior_slip_statistics_cache = {}
         if rank == 0:
@@ -1600,7 +1773,8 @@ class BayesianMultiFaultsInversion(
     def walk_smc_fj(self, nchains=None, chain_length=None, samples=None, comm=None, filename='samples_smc.h5',
                  save_every=1, save_at_interval=False, save_at_final=True, covariance_epsilon=1e-6, amh_a=1.0/9.0, amh_b=8.0/9.0,
                  log_enabled=False, x0=None, opts=None, smooth_prior_weight=1.0,
-                 magnitude_log_prior=False, decay_rate=0.1, run_bayesian=True):
+                 magnitude_log_prior=False, decay_rate=0.1, run_bayesian=True,
+                 allow_legacy_unverified=False):
         """
         Perform a Sequential Monte Carlo (SMC) sampling walk.
     
@@ -1623,6 +1797,8 @@ class BayesianMultiFaultsInversion(
         magnitude_log_prior (bool): If True, use magnitude log prior. Default is False.
         decay_rate (float): Decay rate for magnitude log prior. Default is 0.1.
         run_bayesian (bool): If True, run the Bayesian process. Default is True.
+        allow_legacy_unverified (bool): Explicitly allow continuation from a
+            historical HDF5 file without a sample-layout manifest.
     
         Returns:
         final (NT2): A named tuple containing the final samples, their posterior values, beta, stage, and None for acceptance and swap.
@@ -1646,11 +1822,8 @@ class BayesianMultiFaultsInversion(
             return None
     
         if rank == 0:
-            self.print_parameter_discribution()
-            # print('Total samples:', self.total_samples)
-            # self.print_parameter_positions()
-            print('Number of MCMC samples:', self.mcmc_samples)
-            self.print_mcmc_parameter_positions()
+            print('Number of data: {}'.format(self.multifaults.Nd))
+            print(self.format_parameter_layout(summary_only=True))
 
         hyper_lb, hyper_ub = self.constraint_manager.get_bounds_for_hyperparameters()
         opt = _SMCFJOptions(
@@ -1665,6 +1838,10 @@ class BayesianMultiFaultsInversion(
         if samples is None:
             samples = NT2(None, None, None, None, None, None)
 
+        self._validate_smc_layout_resume(
+            samples,
+            allow_legacy_unverified=allow_legacy_unverified,
+        )
         self._validate_smc_tempering_resume(samples)
     
         # run the SMC sampling
@@ -1672,6 +1849,7 @@ class BayesianMultiFaultsInversion(
             opt, samples, _SMCFJOptions, NT2, comm, save_at_final,
             save_every, save_at_interval, covariance_epsilon, amh_a, amh_b,
             tempering_policy=self.config.smc_tempering,
+            sample_layout_manifest=self._build_sample_layout_manifest(),
         )
         self.sampler = final
         self._posterior_slip_statistics_cache = {}
@@ -1758,10 +1936,9 @@ class BayesianMultiFaultsInversion(
             sample = np.asarray(sample, dtype=float).reshape(-1)
             workspace = fixed_workspace
             if self.geometry_updates_active:
-                for resolved, fault_config in self._iter_resolved_geometry_configs():
-                    fault_name = resolved.fault_name
+                for resolved in self._iter_resolved_geometry_updates():
                     if not self._try_update_fault_geometry_and_mesh(
-                            fault_name, fault_config, sample,
+                            resolved, sample,
                             log_enabled=False):
                         raise RuntimeError(
                             "stored SMC-FJ sample "
@@ -1769,8 +1946,7 @@ class BayesianMultiFaultsInversion(
                             "fault geometry"
                         )
                     self._update_fault_GFs_and_Laplacian(
-                        fault_name,
-                        fault_config,
+                        resolved,
                         update_laplacian=self.config.alpha_enabled,
                         log_enabled=False,
                     )
@@ -2084,6 +2260,8 @@ class BayesianMultiFaultsInversion(
             self._restore_published_linear_result(predictive_state)
         return summary
 
+    # Result activation, diagnostics, plotting, and reporting
+
     def returnModel(
         self,
         model='mean',
@@ -2181,10 +2359,9 @@ class BayesianMultiFaultsInversion(
         self.model = specs
 
         # Update the model geometry
-        for resolved, fault_config in self._iter_resolved_geometry_configs():
-            fault_name = resolved.fault_name
-            self._update_fault_geometry_and_mesh(fault_name, fault_config, specs)
-            self._update_fault_GFs_and_Laplacian(fault_name, fault_config)
+        for resolved in self._iter_resolved_geometry_updates():
+            self._update_fault_geometry_and_mesh(resolved, specs)
+            self._update_fault_GFs_and_Laplacian(resolved)
         
         if self.bayesian_sampling_mode == 'SMC_FJ':
             self.target(specs)
@@ -2204,19 +2381,9 @@ class BayesianMultiFaultsInversion(
             self.mpost = mpost_tmp
         
         print('Number of data: {}'.format(self.multifaults.Nd))
-        print('Number of MCMC parameters: {}'.format(self.mcmc_samples)) # self.multifaults.Np
-        print('Parameter Description ----------------------------------')
         # update model slip and poly
         total_half = 0
         for fault in self.multifaults.faults:
-            # print('-----------------')
-            print(f"Fault {fault.name}:")
-            geometry_position = getattr(self, 'geometry_positions', {}).get(
-                fault.name, [0, 0]
-            )
-            if geometry_position[1] > geometry_position[0]:
-                print(f"  Geometry positions: {geometry_position}")
-            
             full_slip_start, full_slip_end = self.full_slip_positions[fault.name]
             slip_start, slip_end = full_slip_start, full_slip_end
             slip_start -= total_half
@@ -2229,14 +2396,12 @@ class BayesianMultiFaultsInversion(
 
             if _adapter is not None and _adapter.source_type != 'Fault':
                 # Non-Fault sources: distribute parameters directly via adapter
-                print(f"  Slip positions: [{slip_start}, {slip_end}]")
                 mpost_segment = specs[slip_start:slip_end]
                 _adapter.distribute_results(mpost_segment)
             elif self.config.slip_sampling_mode == 'rake_fixed':
                 compact_start, compact_end = self.constraint_manager.sample_slip_positions[
                     fault.name
                 ]
-                print(f"  Slip positions: [{compact_start}, {compact_end}]")
                 ss_ds = expanded_specs[full_slip_start:full_slip_end]
                 if _adapter is not None:
                     _adapter.distribute_results(ss_ds)
@@ -2251,8 +2416,6 @@ class BayesianMultiFaultsInversion(
                 )
             elif self.config.slip_sampling_mode == 'magnitude_rake':
                 half = (slip_end - slip_start) // 2
-                print(f"  Slip magnitude positions: [{slip_start}, {slip_start + half}]")
-                print(f"  Rake positions: [{slip_start + half}, {slip_end}]")
                 slip_mag = specs[slip_start:slip_start + half]
                 rake = specs[slip_start + half:slip_end]
                 ss = slip_mag*np.cos(np.radians(rake))
@@ -2265,7 +2428,6 @@ class BayesianMultiFaultsInversion(
                 linear_start = self.linear_sample_start_position
                 mpost_tmp[slip_start-linear_start:slip_end-linear_start] = np.hstack([ss, ds])
             else:
-                print(f"  Slip positions: [{slip_start}, {slip_end}]")
                 if _adapter is not None:
                     _adapter.distribute_results(specs[slip_start:slip_end])
                 else:
@@ -2281,8 +2443,6 @@ class BayesianMultiFaultsInversion(
                 poly_start = full_poly_start - total_half
                 poly_end = full_poly_end - total_half
                 poly_values = specs[poly_start:poly_end]
-            if poly_start != poly_end:
-                print(f"  Poly positions: [{poly_start}, {poly_end}]")
             poly_offset = 0
             for i, (key, value) in enumerate(fault.poly.items()):
                 if value is not None:
@@ -2291,15 +2451,9 @@ class BayesianMultiFaultsInversion(
                     ]
                     poly_offset += value
 
-        if self._sigma_update_flag:
-            sigmas_start, sigmas_end = self.sigmas_position
-            print(f"Sigmas position: [{sigmas_start}, {sigmas_end}]")
-        if self._alpha_update_flag:
-            alpha_start, alpha_end = self.alpha_position
-            print(f"Alpha position: [{alpha_start}, {alpha_end}]")
-        
         if (not isinstance(model, str)) or (model not in ('std', 'STD', 'Std')):
             self._publish_fit_hyperparameter_context(specs)
+            self._active_result_model_source = describe_bayesian_value_source(model)
             # Predict the data and print the RMS and VR
             # Caluculate RMS and VR for the solution and print the results
             rms = np.sqrt(np.mean((np.dot(self.G_combined, mpost_tmp) - self.observations)**2))
@@ -2580,12 +2734,23 @@ class BayesianMultiFaultsInversion(
                 axis_label_selection += [True] * len(fault_keys)
         
         if plot_geometry:
-            for resolved, fault_config in self._iter_resolved_geometry_configs():
-                if fault_config['geometry'].get('follows'):
+            for resolved in self._iter_resolved_geometry_updates():
+                if getattr(resolved, 'follows', None):
                     continue
                 start, end = resolved.sample_slice
+                local_names = tuple(
+                    getattr(resolved, 'parameter_names', ()) or ()
+                )
+                layout = getattr(resolved, 'parameter_layout', None)
+                if layout is None or not getattr(layout, 'explicit', False):
+                    # Preserve the historical implicit-layout KDE keys.  Group
+                    # labels are descriptive only when the user explicitly
+                    # declared a grouped profile.
+                    local_names = tuple(str(i) for i in range(end - start))
+                elif len(local_names) != end - start:
+                    local_names = tuple(str(i) for i in range(end - start))
                 geometry_keys = [
-                    f"{resolved.fault_name}_{i}" for i in range(end - start)
+                    f"{resolved.fault_name}_{name}" for name in local_names
                 ]
                 keys += geometry_keys
                 index += list(range(start, end))
@@ -3106,10 +3271,29 @@ class BayesianMultiFaultsInversion(
                 "printing hyperparameter summaries; the posterior standard "
                 "deviation vector is descriptive and is not a model."
             )
-        sigma_scales = {
-            group: float(sigma_by_dataset[members[0]])
-            for group, members in sigma_layout.get('members_by_group', {}).items()
-            if members
+        sigma_scales = collapse_member_scales_to_groups(
+            layout=sigma_layout,
+            active_scales_by_member=sigma_by_dataset,
+        )
+        active_source = getattr(self, '_active_result_model_source', None)
+        if not active_source:
+            raise RuntimeError(
+                "No active Bayesian representative source. Activate a predictive "
+                "model with returnModel() before printing scale parameters."
+            )
+        sigma_fixed_source = 'config sigmas.initial_value'
+        sigma_fixed_source += (
+            ' [log10(s)]'
+            if bool(self.config.sigmas.get('log_scaled', False))
+            else ' [s]'
+        )
+        sigma_sources = {
+            group: (
+                active_source
+                if bool(sigma_layout['update_by_group'][index])
+                else sigma_fixed_source
+            )
+            for index, group in enumerate(sigma_layout.get('group_names', ()))
         }
         sigma_samples = None
         sigma_offset = None
@@ -3125,6 +3309,7 @@ class BayesianMultiFaultsInversion(
                 log_scaled=bool(self.config.sigmas.get('log_scaled', False)),
                 posterior_samples=sigma_samples,
                 sample_index_offset=sigma_offset,
+                value_source_by_group=sigma_sources,
             )
         )
 
@@ -3143,6 +3328,8 @@ class BayesianMultiFaultsInversion(
                 alpha_offset = self.alpha_position[0]
                 alpha_samples = posterior[:, self.alpha_position[0]:self.alpha_position[1]]
             rows.extend(
+                # The active physical values were published by the same
+                # likelihood/model activation that generated predictions.
                 build_scale_parameter_rows(
                     kind='alpha',
                     layout=alpha_layout,
@@ -3151,9 +3338,46 @@ class BayesianMultiFaultsInversion(
                     log_scaled=bool(self.config.alpha.get('log_scaled', False)),
                     posterior_samples=alpha_samples,
                     sample_index_offset=alpha_offset,
+                    value_source_by_group={
+                        group: (
+                            active_source
+                            if bool(alpha_layout['update_by_group'][index])
+                            else (
+                                'config alpha.initial_value [log10(s)]'
+                                if bool(self.config.alpha.get('log_scaled', False))
+                                else 'config alpha.initial_value [s]'
+                            )
+                        )
+                        for index, group in enumerate(
+                            alpha_layout.get('group_names', ())
+                        )
+                    },
                 )
             )
         return rows
+
+    def collect_scale_parameters(self):
+        """Return physical sigma/alpha rows for the active Bayesian model."""
+
+        return copy.deepcopy(self._collect_scale_parameter_rows())
+
+    def format_scale_parameters(self):
+        """Format active Bayesian scales and their sampled coordinates."""
+
+        return format_scale_parameter_report(
+            self.collect_scale_parameters(),
+            title="Bayesian scale parameters",
+            show_index=True,
+            show_value_source=True,
+            show_sampling_space=True,
+            show_posterior_uncertainty=True,
+            tablefmt='simple',
+        )
+
+    def print_scale_parameters(self):
+        """Print scale parameters for the active Bayesian representative."""
+
+        print(self.format_scale_parameters())
 
     def _print_hyperparameters_summary(self):
         """Print geometry and scale parameters without mixing coordinate spaces."""
@@ -3165,8 +3389,6 @@ class BayesianMultiFaultsInversion(
             active_vector=self.model,
             posterior_samples=posterior,
         )
-        scale_rows = self._collect_scale_parameter_rows()
-
         print("\n" + "=" * 80)
         print("Bayesian Hyperparameter Summary")
         print("=" * 80)
@@ -3174,36 +3396,312 @@ class BayesianMultiFaultsInversion(
             print(format_geometry_parameter_report(geometry_rows))
             print()
         print(
-            format_scale_parameter_report(
-                scale_rows,
-                title="Bayesian scale parameters",
-                show_index=True,
-                show_posterior_uncertainty=True,
-                tablefmt='simple',
-            )
+            self.format_scale_parameters()
         )
         print(
             "Scale (s) and Row mult. (1/s) are physical active-model values; "
-            "Sampling identifies the stored Bayesian coordinate."
+            "Sample coord. identifies the stored Bayesian coordinate."
         )
         print("=" * 80)
 
+    # Checkpoint manifests and persistence
+
+    @classmethod
+    def _canonical_manifest_value(cls, value):
+        """Return a compact deterministic description of scientific state."""
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, (float, np.floating)):
+            number = float(value)
+            return number if np.isfinite(number) else str(number)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.ndarray):
+            array = np.asarray(value)
+            if array.dtype.kind in {'f', 'c'}:
+                array = np.ascontiguousarray(array, dtype='<f8')
+            elif array.dtype.kind in {'i', 'u'}:
+                array = np.ascontiguousarray(array, dtype='<i8')
+            elif array.dtype.kind == 'b':
+                array = np.ascontiguousarray(array, dtype=np.uint8)
+            else:
+                return {
+                    'shape': list(array.shape),
+                    'values': array.astype(str).tolist(),
+                }
+            return {
+                'shape': list(array.shape),
+                'sha256': hashlib.sha256(array.tobytes(order='C')).hexdigest(),
+            }
+        if is_dataclass(value):
+            return {
+                field.name: cls._canonical_manifest_value(
+                    getattr(value, field.name)
+                )
+                for field in dataclass_fields(value)
+            }
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._canonical_manifest_value(item)
+                for key, item in sorted(
+                    value.items(), key=lambda pair: str(pair[0])
+                )
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._canonical_manifest_value(item) for item in value]
+        return repr(value)
+
+    @classmethod
+    def _geometry_reference_digest(cls, reference):
+        """Fingerprint an immutable GeometryReference without storing arrays."""
+        if reference is None:
+            return None
+        state = cls._canonical_manifest_value(reference)
+        payload = canonical_sample_layout_json({'reference': state})
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _group_layout_manifest(config_block, sample_slice):
+        """Describe sampled scale coordinates and their member mapping."""
+        if sample_slice is None:
+            return None
+        layout = config_block.get('group_layout') or {}
+        group_names = [str(value) for value in layout.get('group_names', ())]
+        members_by_group = layout.get('members_by_group', {}) or {}
+        update_by_group = np.asarray(
+            layout.get('update_by_group', ()), dtype=bool
+        ).reshape(-1)
+        sample_index_by_group = np.asarray(
+            layout.get('sample_index_by_group', ()), dtype=int
+        ).reshape(-1)
+        sampled = []
+        for index, name in enumerate(group_names):
+            if index < update_by_group.size and update_by_group[index]:
+                sampled.append({
+                    'name': name,
+                    'local_index': int(sample_index_by_group[index]),
+                    'members': [
+                        str(member)
+                        for member in members_by_group.get(name, ())
+                    ],
+                })
+        sampled.sort(key=lambda item: item['local_index'])
+        return {
+            'slice': [int(sample_slice[0]), int(sample_slice[1])],
+            'mode': str(config_block.get('mode', 'individual')),
+            'log_scaled': bool(config_block.get('log_scaled', False)),
+            'sampled_groups': sampled,
+        }
+
+    @staticmethod
+    def _geometry_parameter_names(resolved):
+        """Return stable local roles for one resolved geometry slice."""
+        start, end = resolved.sample_slice
+        count = end - start
+        names = tuple(getattr(resolved, 'parameter_names', ()) or ())
+        if len(names) == count:
+            return list(names)
+        items = tuple(
+            ((resolved.registry_contract or {}).get('parameter_spec') or {})
+            .get('items') or ()
+        )
+        if len(items) == count:
+            return [
+                str(item.get('role') or f'parameter[{index}]')
+                for index, item in enumerate(items)
+            ]
+        if len(items) == 1:
+            role = str(items[0].get('role') or 'parameter')
+            return [
+                role if count == 1 else f'{role}[{index}]'
+                for index in range(count)
+            ]
+        return [f'parameter[{index}]' for index in range(count)]
+
+    @staticmethod
+    def _geometry_parameter_units(resolved):
+        """Return the scientific unit attached to each geometry sample column.
+
+        Units come from the same registry contract and method keyword used by
+        candidate execution. Canonical angle names keep aliases such as
+        ``deg`` and ``degrees`` equivalent while a true degrees/radians change
+        invalidates the checkpoint layout.
+        """
+        start, end = resolved.sample_slice
+        count = end - start
+        items = tuple(
+            ((resolved.registry_contract or {}).get('parameter_spec') or {})
+            .get('items') or ()
+        )
+        if len(items) == 1:
+            items = items * count
+        elif len(items) != count:
+            return [None] * count
+
+        units = []
+        for item in items:
+            unit = item.get('unit')
+            unit_from = item.get('unit_from')
+            if unit is not None:
+                units.append(str(unit))
+            elif unit_from == 'angle_unit':
+                units.append(normalize_angle_unit(
+                    resolved.method_kwargs.get('angle_unit')
+                ))
+            elif unit_from is not None:
+                value = resolved.method_kwargs.get(unit_from)
+                units.append(None if value is None else str(value))
+            else:
+                units.append(None)
+        return units
+
+    def _build_sample_layout_manifest(self):
+        """Build the canonical interpretation of columns stored in HDF5.
+
+        This manifest protects parameter identity and ordering.  It is not a
+        full reproducibility bundle for observations, priors, or solver
+        options; those remain separate scientific inputs.
+        """
+        mode = self.config.bayesian_sampling_mode
+        blocks = []
+        for resolved in sorted(
+                self.config.resolved_geometry_updates,
+                key=lambda item: item.sample_slice):
+            start, end = resolved.sample_slice
+            layout = getattr(resolved, 'parameter_layout', None)
+            baseline_source = self._geometry_baseline_source(resolved)
+            block = {
+                'kind': 'geometry',
+                'owner': str(resolved.fault_name),
+                'slice': [int(start), int(end)],
+                'method': str(resolved.method_name),
+                'parameters': self._geometry_parameter_names(resolved),
+                'parameter_units': self._geometry_parameter_units(resolved),
+                'baseline_source': baseline_source,
+                'reference_sha256': (
+                    self._geometry_reference_digest(
+                        getattr(resolved.fault_instance, 'geometry_ref', None)
+                    )
+                    if baseline_source == 'geometry_ref' else None
+                ),
+            }
+            if layout is not None:
+                block.update({
+                    'layout_mode': str(layout.mode),
+                    'layout_explicit': bool(layout.explicit),
+                    'group_names': list(layout.group_names),
+                    'sampled_control_parameter_indices': (
+                        layout.sampled_control_parameter_indices.tolist()
+                    ),
+                })
+            blocks.append(block)
+
+        sigma_block = self._group_layout_manifest(
+            self.config.sigmas,
+            self.sigmas_position,
+        )
+        if sigma_block is not None:
+            sigma_block['kind'] = 'sigma'
+            blocks.append(sigma_block)
+        alpha_block = self._group_layout_manifest(
+            self.config.alpha,
+            self.alpha_position,
+        )
+        if alpha_block is not None:
+            alpha_block['kind'] = 'alpha'
+            blocks.append(alpha_block)
+
+        sample_width = int(self.linear_sample_start_position)
+        if mode == 'FULLSMC':
+            cursor = sample_width
+            for fault in self.multifaults.faults:
+                full_slip_width = int(
+                    self.slip_positions[fault.name][1]
+                    - self.slip_positions[fault.name][0]
+                )
+                adapter = getattr(self.multifaults, 'adapters', {}).get(
+                    fault.name
+                )
+                is_fault_source = (
+                    adapter is None or adapter.source_type == 'Fault'
+                )
+                slip_width = (
+                    full_slip_width // 2
+                    if (
+                        self.config.slip_sampling_mode == 'rake_fixed'
+                        and is_fault_source
+                    )
+                    else full_slip_width
+                )
+                blocks.append({
+                    'kind': 'slip',
+                    'owner': str(fault.name),
+                    'slice': [cursor, cursor + slip_width],
+                    'parameterization': str(self.config.slip_sampling_mode),
+                    'source_class': fault.__class__.__name__,
+                })
+                cursor += slip_width
+                poly_width = int(
+                    self.poly_positions[fault.name][1]
+                    - self.poly_positions[fault.name][0]
+                )
+                if poly_width:
+                    blocks.append({
+                        'kind': 'poly',
+                        'owner': str(fault.name),
+                        'slice': [cursor, cursor + poly_width],
+                        'components': self._canonical_manifest_value(
+                            getattr(fault, 'numberofpolys', {})
+                        ),
+                    })
+                    cursor += poly_width
+            sample_width = cursor
+            expected_width = int(self.mcmc_samples)
+            if sample_width != expected_width:
+                raise RuntimeError(
+                    "FULLSMC checkpoint layout width is inconsistent with "
+                    f"the active sampler: manifest={sample_width}, "
+                    f"sampler={expected_width}."
+                )
+
+        return {
+            'schema_version': SAMPLE_LAYOUT_SCHEMA_VERSION,
+            'scope': 'bayesian_sample_coordinates',
+            'bayesian_sampling_mode': str(mode),
+            'slip_sampling_mode': str(self.config.slip_sampling_mode),
+            'sample_width': sample_width,
+            'blocks': blocks,
+        }
+
+    def _expected_checkpoint_sample_width(self):
+        return int(
+            self.linear_sample_start_position
+            if self.config.bayesian_sampling_mode == 'SMC_FJ'
+            else self.mcmc_samples
+        )
+
     def save2h5(self, samples, filename):
-        with h5py.File(filename, 'w') as f:
-            f.create_dataset('allsamples', data=samples.allsamples)
-            f.create_dataset('postval', data=samples.postval)
-            f.create_dataset('beta', data=samples.beta)
-            f.create_dataset('stage', data=samples.stage)
-            f.create_dataset('covsmpl', data=samples.covsmpl)
-            f.create_dataset('resmpl', data=samples.resmpl)
-            write_smc_tempering_metadata(
-                f.attrs,
-                self.config.smc_tempering,
-            )
+        sample_layout_manifest = self._build_sample_layout_manifest()
+        provenance = self._get_smc_checkpoint_provenance(samples)
+        if (
+            provenance is not None
+            and provenance.layout_status == 'legacy_unverified'
+        ):
+            # Copying an old manifestless state does not prove its column
+            # semantics. Keep it unverified until a real SMC run creates new
+            # samples under the current resolved layout.
+            sample_layout_manifest = None
+        write_smc_checkpoint(
+            filename,
+            samples,
+            tempering_policy=self.config.smc_tempering,
+            sample_layout_manifest=sample_layout_manifest,
+        )
 
     def load_from_h5(self, filename):
         with h5py.File(filename, 'r') as f:
             checkpoint_tempering = read_smc_tempering_metadata(f.attrs)
+            checkpoint_layout = read_sample_layout_manifest(f.attrs)
             
             # Create a namedtuple to store the data
             data = NT2(
@@ -3211,18 +3709,54 @@ class BayesianMultiFaultsInversion(
                 postval=f['postval'][:],
                 beta=f['beta'][:],
                 stage=f['stage'][:],
-                covsmpl=f['covsmpl'][:],
-                resmpl=f['resmpl'][:]
+                covsmpl=f['covsmpl'][:] if 'covsmpl' in f else None,
+                resmpl=f['resmpl'][:] if 'resmpl' in f else None,
             )
+
+        expected_width = self._expected_checkpoint_sample_width()
+        actual_width = int(np.asarray(data.allsamples).shape[1])
+        if actual_width != expected_width:
+            raise ValueError(
+                "SMC checkpoint sample width does not match the current "
+                f"inversion layout: checkpoint={actual_width}, "
+                f"current={expected_width}."
+            )
+        current_layout = self._build_sample_layout_manifest()
+        if checkpoint_layout is None:
+            warnings.warn(
+                "SMC checkpoint has no sample-layout manifest. Its column "
+                "count matches, so read-only inspection is allowed, but the "
+                "scientific meaning of equally sized columns is unverified. "
+                "Continuation or prior reseeding requires explicit legacy "
+                "acknowledgement.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            layout_status = 'legacy_unverified'
+        elif canonical_sample_layout_json(checkpoint_layout) != (
+                canonical_sample_layout_json(current_layout)):
+            raise ValueError(
+                "SMC checkpoint sample-layout manifest does not match the "
+                "current inversion. The file may use different geometry "
+                "groups, scale groups, parameter ordering, sampling mode, or "
+                "reference geometry. Recreate the matching inversion before "
+                "loading it."
+            )
+        else:
+            layout_status = 'verified'
 
         self.sampler = data
         self._posterior_slip_statistics_cache = {}
-        self._loaded_smc_tempering_policy = checkpoint_tempering
-        self._loaded_smc_samples_id = id(data)
+        self._register_smc_checkpoint_provenance(
+            data,
+            layout_status=layout_status,
+            tempering_policy=checkpoint_tempering,
+        )
             
         return data
 
-    def resample_prior_from_samples_file(self, filename, nchains=1000):
+    def resample_prior_from_samples_file(
+            self, filename, nchains=1000, *, allow_legacy_unverified=False):
         """
         Load and optionally resample initial samples from a given file.
         
@@ -3235,12 +3769,20 @@ class BayesianMultiFaultsInversion(
         Parameters:
         - filename: str, the path to the file containing the previous sampling results.
         - nchains: int, the desired number of chains to resample to. Defaults to 1000.
+        - allow_legacy_unverified: bool, explicit confirmation that a historical
+          file without a sample-layout manifest has been independently checked.
+          New-format manifest mismatches are never bypassed.
         
         Returns:
         - samples: NT2, a namedtuple containing the resampled allsamples and postval,
                    along with placeholders for future use.
         """
         final = self.load_from_h5(filename)
+        provenance = self._get_smc_checkpoint_provenance(final)
+        self._validate_smc_layout_resume(
+            final,
+            allow_legacy_unverified=allow_legacy_unverified,
+        )
         nchains_file, Nparams = final.allsamples.shape
         rng = np.random.default_rng()  # Create a new Generator instance
 
@@ -3256,7 +3798,15 @@ class BayesianMultiFaultsInversion(
             postval_resampled = final.postval
 
         samples = NT2(allsamples_resampled, postval_resampled, np.array([0]), np.array([1]), None, None)
+        if provenance is not None:
+            self._register_smc_checkpoint_provenance(
+                samples,
+                layout_status=provenance.layout_status,
+                tempering_policy=provenance.tempering_policy,
+            )
         return samples
+
+    # Sample cardinality and parameter layout
 
     @property
     def total_samples(self):
@@ -3392,62 +3942,143 @@ class BayesianMultiFaultsInversion(
                 print('-----------------') 
                 print('Equalized parameter indexes: {} --> {}'.format(old,new))
 
-    def print_parameter_positions(self):
-        """Print the parameter positions."""
-        print("Parameter positions:")
-        for fault in self.multifaults.faults:
-            print(f"Fault {fault.name}:")
-            geometry_position = getattr(self, 'geometry_positions', {}).get(
-                fault.name, [0, 0]
-            )
-            if geometry_position[1] > geometry_position[0]:
-                print(f"  Geometry positions: {geometry_position}")
-            print(f"  Slip positions: {self.slip_positions[fault.name]}")
-            print(f"  Poly positions: {self.poly_positions[fault.name]}")
-        if self._sigma_update_flag:
-            print(f"Sigmas position: {self.sigmas_position}")
-        if self._alpha_update_flag:
-            print(f"Alpha position: {self.alpha_position}")
-    
-    def print_mcmc_parameter_positions(self):
-        """Print the MCMC parameter positions."""
-        print("MCMC Parameter Description ----------------------------------")
-        total_half = 0
-        for fault in self.multifaults.faults:
-            # print('-----------------')
-            print(f"Fault {fault.name}:")
-            geometry_position = getattr(self, 'geometry_positions', {}).get(
-                fault.name, [0, 0]
-            )
-            if geometry_position[1] > geometry_position[0]:
-                print(f"  Geometry positions: {geometry_position}")
+    def collect_parameter_layout(self):
+        """Return the validated joint-Bayesian parameter layout.
 
-            slip_start, slip_end = self.slip_positions[fault.name]
-            slip_start -= total_half
-            slip_end -= total_half
+        FULLSMC reports one sampled vector.  SMC_FJ reports its sampled
+        nonlinear prefix and its separately indexed conditional-linear suffix.
+        The collector consumes resolved configuration and constraint-manager
+        layouts only; it never reads posterior values or changes model state.
+        """
+
+        mode = str(self.config.bayesian_sampling_mode)
+        observation_unit = get_observation_unit_info(self.config)['observation']
+        resolved_updates = tuple(
+            getattr(self.config, 'resolved_geometry_updates', ()) or ()
+        )
+        rows, notes = build_geometry_layout_rows(resolved_updates)
+
+        rows.extend(
+            build_scale_layout_rows(
+                kind='sigma',
+                layout=self.config.sigmas.get('group_layout', {}),
+                sample_slice=self.sigmas_position,
+                sampled_use='sample',
+                fixed_use='fixed',
+                log_scaled=bool(self.config.sigmas.get('log_scaled', False)),
+            )
+        )
+        if self.config.alpha_enabled:
+            rows.extend(
+                build_scale_layout_rows(
+                    kind='alpha',
+                    layout=self.config.alpha.get('group_layout', {}),
+                    sample_slice=self.alpha_position,
+                    sampled_use='sample',
+                    fixed_use='fixed',
+                    log_scaled=bool(self.config.alpha.get('log_scaled', False)),
+                )
+            )
+
+        spaces = []
+        sources = list(self.multifaults.faults)
+        sources_by_name = {source.name: source for source in sources}
+        if mode == 'SMC_FJ':
+            sample_width = int(self.linear_sample_start_position)
+            spaces.append(
+                {
+                    'key': 'S',
+                    'name': 'SMC sampled vector',
+                    'width': sample_width,
+                    'global_offset': 0,
+                }
+            )
+            linear_layout = self.get_linear_parameter_layout()
+            spaces.append(
+                {
+                    'key': 'L',
+                    'name': 'conditional linear vector',
+                    'width': int(linear_layout['width']),
+                    'global_offset': int(linear_layout['global_offset']),
+                }
+            )
+            poly_descriptions = {}
+            for block in linear_layout.get('blocks', ()):
+                if block.get('role') != 'data_correction':
+                    continue
+                source = sources_by_name[str(block['source'])]
+                poly_descriptions[source.name] = describe_data_correction_blocks(
+                    self,
+                    source,
+                    start=int(block['start']),
+                    stop=int(block['stop']),
+                )
+            rows.extend(
+                build_linear_layout_rows(
+                    layout=linear_layout,
+                    adapters=self.multifaults.adapters,
+                    observation_unit=observation_unit,
+                    use='solve',
+                    space='L',
+                    poly_descriptions=poly_descriptions,
+                )
+            )
+            notes.append(
+                'SMC_FJ samples S only; every candidate solves L conditionally'
+            )
+        elif mode == 'FULLSMC':
+            sample_width = int(self.mcmc_samples)
+            spaces.append(
+                {
+                    'key': 'S',
+                    'name': 'SMC sampled vector',
+                    'width': sample_width,
+                    'global_offset': 0,
+                }
+            )
+            rows.extend(
+                build_sampled_source_rows(
+                    inversion=self,
+                    sources=sources,
+                    adapters=self.multifaults.adapters,
+                    source_positions=self.constraint_manager.sample_slip_positions,
+                    poly_positions=self.constraint_manager.sample_poly_positions,
+                    observation_unit=observation_unit,
+                    slip_sampling_mode=self.config.slip_sampling_mode,
+                    use='sample',
+                    space='S',
+                )
+            )
             if self.config.slip_sampling_mode == 'rake_fixed':
-                half = (slip_end - slip_start) // 2
-                print(f"  Slip positions: [{slip_start}, {slip_start + half}]")
-                total_half += half
-            elif self.config.slip_sampling_mode == 'magnitude_rake':
-                half = (slip_end - slip_start) // 2
-                print(f"  Slip magnitude positions: [{slip_start}, {slip_start + half}]")
-                print(f"  Rake positions: [{slip_start + half}, {slip_end}]")
-            else:
-                print(f"  Slip positions: [{slip_start}, {slip_end}]")
+                notes.append(
+                    'fixed-rake FULLSMC samples compact magnitudes; physical ss/ds are derived'
+                )
+        else:
+            raise ValueError(f"Unsupported Bayesian sampling mode {mode!r}")
 
-            poly_start, poly_end = self.poly_positions[fault.name]
-            poly_start -= total_half
-            poly_end -= total_half
-            if poly_start != poly_end:
-                print(f"  Poly positions: [{poly_start}, {poly_end}]")
+        return make_parameter_layout_report(
+            mode=mode,
+            spaces=spaces,
+            rows=rows,
+            notes=notes,
+        )
 
-        if self._sigma_update_flag:
-            sigmas_start, sigmas_end = self.sigmas_position
-            print(f"Sigmas position: [{sigmas_start}, {sigmas_end}]")
-        if self._alpha_update_flag:
-            alpha_start, alpha_end = self.alpha_position
-            print(f"Alpha position: [{alpha_start}, {alpha_end}]")
+    def format_parameter_layout(self, *, summary_only=False):
+        """Format the current joint-Bayesian structural parameter layout."""
+
+        return format_parameter_layout_report(
+            self.collect_parameter_layout(), summary_only=summary_only
+        )
+
+    def print_parameter_positions(self):
+        """Print the compact joint-Bayesian parameter layout."""
+
+        print(self.format_parameter_layout())
+
+    def print_mcmc_parameter_positions(self):
+        """Compatibility alias for :meth:`print_parameter_positions`."""
+
+        self.print_parameter_positions()
 
     def calculate_sigmas_alpha_positions(self):
         """
@@ -3560,6 +4191,8 @@ class BayesianMultiFaultsInversion(
         self.sample_slip_only_positions = slip_only_positions
         self.smoothing_slip_only_positions = np.array(smoothing_slip_only_positions)
         return slip_only_positions
+
+    # Sample-coordinate transforms, priors, and target construction
 
     def compute_slip(self, samples, fault):
         """Compute scalar slip magnitude from samples for a Fault source.
@@ -3954,22 +4587,25 @@ class BayesianMultiFaultsInversion(
         self._require_bayesian_sampling_mode('FULLSMC', 'make_target_for_parallel')
         self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
-        if self.geometry_updates_active:
+        geometry_contract = self._freeze_geometry_target_contract()
+        if geometry_contract.updates:
             def target(samples):
                 ensure_current_bounds()
+                self._ensure_current_geometry_target_contract(
+                    geometry_contract
+                )
                 # Compute log prior
                 log_prior = compute_log_prior(samples, lb, ub)
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for resolved, fault_config in self._iter_resolved_geometry_configs():
-                    fault_name = resolved.fault_name
+                for resolved in geometry_contract.updates:
                     if not self._try_update_fault_geometry_and_mesh(
-                            fault_name, fault_config, samples,
+                            resolved, samples,
                             log_enabled=log_enabled):
                         return -np.inf
                     self._update_fault_GFs_and_Laplacian(
-                        fault_name, fault_config,
+                        resolved,
                         update_laplacian=self.config.alpha_enabled,
                         log_enabled=log_enabled,
                     )
@@ -3999,18 +4635,21 @@ class BayesianMultiFaultsInversion(
         )
         self._validate_sampling_ready()
         lb, ub, ensure_current_bounds = self._build_fullsmc_prior_guard()
-        if self.geometry_updates_active:
+        geometry_contract = self._freeze_geometry_target_contract()
+        if geometry_contract.updates:
             def target(samples):
                 ensure_current_bounds()
+                self._ensure_current_geometry_target_contract(
+                    geometry_contract
+                )
                 # Compute log prior
                 log_prior = compute_log_prior(samples, lb, ub)
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for resolved, fault_config in self._iter_resolved_geometry_configs():
-                    fault_name = resolved.fault_name
+                for resolved in geometry_contract.updates:
                     if not self._try_update_fault_geometry_and_mesh(
-                            fault_name, fault_config, samples,
+                            resolved, samples,
                             update_areas=True, log_enabled=log_enabled):
                         return -np.inf
 
@@ -4023,10 +4662,9 @@ class BayesianMultiFaultsInversion(
                 # if magnitude_log_prior != 0.0:
                 #     return magnitude_log_prior
 
-                for resolved, fault_config in self._iter_resolved_geometry_configs():
-                    fault_name = resolved.fault_name
+                for resolved in geometry_contract.updates:
                     self._update_fault_GFs_and_Laplacian(
-                        fault_name, fault_config,
+                        resolved,
                         update_laplacian=self.config.alpha_enabled,
                         log_enabled=log_enabled,
                     )
@@ -4111,6 +4749,7 @@ class BayesianMultiFaultsInversion(
             label='SMC_FJ hyperparameter bounds',
         )
         constraint_revision = contract.revision
+        geometry_contract = self._freeze_geometry_target_contract()
 
         def ensure_current_constraints():
             if self.constraint_manager.state_revision != constraint_revision:
@@ -4119,22 +4758,24 @@ class BayesianMultiFaultsInversion(
                     "Rebuild the target or call walk_smc_fj() again before sampling."
                 )
 
-        if self.geometry_updates_active:
+        if geometry_contract.updates:
             def target(samples):
                 ensure_current_constraints()
+                self._ensure_current_geometry_target_contract(
+                    geometry_contract
+                )
                 # Compute log prior
                 log_prior = compute_log_prior(samples, hyper_lb, hyper_ub)
                 if log_prior == -np.inf:
                     return -np.inf
 
-                for resolved, fault_config in self._iter_resolved_geometry_configs():
-                    fault_name = resolved.fault_name
+                for resolved in geometry_contract.updates:
                     if not self._try_update_fault_geometry_and_mesh(
-                            fault_name, fault_config, samples,
+                            resolved, samples,
                             log_enabled=log_enabled):
                         return -np.inf
                     self._update_fault_GFs_and_Laplacian(
-                        fault_name, fault_config,
+                        resolved,
                         update_laplacian=self.config.alpha_enabled,
                         log_enabled=log_enabled,
                     )
@@ -4165,6 +4806,8 @@ class BayesianMultiFaultsInversion(
         self.target = target
         return target
 
+    # Candidate execution and conditional linear inversion
+
     def _try_update_fault_geometry_and_mesh(self, *args, **kwargs):
         """Update one Bayesian candidate, rejecting only invalid geometry.
 
@@ -4179,11 +4822,20 @@ class BayesianMultiFaultsInversion(
             return False
         return True
 
-    def _update_fault_geometry_and_mesh(self, fault_name, fault_config, samples, update_areas=False, log_enabled=False):
+    def _update_fault_geometry_and_mesh(
+            self, resolved, samples, update_areas=False, log_enabled=False):
+        """Execute one preflighted geometry update without rereading YAML.
+
+        The resolved envelope owns the bound method, sample slice, method
+        arguments, mesh replay arguments, and optional dip-control layout.
+        This prevents candidate evaluation from reinterpreting mutable config
+        or group labels after target construction.
+        """
+        fault_name = resolved.fault_name
         # Followers share geometry via SharedFaultInfo; nothing to update.
-        if fault_config['geometry'].get('follows'):
+        if resolved.follows:
             return
-        start, end = fault_config['geometry']['sample_positions']
+        start, end = resolved.sample_slice
         # print(f"Updating fault {fault_name} geometry with samples from position {start} to {end}")
         sample_values = samples[start:end]
         # Update fault geometry
@@ -4191,10 +4843,15 @@ class BayesianMultiFaultsInversion(
         # Followers returned above.  Every master candidate must replay its
         # perturbation from the frozen reference; there is no persistent
         # "geometry already updated" state across candidates.
-        self.multifaults.update_fault_geometry(
-            fault_names=[fault_name],
+        method_kwargs = dict(resolved.method_kwargs or {})
+        layout_keyword = getattr(
+            resolved, 'parameter_layout_keyword', None
+        )
+        if layout_keyword is not None:
+            method_kwargs[layout_keyword] = resolved.parameter_layout
+        resolved.bound_method(
             perturbations=sample_values,
-            **fault_config['method_parameters']['update_fault_geometry'],
+            **method_kwargs,
         )
         end_time_geometry = time.time()
         log_time(start_time_geometry, end_time_geometry, "Execution time for updating fault geometry", log_enabled)
@@ -4203,7 +4860,7 @@ class BayesianMultiFaultsInversion(
         if not self.multifaults.faults_dict[fault_name].mesh_valid:
             self.multifaults.update_mesh(
                 fault_names=[fault_name],
-                **fault_config['method_parameters']['update_mesh'],
+                **dict(resolved.mesh_kwargs or {}),
             )
         end_time_mesh = time.time()
         log_time(start_time_mesh, end_time_mesh, "Execution time for updating mesh", log_enabled)
@@ -4212,7 +4869,7 @@ class BayesianMultiFaultsInversion(
             self.multifaults.get_fault_areas(fault_names=[fault_name])
 
     def _update_fault_GFs_and_Laplacian(
-            self, fault_name, fault_config, update_laplacian=True,
+            self, resolved, update_laplacian=True,
             log_enabled=False):
         """Refresh observation physics and requested candidate smoothing.
 
@@ -4220,9 +4877,13 @@ class BayesianMultiFaultsInversion(
         after nonlinear geometry updates. Laplacian construction is gated
         separately because alpha-disabled targets do not consume smoothing.
         """
+        fault_name = resolved.fault_name
         # Update GFs
         start_time_GFs = time.time()
-        self.multifaults.update_GFs(fault_names=[fault_name], **fault_config['method_parameters']['update_GFs'])
+        self.multifaults.update_GFs(
+            fault_names=[fault_name],
+            **dict(resolved.gf_kwargs or {}),
+        )
         end_time_GFs = time.time()
         log_time(start_time_GFs, end_time_GFs, "Execution time for updating GFs", log_enabled)
         # Update Laplacian
@@ -4238,7 +4899,7 @@ class BayesianMultiFaultsInversion(
         ):
             self.multifaults.update_Laplacian(
                 fault_names=[fault_name],
-                **fault_config['method_parameters']['update_Laplacian'],
+                **dict(resolved.laplacian_kwargs or {}),
             )
         end_time_Laplacian = time.time()
         log_time(start_time_Laplacian, end_time_Laplacian, "Execution time for updating Laplacian", log_enabled)
@@ -4724,6 +5385,8 @@ class BayesianMultiFaultsInversion(
             self.GL_combined_poly = np.zeros((0, 0))
         return self.GL_combined_poly
     
+    # Compatibility properties and configuration proxies
+
     @property
     def observations(self):
         if not hasattr(self.multifaults, 'd') or self.multifaults.d is None:

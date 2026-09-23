@@ -2,6 +2,12 @@
 
 [ECAT](https://github.com/kefuhe/ECAT) 是面向地震大地测量建模与反演的科研工具集。公开代码包含 `eqtools` 和 `csi` 相关扩展；本手册按实际科研流程组织，而不是按源码目录组织。
 
+| 你的目标 | 推荐入口 |
+| --- | --- |
+| 第一次学习 | [安装与环境检查](getting_started/installation.md) → [首次练习路线](getting_started/quickstart_two_step.md#first-learning-route) |
+| 已有数据或明确任务 | [科研工作流](workflows/index.md)：按输入选择任务，检查输出后进入下一阶段 |
+| 查字段、公式或接口 | [完整参考速查](reference/index.md#quick-lookup)：直接定位定义及可复制示例 |
+
 标准入门路线是**两阶段反演**，下文简称“两步走”：
 
 1. **Bayesian 非线性几何反演**：估计断层顶边中点经纬度和深度、走向、倾角、长度、宽度等几何参数。
@@ -38,9 +44,11 @@
 | --- | --- | --- |
 | 安装、导入或运行速度异常 | [安装与运行故障排查](getting_started/troubleshooting.md) | 按症状检查版本、wheel、MPI、BLAS 和线程数 |
 | 不清楚 `-n`、rank、进程、线程或 affinity | [并行运行基础](concepts/parallel_process_rank_thread.md) | 先理解运行单位，再决定是否需要调参 |
+| 需要可编辑的 Windows/WSL MPI 启动器 | [MPI 启动脚本](examples/mpi_launcher_scripts.md) | 把 rank、每 rank 线程和案例入口集中在启动层 |
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
 | 需要设置跨直立倾角或核对 `strike/dip/rake` | [断层角度约定](concepts/fault_angle_conventions.md) | 先确认输入、solver geometry 和滑动基底的区别 |
 | 不清楚 `d/G/Cd/H` 的行列和 GPS/optical 分量顺序 | [观测与矩阵排列合同](concepts/observation_matrix_layout.md) | 先统一观测行，再检查协方差、设计矩阵和参数列 |
+| 需要理解或试验 SMC beta stage | [SMC 温度调度](reference/smc_tempering.md) | 区分 `target_cov` 与 `max_delta_beta`，保持默认值作为对照基线 |
 | 西半球或跨日界线区域配置 | [经度约定与区域配置](reference/longitude_regions.md) | 核对处理区域、过滤、协方差掩膜和检查图范围的等价经度匹配 |
 
 ## 工作流主线

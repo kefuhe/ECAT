@@ -178,9 +178,11 @@ class BayesianAdaptiveTriangularPatches(
     def _ensure_geometry_ref_for_dip_profile(self):
         """Create the minimal reference needed to attach a dip profile.
 
-        A profile may be declared before bottom generation and mesh creation.
-        A later :meth:`snapshot` replaces the coordinate arrays while
-        preserving the complete profile specification.
+        When no reference exists, the current top is captured without requiring
+        a generated bottom or mesh.  When a reference already exists, its top
+        remains authoritative; changing the profile never promotes a current
+        candidate top implicitly.  Use :meth:`snapshot` only when deliberately
+        promoting a complete independent geometry baseline.
         """
         if self.geometry_ref is not None:
             return
@@ -198,9 +200,18 @@ class BayesianAdaptiveTriangularPatches(
         *,
         interpolation_axis="auto",
         transition_zones=None,
+        perturbation_groups=None,
         is_utm=False,
     ):
         """Freeze an along-strike dip profile for candidate generation.
+
+        If no :attr:`geometry_ref` exists, the current top is captured as the
+        authoritative generator reference.  If one already exists, its frozen
+        top is retained and only the profile contract is replaced.  The setter
+        never promotes a previously materialized candidate top implicitly.
+        Each candidate regenerates bottom from the frozen top, profile, and
+        density policy before any later rigid transform.  Do not snapshot the
+        zero-perturbation output back into this generator reference.
 
         Parameters
         ----------
@@ -225,6 +236,12 @@ class BayesianAdaptiveTriangularPatches(
              ``{'s_from_end_km': d}`` instead of a coordinate pair.  Each zone
              accepts ``shape='linear'`` (default) or the opt-in cubic Hermite
              blend ``shape='smoothstep'``.
+        perturbation_groups : sequence of str, optional
+            Labels aligned with ``sampled_controls`` declaration order. Equal
+            labels make those controls share one additive perturbation. The
+            independent parameter order is the first occurrence of each label.
+            Omission preserves the established scalar-broadcast or one-value-
+            per-sampled-control behavior.
         is_utm : bool, default False
             Whether all declared position coordinates are fault-local x/y in
             kilometres.  The frozen profile itself is stored canonically in
@@ -241,6 +258,7 @@ class BayesianAdaptiveTriangularPatches(
             fixed_controls,
             interpolation_axis=interpolation_axis,
             transition_zones=transition_zones,
+            perturbation_groups=perturbation_groups,
             reference_top_xy=self.geometry_ref.top_coords,
             xy_to_declaration_frame=None if is_utm else self.xy2ll,
         )
@@ -319,11 +337,18 @@ class BayesianAdaptiveTriangularPatches(
         )
 
     def refresh_geometry_baseline(self):
-        """Re-snapshot coordinates while preserving dip profile and density."""
+        """Deliberately re-snapshot current coordinates as a new baseline.
+
+        This advanced lifecycle operation preserves the declared dip profile
+        and density policy but replaces their frozen top/bottom reference with
+        the current geometry.  It is not part of ordinary dip-profile setup and
+        must never be called inside a candidate loop.
+        """
         if self.geometry_ref is None or self.geometry_ref.dip_profile is None:
             raise ValueError(
                 "No existing geometry_ref with a dip profile to preserve. "
-                "Call set_dip_profile() and snapshot() first."
+                "Declare the dip profile before deliberately refreshing its "
+                "complete top/bottom baseline."
             )
         self.snapshot()
 
@@ -331,8 +356,9 @@ class BayesianAdaptiveTriangularPatches(
     def set_densification(self, num_segments=None, interval=None, enabled=True):
         """Configure automatic coordinate densification for mesh/physics consumers.
 
-        Call after ``snapshot()`` (or ``set_edges_for_bayesian_optimization``).
-        The config is stored in ``geometry_ref`` and survives re-snapshots.
+        Call after either ``set_dip_profile()`` for a generator-owned profile
+        or ``snapshot()`` for an independent-boundary geometry.  The immutable
+        policy is stored in ``geometry_ref`` and survives deliberate snapshots.
 
         Parameters
         ----------
@@ -346,7 +372,10 @@ class BayesianAdaptiveTriangularPatches(
             Set False to disable without removing config.
         """
         if self.geometry_ref is None:
-            raise ValueError("geometry_ref not set. Call snapshot() first.")
+            raise ValueError(
+                "geometry_ref not set. Call set_dip_profile() for a generated "
+                "dip profile, or snapshot() for independent boundaries."
+            )
         cfg = DensificationConfig(num_segments=num_segments, interval=interval, enabled=enabled)
         previous_reference = self.geometry_ref
         previous_cfg = previous_reference.densification
@@ -408,7 +437,8 @@ class BayesianAdaptiveTriangularPatches(
             warnings.warn(
                 f"generate_simple_mesh called with only {top_coords.shape[0]} top_coords points "
                 f"and no DensificationConfig set. Sparse control points may produce inaccurate "
-                f"meshes. Consider calling set_densification(num_segments=N) after snapshot().",
+                "meshes. Densify explicit boundaries before this direct "
+                "mesh call.",
                 stacklevel=2,
             )
         self._build_simple_mesh(top_coords, bottom_coords, disct_z, bias, min_dz, use_depth_only)
@@ -737,14 +767,17 @@ class BayesianAdaptiveTriangularPatches(
                 "still belong to the previous materialization. Replay the "
                 "zero-perturbation "
                 "dip method before generate_and_deform_mesh(), for example "
-                "perturb_dips_with_preset_params(np.zeros(n_controls), ...)."
+                "profile = fault.geometry_ref.dip_profile; "
+                "fault.perturb_dips_with_preset_params("
+                "np.zeros(profile.perturbation_parameter_count), ...)."
             )
         if top_coords.shape[0] <= 10 and (self.geometry_ref is None or self.geometry_ref.densification is None):
             import warnings
             warnings.warn(
                 f"generate_and_deform_mesh called with only {top_coords.shape[0]} top_coords points "
                 f"and no DensificationConfig set. Sparse control points may produce inaccurate "
-                f"meshes. Consider calling set_densification(num_segments=N) after snapshot().",
+                "meshes. Configure reference-owned densification and replay "
+                "the candidate before creating the mapping.",
                 stacklevel=2,
             )
 
@@ -953,7 +986,8 @@ class BayesianAdaptiveTriangularPatches(
                               dip_interpolation_axis='auto',
                               dip_transition_zones=None,
                               dip_controls_are_utm=False,
-                              densify_num_segments=None, densify_interval=None):
+                              densify_num_segments=None, densify_interval=None,
+                              dip_perturbation_groups=None):
         """One-call convenience setup for Bayesian geometry optimization.
 
         Delegates to ``set_edges_for_bayesian_optimization()`` for geometry
@@ -974,6 +1008,7 @@ class BayesianAdaptiveTriangularPatches(
                 fixed_controls=dip_fixed_controls,
                 interpolation_axis=dip_interpolation_axis,
                 transition_zones=dip_transition_zones,
+                perturbation_groups=dip_perturbation_groups,
                 is_utm=dip_controls_are_utm,
             )
     #----------------------------------------------------------------------------------------------------------#

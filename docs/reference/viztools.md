@@ -306,6 +306,47 @@ fig, axes = plot_fault_boundary_diagnostics(
 只在 rank 0 保存或显示图件。完整边界字段、方法和 gap policy 说明见
 [断层边界识别](fault_edges.md)。
 
+## 倾角 profile 诊断
+
+非分层 Bayesian 倾角 profile 使用独立诊断入口，不把参数控制信息混入 mesh 四边拓扑图：
+
+```python
+from eqtools.viztools import plot_dip_profile_diagnostics
+
+fig, axes = plot_dip_profile_diagnostics(
+    fault,
+    perturbations=None,  # None 表示零扰动参考 profile
+    coordinates="lonlat",
+    save="dip_profile_diagnostics.pdf",
+    show=False,
+)
+```
+
+`map` panel 同时画输入位置、投影到 top 后的位置、sampled/fixed 角色和 transition；
+`profile` panel 画统一坐标 \(u\) 上实际用于底边生成的倾角。该函数直接消费 fault 的只读
+`resolve_dip_profile()`，不会复制投影/插值规则，也不会更新 bottom、mesh、GF、Laplacian
+或缓存状态。完整设置协议与可复制的过渡区写法见
+[Bayesian 倾角剖面组合](dip_profile/bayesian_mixed.md#只读诊断)。
+
+transition 尚未确定时，可先显示 reference-top 曲率分析：
+
+```python
+from eqtools.viztools import plot_dip_transition_analysis
+
+fig, axes = plot_dip_transition_analysis(
+    fault,
+    analysis,
+    suggestion,
+    coordinates="lonlat",
+    save="dip_transition_preflight.pdf",
+    show=False,
+)
+```
+
+该函数只消费已经计算好的 `TopCurvatureAnalysis`，不会在绘图层重算曲率。它会先核对
+reference fingerprint，避免把旧 top 的建议画到新 top。计算公式、报告字段和标准 setup
+顺序见[曲率与转换带预分析](dip_profile/transition_preflight.md)。
+
 ## 兼容入口
 
 `eqtools.plottools`、`sci_plot_style()` 和 `set_plot_style()` 仍保留给旧脚本；新建用户

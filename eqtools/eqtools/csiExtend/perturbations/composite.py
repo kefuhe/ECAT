@@ -12,6 +12,116 @@ from ..bayesian_perturbation_base import track_mesh_update
 class CompositePerturbationMixin:
     """Mixin providing composite perturbation capabilities (combinations of direction, rotation, translation)."""
 
+    @track_mesh_update(
+        update_mesh=False,
+        update_laplacian=False,
+        update_area=False,
+        description=(
+            "Regenerate a dip-profile fault, then rigidly rotate and translate "
+            "the complete top/bottom geometry."
+        ),
+        params_info={
+            "perturbations": "[dip_change(s)..., rotation, dx, dy]",
+            "pivot": "'start'/'end'/'midpoint' or an explicit coordinate",
+        },
+        reference_requirements={"fields": ("top_coords", "dip_profile")},
+        perturbation_cardinality={
+            "kind": "sampled_dip_controls_plus_rigid_transform",
+            "suffix_count": 3,
+        },
+        perturbation_items=(
+            {"role": "dip_change", "unit_from": "angle_unit"},
+            {"role": "rotation", "unit_from": "angle_unit"},
+            {"role": "dx", "unit": "km"},
+            {"role": "dy", "unit": "km"},
+        ),
+    )
+    def perturb_dips_with_preset_params_and_rigid_transform(
+        self,
+        perturbations,
+        *,
+        pivot="midpoint",
+        pivot_is_utm=False,
+        force_pivot_in_coords=False,
+        angle_unit="degrees",
+        discretization_interval=None,
+        use_average_strike=False,
+        average_strike_source="pca",
+        user_direction_angle=None,
+        _resolved_perturbation_layout=None,
+    ):
+        """Apply dip generation, rigid rotation, and translation in that order.
+
+        The perturbation vector is ``[dip_change(s)..., rotation, dx, dy]``.
+        Its dip prefix follows the frozen profile contract: without explicit
+        groups it is either one broadcast value or one value per sampled
+        control; with groups it contains one value per unique group.  The last
+        three values are always the horizontal rotation, x translation, and y
+        translation.  Dip and rotation share ``angle_unit``; translations are
+        in fault-local kilometres.  Like every registered geometry method, the
+        complete perturbation vector must contain only finite numeric values;
+        invalid input is rejected before current geometry or cache-validity
+        state changes.
+
+        Named pivots are resolved from the frozen reference top, so changing
+        densification or inserting dip-profile event stations cannot move the
+        rotation reference.  The generated working top, bottom, and trace top
+        are then transformed together.  No mesh is built here; Bayesian use
+        should keep the existing ``update_mesh`` section so fixed-topology
+        deformation happens after this method returns.
+        """
+        from .pipeline import (
+            DipGeneratorStage,
+            NoMeshPolicy,
+            RotateStage,
+            Target,
+            TranslateStage,
+            run_pipeline,
+        )
+
+        values = np.asarray(perturbations, dtype=float).reshape(-1)
+        if values.size < 3:
+            raise ValueError(
+                "perturb_dips_with_preset_params_and_rigid_transform requires "
+                "a dip prefix followed by [rotation, dx, dy]"
+            )
+        dip_changes = values[:-3]
+        rotation, dx, dy = values[-3:]
+        stages = [
+            DipGeneratorStage(
+                dip_profile=self._project_reference_dip_profile(),
+                perturbations=dip_changes,
+                angle_unit=angle_unit,
+                perturbation_layout=_resolved_perturbation_layout,
+                densify_top=True,
+                discretization_interval=discretization_interval,
+                use_average_strike=use_average_strike,
+                average_strike_source=average_strike_source,
+                user_direction_angle=user_direction_angle,
+            ),
+            RotateStage(
+                [Target("top"), Target("bottom")],
+                angle=rotation,
+                pivot=pivot,
+                pivot_source=Target("top"),
+                pivot_is_utm=pivot_is_utm,
+                force_pivot_in_coords=force_pivot_in_coords,
+                pivot_frame="reference",
+            ),
+            TranslateStage(
+                [Target("top"), Target("bottom")],
+                dx=dx,
+                dy=dy,
+            ),
+        ]
+        run_pipeline(
+            self,
+            stages,
+            mesh_policy=NoMeshPolicy(),
+            angle_unit=angle_unit,
+        )
+        return self.top_coords, self.bottom_coords
+
     #-------------------------------------Perturbing geometry by translation and rotation-------------------------------------#
     @track_mesh_update(update_mesh=True, update_laplacian=True, update_area=True, expected_perturbations_count=3,
                        description="Rotate and Translate the entire geometry.",

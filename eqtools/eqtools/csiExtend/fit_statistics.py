@@ -177,12 +177,12 @@ def format_fit_statistics_table(
     return title + "\n" + tabulate(table, headers=headers, tablefmt="simple")
 
 
-def format_vce_component_report(result: Mapping[str, Any]) -> str:
-    """Format final VCE variance components and group diagnostics.
+def build_vce_component_rows(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return rows for the variance components used by a VCE model.
 
-    ``1/s`` is the row multiplier used by the augmented least-squares system;
-    ``Qw`` and ``Approx. red.Q`` are evaluated for the final reported model
-    and the explicit ``solved_*`` variance scales associated with it.
+    The caller-provided ``solved_*`` dictionaries are the sole numerical
+    source.  Optional value-source metadata is report-only and never causes a
+    configuration value or proposed next-iteration scale to be substituted.
     """
     rows = []
     diagnostics = result.get("component_diagnostics", {})
@@ -193,6 +193,7 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
             result.get("solved_sigma2_by_group", {}),
             result.get("sigma_groups", {}),
             result.get("sigma_update_by_group", {}),
+            result.get("sigma_value_source_by_group", {}),
         )
     ]
     if not result.get("sigma_only", False):
@@ -203,12 +204,25 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
                 result.get("solved_alpha2_by_group", {}),
                 result.get("smooth_groups", {}),
                 result.get("smooth_update_by_group", {}),
+                result.get("smooth_value_source_by_group", {}),
             )
         )
-    for kind, symbol, values, groups, update_by_group in sections:
+    for kind, symbol, values, groups, update_by_group, sources in sections:
         if not isinstance(values, Mapping):
-            continue
+            raise ValueError(f"solved {symbol} variances must be a group mapping")
         group_names = list(values)
+        if set(groups) != set(group_names):
+            raise ValueError(
+                f"{symbol} group members do not match solved variance groups"
+            )
+        if update_by_group and set(update_by_group) != set(group_names):
+            raise ValueError(
+                f"{symbol} update states do not match solved variance groups"
+            )
+        if sources and set(sources) != set(group_names):
+            raise ValueError(
+                f"{symbol} value sources do not match solved variance groups"
+            )
         # Older low-level callers did not publish update metadata.  Preserve
         # their established interpretation as estimated components, while new
         # solver results distinguish estimated and fixed groups explicitly.
@@ -218,9 +232,15 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
         )
         next_update = 0
         sample_indices = []
+        value_sources = {}
         for should_update in updates:
             sample_indices.append(next_update if should_update else -1)
             next_update += int(should_update)
+        for group_name, should_update in zip(group_names, updates):
+            # An estimated VCE value is not inherited from its initial value.
+            # Provenance is meaningful only for components held fixed.
+            fallback = "-" if should_update else "fixed input"
+            value_sources[group_name] = str(sources.get(group_name, fallback))
         layout = {
             "group_names": group_names,
             "members_by_group": groups,
@@ -238,8 +258,22 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
                 update_state="estimated",
                 variance_by_group=values,
                 diagnostics_by_group=diagnostics.get(kind, {}),
+                value_source_by_group=value_sources,
             )
         )
+    return rows
+
+
+def format_vce_component_report(result: Mapping[str, Any]) -> str:
+    """Format final VCE variance components and group diagnostics.
+
+    ``1/s`` is the row multiplier used by the augmented least-squares system;
+    ``Qw`` and ``Approx. red.Q`` are evaluated for the final reported model
+    and the explicit ``solved_*`` variance scales associated with it.  VCE has
+    no Bayesian sample coordinate, so that column is intentionally omitted.
+    """
+
+    rows = build_vce_component_rows(result)
 
     status = "converged" if result.get("converged") else "not converged"
     title = f"VCE variance components ({status}, {result.get('iterations', 0)} iterations)"
@@ -247,6 +281,8 @@ def format_vce_component_report(result: Mapping[str, Any]) -> str:
         rows,
         title=title,
         show_index=False,
+        show_value_source=True,
+        show_sampling_space=False,
         show_posterior_uncertainty=False,
         show_variance=True,
         show_diagnostics=True,

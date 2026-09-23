@@ -1,6 +1,7 @@
 import scipy
 import numpy as np
 import copy
+import json
 import os
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,11 +12,67 @@ from .config.parameter_groups import attach_group_parameters, resolve_group_layo
 from .data_correction_constraints import DataCorrectionConstraintMixin
 from .data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
+from .data_prediction import get_prediction_result_state_attributes
+from .blse_diagnostics import plot_blse_roughness_rms
 from .interseismic_mixin import InterseismicKinematicsMixin
 from .plot_product_mixin import FigureProductMixin
 from .patch_indices import normalize_patch_indices
-from .fit_statistics import format_vce_component_report
-from ..viztools import normalize_image_format, sci_plot_style
+from .fit_statistics import build_vce_component_rows
+from .hyperparameter_reporting import (
+    build_fixed_scale_parameter_rows,
+    format_scale_parameter_report,
+)
+from .parameter_layout_reporting import (
+    build_active_scale_layout_rows,
+    build_linear_layout_rows,
+    build_scale_layout_rows,
+    describe_data_correction_blocks,
+    format_parameter_layout_report,
+    make_parameter_layout_report,
+)
+from .config.config_utils import get_observation_unit_info, parse_observation_unit
+from ..viztools import normalize_image_format
+
+
+_PENALTY_SCAN_SUMMARY_COLUMNS = (
+    'candidate_index',
+    'penalty_weight',
+    'equivalent_log10_alpha',
+    'resolved_penalty_order',
+    'resolved_penalty_weights',
+    'roughness',
+    'global_rms',
+    'global_vr_percent',
+    'observation_unit',
+)
+
+_PENALTY_SCAN_FIT_COLUMNS = (
+    'candidate_index',
+    'penalty_weight',
+    'observation_unit',
+    'scope',
+    'model',
+    'dataset',
+    'data_type',
+    'vertical',
+    'poly',
+    'sigma_group',
+    'rms',
+    'vr',
+    'ss_res',
+    'ss_obs',
+    'n_observations',
+)
+
+_PENALTY_SCAN_WEIGHTED_COLUMNS = (
+    'sigma_scale',
+    'base_marginal_std',
+    'effective_marginal_std',
+    'weighted_quadratic',
+    'weighted_rms',
+    'weighted_effective_dof',
+    'reduced_weighted_misfit',
+)
 
 class BoundLSEMultiFaultsInversion(
     DataCorrectionReportMixin,
@@ -25,7 +82,7 @@ class BoundLSEMultiFaultsInversion(
     FigureProductMixin,
     MyMultiFaultsInversion,
 ):
-    # ``simple_run_loop`` is a diagnostic transaction: candidate solves may
+    # A penalty scan is a diagnostic transaction: candidate solves may
     # temporarily replace these active-result attributes, but the object must
     # leave the loop in exactly the state in which it entered.  Matrix entries
     # are assigned, not mutated, by ``run()``, so retaining their references is
@@ -46,6 +103,9 @@ class BoundLSEMultiFaultsInversion(
         'current_data_sigma_groups',
         'current_data_sigma_group_members',
         'current_data_effective_dof',
+        'current_scale_parameter_rows',
+        'current_scale_parameter_method',
+        'current_scale_parameter_title',
     )
     def __init__(self, name, faults_list, geodata=None, config='default_config_BLSE.yml', encoding='utf-8',
                  gfmethods=None, bounds_config='bounds_config.yml', interseismic_config=None,
@@ -273,33 +333,229 @@ class BoundLSEMultiFaultsInversion(
                 # Update Laplacian
                 self.update_Laplacian(fault_names=[fault_name], **fault_config['method_parameters']['update_Laplacian'])
 
-    def run(self, penalty_weight=None, smoothing_constraints=None, data_weight=None, data_log_scaled=None, 
-            penalty_log_scaled=None, sigma=None, alpha=None, verbose=True, des_enabled=None):
+    @staticmethod
+    def _resolve_result_report(report, *, verbose):
+        """Resolve the shared BLSE/VCE final-report policy."""
+
+        resolved = ('compact' if verbose else 'none') if report is None else str(report).lower()
+        if resolved not in {'none', 'compact', 'full'}:
+            raise ValueError("report must be one of: None, 'none', 'compact', 'full'")
+        return resolved
+
+    def _clear_scale_parameter_context(self):
+        """Invalidate scale rows whenever no successful active solve exists."""
+
+        self.current_scale_parameter_rows = []
+        self.current_scale_parameter_method = None
+        self.current_scale_parameter_title = None
+
+    def _publish_scale_parameter_context(self, *, rows, method, title):
+        """Freeze report-only rows already bound to a successful active solve."""
+
+        self.current_scale_parameter_rows = copy.deepcopy(list(rows))
+        self.current_scale_parameter_method = str(method)
+        self.current_scale_parameter_title = str(title)
+
+    def collect_scale_parameters(self):
+        """Return a detached copy of the active BLSE/VCE scale rows."""
+
+        return copy.deepcopy(getattr(self, 'current_scale_parameter_rows', []))
+
+    def format_scale_parameters(self):
+        """Format scales from the active result without re-reading config."""
+
+        rows = self.collect_scale_parameters()
+        method = getattr(self, 'current_scale_parameter_method', None)
+        title = getattr(self, 'current_scale_parameter_title', None)
+        if method == 'VCE':
+            return format_scale_parameter_report(
+                rows,
+                title=title or 'VCE variance components',
+                show_index=False,
+                show_value_source=True,
+                show_sampling_space=False,
+                show_posterior_uncertainty=False,
+                show_variance=True,
+                show_diagnostics=True,
+            )
+        return format_scale_parameter_report(
+            rows,
+            title=title or 'BLSE scale parameters',
+            show_index=False,
+            show_value_source=True,
+            show_sampling_space=False,
+            show_posterior_uncertainty=False,
+        )
+
+    def print_scale_parameters(self):
+        """Print the active BLSE/VCE scale table."""
+
+        print(self.format_scale_parameters())
+
+    def collect_parameter_layout(self):
+        """Return the validated BLSE/VCE parameter layout as detached rows.
+
+        The report is structural.  Linear rows come from the active constraint
+        manager.  Before a solve, sigma/alpha rows come from canonical config
+        layouts; after a solve, their group membership and estimated/fixed
+        state come from the frozen active result.  Numerical scale values
+        remain the responsibility of :meth:`collect_scale_parameters`.
+        """
+
+        linear_layout = self.get_linear_parameter_layout()
+        sources = {source.name: source for source in self.faults}
+        poly_descriptions = {}
+        for block in linear_layout.get('blocks', ()):
+            if block.get('role') != 'data_correction':
+                continue
+            source = sources[str(block['source'])]
+            poly_descriptions[source.name] = describe_data_correction_blocks(
+                self,
+                source,
+                start=int(block['start']),
+                stop=int(block['stop']),
+            )
+
+        observation_unit = get_observation_unit_info(self.config)['observation']
+        rows = build_linear_layout_rows(
+            layout=linear_layout,
+            adapters=self.adapters,
+            observation_unit=observation_unit,
+            use='solve',
+            space='L',
+            poly_descriptions=poly_descriptions,
+        )
+
+        result_method = getattr(self, 'current_scale_parameter_method', None)
+        if result_method == 'VCE':
+            mode = 'VCE'
+            active_use = 'estimate'
+        elif result_method == 'BLSE':
+            mode = 'BLSE'
+            active_use = 'fixed'
+        else:
+            mode = 'BLSE/VCE'
+            active_use = 'configured'
+
+        if result_method is None:
+            rows.extend(
+                build_scale_layout_rows(
+                    kind='sigma',
+                    layout=self.config.sigmas.get('group_layout', {}),
+                    sample_slice=None,
+                    sampled_use=active_use,
+                    fixed_use='fixed',
+                    log_scaled=bool(self.config.sigmas.get('log_scaled', False)),
+                )
+            )
+            if self.config.alpha_enabled:
+                rows.extend(
+                    build_scale_layout_rows(
+                        kind='alpha',
+                        layout=self.config.alpha.get('group_layout', {}),
+                        sample_slice=None,
+                        sampled_use=active_use,
+                        fixed_use='fixed',
+                        log_scaled=bool(self.config.alpha.get('log_scaled', False)),
+                    )
+                )
+        else:
+            active_scale_rows = self.collect_scale_parameters()
+            rows.extend(
+                build_active_scale_layout_rows(
+                    kind='sigma',
+                    result_rows=active_scale_rows,
+                    log_scaled=bool(self.config.sigmas.get('log_scaled', False)),
+                )
+            )
+            rows.extend(
+                build_active_scale_layout_rows(
+                    kind='alpha',
+                    result_rows=active_scale_rows,
+                    log_scaled=bool(self.config.alpha.get('log_scaled', False)),
+                )
+            )
+
+        return make_parameter_layout_report(
+            mode=mode,
+            spaces=[
+                {
+                    'key': 'L',
+                    'name': 'linear model vector',
+                    'width': int(linear_layout['width']),
+                    'global_offset': 0,
+                }
+            ],
+            rows=rows,
+            notes=[
+                'sigma/alpha are scale controls, not columns of the linear model vector',
+                (
+                    'pre-solve scale rows show configured update eligibility; '
+                    'the solved BLSE/VCE scale report is authoritative for active values'
+                    if result_method is None else
+                    'active scale values are reported separately by print_scale_parameters()'
+                ),
+            ],
+        )
+
+    def format_parameter_layout(self, *, summary_only=False):
+        """Format the current BLSE/VCE structural parameter layout."""
+
+        return format_parameter_layout_report(
+            self.collect_parameter_layout(), summary_only=summary_only
+        )
+
+    def print_parameter_positions(self):
+        """Print the compact BLSE/VCE parameter layout."""
+
+        print(self.format_parameter_layout())
+
+    @staticmethod
+    def _build_vce_scale_rows(result):
+        """Adapt a solved VCE result to the shared read-only row contract."""
+
+        return build_vce_component_rows(result)
+
+    def run(self, penalty_weight=None, smoothing_constraints=None, data_weight=None, data_log_scaled=None,
+            penalty_log_scaled=None, sigma=None, alpha=None, verbose=True, des_enabled=None,
+            report=None):
         """
         Start the boundary-constrained least squares process.
     
         Parameters:
         -----------
         penalty_weight : int, float, list, or np.ndarray, optional
-            Penalty weights to apply to the Green's functions. If None, the function will use the initial values from the configuration.
+            Direct smoothing-row multipliers. They use ``1/s`` coordinates
+            and therefore imply physical alpha ``s = 1 / penalty_weight``.
         smoothing_constraints : tuple or dict, optional
             Smoothing constraints to apply during the least squares process. If None, the function will use the combined Green's functions matrix.
             If a tuple, it should be a 4-tuple. If a dict, the keys should be fault names and the values should be 4-tuples.
             (top, bottom, left, right) for the smoothing constraints.
         data_weight : np.ndarray, optional
-            Weights to apply to the data. If None, the function will use the initial values from the configuration.
+            Direct data-row multipliers in ``1/s`` coordinates. They imply
+            physical sigma ``s = 1 / data_weight``.
         data_log_scaled : bool, optional
-            Whether to apply log scaling to the data weights. If None, the function will use the log_scaled value from the configuration.
+            Coordinate of ``sigma`` only: ``False`` means physical ``s`` and
+            ``True`` means ``log10(s)``. It does not transform ``data_weight``.
         penalty_log_scaled : bool, optional
-            Whether to apply log scaling to the penalty weights. If None, the function will use the log_scaled value from the configuration.
+            Coordinate of ``alpha`` only: ``False`` means physical ``s`` and
+            ``True`` means ``log10(s)``. It does not transform
+            ``penalty_weight``.
         sigma : np.ndarray, optional
-            Data standard deviations. If None, the function will use the initial values from the configuration.
+            Data standard-deviation scales in the coordinate selected by
+            ``data_log_scaled`` (or ``sigmas.log_scaled`` when omitted).
         alpha : np.ndarray, optional
-            Smoothing standard deviations. If None, the function will use the initial values from the configuration.
+            Smoothing scales in the coordinate selected by
+            ``penalty_log_scaled`` (or ``alpha.log_scaled`` when omitted).
         verbose : bool, optional
             Whether to print the results of the inversion. Default is True.
         des_enabled : bool, optional
             Whether to use Depth-Equalized Smoothing (DES). If None, uses self.des_enabled.
+        report : {None, 'none', 'compact', 'full'}, optional
+            Final reporting policy. ``None`` selects ``'compact'`` when
+            ``verbose=True`` and ``'none'`` otherwise. ``'compact'`` prints
+            the exact active sigma/alpha scales and row multipliers;
+            ``'full'`` additionally prints fit statistics.
     
         Returns:
         --------
@@ -308,6 +564,8 @@ class BoundLSEMultiFaultsInversion(
         from .config.config_utils import parse_initial_values
 
         self._clear_fit_weight_context()
+        self._clear_scale_parameter_context()
+        resolved_report = self._resolve_result_report(report, verbose=verbose)
 
         # Ensure data_weight and sigma are either both None or only one is provided
         if (data_weight is not None) and (sigma is not None):
@@ -318,26 +576,39 @@ class BoundLSEMultiFaultsInversion(
             raise ValueError("penalty_weight and alpha must either both be None or only one is provided.")
     
         # Handle data weights
-        n_datasets = len(self.config.sigmas['update'])
+        sigma_layout = self.config.sigmas['group_layout']
+        n_datasets = int(sigma_layout['total_params'])
         if self.config.sigmas['mode'] == 'single':
             data_names = ['All_data']
         elif self.config.sigmas['mode'] == 'individual':
-            data_names = [d.name for d in self.config.geodata.get('data', [])]
+            data_names = list(sigma_layout['member_names'])
         elif self.config.sigmas['mode'] == 'grouped':
-            data_names = list(self.config.sigmas['groups'].keys())
-        data_indices = self.config.sigmas['dataset_param_indices']
+            data_names = list(sigma_layout['group_names'])
+        data_indices = np.asarray(sigma_layout['member_param_indices'], dtype=int)
+        legacy_data_indices = np.asarray(
+            self.config.sigmas['dataset_param_indices'], dtype=int
+        )
+        if not np.array_equal(data_indices, legacy_data_indices):
+            raise ValueError(
+                "sigmas.dataset_param_indices is inconsistent with the canonical "
+                "group_layout; rebuild the inversion configuration"
+            )
         if data_weight is None:
             if sigma is None:
                 sigma = self.config.sigmas['initial_value']
+                sigma_source = 'config sigmas.initial_value'
             else:
                 sigma = parse_initial_values({'initial_value': sigma},
                                                 n_datasets=n_datasets,
                                                 param_name='initial_value',  # initial_value or 'values'
                                                 dataset_names=data_names,
-                                                print_name='sigma')
+                                                print_name='sigma',
+                                                reject_unknown_keys=True)
+                sigma_source = 'run sigma'
             sigma = np.array(sigma)
             if data_log_scaled is None:
                 data_log_scaled = self.config.sigmas['log_scaled']
+            sigma_source += ' [log10(s)]' if data_log_scaled else ' [s]'
             if data_log_scaled:
                 sigma = np.power(10, sigma)
             data_weight = 1.0 / sigma
@@ -346,13 +617,24 @@ class BoundLSEMultiFaultsInversion(
             data_weight = parse_initial_values(wgt_dict, n_datasets=n_datasets,
                                                 param_name='initial_value',  # initial_value or 'values'
                                                 dataset_names=data_names,
-                                                print_name='data_weight')
+                                                print_name='data_weight',
+                                                reject_unknown_keys=True)
             data_weight = np.array(data_weight)
-        data_weight = data_weight[data_indices]
-        sigma_group_members = self._resolved_sigma_group_members(
-            self.config.sigmas.get('mode', 'individual'),
-            self.config.sigmas.get('groups'),
+            sigma_source = 'run data_weight [1/s]'
+        data_group_weights = np.asarray(data_weight, dtype=float).reshape(-1)
+        sigma_group_names = list(sigma_layout['group_names'])
+        if data_group_weights.size != len(sigma_group_names):
+            raise ValueError(
+                "Resolved data weights do not match the canonical sigma group count"
+            )
+        sigma_group_members = sigma_layout['members_by_group']
+        sigma_rows = build_fixed_scale_parameter_rows(
+            kind='sigma',
+            layout=sigma_layout,
+            row_multipliers_by_group=dict(zip(sigma_group_names, data_group_weights)),
+            value_source_by_group={name: sigma_source for name in sigma_group_names},
         )
+        data_weight = data_group_weights[data_indices]
 
         # Handle penalty weights
         # If alpha smoothing is disabled, use uniform weight (no regularization penalty)
@@ -373,7 +655,7 @@ class BoundLSEMultiFaultsInversion(
                                             smoothing_matrix=self.GL_combined_poly,
                                             data_weight=data_weight,
                                             des_enabled=des_enabled,
-                                            verbose=True)
+                                            verbose=verbose)
             self.current_model_smoothing_matrix = np.asarray(
                 self.G_lap, dtype=float
             )
@@ -387,30 +669,55 @@ class BoundLSEMultiFaultsInversion(
                 data_weights=data_weight,
                 group_members=sigma_group_members,
             )
+            self._publish_scale_parameter_context(
+                rows=sigma_rows,
+                method='BLSE',
+                title='BLSE scale parameters',
+            )
+            if resolved_report in {'compact', 'full'}:
+                print('\n' + self.format_scale_parameters())
+            if resolved_report == 'full':
+                self.calculate_and_print_fit_statistics()
             return
         else:
-            n_faults = len(self.config.alpha['update'])
+            alpha_layout = self.config.alpha['group_layout']
+            n_faults = int(alpha_layout['total_params'])
             if self.config.alpha['mode'] == 'single':
                 fault_names = ['All_faults']
             elif self.config.alpha['mode'] == 'individual':
-                fault_names = [fault.name for fault in self.faults]
+                fault_names = list(alpha_layout['member_names'])
             elif self.config.alpha['mode'] == 'grouped':
-                fault_names = [f'Event_{i}' for i in range(n_faults)]
-            fault_indices = self.config.alpha['fault_param_indices']
+                fault_names = list(alpha_layout['group_names'])
+            fault_indices = np.asarray(
+                self.config.alpha['fault_param_indices'], dtype=int
+            )
+            smoothing_names = list(alpha_layout['member_names'])
+            smoothing_positions = [self.faultnames.index(name) for name in smoothing_names]
+            if not np.array_equal(
+                fault_indices[smoothing_positions],
+                np.asarray(alpha_layout['member_param_indices'], dtype=int),
+            ):
+                raise ValueError(
+                    "alpha.fault_param_indices is inconsistent with the canonical "
+                    "group_layout; rebuild the inversion configuration"
+                )
 
             if penalty_weight is None:
                 if alpha is None:
                     alpha = self.config.alpha['initial_value']
-                    # print('alpha is from config:', alpha)
+                    alpha_source = 'config alpha.initial_value'
                 else:
                     alpha = parse_initial_values({'initial_value': alpha},
                                                     n_datasets=n_faults,
                                                     param_name='initial_value',  # initial_value or 'values'
                                                     dataset_names=fault_names,
-                                                    print_name='alpha')
+                                                    print_name='alpha',
+                                                    reject_unknown_keys=True)
+                    alpha_source = 'run alpha'
                 alpha = np.array(alpha)
                 if penalty_log_scaled is None:
                     penalty_log_scaled = self.config.alpha['log_scaled']
+                alpha_source += ' [log10(s)]' if penalty_log_scaled else ' [s]'
                 if penalty_log_scaled:
                     alpha = np.power(10, alpha)
                 penalty_weight = 1.0 / alpha
@@ -419,9 +726,25 @@ class BoundLSEMultiFaultsInversion(
                                                       n_datasets=n_faults,
                                                       param_name='initial_value',  # initial_value or 'values'
                                                       dataset_names=fault_names,
-                                                      print_name='penalty_weight')
+                                                      print_name='penalty_weight',
+                                                      reject_unknown_keys=True)
                 penalty_weight = np.array(penalty_weight)
-            penalty_weight = penalty_weight[fault_indices]
+                alpha_source = 'run penalty_weight [1/s]'
+            alpha_group_weights = np.asarray(penalty_weight, dtype=float).reshape(-1)
+            alpha_group_names = list(alpha_layout['group_names'])
+            if alpha_group_weights.size != len(alpha_group_names):
+                raise ValueError(
+                    "Resolved penalty weights do not match the canonical alpha group count"
+                )
+            alpha_rows = build_fixed_scale_parameter_rows(
+                kind='alpha',
+                layout=alpha_layout,
+                row_multipliers_by_group=dict(
+                    zip(alpha_group_names, alpha_group_weights)
+                ),
+                value_source_by_group={name: alpha_source for name in alpha_group_names},
+            )
+            penalty_weight = alpha_group_weights[fault_indices]
 
             self.current_penalty_weight = penalty_weight
         # Handle smoothing constraints
@@ -438,7 +761,7 @@ class BoundLSEMultiFaultsInversion(
                                             smoothing_constraints=smoothing_constraints, 
                                             data_weight=data_weight,
                                             des_enabled=des_enabled,
-                                            verbose=True)
+                                            verbose=verbose)
             base_smoothing_matrix = np.asarray(
                 self.G_lap_base, dtype=float
             )
@@ -467,7 +790,7 @@ class BoundLSEMultiFaultsInversion(
                                             smoothing_matrix=self.GL_combined_poly,
                                             data_weight=data_weight,
                                             des_enabled=des_enabled,
-                                            verbose=True)
+                                            verbose=verbose)
         self.current_model_smoothing_matrix = np.asarray(
             self.G_lap, dtype=float
         )
@@ -485,6 +808,15 @@ class BoundLSEMultiFaultsInversion(
             data_weights=data_weight,
             group_members=sigma_group_members,
         )
+        self._publish_scale_parameter_context(
+            rows=[*sigma_rows, *alpha_rows],
+            method='BLSE',
+            title='BLSE scale parameters',
+        )
+        if resolved_report in {'compact', 'full'}:
+            print('\n' + self.format_scale_parameters())
+        if resolved_report == 'full':
+            self.calculate_and_print_fit_statistics()
 
     @staticmethod
     def _resolve_vce_component_contract(
@@ -525,10 +857,11 @@ class BoundLSEMultiFaultsInversion(
                     and component_name == "smooth"
                     and configured.get("faults") is not None
                 ):
-                    configured_groups = {
-                        f"Event_{index}": members
-                        for index, members in enumerate(configured["faults"])
-                    }
+                    raise ValueError(
+                        "Grouped smoothing no longer accepts the anonymous "
+                        "alpha.faults list. Define named alpha.groups and "
+                        "rebuild the inversion configuration."
+                    )
                 layout = resolve_group_layout(
                     member_names,
                     configured_mode,
@@ -679,13 +1012,16 @@ class BoundLSEMultiFaultsInversion(
         stale values or update flags from the loaded configuration.
         """
         self._clear_fit_weight_context()
-        resolved_report = (
-            'compact' if verbose else 'none'
-        ) if report is None else str(report).lower()
-        if resolved_report not in {'none', 'compact', 'full'}:
-            raise ValueError(
-                "report must be one of: None, 'none', 'compact', 'full'"
-            )
+        self._clear_scale_parameter_context()
+        resolved_report = self._resolve_result_report(report, verbose=verbose)
+        sigma_uses_config = all(
+            value is None
+            for value in (sigma_mode, sigma_groups, sigma_update, sigma_values)
+        )
+        smooth_uses_config = all(
+            value is None
+            for value in (smooth_mode, smooth_groups, smooth_update, smooth_values)
+        )
 
         sigma_contract = self._resolve_vce_component_contract(
             component_name="sigma",
@@ -886,8 +1222,46 @@ class BoundLSEMultiFaultsInversion(
         ]
         self.GL_combined_poly = self.current_model_smoothing_matrix
 
+        sigma_fixed_source = (
+            'config sigmas.initial_value'
+            if sigma_uses_config else 'run_simple_vce sigma_values'
+        )
+        sigma_fixed_source += (
+            ' [log10(s)]' if self.config.sigmas['log_scaled'] else ' [s]'
+        )
+        vce_result['sigma_value_source_by_group'] = {
+            group: ('-' if bool(should_update) else sigma_fixed_source)
+            for group, should_update in vce_result.get(
+                'sigma_update_by_group', {}
+            ).items()
+        }
+        if not alpha_disabled:
+            smooth_fixed_source = (
+                'config alpha.initial_value'
+                if smooth_uses_config else 'run_simple_vce smooth_values'
+            )
+            smooth_fixed_source += (
+                ' [log10(s)]' if self.config.alpha['log_scaled'] else ' [s]'
+            )
+            vce_result['smooth_value_source_by_group'] = {
+                group: ('-' if bool(should_update) else smooth_fixed_source)
+                for group, should_update in vce_result.get(
+                    'smooth_update_by_group', {}
+                ).items()
+            }
+
+        status = 'converged' if vce_result.get('converged') else 'not converged'
+        self._publish_scale_parameter_context(
+            rows=self._build_vce_scale_rows(vce_result),
+            method='VCE',
+            title=(
+                'VCE variance components '
+                f"({status}, {vce_result.get('iterations', 0)} iterations)"
+            ),
+        )
+
         if resolved_report in {'compact', 'full'}:
-            print("\n" + format_vce_component_report(vce_result))
+            print("\n" + self.format_scale_parameters())
         if resolved_report == 'full':
             self.calculate_and_print_fit_statistics()
 
@@ -1044,10 +1418,187 @@ class BoundLSEMultiFaultsInversion(
                     setattr(source, name, value)
                 elif hasattr(source, name):
                     delattr(source, name)
-    
+
+    def _snapshot_prediction_result_state(self):
+        """Capture only geodata fields rebuilt by fit-statistics collection."""
+        data_objects, _, _ = self._get_fit_geodata_config()
+        states = []
+        for data in data_objects:
+            state = {
+                name: (
+                    hasattr(data, name),
+                    copy.deepcopy(getattr(data, name, None)),
+                )
+                for name in get_prediction_result_state_attributes(data)
+            }
+            states.append((data, state))
+        return states
+
+    @staticmethod
+    def _restore_prediction_result_state(states):
+        """Restore a snapshot created by ``_snapshot_prediction_result_state``."""
+        for data, state in states:
+            for name, (existed, value) in state.items():
+                if existed:
+                    setattr(data, name, value)
+                elif hasattr(data, name):
+                    delattr(data, name)
+
+    def scan_penalty_weights(
+        self,
+        penalty_weights,
+        *,
+        include_fit_statistics=False,
+        include_weighted=False,
+        verbose=True,
+    ):
+        """Scan scalar BLSE penalty weights on one fixed geometry.
+
+        The scan owns candidate execution, scan-local quadratic reuse and
+        restoration of the active result.  It performs no plotting or file
+        output.  The returned summary always contains global solver-vector
+        RMS/VR and unweighted model roughness.  Per-dataset rows are optional
+        because rebuilding their synthetic fields has a measurable cost.
+
+        Returns
+        -------
+        tuple of pandas.DataFrame
+            ``(summary, fit_stats)``.  ``fit_stats`` contains dataset rows
+            only and has a stable empty schema when collection is disabled.
+        """
+        if not self.config.alpha_enabled:
+            raise ValueError(
+                "penalty-weight scanning requires alpha.enabled: true"
+            )
+        if include_weighted and not include_fit_statistics:
+            raise ValueError(
+                "include_weighted=True requires include_fit_statistics=True"
+            )
+
+        candidates = np.asarray(penalty_weights, dtype=float)
+        if candidates.ndim == 0:
+            candidates = candidates.reshape(1)
+        elif candidates.ndim != 1:
+            raise ValueError("penalty_weights must be a scalar or one-dimensional")
+        if candidates.size == 0:
+            raise ValueError("penalty_weights must contain at least one value")
+        if np.any(~np.isfinite(candidates)) or np.any(candidates <= 0.0):
+            raise ValueError(
+                "penalty_weights must be finite and strictly positive"
+            )
+
+        observation_unit = get_observation_unit_info(self)['observation']
+        summary_records = []
+        fit_records = []
+        entry_state = self._snapshot_linear_result_state()
+        prediction_state = (
+            self._snapshot_prediction_result_state()
+            if include_fit_statistics else None
+        )
+        try:
+            with self._blse_quadratic_scan_context():
+                for candidate_index, candidate in enumerate(candidates):
+                    weight = float(candidate)
+                    self.run(
+                        penalty_weight=weight,
+                        alpha=None,
+                        verbose=verbose,
+                        report='none',
+                    )
+
+                    rows = self.collect_fit_statistics(
+                        model=f'penalty_{weight:g}',
+                        data_poly='config',
+                        include_dataset=include_fit_statistics,
+                        include_global=True,
+                        include_weighted=include_weighted,
+                        rebuild_synth=include_fit_statistics,
+                    )
+                    global_rows = [
+                        row for row in rows
+                        if row.get('scope') == 'global_solver_vector'
+                    ]
+                    if len(global_rows) != 1:
+                        raise RuntimeError(
+                            "penalty scan requires exactly one global solver fit row"
+                        )
+                    global_fit = global_rows[0]
+
+                    base_smoothing = np.asarray(
+                        self.current_smoothing_matrix, dtype=float
+                    )
+                    roughness_vector = base_smoothing.dot(self.mpost)
+                    roughness = (
+                        float(np.sqrt(np.mean(roughness_vector ** 2)))
+                        if roughness_vector.size else 0.0
+                    )
+
+                    resolved_weights = np.asarray(
+                        self.current_penalty_weight, dtype=float
+                    ).reshape(-1)
+                    resolved_order = list(self.faultnames)
+                    if resolved_weights.size != len(resolved_order):
+                        raise RuntimeError(
+                            "resolved penalty weights do not align with faultnames"
+                        )
+                    summary_records.append({
+                        'candidate_index': int(candidate_index),
+                        'penalty_weight': weight,
+                        'equivalent_log10_alpha': float(-np.log10(weight)),
+                        'resolved_penalty_order': json.dumps(
+                            resolved_order, separators=(',', ':')
+                        ),
+                        'resolved_penalty_weights': json.dumps(
+                            resolved_weights.tolist(), separators=(',', ':')
+                        ),
+                        'roughness': roughness,
+                        'global_rms': float(global_fit['rms']),
+                        'global_vr_percent': float(global_fit['vr']),
+                        'observation_unit': observation_unit,
+                    })
+
+                    if include_fit_statistics:
+                        for row in rows:
+                            if row.get('scope') != 'dataset':
+                                continue
+                            fit_records.append({
+                                'candidate_index': int(candidate_index),
+                                'penalty_weight': weight,
+                                'observation_unit': observation_unit,
+                                **row,
+                            })
+
+                    if verbose:
+                        print(
+                            f'Penalty_weight: {weight:g}, '
+                            f'Roughness: {roughness:.4f}, '
+                            f'RMS: {float(global_fit["rms"]):.4f}, '
+                            f'VR: {float(global_fit["vr"]):.2f}%'
+                        )
+        finally:
+            try:
+                if prediction_state is not None:
+                    self._restore_prediction_result_state(prediction_state)
+            finally:
+                self._restore_linear_result_state(entry_state)
+
+        summary = pd.DataFrame(
+            summary_records, columns=_PENALTY_SCAN_SUMMARY_COLUMNS
+        )
+        fit_columns = list(_PENALTY_SCAN_FIT_COLUMNS)
+        if include_weighted:
+            fit_columns.extend(_PENALTY_SCAN_WEIGHTED_COLUMNS)
+        fit_stats = pd.DataFrame(fit_records).reindex(columns=fit_columns)
+        return summary, fit_stats
+
     def simple_run_loop(self, penalty_weights=None, output_file='run_loop.dat', preferred_penalty_weight=None, rms_unit='m', verbose=True, equal_aspect=False):
         """
         Diagnose a range of BLSE penalty weights on one fixed geometry.
+
+        This compatibility wrapper delegates candidate execution to
+        :meth:`scan_penalty_weights`, writes the historical four-column table,
+        and produces the historical single-panel figure.  New scripts should
+        call :meth:`scan_penalty_weights` directly.
 
         Every candidate is solved independently from the source Laplacians.
         Its reported roughness uses the exact unweighted matrix ``L0``
@@ -1068,8 +1619,8 @@ class BoundLSEMultiFaultsInversion(
         preferred_penalty_weight : float, optional
             The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
         rms_unit : str, optional
-            Display unit for the plot (``'m'``, ``'cm'``, or ``'mm'``).
-            The returned table and CSV always retain RMS in metres.
+            Target display unit for the plot.  The returned legacy table and
+            CSV retain RMS in the configured observation unit.
         verbose : bool, optional
             Whether to print one summary line per candidate. Default is True.
         equal_aspect : bool, optional
@@ -1081,75 +1632,29 @@ class BoundLSEMultiFaultsInversion(
             Candidate penalty, unweighted roughness, RMS, and variance
             reduction.  Returning does not activate any candidate model.
         """
-        if penalty_weights is None:
-            raise ValueError("penalty_weights must contain at least one value")
-        penalty_weights = np.asarray(penalty_weights, dtype=float).reshape(-1)
-        if penalty_weights.size == 0:
-            raise ValueError("penalty_weights must contain at least one value")
-        if np.any(~np.isfinite(penalty_weights)) or np.any(penalty_weights <= 0.0):
-            raise ValueError("penalty_weights must be finite and strictly positive")
-
-        results = []
-        entry_state = self._snapshot_linear_result_state()
-        try:
-            # Geometry, covariance, data weights, constraints, and the
-            # unweighted L0 are fixed for this diagnostic transaction.  The
-            # inherited context permits run() to reuse only their quadratic
-            # contributions; it is removed before the entry result is restored.
-            with self._blse_quadratic_scan_context():
-                for ipenalty in penalty_weights:
-                    # A loop candidate is one physical, uniform smoothing
-                    # weight. Passing that scalar through run() preserves the
-                    # single/individual/grouped alpha mapping contract.
-                    self.run(
-                        penalty_weight=float(ipenalty),
-                        alpha=None,
-                        verbose=verbose,
-                    )
-
-                    residual = np.dot(self.G, self.mpost) - self.d
-                    rms = np.sqrt(np.mean(residual**2))
-                    vr = (1 - np.sum(residual**2) / np.sum(self.d**2)) * 100
-                    base_smoothing = np.asarray(
-                        self.current_smoothing_matrix,
-                        dtype=float,
-                    )
-                    roughness_vec = np.dot(base_smoothing, self.mpost)
-                    roughness = (
-                        np.sqrt(np.mean(roughness_vec**2))
-                        if roughness_vec.size > 0 else 0.0
-                    )
-                    results.append({
-                        'Penalty_weight': float(ipenalty),
-                        'Roughness': roughness,
-                        'RMS': rms,
-                        'VR': vr,
-                    })
-                    if verbose:
-                        print(
-                            f'Penalty_weight: {ipenalty:g}, '
-                            f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, '
-                            f'VR: {vr:.2f}%'
-                        )
-
-            df = pd.DataFrame(results)
-            if output_file:
-                df.to_csv(output_file, index=False)
-            self.plot_roughness_vs_rms(
-                df,
-                output_file='Roughness_vs_RMS.png',
-                show=True,
-                preferred_penalty_weight=preferred_penalty_weight,
-                rms_unit=rms_unit,
-                equal_aspect=equal_aspect,
-            )
-        finally:
-            # Candidate solutions and report weights are local diagnostics.
-            # Restore all active-result fields together so a failed or
-            # completed scan cannot leave a model/matrix mismatch behind.
-            self._restore_linear_result_state(entry_state)
-
-        return df
+        summary, _ = self.scan_penalty_weights(
+            penalty_weights,
+            include_fit_statistics=False,
+            verbose=verbose,
+        )
+        self.plot_roughness_vs_rms(
+            summary,
+            output_file='Roughness_vs_RMS.png',
+            show=True,
+            preferred_penalty_weight=preferred_penalty_weight,
+            rms_unit=rms_unit,
+            equal_aspect=equal_aspect,
+        )
+        legacy = summary.rename(columns={
+            'penalty_weight': 'Penalty_weight',
+            'roughness': 'Roughness',
+            'global_rms': 'RMS',
+            'global_vr_percent': 'VR',
+        })[['Penalty_weight', 'Roughness', 'RMS', 'VR']]
+        legacy.attrs['observation_unit'] = summary['observation_unit'].iloc[0]
+        if output_file:
+            legacy.to_csv(output_file, index=False)
+        return legacy
     
     def plot_roughness_vs_rms(self, df, output_file='Roughness_vs_RMS.png', show=True, preferred_penalty_weight=None, rms_unit='m', equal_aspect=False):
         """
@@ -1158,7 +1663,8 @@ class BoundLSEMultiFaultsInversion(
         Parameters:
         -----------
         df : pd.DataFrame
-            DataFrame containing the results with columns 'Roughness' and 'RMS'.
+            Canonical penalty-scan summary or a historical table containing
+            ``Penalty_weight``, ``Roughness`` and ``RMS``.
         output_file : str, optional
             Path to the output file. Default is 'Roughness_vs_RMS.png'.
         show : bool, optional
@@ -1166,47 +1672,69 @@ class BoundLSEMultiFaultsInversion(
         preferred_penalty_weight : float, optional
             The preferred penalty weight to highlight in the plot. If None, no preferred point will be highlighted.
         rms_unit : str, optional
-            Plot display unit.  Conversion is applied to a copy and never
-            changes the input DataFrame.
+            Target display unit.  Canonical summaries carry their source unit;
+            historical tables without unit metadata retain the legacy
+            assumption that their RMS is in metres.
         equal_aspect : bool, optional
             If True, set equal aspect ratio for the plot. Default is False.
         """
-        # Scale RMS values if necessary
-        rms_values = df['RMS'].to_numpy(dtype=float, copy=True)
-        rms_scale = 1.0
-        if rms_unit != 'm':
-            if rms_unit == 'cm':
-                rms_scale = 100.0
-            elif rms_unit == 'mm':
-                rms_scale = 1000.0
-            else:
-                raise ValueError(f"Unsupported RMS unit: {rms_unit}")
-        rms_values *= rms_scale
-    
-        with sci_plot_style():
-            plt.plot(df.Roughness.values[:], rms_values[:], marker='o', linestyle='-', label='L-Curve')
-            
-            # Highlight the preferred penalty weight point if specified
-            if preferred_penalty_weight is not None:
-                preferred_point = df[df.Penalty_weight == preferred_penalty_weight]
-                if not preferred_point.empty:
-                    plt.plot(
-                        preferred_point.Roughness.values,
-                        preferred_point.RMS.values * rms_scale,
-                        marker='o', c='#e54726', label='Preferred'
-                    )
-            
-            plt.xlabel('Roughness')
-            plt.ylabel(f'RMS ({rms_unit})')
-            plt.legend()
-            plt.grid(True)
-            if equal_aspect:
-                plt.gca().set_aspect('equal', adjustable='box')
-            plt.savefig(output_file, dpi=600)
-            if show:
-                plt.show()
-            else:
-                plt.close()
+        canonical_columns = {
+            'candidate_index', 'penalty_weight', 'roughness', 'global_rms',
+            'global_vr_percent', 'observation_unit',
+        }
+        if canonical_columns.issubset(df.columns):
+            summary = df.copy()
+            source_units = summary['observation_unit'].dropna().astype(str).unique()
+            if source_units.size != 1:
+                raise ValueError(
+                    "canonical BLSE summary must contain one observation_unit"
+                )
+            source_unit = source_units[0]
+        else:
+            required = {'Penalty_weight', 'Roughness', 'RMS'}
+            missing = sorted(required.difference(df.columns))
+            if missing:
+                raise ValueError(
+                    "legacy BLSE loop table is missing column(s): "
+                    + ", ".join(missing)
+                )
+            source_unit = df.attrs.get('observation_unit', 'm')
+            summary = pd.DataFrame({
+                'candidate_index': np.arange(len(df), dtype=int),
+                'penalty_weight': df['Penalty_weight'].to_numpy(dtype=float),
+                'roughness': df['Roughness'].to_numpy(dtype=float),
+                'global_rms': df['RMS'].to_numpy(dtype=float),
+                'global_vr_percent': (
+                    df['VR'].to_numpy(dtype=float)
+                    if 'VR' in df else np.full(len(df), np.nan)
+                ),
+                'observation_unit': source_unit,
+            })
+
+        source_info = parse_observation_unit(source_unit)
+        target_info = parse_observation_unit(rms_unit)
+        if source_info['kind'] != target_info['kind']:
+            raise ValueError(
+                f"Cannot convert RMS from {source_unit!r} to {rms_unit!r}: "
+                "displacement and rate units are not interchangeable"
+            )
+        display_summary = summary.copy()
+        display_summary['global_rms'] = (
+            display_summary['global_rms'].to_numpy(dtype=float)
+            * source_info['to_si'] / target_info['to_si']
+        )
+        display_summary['observation_unit'] = target_info['observation']
+        fig, _ = plot_blse_roughness_rms(
+            display_summary,
+            preferred_penalty_weight=preferred_penalty_weight,
+            equal_aspect=equal_aspect,
+        )
+        if output_file:
+            fig.savefig(output_file, dpi=600)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
     def reassemble_data(self, geodata=None, trifaults_list=None, verticals=None):
         """
@@ -1221,6 +1749,7 @@ class BoundLSEMultiFaultsInversion(
             List of vertical data objects.
         """
         self._clear_fit_weight_context()
+        self._clear_scale_parameter_context()
         faults = self.faults if trifaults_list is None else trifaults_list
         geodata = self.config.geodata['data'] if geodata is None else geodata
         vertical = self.config.geodata['verticals'] if verticals is None else verticals
@@ -1289,11 +1818,7 @@ class BoundLSEMultiFaultsInversion(
         roughness_vec = np.dot(active_smoothing, self.mpost)
         roughness = np.sqrt(np.mean(roughness_vec**2)) if roughness_vec.size > 0 else 0.0
         if print_stat:
-            # Format penalty weight with up to 4 decimals, removing trailing zeros but keeping at least 1 decimal
-            penalty_str = [f'{ipenalty:.4f}'.rstrip('0') for ipenalty in self.current_penalty_weight]
-            penalty_str = [s + '0' if s.endswith('.') else s for s in penalty_str]
-            penalty_str = ', '.join(penalty_str)
-            output = f'Penalty_weight: {penalty_str}, Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
+            output = f'Roughness: {roughness:.4f}, RMS: {rms:.4f}, VR: {vr:.2f}%'
             print(output)
         return roughness, rms, vr
     

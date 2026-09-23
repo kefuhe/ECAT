@@ -845,9 +845,13 @@ class LinearInversionConfig(CommonConfigBase):
             else:
                 return obj
 
-        # Deepcopy to avoid modifying self.geodata/self.faults
+        # Deepcopy to avoid modifying resolved runtime state.  ``alpha.faults``
+        # is an internal compatibility projection derived from named groups;
+        # it is deliberately not exported as accepted user configuration.
         geodata_export = copy.deepcopy(self.geodata)
         faults_export_src = copy.deepcopy(self.faults)
+        alpha_export = copy.deepcopy(self.alpha)
+        alpha_export.pop('faults', None)
 
         # Strip internal keys (e.g. _method_params_origin) before export
         for _fval in faults_export_src.values():
@@ -940,7 +944,7 @@ class LinearInversionConfig(CommonConfigBase):
         # add_field('nonlinear_inversion', self.nonlinear_inversion)
 
         add_field('geodata', geodata_export)
-        add_field('alpha', self.alpha)
+        add_field('alpha', alpha_export)
         add_field('interseismic_config', self.interseismic_config)
         add_field('faults', faults_export)
 

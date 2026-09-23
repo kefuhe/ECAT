@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import time
 
-import h5py
 import numpy as np
 from numba import njit
 
 from .smc_progress import SMCProgressReporter
 from .smc_tempering import (
     resolve_smc_tempering_policy,
-    write_smc_tempering_metadata,
 )
+from .smc_checkpoint import write_smc_checkpoint
 
 
 _INITIAL_DIMENSION_FACTORS = (
@@ -348,26 +347,12 @@ def _weight_stats(postval, beta_previous, beta_current):
 
 
 def _write_samples_h5(filename, samples, *, tempering_policy):
-    with h5py.File(filename, "w") as f:
-        for key, value in samples._asdict().items():
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                group = f.create_group(key)
-                for subkey, subvalue in value.items():
-                    _write_h5_dataset(group, subkey, subvalue)
-            else:
-                _write_h5_dataset(f, key, value)
-        write_smc_tempering_metadata(f.attrs, tempering_policy)
-
-
-def _write_h5_dataset(group, key, value):
-    arr = np.asarray(value)
-    if arr.dtype.kind in {"U", "O"}:
-        dtype = h5py.string_dtype(encoding="utf-8")
-        group.create_dataset(key, data=np.asarray(value, dtype=dtype), dtype=dtype)
-        return
-    group.create_dataset(key, data=value)
+    """Compatibility wrapper around the shared SMC checkpoint writer."""
+    write_smc_checkpoint(
+        filename,
+        samples,
+        tempering_policy=tempering_policy,
+    )
 
 
 class NonlinearSMCclass:

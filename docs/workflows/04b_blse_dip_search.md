@@ -2,11 +2,11 @@
 
 当断层迹线、上下边界和其他几何已经确定，但倾角仍需要用分布式滑动反演比较时，
 可以对一组候选倾角分别运行 BLSE。ECAT 提供的标准模板是
-[`scripts/test_dip_search_BLSE.py`](https://github.com/kefuhe/eqtools/blob/main/scripts/test_dip_search_BLSE.py)。
+[`scripts/test_dip_search_BLSE.py`](../../scripts/test_dip_search_BLSE.py)。
 
 这是一种**条件模型比较**：每个候选倾角都对应一次完整、独立的 BLSE。它不是
 Bayesian 倾角后验，也不能只凭最小 RMS 代替几何合理性、粗糙度、残差和机制检查。
-建议先用 [固定几何平滑参数搜索](04a_blse_smoothing_search.md) 选出一个合理 penalty
+建议先用 [固定几何 L-curve](04a_blse_l_curve.md) 选出一个合理 penalty
 范围，再固定其中一个值执行本页倾角搜索。
 
 
@@ -187,13 +187,13 @@ source，但正式运行前仍应检查最终约束摘要。
 
 - 每个断层先各自执行一次 `remap=True`；
 - 每个候选只对对应断层执行 `remap=False`；
-- `OrderedDict`、配置 source 名和 `faults_list` 顺序固定；
+- 配置 source 名和 `faults_list` 顺序固定；
 - 每个组合新建 `BoundLSEMultiFaultsInversion`；
 - 组合数在运行前明确打印，避免意外进行过大的网格搜索。
 
 ## 下一步
 
-- 尚未选择合理平滑强度：先看 [固定几何平滑参数搜索](04a_blse_smoothing_search.md)。
+- 尚未选择合理平滑强度：先看 [固定几何 L-curve](04a_blse_l_curve.md)。
 - 倾角结果随平滑强度变化明显：再看
   [倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md)。
 - 普通 BLSE 构建、配置和输出：看 [BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md)。

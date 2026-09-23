@@ -242,6 +242,9 @@ Matplotlib 切换为非交互式文件后端，不改变采样模式、似然或
 prior_bounds_format: lower_upper
 nchains: 100
 chain_length: 50
+smc_tempering:
+  target_cov: 1.0
+  max_delta_beta: 0.5
 nfaults: 1
 slip_sampling_mode: mag_rake
 
@@ -269,6 +272,10 @@ geodata:
     values: [0.0, 0.0]
     log_scaled: true
 ```
+
+标准运行保持 `target_cov: 1.0` 和 `max_delta_beta: 0.5`。它们控制 beta stage，
+不是数据协方差或模型参数；需要试验 stage 数和短尾增量时，先读
+[SMC 温度调度](../reference/smc_tempering.md)，并保持其他采样设置不变做对照。
 
 新版模板默认使用 `prior_bounds_format: lower_upper`，因此 `Uniform` 写法是：
 
@@ -306,6 +313,24 @@ rake 或 ss/ds。运行后同时检查摘要中的 input/sample 角度和 `Solve
 - data/synthetic/residual 图
 - 几何参数和 sigma 参数 KDE 图
 - `fault_parameter_trends.png` 断层参数 stage 演化图
+
+<a id="result-checks"></a>
+
+## 结果判读与阶段交接
+
+样本和图件生成后，还需检查模型与数据是否一致；程序完成不等于几何已经得到充分约束。
+
+| 观察到的现象 | 优先核对 | 下一步 |
+| --- | --- | --- |
+| 后验贴近先验边界 | 边界含义、单位、角度约定和观测覆盖 | 查明原因后比较合理的先验或模型方案，不只为消除贴边而放宽范围 |
+| 后验多峰或参数强相关 | 候选几何的预测、残差和物理合理性 | 分别保留候选模型；不要仅凭逐参数中位数决定交接几何 |
+| 残差有系统性空间结构 | projection、数据改正项、几何与模型表达 | 对照各数据集检查，避免只依据总 RMS 选择模型 |
+| stage 演化或重复运行结果不稳定 | 采样诊断、先验和采样规模 | 先解释不稳定性，再把几何作为固定基线 |
+
+交给线性阶段时，记录代表模型的选择依据、顶边中点坐标、solver strike/dip 和长度，
+再用[几何构建短例](../examples/fault_from_nonlinear_geometry.md)生成并检查固定网格。
+`top/depth` 是线性滑动面扩展范围，不能用它替换非线性 `cdepth`。
+保留诊断与候选结果，便于之后检查几何选择对滑动的影响。
 
 ## 下一步
 

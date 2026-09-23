@@ -3,6 +3,10 @@
 这个短例把最常见的反演数据入口放在一页：ECAT 降采样结果、外部 ASCII SAR
 点数据和 CSI ENU 格式 GNSS。非线性几何反演与 BLSE/VCE 可以复用同一组数据对象。
 
+本页是按输入选择的顺序示例。仅使用三角 varres、外部 SAR 或 GNSS 分支时，也要先设置
+共同的 `lon0/lat0`，并执行该分支需要的 import；不要为了获得一个变量而读取无关数据。
+第 4 节的 `geodata` 仅展示装配方式，应换成本次实际建立的对象。
+
 ## 输入
 
 按手头数据选择一种入口；不要把同一观测同时用两种方式读入并重复加入 `geodata`。
@@ -16,6 +20,8 @@
 
 所有数据对象必须使用同一个 `lon0/lat0`。`factor` 同时缩放观测值和误差，应按输入
 文件单位设置。
+
+<a id="varres-loading"></a>
 
 ## 1. 读取 ECAT 降采样结果
 
@@ -50,7 +56,10 @@ sar_trirb.read_from_varres(
 `insar.read_from_varres()` 的默认值是 `False`；只有矩形 `.rsp` 会在 10 列 legacy
 和 18 列 full-corner 之间自动判断。三角 `.rsp` 需要 `triangular=True`。
 
-如果调用方确实不知道几何类型，可先用只读接口识别，再把结果交给 CSI：
+<a id="detect-varres-geometry"></a>
+
+如果调用方确实不知道几何类型，可先用只读接口识别，再把结果交给 CSI。
+下面片段仍需要前面的 `from csi.insar import insar` 和共同投影原点：
 
 ```python
 from eqtools.csiExtend.downsample import read_csi_varres_result
@@ -138,6 +147,8 @@ gnss.buildCd(direction="enu")
 `minerr` 只替换文件中等于零的误差，单位是乘以 `factor` 之前的输入单位。例如输入
 位移和误差均为 mm、目标单位为 m 时使用 `factor=1e-3`，同时把 `minerr` 写成 mm。
 
+<a id="assemble-geodata"></a>
+
 ## 4. 组成 `geodata`
 
 只把本次反演真正使用的数据按固定顺序放入列表：
@@ -145,6 +156,9 @@ gnss.buildCd(direction="enu")
 ```python
 geodata = [sar_qtree, sar_ascii, gnss]
 ```
+
+如果只读取了上面的三角结果，应使用 `geodata = [sar_trirb]`；不要照抄包含未创建对象的列表，
+也不要把同一轨道的矩形与三角降采样版本同时加入反演。
 
 这个顺序必须与非线性配置或线性配置中的数据顺序、`polys`、`sigmas`、
 `verticals` 和数据—断层覆盖关系一致。不要依赖对象名自动重排。
@@ -164,6 +178,13 @@ for data in geodata:
 - `.cov` 维度或对角误差与观测数一致；
 - GNSS 的 ENU 分量和误差列顺序正确；
 - `geodata` 与配置顺序一致。
+
+## 数据准备完成后交给哪里
+
+完成上述检查后，保留数据对象、输入前缀、误差处理方式和共同投影原点。
+需要估计紧凑几何时，进入[非线性几何工作流](../workflows/03_nonlinear_geometry_bayesian.md#入口)；
+已有固定几何时，将本页的 `geodata` 接到 [BLSE 输入装配](../workflows/04_linear_slip_blse_vce.md#input-handoff)。
+切换到另一个示例时，继续使用本项目的坐标和数据名称，不复制其中的占位坐标。
 
 ## 何时不用这个例子
 

@@ -37,7 +37,7 @@
 | 已知距离、经度、纬度或最近点，需要可复现地裁剪、延长或重采样迹线 | [02d 断层迹线预处理](02d_fault_trace_preprocessing.md) | 经检查、可直接交给断层构建的新迹线和可选处理报告 |
 | 用紧凑源估计断层几何 | [03 Bayesian 非线性几何反演](03_nonlinear_geometry_bayesian.md) | 优选几何、不确定性和拟合诊断 |
 | 已有非线性结果、地表迹线+倾角或其他固定几何，需要求分布式滑动 | [04 BLSE/VCE 线性滑动分布反演](04_linear_slip_blse_vce.md) | 固定几何上的滑动分布、残差和结果报告 |
-| 固定几何已检查，需要选择 BLSE 平滑强度 | [04a BLSE 固定几何平滑参数搜索](04a_blse_smoothing_search.md) | penalty–RMS/VR、L-curve 和逐数据集拟合表 |
+| 固定几何已检查，需要选择 BLSE 平滑强度 | [04a BLSE 固定几何 L-curve](04a_blse_l_curve.md) | penalty–RMS/VR、L-curve 和逐数据集拟合表 |
 | 迹线等几何已定，需要比较一组 BLSE 倾角候选 | [04b BLSE 固定拓扑倾角搜索](04b_blse_dip_search.md) | patch 身份一致的倾角—拟合统计表和诊断图 |
 | 已完成平滑和倾角搜索，需要检查二者耦合 | [04c 倾角 × 平滑参数敏感性分析](04c_blse_dip_smoothing_search.md) | dip–penalty 二维诊断和分倾角 L-curve |
 | 已完成并检查标准两步走，明确需要联合后验 | [05 Bayesian 联合几何-滑动分布反演](05_joint_bayesian_geometry_slip.md)；先理解 [几何参考](../concepts/bayesian_geometry_reference.md)，再复制 [设置短例](../examples/joint_bayesian_geometry_setup.md) | 几何、滑动和噪声参数的联合后验 |

@@ -9,6 +9,46 @@ ECAT 教程按标准两阶段路线组织反演，下文简称“两步走”：
 
 如果还不清楚为什么要分成几何搜索和线性滑动两步，先读 [标准两阶段反演逻辑](../concepts/two_step_inversion.md)。如果只需要某个小任务的最小代码，例如 trace 预处理、GAMMA quick-look 或 BLSE 最小脚本，看 [Examples / 任务短例](../examples/index.md)。
 
+<a id="first-learning-route"></a>
+
+## 第一次学习：先完成一个阶段
+
+1. 完成[安装页的快速检查](installation.md#8-快速检查)。
+2. 按下文[公开案例命令](#最短可运行公开案例)运行 Wushi，保留案例原有 legacy 配置。
+3. 按 [Wushi 跑通判据](../casebook/wushi_nonlinear_geometry.md#跑通判据)确认样本、摘要和拟合输出，再看[几何结果判读](../workflows/03_nonlinear_geometry_bayesian.md#result-checks)。
+4. 学习[非线性结果到 fault object](../examples/fault_from_nonlinear_geometry.md)，理解几何交接。
+5. 用 [Dingri 的 single 模式](../casebook/dingri_blse_vce.md#运行方式)练习固定几何 BLSE，再看[线性结果判读](../workflows/04_linear_slip_blse_vce.md#result-checks)。
+
+Wushi 和 Dingri 是两个独立事件的阶段练习，不是同一事件的连续两阶段结果。
+练习已有降采样数据时，可先跳过原始产品降采样。开展自己的项目时，再按下文完整顺序准备输入，
+并使用新版非线性入口。初次练习不需要先读完全部参考页或同时尝试所有权重与几何方案。
+
+## 最短可运行公开案例
+
+下面命令假设已经克隆 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)，当前位于其根目录，并且环境已经安装 ECAT、CSI 和 MPI。两个案例当前都使用 legacy `explorefault`，用于练习非线性几何阶段；新项目使用[新版入口](#先选择非线性入口)，不把两套配置混用。
+
+Wushi InSAR-only：
+
+```bash
+cd Cases/Wushi_20240122M7_0/Nonlinear
+mpiexec -n 4 python test_nonlinear_mag_rake.py -r
+```
+
+进阶练习 Ridgecrest GPS+InSAR（从 ECAT-Cases 根目录执行）：
+
+```bash
+cd Cases/Ridgecrest_20190706Mw7_1/Nonlinear
+mpiexec -n 4 python test_nonlinear_mag_rake.py -r
+```
+
+这里的 `-n 4` 表示启动 4 个 MPI 进程/rank，不是把一个 Python 进程设成 4 个
+线程。第一次使用先直接运行这条默认命令，不需要预先添加
+`MKL_NUM_THREADS=1`、`OMP_NUM_THREADS=1` 等变量。跑通后需要扩大进程数或排查
+速度时，再读
+[进程、MPI Rank、线程与 CPU 亲和性](../concepts/parallel_process_rank_thread.md)。
+
+已有 HDF5 样本时，去掉 `mpiexec -n 4` 和 `-r`，可只重建摘要与图件。运行前仍应检查脚本中的相对数据路径和配置文件；案例完整说明见 [Casebook](../casebook/index.md)。
+
 ## 先选择非线性入口
 
 ECAT 保留新版和 legacy 两套非线性几何入口，但职责不同：
@@ -40,32 +80,6 @@ ECAT 保留新版和 legacy 两套非线性几何入口，但职责不同：
 | 地表迹线和一个倾角 | [单倾角平面](../examples/fault_trace_preprocessing.md#single-dip) |
 | 地表迹线和多个倾角参考点 | [沿走向变化倾角](../examples/fault_trace_preprocessing.md#multiple-dips) |
 | 需要用 BLSE 比较多个倾角 | [固定参考拓扑](../examples/fault_trace_preprocessing.md#fixed-topology) |
-
-## 最短可运行公开案例
-
-下面命令假设已经克隆 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)，并且当前环境已经安装 ECAT、CSI 和 MPI。两个案例当前都使用 legacy `explorefault`，适合先验证完整计算链；新项目再按上一节切换到新版入口。
-
-Wushi InSAR-only：
-
-```bash
-cd Cases/Wushi_20240122M7_0/Nonlinear
-mpiexec -n 4 python test_nonlinear_mag_rake.py -r
-```
-
-Ridgecrest GPS+InSAR：
-
-```bash
-cd Cases/Ridgecrest_20190706Mw7_1/Nonlinear
-mpiexec -n 4 python test_nonlinear_mag_rake.py -r
-```
-
-这里的 `-n 4` 表示启动 4 个 MPI 进程/rank，不是把一个 Python 进程设成 4 个
-线程。第一次使用先直接运行这条默认命令，不需要预先添加
-`MKL_NUM_THREADS=1`、`OMP_NUM_THREADS=1` 等变量。跑通后需要扩大进程数或排查
-速度时，再读
-[进程、MPI Rank、线程与 CPU 亲和性](../concepts/parallel_process_rank_thread.md)。
-
-已有 HDF5 样本时，去掉 `mpiexec -n 4` 和 `-r`，可只重建摘要与图件。运行前仍应检查脚本中的相对数据路径和配置文件；案例完整说明见 [Casebook](../casebook/index.md)。
 
 ## 第一步：Bayesian 非线性几何反演
 
@@ -145,7 +159,8 @@ CLI 生成的是模板，不是最终科学配置。需要继续修改数据路�
 
 - 新版非线性几何：[`scripts/test_nonlinear_geometry_smc.py`](../../scripts/test_nonlinear_geometry_smc.py)
 - legacy 案例复现：[`scripts/test_nonlinear_bayesian.py`](../../scripts/test_nonlinear_bayesian.py)
-- BLSE/VCE：[`scripts/test_slip_inv_BLSE.py`](../../scripts/test_slip_inv_BLSE.py)
+- 固定权重 BLSE：[`scripts/test_slip_inv_BLSE.py`](../../scripts/test_slip_inv_BLSE.py)
+- VCE：[`scripts/test_slip_inv_VCE.py`](../../scripts/test_slip_inv_VCE.py)
 
 非线性几何反演：
 

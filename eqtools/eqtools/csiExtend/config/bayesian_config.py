@@ -1,7 +1,7 @@
 import copy
 import yaml
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Setup module-level logger
 logger = logging.getLogger(__name__)
@@ -26,6 +26,15 @@ class ResolvedGeometryUpdate:
     method_kwargs: object
     sample_slice: tuple
     registry_contract: object
+    parameter_names: tuple = ()
+    parameter_mapping: tuple = ()
+    parameter_mode: str | None = None
+    parameter_layout: object | None = None
+    parameter_layout_keyword: str | None = None
+    follows: object | None = None
+    mesh_kwargs: object | None = None
+    gf_kwargs: object | None = None
+    laplacian_kwargs: object | None = None
 
 
 _BAYESIAN_SAMPLING_MODE_ALIASES = {
@@ -167,6 +176,10 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         # Validate the perturbation methods defined in the raw YAML configuration
         self._validate_perturbation_config()
         self._normalize_mesh_config()
+        # Mesh normalization may fill an inherited/default replay method.
+        # Recompile once so the immutable execution plan, rather than the raw
+        # mutable configuration, owns those final candidate arguments.
+        self._validate_perturbation_config(report_success=False)
         # Perturbation preflight can add later diagnostics.  The report cursor
         # emits only those new records and never repeats the earlier block.
         self.report_config_diagnostics()
@@ -370,11 +383,19 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 update.method_name,
                 tuple(update.sample_slice),
                 repr(update.method_kwargs),
+                tuple(getattr(update, 'parameter_names', ()) or ()),
+                tuple(getattr(update, 'parameter_mapping', ()) or ()),
+                getattr(update, 'parameter_mode', None),
+                getattr(update, 'parameter_layout_keyword', None),
+                repr(getattr(update, 'follows', None)),
+                repr(getattr(update, 'mesh_kwargs', None)),
+                repr(getattr(update, 'gf_kwargs', None)),
+                repr(getattr(update, 'laplacian_kwargs', None)),
             )
             for update in self.resolved_geometry_updates
         )
 
-    def _validate_perturbation_config(self):
+    def _validate_perturbation_config(self, *, report_success=True):
         """
         Validate perturbation methods by matching YAML config against 
         actual instantiated fault objects.
@@ -501,6 +522,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 name
                 for name, param in method_signature.parameters.items()
                 if name not in {'self', 'perturbations'}
+                and not name.startswith('_')
                 and param.kind in {
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
                     inspect.Parameter.KEYWORD_ONLY,
@@ -559,11 +581,69 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 method_kwargs=copy.deepcopy(method_kwargs),
                 sample_slice=(start, end),
                 registry_contract=copy.deepcopy(registry_contract),
+                follows=copy.deepcopy(geom_config.get('follows')),
+                mesh_kwargs=copy.deepcopy(
+                    method_params.get('update_mesh', {}) or {}
+                ),
+                gf_kwargs=copy.deepcopy(
+                    method_params.get('update_GFs', {}) or {}
+                ),
+                laplacian_kwargs=copy.deepcopy(
+                    method_params.get('update_Laplacian', {}) or {}
+                ),
             )
-            self._validate_geometry_update_contract(resolved)
+            dip_layout = self._validate_geometry_update_contract(resolved)
+            if dip_layout is not None:
+                parameter_names = dip_layout.parameter_roles()
+                resolved_contract = resolved.registry_contract
+                parameter_spec = resolved_contract.get('parameter_spec') or {}
+                cardinality = parameter_spec.get('cardinality') or {}
+                if (
+                    cardinality.get('kind')
+                    == 'sampled_dip_controls_plus_rigid_transform'
+                ):
+                    suffix_count = cardinality.get('suffix_count')
+                    declared_items = tuple(parameter_spec.get('items') or ())
+                    if (
+                        isinstance(suffix_count, bool)
+                        or not isinstance(suffix_count, int)
+                        or suffix_count <= 0
+                        or len(declared_items) != suffix_count + 1
+                    ):
+                        raise ValueError(
+                            f"Fault '{fault_name}': geometry method "
+                            f"'{method_name}' has an invalid composite "
+                            "perturbation registry contract."
+                        )
+                    suffix_items = declared_items[-suffix_count:]
+                    parameter_names += tuple(
+                        str(item.get('role')) for item in suffix_items
+                    )
+                    resolved_contract = copy.deepcopy(resolved_contract)
+                    resolved_contract['parameter_spec']['items'] = tuple(
+                        copy.deepcopy(declared_items[0])
+                        for _ in range(dip_layout.parameter_count)
+                    ) + tuple(copy.deepcopy(item) for item in suffix_items)
+                resolved = replace(
+                    resolved,
+                    registry_contract=resolved_contract,
+                    parameter_names=parameter_names,
+                    parameter_mapping=tuple(
+                        int(index)
+                        for index in dip_layout.sampled_control_parameter_indices
+                    ),
+                    parameter_mode=dip_layout.mode,
+                    parameter_layout=dip_layout,
+                    parameter_layout_keyword=(
+                        '_resolved_perturbation_layout'
+                        if '_resolved_perturbation_layout'
+                        in method_signature.parameters
+                        else None
+                    ),
+                )
             resolved_updates.append(resolved)
 
-            if self.verbose:
+            if self.verbose and report_success:
                 logger.info(f"[Config Check] Method '{method_name}' confirmed valid for object '{fault_name}' ({fault_instance.__class__.__name__}).")
 
         self._resolved_geometry_updates = tuple(resolved_updates)
@@ -594,7 +674,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             )
 
         if contract.get('schema_version') is None:
-            return
+            return None
 
         requirements = contract.get('reference_requirements') or {}
         if requirements:
@@ -624,7 +704,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         parameter_spec = contract.get('parameter_spec') or {}
         cardinality = parameter_spec.get('cardinality')
         if not cardinality:
-            return
+            return None
         start, end = resolved.sample_slice
         sample_count = end - start
         kind = cardinality.get('kind')
@@ -637,23 +717,60 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                     f"perturbation value(s), but sample_positions "
                     f"{list(resolved.sample_slice)} supplies {sample_count}."
                 )
-            return
+            return None
 
-        if kind not in {
-                'scalar_or_movable_nodes',
-                'scalar_or_sampled_dip_controls'}:
+        dip_kinds = {
+            'scalar_or_sampled_dip_controls',
+            'sampled_dip_controls_plus_rigid_transform',
+        }
+        if kind not in {'scalar_or_movable_nodes', *dip_kinds}:
             # Additive schemas from plugins remain forward compatible.  An
             # unknown future cardinality is enforced by that method at runtime.
-            return
+            return None
 
         if reference is None:
-            return
-        if kind == 'scalar_or_sampled_dip_controls':
+            return None
+        if kind in dip_kinds:
             profile = getattr(reference, 'dip_profile', None)
             if profile is None:
-                return
-            movable_count = profile.controls.sampled_count
-            count_label = 'sampled dip control'
+                return None
+            from ..dip_profile import resolve_dip_perturbation_layout
+            dip_parameter_count = sample_count
+            if kind == 'sampled_dip_controls_plus_rigid_transform':
+                suffix_count = cardinality.get('suffix_count')
+                if (
+                    isinstance(suffix_count, bool)
+                    or not isinstance(suffix_count, int)
+                    or suffix_count <= 0
+                ):
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': geometry method "
+                        f"'{resolved.method_name}' has an invalid rigid "
+                        "suffix_count in its registry contract."
+                    )
+                if sample_count < suffix_count:
+                    raise ValueError(
+                        f"Fault '{resolved.fault_name}': geometry method "
+                        f"'{resolved.method_name}' requires a dip prefix plus "
+                        f"{suffix_count} rigid-transform value(s), but "
+                        f"sample_positions {list(resolved.sample_slice)} "
+                        f"supplies only {sample_count}."
+                    )
+
+                dip_parameter_count -= suffix_count
+            try:
+                return resolve_dip_perturbation_layout(
+                    profile.controls,
+                    profile.perturbation_groups,
+                    dip_parameter_count,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Fault '{resolved.fault_name}': geometry method "
+                    f"'{resolved.method_name}' has an invalid dip-profile "
+                    f"sample layout for sample_positions "
+                    f"{list(resolved.sample_slice)}: {exc}"
+                ) from exc
         else:
             field_name = cardinality.get('reference_field')
             coords = getattr(reference, field_name, None)
@@ -713,6 +830,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 f"{list(resolved.sample_slice)} supplies {sample_count}. "
                 f"Expected {allowed_text}."
             )
+        return None
 
     def validate_sampling_ready(self):
         """Validate state consumed by Bayesian candidates without mutation.
@@ -732,16 +850,13 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         from .. import mesh_registry as _mesh_registry
 
         for resolved in self.resolved_geometry_updates:
-            fault_config = self.faults[resolved.fault_name]
-            geometry_config = fault_config.get('geometry', {})
-            if geometry_config.get('follows'):
+            if resolved.follows:
                 # Followers consume their master's shared materialized state;
                 # only the master executes the geometry/mesh replay.
                 continue
 
             contract = resolved.registry_contract or {}
             flags = contract.get('flags') or {}
-            method_parameters = fault_config.get('method_parameters', {})
             if flags.get('mesh'):
                 mesh_method = contract.get('mesh_replay_method')
                 # Internal mesh wrappers may intentionally choose defaults
@@ -755,7 +870,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 }
                 replay_params.update(resolved.method_kwargs)
             else:
-                mesh_config = method_parameters.get('update_mesh', {})
+                mesh_config = resolved.mesh_kwargs or {}
                 mesh_method = (
                     mesh_config.get('method')
                     if isinstance(mesh_config, dict) else None

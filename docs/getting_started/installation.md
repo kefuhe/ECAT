@@ -8,6 +8,14 @@ ECAT 支持 64 位 Windows 和 Linux 上的 CPython 3.10、3.11 和 3.12。当�
 Conda/conda-forge 建立基础环境，再用 `python -m pip` 安装本地源码。安装时直接
 使用仓库提供的依赖清单。
 
+## 首次安装的阅读顺序
+
+先读下面的终端与下载约定，再依次完成 [1. 创建环境](#1-第一次安装完整-ecat)、
+[2. 安装 okada4py](#2-安装必需的-okada4py)、[3. 安装 CSI 与 eqtools](#3-安装统一仓库中的-csi-与-eqtools)，
+最后运行 [8. 快速检查](#8-快速检查)。首次安装采用第 1 节默认命令即可；1.1 是明确需要
+其他数值/MPI 实现时的替代路线，1.2 用于处理创建环境时的问题。已有环境更新看第 4 节。
+检查通过后进入[首次练习路线](quickstart_two_step.md#first-learning-route)。
+
 ### 命令行和下载路径约定
 
 本文中的 `bash` 命令用于 Linux、WSL 和 Bash；Windows 原生终端默认按

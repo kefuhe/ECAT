@@ -2,6 +2,22 @@
 
 Reference 是查阅层，不替代工作流教程。第一次跑案例时先读 `workflows/` 和 `casebook/`；需要确认命令、配置字段、reader 语义、约束或输出细节时，再回到本目录查阅。
 
+<a id="quick-lookup"></a>
+
+## 按问题直接查阅
+
+| 当前问题 | 定义与完整参考 | 可复制入口 |
+| --- | --- | --- |
+| 如何读回 .txt/.rsp/.cov | [观测读取协议](observation_data_readers.md#csi-varres) | [反演数据读入](../examples/inversion_data_loading.md) |
+| 非线性深度和角度怎样交接 | [几何构建](fault_geometry_construction.md)、[角度约定](../concepts/fault_angle_conventions.md) | [结果到 fault object](../examples/fault_from_nonlinear_geometry.md) |
+| 新旧非线性 bounds 有何区别 | [非线性配置](config_nonlinear_geometry.md) | [非线性入口](../workflows/03_nonlinear_geometry_bayesian.md#入口) |
+| sigma/alpha 的分组、初值和对数尺度 | [Sigmas 与 Alpha](sigmas_alpha.md) | [BLSE 最小脚本](../examples/blse_minimal_run.md) |
+| 怎样设置 bounds、rake 和 patch 约束 | [约束管理器](constraint_manager.md) | [约束配置与运行时调整](../examples/constraint_config_runtime.md) |
+| 怎样解释拟合统计和保存报告 | [拟合统计量](fit_statistics.md) | [循环统计示例](../examples/script_templates.md#loop-statistics) |
+| 已有模型，计算地表位移或震间派生量 | [地表正演](surface_displacement_forward.md)、[震间运动学](interseismic_kinematics.md) | [地表位移短例](../examples/surface_forward_grid.md) |
+
+下方分类表继续提供全部参考入口；查到具体字段后可直接返回原工作流，无需顺序阅读所有页面。
+
 ## 阅读方式
 
 ```text
@@ -37,6 +53,7 @@ Reference 不要求按文件顺序通读。长页面保留完整字段和公式�
 | 页面 | 什么时候读 |
 | --- | --- |
 | [Nonlinear Config](config_nonlinear_geometry.md) | 设置非线性几何搜索边界、固定参数、数据顺序和 sigma 策略时 |
+| [SMC 温度调度](smc_tempering.md) | 需要理解或试验 `target_cov`、`max_delta_beta`、beta stage 和有效样本量关系时 |
 | [Fault Angle Conventions](../concepts/fault_angle_conventions.md) | 设置 `strike/dip/rake`、让 dip 跨过直立位置或解释 raw/canonical 几何时 |
 | [Linear Slip Config](config_linear_slip.md) | 设置 BLSE/VCE 的主配置、边界配置、GF、Laplacian、poly 和线性约束入口时 |
 | [Fault Geometry Construction](fault_geometry_construction.md) | 从非线性结果或地表迹线构建固定/变化倾角断层，或处理等深线、slab、外部 mesh 和 GMT 时 |
@@ -60,6 +77,9 @@ Reference 不要求按文件顺序通读。长页面保留完整字段和公式�
 | --- | --- |
 | [Bayesian Joint Inversion](bayesian_joint_inversion.md) | 完成标准两步走后，需要把几何不确定性、滑动、sigma/alpha 和约束放入联合后验框架时 |
 | [Perturbable Fault Geometry](geometry_perturbation.md) | 联合 Bayesian 中需要选择几何参考来源、查 `ref*` 接口、重新设基线或让 mesh/GF 随样本一致更新时 |
+| [Geometry Reference Lifecycle](geometry_perturbation/reference_lifecycle.md) | 只需要集中确认 snapshot、权威参考来源、重新设基线和加密规则时 |
+| [Geometry Parameter Routing](geometry_perturbation/parameter_routing.md) | 只需要核对方法、参数切片、bounds、动态 cardinality 和配置预检时 |
+| [MeshPolicy and Derived State](geometry_perturbation/mesh_cache.md) | 只需要核对 mesh 路由、固定拓扑和 GF/GL/area 缓存后果时 |
 
 ## 通用工具
 

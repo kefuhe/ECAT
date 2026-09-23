@@ -1,0 +1,19 @@
+# Geometry order: bottom offset (km), rotation (degree), dx (km), dy (km).
+# ECAT accepts this explicit lb/ub mapping. It does not interpret a 4x2 list
+# of [lower, upper] rows as per-parameter bounds.
+lb: -10.0
+ub: 10.0
+
+geometry:
+  MainFault:
+    lb: [-10.0, -15.0, -5.0, -5.0]
+    ub: [10.0, 15.0, 5.0, 5.0]
+
+strikeslip:
+  MainFault: [-10.0, 10.0]
+dipslip:
+  MainFault: [-10.0, 10.0]
+
+sigmas: [-3.0, 3.0]
+alpha: [-3.0, 3.0]
+

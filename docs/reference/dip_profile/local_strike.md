@@ -65,7 +65,8 @@ fault.perturb_dips_with_preset_params(
     angle_unit="degrees",
     use_average_strike=False,
 )
-fault.snapshot(capture_vertices=False, capture_layers=False)
+# 下一步直接建立固定拓扑 mapping；不要 snapshot 派生 bottom。
+fault.generate_and_deform_mesh(..., remap=True)
 ```
 
 候选解析时，所有 control 先投影到本候选的 top，再按累计弧长插值 dip；随后 strike 也从

@@ -173,7 +173,7 @@ geodata:
 
 alpha 分组只覆盖支持 Laplacian 平滑的 fault 源。Pressure、Sbarbot 等非平滑源仍占据
 完整线性参数列并参与数据拟合，但不需要、也不允许为了“覆盖所有源”而加入
-`alpha.faults`。混合源结果中的 `smooth_groups` 因此只列平滑源；按完整 source 顺序保存的
+`alpha.groups`。混合源结果中的 `smooth_groups` 因此只列平滑源；按完整 source 顺序保存的
 内部 penalty 数组对非平滑源使用中性占位值，该值不乘入任何平滑行。
 
 单个平滑参数：
@@ -185,7 +185,6 @@ alpha:
   update: true
   initial_value: -2.0
   log_scaled: true
-  faults: null
 ```
 
 每个断层独立平滑参数：
@@ -202,22 +201,8 @@ alpha:
   log_scaled: true
 ```
 
-按断层组共享平滑参数时，推荐使用 `faults` 的列表分组：
-
-```yaml
-alpha:
-  enabled: true
-  mode: grouped
-  faults:
-    - ["HH_Main", "HH_Deep"]
-    - ["HH_North", "HH_South"]
-    - ["XJ_Fault"]
-  update: [true, false, true]
-  initial_value: [-2.0, -1.5, -1.8]
-  log_scaled: true
-```
-
-需要稳定组名时，也可直接使用 `groups` 字典；组名会进入解析结果和诊断输出：
+按断层组共享平滑参数时，必须使用具名 `groups` 字典；组名会进入运行参数、解析结果、
+诊断输出和 checkpoint 布局：
 
 ```yaml
 alpha:
@@ -235,7 +220,10 @@ alpha:
   log_scaled: true
 ```
 
-`faults` 列表和 `groups` 字典二选一；同时出现时 `faults` 是既有兼容入口。新配置若需要可读的稳定组名，优先使用 `groups`。
+`alpha.mode: grouped` 不再接受匿名 `faults: [[...], [...]]` 列表。旧列表只能生成
+`Event_0`、`Event_1` 这类位置名称，无法稳定表达运行字典、报告和样本列的科学含义；
+解析器会直接报错并提示改成 `groups`。迁移时给每一组起一个稳定名称，成员顺序保持不变，
+再用相同组名填写 `initial_value`；若使用列表值，其顺序严格跟随 `groups` 的声明顺序。
 
 ## 求解器中的统一流转
 
@@ -295,11 +283,11 @@ actual_alpha = 10 ** config_alpha
 似然中的物理标准差。不要把 `sigmas: [-3, 3]` 与非对数 sigma 配合；这会允许负标准差和
 零附近的无效数值。非对数模式应使用与观测单位一致的正边界。
 
-结果摘要不再用两张名称相近的表分别展示采样值和物理值。VCE、联合 Bayesian 和新版
-非线性几何 SMC 统一以物理尺度 `Scale (s)` 为主值，并用 `Sampling` 明确原样本列是
-`s` 还是 `log10(s)`。`log10(s)` 是同一活动物理尺度的对数表示；`Row mult. (1/s)` 是
-求解或白化行实际使用的乘数。HDF5 和 KDE 仍保留原采样坐标，不会因为控制台格式改变而
-重写样本。
+结果摘要不再用名称相近的表混合输入值、采样值和物理值。BLSE、VCE、联合 Bayesian
+和新版非线性几何 SMC 都以物理尺度 `Scale (s)` 为主值；`log10(s)` 是同一活动物理
+尺度的常用对数，`Row mult. (1/s)` 是求解或白化行实际使用的乘数。只有 Bayesian
+存在样本坐标，表中的 `Sample coord.` 才显示 `s` 或 `log10(s)`；BLSE 和 VCE 不显示
+该列。HDF5 和 KDE 仍保留 Bayesian 原始采样坐标，不会因为控制台格式改变而重写样本。
 
 Bayesian 表中的 `Post. SD(s)` 不是把 `SD[log10(s)]` 简单取幂。实现先把每个 posterior
 样本转换到物理尺度，再对整列计算标准差：
@@ -325,6 +313,31 @@ Bayesian 表中的 `Post. SD(s)` 不是把 `SD[log10(s)]` 简单取幂。实现�
 | `-2.0` | `0.01` |
 
 因此，`alpha.initial_value: -2.0` 且 `log_scaled: true` 时，实际 `alpha = 0.01`，线性求解中的平滑惩罚权重约为 `100`。若在脚本里直接调用 `inv.run(alpha=[...])`，也应与 `penalty_log_scaled` 或配置中的 `alpha.log_scaled` 保持一致。
+
+### 固定 BLSE 的输入坐标与最终活动值
+
+`run()` 允许从配置、物理尺度参数或直接行乘数进入同一个目标函数。每一对入口互斥，
+最终都在 canonical 参数组空间解析，再按成员映射展开到数据行或平滑 source：
+
+| 用户入口 | 输入坐标 | 求解器最终活动尺度 |
+| --- | --- | --- |
+| 配置 `sigmas.initial_value` | `s` 或 `log10(s)`，由 `sigmas.log_scaled` 决定 | \(\sigma\) |
+| `run(sigma=...)` | `s` 或 `log10(s)`，由 `data_log_scaled` 或配置决定 | \(\sigma\) |
+| `run(data_weight=...)` | 直接数据行乘数 \(w_d\) | \(\sigma=1/w_d\) |
+| 配置 `alpha.initial_value` | `s` 或 `log10(s)`，由 `alpha.log_scaled` 决定 | \(\alpha\) |
+| `run(alpha=...)` | `s` 或 `log10(s)`，由 `penalty_log_scaled` 或配置决定 | \(\alpha\) |
+| `run(penalty_weight=...)` | 直接平滑行乘数 \(w_\alpha\) | \(\alpha=1/w_\alpha\) |
+
+`data_log_scaled` 只解释 `sigma`，不会变换 `data_weight`；`penalty_log_scaled` 只解释
+`alpha`，不会变换 `penalty_weight`。尺度表的 `Value source` 会记录本次成功求解实际采用
+的入口和输入坐标。它读取已经解析并实际展开给求解矩阵的组值，不在求解后重新读取配置。
+若直接行乘数不是有限正数，报表会保留该乘数，但不会伪造倒数尺度或 `log10(s)`。
+
+配置文件中的组值字典必须覆盖全部合法组。作为一次性敏感性测试，`run(alpha=...)`、
+`run(penalty_weight=...)`、`run(sigma=...)` 和 `run(data_weight=...)` 的运行字典可以只写
+部分**已知**组；未写组使用该入口的默认值 `0.0`。任何未知键都会在求解前报错，旧
+`Event_0` 名称也不会映射到具名 alpha 组。例如当前组为 `west/east` 时，
+`alpha={"west": -1.0}` 可用于临时覆盖，而 `alpha={"Event_0": -1.0}` 会报错。
 
 ## 与 Bounds 的关系
 
@@ -367,8 +380,9 @@ inv.run(penalty_weight=[100.0])
 
 | 表中字段 | 数据组 | 平滑组 | 适用场景 |
 | --- | --- | --- | --- |
-| `State` | `sampled` / `estimated` / `fixed` | 同左 | Bayesian / VCE |
-| `Sampling` | `s` 或 `log10(s)` | 同左 | Bayesian；VCE 为 `-` |
+| `State` | `sampled` / `estimated` / `fixed` | 同左 | Bayesian / VCE / BLSE |
+| `Value source` | 当前代表模型或固定输入来源 | 同左 | 全部；VCE 估计组为 `-` |
+| `Sample coord.` | `s` 或 `log10(s)` | 同左 | 仅 Bayesian |
 | `Variance (v)` | `sigma²` | `alpha²` | VCE |
 | `Scale (s)` | `sigma` | `alpha` | 全部场景的活动物理值 |
 | `Post. SD(s)` | 物理 sigma 的 posterior 标准差 | 物理 alpha 的 posterior 标准差 | Bayesian |
@@ -387,10 +401,15 @@ inv.run(penalty_weight=[100.0])
 `1/sqrt(solved_alpha2_by_group[group])`，也就是表中的 `1/s`。旧的无明确阶段含义的
 `weights`、`var_d` 和 `var_alpha` 结果字段不再返回。
 
-VCE 的 `State=estimated` 表示该组参加方差分量迭代，`State=fixed` 表示它以配置值参加
-目标函数但不更新。VCE 不是 posterior 采样，所以不显示 `Post. SD(s)` 或
-`SD[log10(s)]`；`Qw` 和 `Approx. red.Q` 仍是与返回模型同一组 `solved_*` 尺度对应的
-迭代诊断。
+VCE 的 `State=estimated` 表示该组参加方差分量迭代，`State=fixed` 表示它以固定值参加
+目标函数但不更新。估计结果并不“来自初值”，因此估计组的 `Value source` 明确为 `-`；
+固定组才显示配置或运行期固定输入来源。VCE 不是 posterior 采样，所以不显示
+`Sample coord.`、`Post. SD(s)` 或 `SD[log10(s)]`；`Qw` 和 `Approx. red.Q` 仍是与返回
+模型同一组 `solved_*` 尺度对应的迭代诊断。
+
+固定 BLSE 的 sigma/alpha 都是本次求解的固定输入，因而 `State=fixed`，不显示采样坐标、
+posterior 标准差、VCE 方差或 VCE 诊断。关闭 alpha 时，求解器内部可以使用中性数组完成
+矩阵流转，但尺度表不会把它报告成一个不存在的 alpha 参数。
 
 所有设置为更新且拥有实际增广行的 sigma/alpha 组采用同一乘法停止准则
 `max(abs(log(u))) < tol`，默认 `tol=1e-4`。因此 `mode: single` 只有一个更新组时也会

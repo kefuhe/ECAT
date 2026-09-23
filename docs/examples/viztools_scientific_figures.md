@@ -120,3 +120,41 @@ fig, axes = plot_fault_boundary_diagnostics(
 可增加 `views=("3d", "map", "sequence")`；`sequence` 横轴只是排序位置，不是距离或真实
 剖面。该函数不会重新识别边界或修改断层、Laplacian 和反演状态。参数与 MPI 使用边界见
 [Viztools 参考](../reference/viztools.md#断层边界诊断)。
+
+## 8. 检查非分层倾角 profile
+
+完成 `fault.set_dip_profile(...)` 后，可在生成正式样本前核对控制点投影和过渡区：
+
+```python
+from eqtools.viztools import plot_dip_profile_diagnostics
+
+fig, axes = plot_dip_profile_diagnostics(
+    fault,
+    perturbations=None,
+    coordinates="lonlat",
+    save="dip_profile_diagnostics.png",
+    show=False,
+)
+```
+
+空心/实心符号分别是声明位置和 top 上的实际投影，`S`/`F` 表示 sampled/fixed control。
+该图只读，不会重建几何或 mesh。设置规则见
+[Bayesian 倾角剖面组合](../reference/dip_profile/bayesian_mixed.md#只读诊断)。
+
+若 transition 仍待选择，可先把已经计算好的曲率分析与一个建议区间画出来：
+
+```python
+from eqtools.viztools import plot_dip_transition_analysis
+
+plot_dip_transition_analysis(
+    fault,
+    analysis,
+    suggestion,
+    coordinates="lonlat",
+    save="dip_transition_preflight.png",
+    show=False,
+)
+```
+
+分析对象的生成、曲率公式与 endpoint 导出见
+[Bayesian 前的曲率与转换带预分析](../reference/dip_profile/transition_preflight.md)。

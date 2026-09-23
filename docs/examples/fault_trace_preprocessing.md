@@ -12,6 +12,8 @@
 [由非线性几何结果构建断层](fault_from_nonlinear_geometry.md)。如果倾角还随深度变化，使用
 [Fault Geometry Construction：倾角随深度变化](../reference/fault_geometry_construction.md#layered-dip)。
 
+<a id="common-initialization"></a>
+
 ## 公共初始化
 
 `fault_trace.txt` 至少包含两列 `lon lat`。点序决定 strike 的正方向，也会影响右手规则下的
@@ -39,6 +41,8 @@ fault.set_top_coords_from_trace()
 
 ## A. 地表迹线 + 单倾角
 
+本分支需要先执行[公共初始化](#common-initialization)，使用已建立的 `fault`。
+
 给定代表性走向和物理倾角后，用右手规则计算下倾方向：
 
 ```python
@@ -59,6 +63,8 @@ fault.initializeslip(values="depth")
 <a id="multiple-dips"></a>
 
 ## B. 地表迹线 + 多个倾角参考点
+
+本分支需要先执行[公共初始化](#common-initialization)，使用已建立的 `fault`。
 
 控制点使用与 fault 一致的坐标约定。下面的三列数组是 `[lon, lat, dip]`，因此必须设置
 `is_utm=False`：
@@ -97,11 +103,13 @@ fault.initializeslip(values="depth")
 若控制点已经是 fault 局部投影下的 `x y dip`（单位 km），应改用 `is_utm=True`。不要把
 经纬度数组和投影坐标开关混用。四列 `[lon, lat, strike, dip]`、CSV、DataFrame 和带符号倾角
 的完整约定见
-[Fault Geometry Construction：沿走向变化倾角](../reference/fault_geometry_construction.md#trace-dip-varying)。
+[倾角剖面模式总览](../reference/dip_profile/index.md)。
 
 <a id="fixed-topology"></a>
 
 ## C. 倾角搜索时保持参考坐标和拓扑一致
+
+本分支需要先执行[公共初始化](#common-initialization)，使用已建立的 `fault`。
 
 若要用 BLSE 比较多个倾角，不能让每个候选角重新生成一套不同的三角形。先在参考倾角上
 建立一次网格与参数坐标映射，后续候选只变形现有拓扑：

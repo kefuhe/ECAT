@@ -20,6 +20,12 @@ Rebuild summaries and plots from an existing HDF5 sample file:
     python test_nonlinear_geometry_smc.py
 """
 
+# Editing guide
+# Edit data paths and projection here; edit geometry priors in the YAML file.
+# Relative paths in this template start from the current working directory.
+# Customize figures in plotting calls or local figure settings; keep execution order.
+# Template selection and setup: docs/examples/script_templates.md
+
 import argparse
 import os
 
@@ -30,7 +36,7 @@ from mpi4py import MPI
 
 
 if __name__ == "__main__":
-    # -------------------------------- Parse Arguments -------------------------------
+    # ========================= Runtime options ==========================
     parser = argparse.ArgumentParser(
         description=(
             "Run or post-process the new nonlinear geometry SMC inversion. "
@@ -67,27 +73,20 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # -------------------------------- MPI Init --------------------------------------
+    # ============================= MPI Init =============================
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
 
-    # -------------------------------- Read Data -------------------------------------
-    # Modify these for each case. They are the CSI local projection origin, not
-    # inverted model parameters.
-    lon0 = 87.5
-    lat0 = 28.5
+    # ========================= Shared settings ==========================
+    # These are the CSI local projection origin, not inverted model parameters.
     verbose = rank == 0
+    lon0, lat0 = 87.5, 28.5
 
-    # ------------------------------ Generate GPS Object -----------------------------#
+    # =============================== Data ===============================
+    # Optional: GPS observations
+    # Enable this block, add cogps to geodata, and update YAML data settings.
     # gps_file = os.path.join("..", "GPS", "GPS_ENU_CSI.dat")
-    # cogps = gps(
-    #     name="GPS",
-    #     utmzone=None,
-    #     ellps="WGS84",
-    #     lon0=lon0,
-    #     lat0=lat0,
-    #     verbose=False,
-    # )
+    # cogps = gps("GPS", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False)
     # cogps.read_from_enu(
     #     gps_file,
     #     factor=1.0,
@@ -97,7 +96,7 @@ if __name__ == "__main__":
     # )
     # cogps.buildCd(direction="enu")
 
-    # ------------------------------ Generate SAR Object -----------------------------#
+    # InSAR observations
     # Replace these paths and reader options with the actual case inputs.
     sar_t012a_file = os.path.join(
         "..", "InSAR", "RawInSAR", "Dingri_2018-12-23_T012A",
@@ -109,16 +108,14 @@ if __name__ == "__main__":
     )
 
     sar_t012a = insar(
-        name="T012A", utmzone=None, ellps="WGS84",
-        lon0=lon0, lat0=lat0, verbose=False,
+        "T012A", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
     sar_t012a.read_from_varres(sar_t012a_file, triangular=True)
     sar_t012a.err *= 1.0
     sar_t012a.buildDiagCd()
 
     sar_t121d = insar(
-        name="T121D", utmzone=None, ellps="WGS84",
-        lon0=lon0, lat0=lat0, verbose=False,
+        "T121D", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
     sar_t121d.read_from_varres(sar_t121d_file, triangular=True)
     sar_t121d.err *= 1.0
@@ -128,7 +125,7 @@ if __name__ == "__main__":
     # geodata.polys and geodata.sigmas in nonlinear_geometry.yml.
     geodata = [sar_t012a, sar_t121d]
 
-    # ------------------------------ Set Inversion Object ----------------------------#
+    # =================== Nonlinear geometry inversion ===================
     inv = NonlinearGeometrySMCInversion(
         "invrc", lat0=lat0, lon0=lon0,
         config_file=args.config, geodata=geodata, verbose=verbose,
@@ -139,7 +136,7 @@ if __name__ == "__main__":
     inv.setPriors(bounds=None, initialSample=None, datas=None)
     inv.setLikelihood(datas=None, verticals=None)
 
-    # ------------------------------ Run SMC Inversion -------------------------------#
+    # =========================== SMC sampling ===========================
     if args.run:
         inv.walk(
             nchains=nchains, chain_length=chain_length, comm=comm,
@@ -148,7 +145,7 @@ if __name__ == "__main__":
             diagnose=True, diagnose_detail=args.diagnose_detail,
         )
 
-    # ------------------------------ Plot and Summarize ------------------------------#
+    # ================== Results: summaries and figures ==================
     if not args.no_plot:
         inv.extract_and_plot_bayesian_results(
             rank=rank, filename=args.samples,

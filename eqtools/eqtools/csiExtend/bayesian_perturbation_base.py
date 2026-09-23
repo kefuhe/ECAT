@@ -113,8 +113,11 @@ class DensificationConfig:
 class GeometryReference:
     """Immutable snapshot of baseline fault geometry.
 
-    Created once via ``snapshot()`` (or ``set_edges_for_bayesian_optimization``),
-    and consumed by all perturbation mixins as the fixed reference for
+    An independent-boundary or whole-mesh reference is created via
+    ``snapshot()`` (or ``set_edges_for_bayesian_optimization``).  A generated
+    dip profile may instead create a minimal top-only reference through
+    ``set_dip_profile()`` before bottom generation.  In either case all
+    perturbation mixins consume the immutable object as the fixed reference for
     generating perturbed geometry each SMC/MCMC iteration.
 
     All numpy arrays stored here have ``writeable=False``; attempting to
@@ -256,7 +259,8 @@ def track_mesh_update(update_mesh=False, update_laplacian=False, update_area=Fal
             contract.  Fixed-length methods normally continue to use
             ``expected_perturbations_count``; dynamic methods use kinds such as
             ``scalar_or_movable_nodes`` or
-            ``scalar_or_sampled_dip_controls``.
+            ``scalar_or_sampled_dip_controls`` or a documented composite
+            contract built from that dip prefix plus fixed trailing values.
         perturbation_items (tuple, optional): Serializable role/unit metadata
             for fixed-position perturbation values.
         baseline_source (str, optional): Source of the unperturbed geometry,
@@ -316,6 +320,26 @@ def track_mesh_update(update_mesh=False, update_laplacian=False, update_area=Fal
             # Validate parameter count if specified
             if expected_perturbations_count is not None and len(perturbations) != expected_perturbations_count:
                 raise ValueError(f"Method '{func.__name__}': Expected {expected_perturbations_count} elements in 'perturbations', but got {len(perturbations)}.")
+
+            # Every registered geometry perturbation consumes a numeric sample
+            # vector. Reject NaN/Inf before invalidating any cache-validity
+            # state or entering a stage pipeline so a failed public call is
+            # transactional with respect to the current fault object.
+            try:
+                perturbation_values = np.asarray(perturbations, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Method '{func.__name__}': 'perturbations' must contain "
+                    "only finite numeric values."
+                ) from exc
+            nonfinite = ~np.isfinite(perturbation_values)
+            if np.any(nonfinite):
+                indices = np.argwhere(nonfinite)[:5].tolist()
+                raise ValueError(
+                    f"Method '{func.__name__}': 'perturbations' must contain "
+                    "only finite numeric values; non-finite indices: "
+                    f"{indices}."
+                )
 
             # These are validity postconditions, not "work was performed"
             # flags.  Cache presence is captured before the method because a
@@ -411,7 +435,10 @@ class PerturbationBase:
                     sig = inspect.signature(value)
                     kwargs_info = {}
                     for pname, param in sig.parameters.items():
-                        if pname in ('self', 'perturbations'):
+                        if (
+                            pname in ('self', 'perturbations')
+                            or pname.startswith('_')
+                        ):
                             continue
                         kwargs_info[pname] = param.default
                 except (ValueError, TypeError):
@@ -790,6 +817,20 @@ class PerturbationBase:
                 f"  Profile coordinate:{profile.interpolation_axis:>8}  "
                 f"transitions={len(profile.transition_zones)}"
             )
+            if profile.perturbation_groups is not None:
+                from .dip_profile import resolve_dip_perturbation_layout
+
+                layout = resolve_dip_perturbation_layout(
+                    controls,
+                    profile.perturbation_groups,
+                    profile.perturbation_parameter_count,
+                )
+                print(
+                    f"  Dip perturbations: {layout.mode}; "
+                    f"groups={list(layout.group_names)}; "
+                    "sampled-control mapping="
+                    f"{layout.sampled_control_parameter_indices.tolist()}"
+                )
         else:
             print(f"  Dip profile:       None")
 
@@ -977,7 +1018,16 @@ class PerturbationBase:
         if kind == 'exact':
             return f"exactly {cardinality.get('count')} value(s)"
         if kind == 'scalar_or_sampled_dip_controls':
-            return "one scalar or one value per sampled dip control"
+            return (
+                "one scalar or one value per sampled dip control, or exactly "
+                "one value per frozen dip-profile group"
+            )
+        if kind == 'sampled_dip_controls_plus_rigid_transform':
+            suffix_count = cardinality.get('suffix_count', 3)
+            return (
+                "one valid sampled dip-control layout followed by "
+                f"{suffix_count} rigid-transform value(s)"
+            )
         if kind == 'scalar_or_movable_nodes':
             field_name = cardinality.get('reference_field', 'coordinate')
             return f"one scalar or one value per movable {field_name} node"

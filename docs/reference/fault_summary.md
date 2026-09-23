@@ -135,7 +135,9 @@ summary = summarize_faults(
 )
 ```
 
-反演对象若配置中已有 `alpha.faults` 分组，`inv.get_faults_summary()` 会优先使用该分组；否则只报告每条断层的 moment 或 moment-rate 以及所有断层的 TOTAL，不额外生成事件组。
+反演对象若已有解析后的 `alpha.group_layout`，`inv.get_faults_summary()` 会按其中的具名
+`alpha.groups` 成员关系组织事件组；否则只报告每条断层的 moment 或 moment-rate 以及
+所有断层的 TOTAL，不额外生成事件组。匿名 `alpha.faults` 不再是分组入口。
 
 ## 常见检查顺序
 

@@ -460,6 +460,7 @@ class DipProfileSpec:
     controls: DipControlPoints
     interpolation_axis: str = "auto"
     transition_zones: tuple[DipTransitionZone, ...] = ()
+    perturbation_groups: tuple[str, ...] | None = None
 
     def __post_init__(self):
         if not isinstance(self.controls, DipControlPoints):
@@ -474,6 +475,167 @@ class DipProfileSpec:
             for zone in self.transition_zones
         )
         object.__setattr__(self, "transition_zones", zones)
+        object.__setattr__(
+            self,
+            "perturbation_groups",
+            _normalize_dip_perturbation_groups(
+                self.perturbation_groups,
+                sampled_count=self.controls.sampled_count,
+            ),
+        )
+
+    @property
+    def perturbation_parameter_count(self):
+        """Default independent-parameter count for reference resolution.
+
+        An undeclared grouping keeps the ordinary one-value-per-sampled-control
+        setup.  Bayesian preflight may still select the established scalar
+        broadcast path by supplying a one-value sample slice.
+        """
+        if self.perturbation_groups is None:
+            return self.controls.sampled_count
+        return len(dict.fromkeys(self.perturbation_groups))
+
+
+@dataclass(frozen=True)
+class DipPerturbationLayout:
+    """Resolved sampled-control to independent-parameter mapping."""
+
+    mode: str
+    group_names: tuple[str, ...]
+    sampled_control_parameter_indices: np.ndarray
+    explicit: bool
+
+    def __post_init__(self):
+        if self.mode not in {"fixed", "single", "individual", "grouped"}:
+            raise ValueError(f"unsupported dip perturbation mode {self.mode!r}")
+        object.__setattr__(self, "group_names", tuple(self.group_names))
+        object.__setattr__(
+            self,
+            "sampled_control_parameter_indices",
+            _freeze_array(self.sampled_control_parameter_indices, dtype=int),
+        )
+
+    @property
+    def parameter_count(self):
+        return len(self.group_names)
+
+    def parameter_roles(self, role="dip_change"):
+        """Return stable report labels without changing legacy defaults."""
+        if self.explicit:
+            return tuple(f"{role}[{name}]" for name in self.group_names)
+        if self.parameter_count == 1:
+            return (str(role),)
+        return tuple(f"{role}[{index}]" for index in range(self.parameter_count))
+
+
+def _normalize_dip_perturbation_groups(groups, *, sampled_count):
+    """Validate the optional labels aligned with sampled-control order."""
+    if groups is None:
+        return None
+    if isinstance(groups, (str, bytes)) or not isinstance(groups, (list, tuple)):
+        raise TypeError(
+            "perturbation_groups must be a list or tuple of non-empty strings "
+            "aligned with sampled_controls"
+        )
+    normalized = tuple(groups)
+    if len(normalized) != sampled_count:
+        raise ValueError(
+            "perturbation_groups must match sampled control count "
+            f"({sampled_count}); got {len(normalized)}"
+        )
+    for index, label in enumerate(normalized):
+        if not isinstance(label, str):
+            raise TypeError(
+                f"perturbation_groups[{index}] must be a non-empty string"
+            )
+        if not label or label != label.strip():
+            raise ValueError(
+                f"perturbation_groups[{index}] must be non-empty and cannot "
+                "have leading or trailing whitespace"
+            )
+        if any(ord(character) < 32 or ord(character) == 127 for character in label):
+            raise ValueError(
+                f"perturbation_groups[{index}] cannot contain control characters"
+            )
+    return normalized
+
+
+def resolve_dip_perturbation_layout(
+    controls,
+    perturbation_groups,
+    parameter_count,
+):
+    """Resolve one safe cardinality/mapping contract for all consumers.
+
+    Without explicit labels, the established public behavior is retained: one
+    parameter broadcasts to every sampled control, or one parameter is supplied
+    per sampled control.  Explicit labels remove that ambiguity and require
+    exactly one parameter per unique label, ordered by first occurrence.
+    """
+    if not isinstance(controls, DipControlPoints):
+        raise TypeError("controls must be DipControlPoints")
+    if isinstance(parameter_count, (bool, np.bool_)) or not isinstance(
+        parameter_count, (int, np.integer)
+    ):
+        raise TypeError("dip perturbation parameter_count must be an integer")
+    parameter_count = int(parameter_count)
+    if parameter_count < 0:
+        raise ValueError("dip perturbation parameter_count cannot be negative")
+
+    sampled_count = controls.sampled_count
+    groups = _normalize_dip_perturbation_groups(
+        perturbation_groups,
+        sampled_count=sampled_count,
+    )
+    if groups is None:
+        if sampled_count == 0:
+            if parameter_count != 0:
+                raise ValueError(
+                    "the dip profile has no sampled controls and has no "
+                    "sampled dip controls; it requires an empty perturbation "
+                    "vector"
+                )
+            return DipPerturbationLayout("fixed", (), np.empty(0, dtype=int), False)
+        if parameter_count == sampled_count:
+            return DipPerturbationLayout(
+                "individual",
+                tuple(str(index) for index in range(sampled_count)),
+                np.arange(sampled_count, dtype=int),
+                False,
+            )
+        if parameter_count == 1:
+            return DipPerturbationLayout(
+                "single",
+                ("all",),
+                np.zeros(sampled_count, dtype=int),
+                False,
+            )
+        raise ValueError(
+            "without perturbation_groups, dip perturbations must contain one "
+            "broadcast value or one value per sampled dip control; the "
+            f"sampled control count is {sampled_count}, got {parameter_count}"
+        )
+
+    group_names = tuple(dict.fromkeys(groups))
+    group_index = {name: index for index, name in enumerate(group_names)}
+    mapping = np.asarray([group_index[name] for name in groups], dtype=int)
+    expected = len(group_names)
+    if parameter_count != expected:
+        raise ValueError(
+            "explicit perturbation_groups requires exactly one perturbation "
+            f"per unique group ({expected}: {', '.join(group_names)}); "
+            f"got {parameter_count}"
+        )
+    if expected == 0:
+        mode = "fixed"
+    elif expected == 1:
+        mode = "single"
+    elif expected == sampled_count:
+        mode = "individual"
+    else:
+        mode = "grouped"
+    return DipPerturbationLayout(mode, group_names, mapping, True)
 
 
 def build_dip_profile_spec(
@@ -482,6 +644,7 @@ def build_dip_profile_spec(
     *,
     interpolation_axis="auto",
     transition_zones=None,
+    perturbation_groups=None,
     reference_top_xy=None,
     xy_to_declaration_frame=None,
 ):
@@ -496,8 +659,10 @@ def build_dip_profile_spec(
     Along-top declarations are materialized on ``reference_top_xy`` exactly
     once at this setup boundary.  ``xy_to_declaration_frame`` converts that
     fault-local x/y anchor to the coordinate frame used by ordinary rows.  The
-    returned :class:`DipProfileSpec` therefore enters the existing candidate
-    resolver without a special interpolation, sampling, or cache path.
+    optional ``perturbation_groups`` sequence aligns only with sampled controls
+    and makes equal labels share one additive candidate value. The returned
+    :class:`DipProfileSpec` therefore enters the existing candidate resolver
+    without a special interpolation, sampling, or cache path.
     """
     sampled_matrix = _materialize_control_group(
         sampled_controls,
@@ -526,6 +691,7 @@ def build_dip_profile_spec(
         controls=controls,
         interpolation_axis=interpolation_axis,
         transition_zones=zones,
+        perturbation_groups=perturbation_groups,
     )
 
 
@@ -632,11 +798,25 @@ def transform_dip_profile_coordinates(profile, transform):
         controls=projected_controls,
         interpolation_axis=profile.interpolation_axis,
         transition_zones=tuple(zones),
+        perturbation_groups=profile.perturbation_groups,
     )
 
 
-def apply_dip_perturbations(controls, perturbations, *, angle_unit="degrees"):
-    """Apply candidate values to sampled controls without positional sentinels."""
+def apply_dip_perturbations(
+    controls,
+    perturbations,
+    *,
+    angle_unit="degrees",
+    perturbation_groups=None,
+    resolved_layout=None,
+):
+    """Apply candidate values through one sampled-control layout.
+
+    Direct callers omit ``resolved_layout`` and compile from the profile
+    declaration.  Bayesian replay supplies the immutable layout produced by
+    preflight, avoiding a second interpretation of group labels in the hot
+    candidate path.
+    """
     from .DipInterpolation import (
         normalize_dip_to_0_180,
         validate_dip_angles_for_depth_projection,
@@ -654,18 +834,31 @@ def apply_dip_perturbations(controls, perturbations, *, angle_unit="degrees"):
         dtype=float,
     ).ravel()
 
-    if len(sample_to_control) == 0:
-        if values.size != 0:
-            raise ValueError("a profile with no sampled controls requires an empty perturbation vector")
-        return result
-    if values.size == 1:
-        values = np.full(len(sample_to_control), values.item(), dtype=float)
-    elif values.size != len(sample_to_control):
-        raise ValueError(
-            "perturbations must be scalar or match sampled control count "
-            f"({len(sample_to_control)}); got {values.size}."
+    if resolved_layout is None:
+        layout = resolve_dip_perturbation_layout(
+            controls,
+            perturbation_groups,
+            values.size,
         )
-    result[sample_to_control] += values
+    else:
+        if not isinstance(resolved_layout, DipPerturbationLayout):
+            raise TypeError("resolved_layout must be a DipPerturbationLayout")
+        layout = resolved_layout
+        if layout.parameter_count != values.size:
+            raise ValueError(
+                "resolved dip perturbation layout expects "
+                f"{layout.parameter_count} value(s); got {values.size}"
+            )
+        if layout.sampled_control_parameter_indices.shape != (
+                controls.sampled_count,):
+            raise ValueError(
+                "resolved dip perturbation layout does not match sampled "
+                "control count"
+            )
+    if len(sample_to_control) == 0:
+        return result
+    expanded = values[layout.sampled_control_parameter_indices]
+    result[sample_to_control] += expanded
 
     invalid = ~np.isfinite(result) | (result <= 0.0) | (result >= 180.0)
     if np.any(invalid):
@@ -684,6 +877,7 @@ def resolve_dip_profile(
     *,
     angle_unit="degrees",
     resolved_axis=None,
+    perturbation_layout=None,
 ):
     """Project, validate and interpolate one candidate dip profile.
 
@@ -743,6 +937,8 @@ def resolve_dip_profile(
         controls,
         perturbations,
         angle_unit=angle_unit,
+        perturbation_groups=profile.perturbation_groups,
+        resolved_layout=perturbation_layout,
     )
     sorted_dip = control_dip[order]
 
@@ -894,6 +1090,22 @@ def _resolve_transition_zones(
     control_order,
     tolerance,
 ):
+    """Resolve declared transition anchors onto the frozen top-edge axis.
+
+    ``center`` and ``endpoints`` have already been materialized as planar
+    coordinates in the profile declaration frame. They are projected to
+    ``top_xy`` before widths or endpoint ordering are evaluated.
+    A center declaration expands by its lower/upper widths using either the
+    resolved interpolation coordinate (``metric='axis'``) or planar distance
+    along the trace (``metric='euclidean'``); an endpoint declaration uses its
+    two projected anchors directly.
+
+    Each resolved interval must lie strictly between exactly one adjacent pair
+    of dip controls, may not contain a control, and may not overlap or touch a
+    second interval. The returned tuple is ordered by increasing resolved
+    coordinate, while ``lower_control`` and ``upper_control`` retain indices
+    into the original control declaration order.
+    """
     resolved = []
     sorted_control_u = control_u[control_order]
     for zone in zones:
@@ -1126,9 +1338,11 @@ __all__ = [
     "DipControlPoints",
     "DipTransitionZone",
     "DipProfileSpec",
+    "DipPerturbationLayout",
     "ResolvedTransitionZone",
     "ResolvedDipProfile",
     "build_dip_profile_spec",
+    "resolve_dip_perturbation_layout",
     "transform_dip_profile_coordinates",
     "apply_dip_perturbations",
     "resolve_dip_profile",

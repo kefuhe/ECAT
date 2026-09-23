@@ -4,6 +4,11 @@
 
 如果只想复制某个局部任务的最小代码，先看 [Examples / 任务短例](../examples/index.md)；如果想理解两步走、SAR 投影或断层几何状态，先看 [Concepts / 核心概念](../concepts/index.md)。
 
+Wushi 非线性几何与 Dingri 线性滑动是两个独立事件的阶段练习。两阶段之间的通用交接见
+[非线性结果到 fault object](../examples/fault_from_nonlinear_geometry.md)；不要将 Wushi 的几何
+直接套入 Dingri 的观测与配置。新项目入口和 legacy 复现的区别见
+[快速开始](../getting_started/quickstart_two_step.md#先选择非线性入口)。
+
 ## 推荐阅读顺序
 
 | 顺序 | 案例 | 适合学习的问题 | 先读 |

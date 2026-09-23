@@ -88,7 +88,7 @@ $L/n$ 可能与目标值 $h$ 略有差别。`every` 是目标间隔，不是输�
 | 地表 trace 等距离散 | `fault.discretize_trace(every=...)` | 生成 `xi/yi/loni/lati`；新项目优先使用，不再用 legacy `discretize(...)`。 |
 | 从 trace 生成三维顶部边界 | `fault.set_top_coords_from_trace(discretized=...)` | `discretized=True` 时先运行 `discretize_trace(...)`。 |
 | top/bottom/layer 曲线加密或统一点数 | `discretize_top_coords(...)`、`discretize_bottom_coords(...)`、`discretize_layer_coords(...)` | 适合手动构建 mesh 前统一三维边界点数。 |
-| Bayesian 几何扰动前自动加密稀疏控制点 | `set_densification(...)`、`densify_edges(...)` | 由 Python 中的 `DensificationConfig` 控制，通常放在扰动和物理建底边之间；不在 YAML 重复声明。 |
+| Bayesian 生成型倾角候选自动加密 | `set_densification(...)` | 在最终 profile 后设置冻结规则，由候选 pipeline 在倾角求值和物理建底边前重放；不在 YAML 重复声明。`densify_edges(...)` 属于独立边界的显式处理，不能与前者叠加。 |
 | 非线性结果沿走向正负方向使用不同长度 | `custom_length=(neg_length, pos_length)` | 目前三角元 `generate_top_bottom_from_nonlinear_soln(...)` 支持；矩形元主流程仍是对称 `length`。 |
 | 由两条等深线外推目标深度或地表迹线 | `FaultGeometryEngine.extrapolate_layer(...)`、`generate_surface_trace(...)` | 这是基于两条等深线的深度外推，不是简单把 trace 端点沿切线延长。 |
 | 从已有 fault object 反提 trace 或等深线 | `fault.setTrace(...)`、`FaultGeometryEngine.extract_contours_from_fault(...)` | `setTrace(...)` 从浅部 patch 顶点反推 trace；等深线详见 [Fault Contours](fault_contours.md)。 |
@@ -357,7 +357,7 @@ fault.initializeslip(values="depth")
 替换见[旧倾角剖面调用迁移](dip_profile/migration.md)。
 
 固定 dip-profile 只需物化一次 bottom 后调用 `generate_mesh(...)`。不要把 Bayesian 页面中的
-`snapshot()`、`set_densification()`、第二次零扰动和 `remap=True` 整段复制到单个固定几何。
+候选 density、固定拓扑 mapping 和 `remap=True` 整段复制到单个固定几何。
 固定模式下若需要加密，优先在声明 profile 前重采样权威 trace；若要保留稀疏 trace，可在
 唯一一次 bottom 物化时传入正的 `discretization_interval`。候选期则只使用
 `set_densification(...)`。三种路径、优先级和可复制设置见

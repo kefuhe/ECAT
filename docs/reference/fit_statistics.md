@@ -52,10 +52,12 @@ sigma/alpha，以及它来自固定、VCE 更新还是 Bayesian 采样”。两�
 但不应合并成一张宽表：
 
 - 拟合表保留 `RMS`、`VR`、`Eff. std`、`Qw` 和 `wRMS`；
-- 尺度表以物理 `Scale (s)` 为主值，并显式列出 `State`、`Sampling`、`log10(s)` 和
-  `Row mult. (1/s)`；
+- 尺度表以物理 `Scale (s)` 为主值，并显式列出 `State`、`Value source`、`log10(s)`
+  和 `Row mult. (1/s)`；只有 Bayesian 另列 `Sample coord.`；
 - Bayesian 的 `Post. SD(s)` 从整列物理 posterior 样本精确计算；固定组留空；
-- VCE 额外列出 `Variance (v)` 和组级 `Approx. red.Q`，但没有 posterior 标准差；
+- VCE 额外列出 `Variance (v)` 和组级 `Approx. red.Q`，但没有采样坐标或 posterior
+  标准差；估计组的来源为 `-`，只有固定组记录输入来源；
+- BLSE 只列本次求解实际采用的固定尺度、输入来源和行乘数；关闭 alpha 时不显示假 alpha；
 - 格式化器只读取活动结果和保存的 posterior，不重算 synthetic、likelihood、GF 或
   Laplacian，也不改变 HDF5 样本。
 
@@ -320,13 +322,16 @@ BLSE 应使用 `run()` 返回后的同步状态。显式调用 `returnModel(mpos
 参数列布局定义，不由配置的 `alpha.initial_value` 定义。带 `1/alpha` 行乘数的活动目标矩阵保存在
 `current_model_smoothing_matrix`；VCE 平滑组 `Qw` 使用后者对应的
 \(\lVert L_hm/\alpha_h\rVert^2\)。报告动作不会从配置重建任一矩阵；
-`simple_run_loop()` 结束后还会恢复调用前的完整活动结果，不能把诊断候选误当成已选模型。
+`scan_penalty_weights()` 结束后还会恢复调用前的完整活动结果，不能把诊断候选误当成已选
+模型。启用逐数据集统计时，扫描还会恢复观测对象原有的 synthetic 字段，避免模型状态和
+数据拟合状态分别停留在不同候选。
 
 ## 结构化接口
 
 | 方法 | 责任 |
 | --- | --- |
 | `collect_fit_statistics(...)` | 按需重建当前 synthetic，并计算 dataset/global rows |
+| `scan_penalty_weights(...)` | 固定几何下扫描 BLSE 平滑权重，返回候选摘要和逐数据集长表，并恢复进入前状态 |
 | `fit_statistics_to_dataframe(rows)` | 把已有 rows 转成 DataFrame，不重新计算 |
 | `format_fit_statistics_report(rows)` | 把已有 rows 渲染为文本，不重新计算 |
 | `write_fit_statistics_report(...)` | 写出已有 rows，或在未传 rows 时按显式参数采集后写出 |

@@ -11,7 +11,7 @@
 - 不确定应该复制普通 BLSE、平滑、倾角还是联合搜索脚本：看 [可运行脚本模板导航](../examples/script_templates.md)。
 - 正在配置 sigma/alpha 或 poly：先查 [线性滑动反演配置](config_linear_slip.md) 和 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)，再回到本页看运行模式。
 - 想复制常用 bounds/rake/patch 搭配：看 [约束配置与运行时调整短例](../examples/constraint_config_runtime.md)。
-- 想选择平滑强度：看 [固定几何平滑搜索](../workflows/04a_blse_smoothing_search.md)；想比较倾角：看 [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md)。
+- 想选择平滑强度：看 [固定几何 L-curve](../workflows/04a_blse_l_curve.md)；想比较倾角：看 [固定拓扑倾角搜索](../workflows/04b_blse_dip_search.md)。
 - 想检查倾角与平滑是否耦合：看 [倾角 × 平滑参数敏感性分析](../workflows/04c_blse_dip_smoothing_search.md)。
 - 正在检查物理约束是否生效：看 [约束检查](#约束检查) 和 [ECAT 约束管理器](constraint_manager.md)。
 - 准备论文或报告：看 [推荐报告内容](#recommended-reporting)。
@@ -50,7 +50,8 @@ inv = BoundLSEMultiFaultsInversion(
 ### 固定几何生命周期
 
 一个 `BoundLSEMultiFaultsInversion` 实例对应一套固定的 fault geometry、mesh、GF、
-Laplacian、参数列布局和约束。`run()`、`simple_run_loop()` 与 `run_simple_vce()`
+Laplacian、参数列布局和约束。`run()`、`scan_penalty_weights()`、兼容入口
+`simple_run_loop()` 与 `run_simple_vce()`
 只在这套固定基础上求滑动或更新权重，不会监听 fault 坐标变化并自动刷新全部矩阵。
 
 比较多组倾角或其他几何时，把几何放在外层循环，并在每个候选完成 mesh 更新后创建
@@ -148,7 +149,8 @@ q^{(t)}=-\sum_k\frac{(W_kG_k)^\mathsf{T}W_kd_k}{\sigma_k^{2(t)}}.
 | 模式 | 方法 | 主要用途 | 常见输出 |
 | --- | --- | --- | --- |
 | 固定权重 BLSE | `run(...)` | 复现一个指定平滑权重的模型 | 滑动模型、拟合图、统计量 |
-| Smoothing loop | `simple_run_loop(...)` | 扫描平滑权重，查看 RMS 与粗糙度权衡 | `run_loop.dat`, `Roughness_vs_RMS.png` |
+| Smoothing scan | `scan_penalty_weights(...)` | 扫描平滑权重，返回规范摘要和逐数据集长表 | 调用方决定 CSV 与图件名称 |
+| Legacy smoothing loop | `simple_run_loop(...)` | 兼容旧四列表和单幅 roughness–RMS 图 | `run_loop.dat`, `Roughness_vs_RMS.png` |
 | VCE | `run_simple_vce(...)` | 迭代估计数据和正则化方差分量 | VCE 结果字典、最终权重、收敛信息 |
 
 入门建议先跑固定权重 BLSE，再用 smoothing loop 或 VCE 做权重诊断。
@@ -158,7 +160,7 @@ q^{(t)}=-\sum_k\frac{(W_kG_k)^\mathsf{T}W_kd_k}{\sigma_k^{2(t)}}.
 `run(...)` 的核心是求解带边界和线性约束的最小二乘问题：
 
 ```python
-inv.run(alpha=[-2.0])
+inv.run(alpha=[-2.0], report="compact")
 inv.extract_and_plot_blse_results(plot_faults=True, plot_data=True)
 ```
 
@@ -181,14 +183,62 @@ inv.run(penalty_weight=[100.0])
 
 `alpha` 和 `penalty_weight` 不要同时传入。`sigma` 和 `data_weight` 也不要同时传入；二者也是倒数关系。
 
+### 参数布局与尺度结果是两类报告
+
+创建 inversion 后可先检查线性模型列、source 分量和数据改正项：
+
+```python
+layout = inv.collect_parameter_layout()
+inv.print_parameter_positions()
+```
+
+BLSE/VCE 的 `L[start:end)` 是求解器线性模型向量。sigma/alpha 是尺度控制，不是 `L` 的
+列，所以它们在结构表中没有 Range。求解前的 `mode=BLSE/VCE` 只说明配置中的组和 update
+资格；成功调用 `run()` 或 `run_simple_vce()` 后再次采集时，mode 和 Use 才分别明确为
+BLSE/fixed 或 VCE/estimate/fixed。结构表不显示活动数值，避免从配置初值反推求解结果。
+
+`collect_parameter_layout()` 用于程序化检查；`format_parameter_layout()` 返回人读文本，
+既有 `print_parameter_positions()` 是唯一打印入口。参数空间、字段和其他诊断入口的职责见
+[观测向量、协方差与设计矩阵排列合同](../concepts/observation_matrix_layout.md#参数列布局与诊断接口)。
+
+六种输入入口最终都落到物理尺度和求解器行乘数这两个明确量：
+
+| 入口 | 调用者给出的坐标 | 实际关系 |
+| --- | --- | --- |
+| `sigmas.initial_value` | 配置的 `s` 或 `log10(s)` | \(w_d=1/\sigma\) |
+| `run(sigma=...)` | `data_log_scaled` 或配置指定的 `s` / `log10(s)` | \(w_d=1/\sigma\) |
+| `run(data_weight=...)` | 直接 \(w_d\) | \(\sigma=1/w_d\) |
+| `alpha.initial_value` | 配置的 `s` 或 `log10(s)` | \(w_\alpha=1/\alpha\) |
+| `run(alpha=...)` | `penalty_log_scaled` 或配置指定的 `s` / `log10(s)` | \(w_\alpha=1/\alpha\) |
+| `run(penalty_weight=...)` | 直接 \(w_\alpha\) | \(\alpha=1/w_\alpha\) |
+
+`data_log_scaled` 只解释 `sigma`，不会变换 `data_weight`；`penalty_log_scaled` 只解释
+`alpha`，不会变换 `penalty_weight`。求解成功后，`collect_scale_parameters()` 返回结构化
+行，`format_scale_parameters()` 返回文本，`print_scale_parameters()` 可随时单独重新打印
+同一活动结果；这三个入口读取求解时冻结的准确组值，不从当前配置反推：
+
+```python
+rows = inv.collect_scale_parameters()
+inv.print_scale_parameters()
+```
+
+`run(report=None)` 在 `verbose=True` 时默认打印紧凑尺度表，在 `verbose=False` 时默认静默。
+显式 `report="compact"` 只打印尺度表，`report="full"` 还打印拟合表，`report="none"`
+始终关闭最终报告。`verbose` 只控制求解过程信息，并原样传入中央约束求解器；它不会改变
+活动权重或解。
+
+公共 BLSE/VCE 模板保留 `report=None` 的默认行为：主 rank 的 `verbose=True` 自动得到
+一次 compact 尺度表，其他 rank 保持静默。模板不再追加第二次尺度打印；交互检查或读取
+既有活动结果时，直接调用上面的 `print_scale_parameters()`，不会重新求解。
+
 常用参数：
 
 | 参数 | 含义 |
 | --- | --- |
 | `alpha` | 平滑尺度；是否按 `log10` 解释由 `penalty_log_scaled` 或配置中的 `alpha.log_scaled` 控制 |
-| `penalty_weight` | 直接传入求解器的平滑惩罚权重 |
+| `penalty_weight` | 直接传入求解器的平滑行乘数；不受 `penalty_log_scaled` 变换 |
 | `sigma` | 数据标准差；是否按 `log10` 解释由 `data_log_scaled` 或配置中的 `geodata.sigmas.log_scaled` 控制 |
-| `data_weight` | 直接传入的数据权重 |
+| `data_weight` | 直接传入的数据行乘数；不受 `data_log_scaled` 变换 |
 | `smoothing_constraints` | 可按断层传入 `(top, bottom, left, right)` 平滑边界 |
 | `des_enabled` | 运行期覆盖 DES 开关 |
 
@@ -209,21 +259,22 @@ inv.run(penalty_weight=[100.0])
 消费时会直接报错，避免静默复用旧矩阵。省略 `GL_combined` 时仍从各 source 当前的
 `fault.GL` 构造；关闭 alpha 时仍生成零平滑行，不改变“无平滑项”的语义。
 
-## Smoothing Loop
+## Smoothing Scan
 
-`simple_run_loop(...)` 用一组 `penalty_weight` 逐次运行 BLSE，并保存 RMS、粗糙度和 variance reduction：
+`scan_penalty_weights(...)` 是固定几何 BLSE 平滑扫描的规范入口：
 
 ```python
 penalties = [1, 3, 10, 30, 100, 300]
-df = inv.simple_run_loop(
+summary, fit_stats = inv.scan_penalty_weights(
     penalties,
-    preferred_penalty_weight=30,
-    output_file="run_loop_covdiag.dat",
-    rms_unit="cm",
+    include_fit_statistics=True,
 )
 ```
 
-函数把每个候选作为标量 `penalty_weight` 直接传给 `run(...)`；标量在当前 alpha 参数组空间广播。因此 `alpha.mode: single`、`individual` 和 `grouped` 都使用同一个候选惩罚权重，但不会错误地按断层数构造 alpha 向量。表中的 `Penalty_weight` 就是目标函数中实际使用的惩罚权重。对第 \(i\) 个
+函数把每个候选作为标量 `penalty_weight` 直接传给 `run(..., report="none")`；标量在当前
+alpha 参数组空间广播。因此 `alpha.mode: single`、`individual` 和 `grouped` 都使用同一个
+候选惩罚权重，但不会错误地按断层数构造 alpha 向量。关闭 `alpha.enabled` 时扫描会直接
+报错，因为这时 `run()` 不会采用候选平滑权重。对第 \(i\) 个
 候选，求解矩阵和报告粗糙度分别为
 
 \[
@@ -236,26 +287,55 @@ R_i=\sqrt{\operatorname{mean}[(L_0m_i)^2]},
 `alpha.initial_value` 只定义普通 `run()` 未显式传权重时的默认值，不定义 \(L_0\)，也不会
 改变 loop 的粗糙度尺度。
 
-`simple_run_loop()` 是诊断事务：每个候选的模型、活动矩阵和统计量在同一轮内保持对应，
-方法正常结束或候选求解异常时都会恢复调用前的活动模型、source 参数、平滑矩阵和权重。
+`scan_penalty_weights()` 是诊断事务：每个候选的模型、活动矩阵和统计量在同一轮内保持
+对应，方法正常结束、候选求解异常或逐数据集统计异常时，都会恢复调用前的活动模型、
+source 参数、平滑矩阵和权重。启用 `include_fit_statistics` 时，还会恢复 InSAR、GPS、
+optical 等观测对象在扫描前的合成结果；关闭时不构建这些逐数据集合成，也不增加对应快照。
 事务内部若 geometry、协方差、数据权重和未缩放的 \(L_0\) 不变，会复用数据项
 \(H_d,q_d\) 与 \(L_0^\mathsf{T}L_0\)；每个候选仍按自己的
 \(w_i^2L_0^\mathsf{T}L_0\) 独立求解。缓存只存在于本次
-`simple_run_loop()` 调用期间，不跨普通 `run()`、不跨 geometry 更新，也不在 DES
+`scan_penalty_weights()` 调用期间，不跨普通 `run()`、不跨 geometry 更新，也不在 DES
 变换前后复用。
 
-`preferred_penalty_weight` 只在图中标记候选，不会选择或激活模型。选定权重后应显式执行：
+`summary` 保存候选索引、输入 penalty、等价 `log10(alpha)`、按 `faultnames` 顺序解析后的
+实际权重、未加权 roughness、全局 RMS/VR 和 `observation_unit`。解析权重及其顺序使用
+JSON 数组，CSV 重读后仍可无歧义解释。`fit_stats` 只包含逐数据集长表；关闭
+`include_fit_statistics` 时返回列结构明确的空表。`include_weighted=True` 只适用于同时启用
+逐数据集统计的情况，并且不会用原始 RMS 冒充缺失的加权指标。
+
+扫描不会选择或激活模型。选定权重后应显式执行：
 
 ```python
 inv.run(penalty_weight=30.0)
 ```
 
-返回 DataFrame 和 CSV 中的 `RMS` 始终保存米制原值；`rms_unit="cm"` 或 `"mm"` 只改变
-图的纵轴显示，不会原地修改结果表。
+规范摘要中的 RMS 始终保留 `units.observation` 的活动数值与单位。领域绘图
+`plot_blse_lcurve_summary(summary)` 只接受带单位的规范摘要，不猜测旧列名或隐式转换单位。
+
+旧脚本仍可调用 `simple_run_loop(...)`。它委托同一扫描核心，然后返回历史
+`Penalty_weight/Roughness/RMS/VR` 四列表并生成单幅图；`rms_unit` 仅作为旧图的目标显示
+单位。旧表没有单位元数据时维持“源单位为米”的历史假定，位移单位与速度单位之间不允许
+互相转换。新脚本不应通过兼容入口组织科研输出。
+
+旧案例迁移时，可在已经构建好的固定几何 `inversion` 上使用以下兼容写法；
+`penalty_weights` 对应旧模板的候选列表，L-curve 模板中的同类变量名为 `penalties`：
+
+```python
+penalty_weights = [1.0, 10.0, 100.0]
+legacy = inversion.simple_run_loop(
+    penalty_weights,
+    preferred_penalty_weight=10.0,
+    output_file="run_loop.dat",
+    verbose=True,
+)
+```
+
+`preferred_penalty_weight` 用于图中标记参考权重，不自动选择最终解。当前模板使用
+`scan_penalty_weights()`；兼容调用示例集中在此处，避免与脚本的实际执行路线混淆。
 
 推荐检查：
 
-- `Roughness_vs_RMS.png` 的拐点是否稳定。
+- 三联图或 `Roughness_vs_RMS.png` 的拐点是否稳定。
 - 选定 penalty 后的残差是否出现轨道系统误差。
 - 选定 penalty 的滑动分布是否被过度平滑或出现不合理尖峰。
 - 最终报告中保留 loop 表格，不只保留最终滑动图。
@@ -351,13 +431,13 @@ chi-square 写入论文。逐项公式、保护规则、单位和论文报告边
 只求解一次；没有 Laplacian 行的空平滑组不参加停止判断。更新因子必须有限且严格为正，
 否则无法定义对数尺度，算法会报告方差分量不可继续更新，而不会静默宣布收敛。
 
-`report` 与 `verbose` 分工如下：
+BLSE 与简化 VCE 共用同一 `report` 策略；`verbose` 只控制各自的求解过程信息：
 
 | 设置 | 作用 |
 | --- | --- |
-| `verbose=True` | 打印 VCE 初始化和逐轮收敛信息 |
-| `report="compact"` | 打印一次最终方差分量表 |
-| `report="full"` | 方差分量表后再打印一次当前模型拟合表 |
+| `verbose=True` | BLSE 打印中央求解器信息；VCE 还打印初始化和逐轮收敛信息 |
+| `report="compact"` | BLSE 打印固定尺度表；VCE 打印最终方差分量表 |
+| `report="full"` | 相应尺度表后再打印一次当前模型拟合表 |
 | `report="none"` | 不打印最终表，适合批处理 |
 | `report=None` | `verbose=True` 时等价于 `compact`，否则等价于 `none` |
 
@@ -483,6 +563,9 @@ VCE 可从配置读取 `geodata.sigmas` 和 `alpha` 的
 `sigma_mode/sigma_update/sigma_values`，Alpha 至少同时给出
 `smooth_mode/smooth_update/smooth_values`；`mode: grouped` 时还必须给出对应
 `*_groups`。若完全省略某一类运行期参数，则整套使用配置值。不能把部分新参数与其余旧配置混用。
+配置中的 grouped alpha 只接受具名 `alpha.groups`；匿名 `alpha.faults` 列表不会再生成
+`Event_*` 名称，而会在预检时给出迁移报错。BLSE 的运行字典同样只接受当前解析布局中的
+组名，未知键在进入求解器前报错。
 分组组织方式及 `log_scaled` 含义见
 [Sigmas 与 Alpha 配置模式](sigmas_alpha.md)。
 
@@ -527,11 +610,13 @@ GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的
 或 `writeDecim2file()` 明确导出；leveling 和 cross-fault offset 的 data/synth 文本
 仍随各自拟合产品写入 `data_outdir`。
 
-公共 `test_slip_inv_BLSE.py --mode single` 给出当前推荐的顺序式导出块：GPS 点表保留在
-`Modeling/`；InSAR/opticorr 的默认文本是降采样多边形；显式设置
-`--export-point-values` 后才增加 `Modeling/points/`。InSAR 点表用 `write_los=True` 保留
-ENU 投影向量，opticorr 用 `component=None` 同行写 east/north。三种状态统一使用
-`data`、`synth`、`resid`，而 optical 多边形内部再准确映射到 `*East` / `*North` 选择器。
+公共 `test_slip_inv_BLSE.py --mode single` 与 `test_slip_inv_VCE.py` 给出当前推荐的顺序式导出块：GPS 点表保留在
+`Modeling/`。模板只用 corner 是否为空区分表示：没有 corner 时调用 `write2file()` 写点表；
+有 corner 时调用 `writeDecim2file(..., triangular=None)` 写降采样多边形。后一种情况下显式
+设置 `--export-point-values`，才会在 `Modeling/points/` 额外生成中心点表。InSAR 点表用
+`write_los=True` 保留 ENU 投影向量，opticorr 用 `component=None` 同行写 east/north。
+三种状态统一使用 `data`、`synth`、`resid`，而 optical 多边形内部再准确映射到
+`*East` / `*North` 选择器。
 高层结果入口已经按 `data_poly="config"` 建好 synthetic，脚本层不应重复正演。
 
 BLSE 和简化 VCE 在一次运行中只产生一个最终滑动解；它们没有 posterior 样本集合，因此

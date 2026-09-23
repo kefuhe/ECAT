@@ -17,13 +17,15 @@ Nonlinear/
 
 `Nonlinear/` 目录中的运行脚本和事件配置来自 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases) 的 Wushi 案例材料，适合直接作为复现实例阅读。
 
-如果新建一个非线性几何反演目录，可以先在当前目录生成标准配置模板：
+复现本案例时优先保留配套配置；只有需要重建 legacy 配置时，才在单独的工作目录生成模板：
 
 ```bash
 ecat-generate-nonlinear -o default_config.yml
 ```
 
 生成的 `default_config.yml` 只是模板，需要参照 Wushi 案例修改 `bounds`、`fixed_params`、`geodata`、`fault_aliasnames`、`nchains` 和 `chain_length`。命令细节见 [CLI 命令参考](../reference/cli.md)，字段含义见 [非线性几何反演配置](../reference/config_nonlinear_geometry.md)。
+
+新研究项目使用 `NonlinearGeometrySMCInversion`，见[新版入口](../workflows/03_nonlinear_geometry_bayesian.md#入口)。不要用新版模板直接替换本案例的 legacy 配置。
 
 ## 为什么选这个案例
 

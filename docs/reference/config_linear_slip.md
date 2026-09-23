@@ -187,7 +187,6 @@ alpha:
   update: true
   initial_value: [-2.0]
   log_scaled: true
-  faults: null
 ```
 
 `alpha.initial_value: -2.0` 且 `log_scaled: true` 时，实际 `alpha = 0.01`，对应 `penalty_weight = 100`。脚本中可等价写：
@@ -200,7 +199,7 @@ inv.run(penalty_weight=[100.0])
 
 二者不要同时传入；代码会直接报错。
 
-Alpha 只对支持 Laplacian 的 source 建组。`single` 在多断层中仍只需要一个值；`individual` 才是一条可平滑 source 一个值；`grouped` 按用户定义组数填写。Pressure 等非平滑 source 保留在线性模型列中，但不应写入 alpha 分组。
+Alpha 只对支持 Laplacian 的 source 建组。`single` 在多断层中仍只需要一个值；`individual` 才是一条可平滑 source 一个值；`grouped` 按用户定义组数填写。Pressure 等非平滑 source 保留在线性模型列中，但不应写入 alpha 分组。`alpha.mode: grouped` 必须用具名 `groups` 映射；旧的匿名 `faults` 列表会报错，迁移示例见 [Sigmas 和 Alpha](sigmas_alpha.md#alpha)。
 
 ## Green's Functions 和 Laplacian
 

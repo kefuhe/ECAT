@@ -254,7 +254,15 @@ source_bounds:
 
 sigmas: [-3.0, 3.0]
 alpha: [-3.0, 3.0]
+
+geometry:
+  FaultA: [-10.0, 10.0]
 ```
+
+Bayesian geometry bounds 只写入 inversion 已解析的几何参数切片。顶层
+`nonlinear_inversion: false` 时不能用 source 级 `geometry.update: true` 预留位置；这种
+矛盾会在配置初始化时报错。由此 geometry、sigma/alpha 与线性后缀的边界不会依赖字段
+写入顺序相互覆盖。
 
 对非 Fault 源使用 `source_bounds`，不要把它们写成
 `strikeslip`/`dipslip`。`rake_angle` 在 FULLSMC magnitude/rake 参数化中

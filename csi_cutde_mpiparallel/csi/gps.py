@@ -513,6 +513,67 @@ class gps(SourceInv):
         # All done
         return
 
+    def add_random_noise(self, sigma_east, sigma_north, sigma_up=None,
+                         mu=0, round_digits=6, data='synth', seed=None):
+        '''
+        Add independent random noise to GPS east, north, and optionally up.
+
+        Args:
+            * sigma_east  : Standard deviation for the east component.
+            * sigma_north : Standard deviation for the north component.
+
+        Kwargs:
+            * sigma_up    : Optional standard deviation for the up component.
+                            If omitted, the up component is left unchanged.
+            * mu          : Mean of the noise. Default is 0.
+            * round_digits: Decimal places used to round the generated noise.
+            * data        : Target array, either 'data' or 'synth'.
+            * seed        : Optional NumPy random seed.
+
+        Notes:
+            This method changes only the selected data array. Formal errors
+            and ``Cd`` remain unchanged so callers can choose independently
+            whether injected noise also defines inversion weights.
+
+        Returns:
+            * None
+        '''
+        if data not in ('data', 'synth'):
+            raise ValueError("data must be either 'data' or 'synth'")
+
+        sigmas = [sigma_east, sigma_north]
+        if sigma_up is not None:
+            sigmas.append(sigma_up)
+        sigmas = np.asarray(sigmas, dtype=float)
+        if not np.isfinite(sigmas).all() or np.any(sigmas < 0.0):
+            raise ValueError(
+                'GPS noise standard deviations must be finite and non-negative'
+            )
+
+        target = self.vel_enu if data == 'data' else self.synth
+        if target is None:
+            raise ValueError('{} is not initialized'.format(data))
+        target = np.asarray(target)
+        if target.ndim != 2 or target.shape[1] < sigmas.size:
+            raise ValueError(
+                '{} must be a two-dimensional ENU array with at least {} '
+                'columns'.format(data, sigmas.size)
+            )
+
+        if seed is not None:
+            np.random.seed(seed)
+
+        active = target[:, :sigmas.size]
+        noise = np.random.normal(mu, sigmas, size=active.shape)
+        active += np.round(noise, round_digits)
+
+        if self.verbose:
+            print('Added random noise to {} GPS data: sigmas={}'.format(
+                data, sigmas.tolist()
+            ))
+
+        return
+
     def scale(self, factor):
         '''
         Scales the gps velocities by a factor.

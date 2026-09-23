@@ -16,6 +16,20 @@ from typing import Any, Mapping
 _MISSING = object()
 _VALID_DATA_POLY_REQUESTS = (None, "config", "include")
 
+_PREDICTION_RESULT_ATTRIBUTES = {
+    "insar": ("synth",),
+    "gps": ("synth",),
+    "leveling": ("synth",),
+    "opticorr": ("east_synth", "north_synth"),
+    "optical": ("east_synth", "north_synth"),
+    "crossfaultoffset": (
+        "synth_parallel",
+        "synth_perpendicular",
+        "synth_vertical",
+        "synth",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class GeodataPredictionSpec:
@@ -98,3 +112,14 @@ def resolve_data_poly(configured_poly: Any, requested: str | None = "config"):
         return requested
     allowed = ", ".join(repr(value) for value in _VALID_DATA_POLY_REQUESTS)
     raise ValueError(f"data_poly must be one of {allowed}; got {requested!r}")
+
+
+def get_prediction_result_state_attributes(data: Any) -> tuple[str, ...]:
+    """Return mutable synthetic-result fields used by fit diagnostics.
+
+    The contract mirrors :func:`eqtools.csiExtend.fit_statistics.data_fit_vectors`.
+    It intentionally excludes observations, geometry, Green's functions and
+    covariance state so diagnostic scans can restore only fields changed by
+    ``buildsynth``.
+    """
+    return _PREDICTION_RESULT_ATTRIBUTES.get(getattr(data, "dtype", None), ())

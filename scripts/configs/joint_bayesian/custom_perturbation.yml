@@ -1,0 +1,74 @@
+# Editable joint Bayesian SMC_FJ example.
+# Geometry sample order: [bottom_offset_km, rotation_deg, dx_km, dy_km].
+
+nonlinear_inversion: true
+bayesian_sampling_mode: SMC_FJ
+slip_sampling_mode: ss_ds
+nchains: 100
+chain_length: 50
+smc_tempering:
+  target_cov: 1.0       # Standard incremental-weight COV target
+  max_delta_beta: 0.5   # Usually keep; 0.75 is an advanced schedule test
+use_bounds_constraints: true
+use_rake_angle_constraints: false
+
+units:
+  observation: m
+
+clipping_options:
+  enabled: false
+
+geodata:
+  verticals: [true, true]
+  polys: null
+  faults: null
+  sigmas:
+    mode: individual
+    update: true
+    initial_value: 0.0
+    log_scaled: true
+
+alpha:
+  enabled: true
+  mode: single
+  update: true
+  initial_value: -2.0
+  log_scaled: true
+
+faults:
+  defaults:
+    geometry:
+      update: false
+      sample_positions: [0, 0]
+    method_parameters:
+      update_GFs:
+        method: cutde
+        options: {}
+      update_Laplacian:
+        method: Mudpy
+        bounds: [free, locked, free, free]
+        topscale: 0.25
+        bottomscale: 0.03
+
+  MainFault:
+    geometry:
+      update: true
+      sample_positions: [0, 4]
+    method_parameters:
+      update_fault_geometry:
+        method: perturb_BottomFixedDir_RotateTransGeom
+        # Use the same explicit down-dip azimuth as the reference bottom in
+        # the paired Python template. Edit both values together.
+        average_direction: 180.0
+        pivot: midpoint
+        angle_unit: degrees
+        force_pivot_in_coords: true
+        use_average_strike: false
+      # The selected no-mesh method changes top/bottom only. This separate
+      # section deforms the parameterized mesh for every candidate.
+      update_mesh:
+        method: generate_and_deform_mesh
+        top_size: 3.0
+        bottom_size: 6.0
+        num_segments: 25
+        disct_z: 10

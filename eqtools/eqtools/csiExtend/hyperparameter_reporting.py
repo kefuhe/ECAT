@@ -19,6 +19,89 @@ from typing import Any
 
 import numpy as np
 
+from .parameter_layout_reporting import build_geometry_layout_rows
+
+
+def _require_exact_group_keys(name, values, group_names):
+    """Reject missing or extra group keys at a reporting boundary."""
+
+    expected = set(group_names)
+    actual = set(values)
+    if actual == expected:
+        return
+    missing = [group for group in group_names if group not in actual]
+    unknown = [group for group in values if group not in expected]
+    details = []
+    if missing:
+        details.append("missing groups: " + ", ".join(map(str, missing)))
+    if unknown:
+        details.append("unknown groups: " + ", ".join(map(str, unknown)))
+    raise ValueError(
+        f"{name} does not match group_layout (" + "; ".join(details) + ")"
+    )
+
+
+def describe_bayesian_value_source(model: Any) -> str:
+    """Describe which posterior coordinate was activated for prediction."""
+
+    if isinstance(model, str):
+        normalized = model.lower()
+        labels = {
+            "mean": "posterior mean coordinate",
+            "median": "posterior median coordinate",
+            "map": "posterior MAP sample",
+            "max_prob": "posterior marginal-mode coordinate",
+        }
+        return labels.get(normalized, f"posterior representative '{model}'")
+    if isinstance(model, (int, np.integer)):
+        return f"posterior sample [{int(model)}]"
+    return "explicit model vector"
+
+
+def collapse_member_scales_to_groups(
+    *,
+    layout: Mapping[str, Any],
+    active_scales_by_member: Mapping[str, float],
+) -> dict[str, float]:
+    """Collapse member scales only when every group member is exactly aligned."""
+
+    result = {}
+    group_names = list(layout.get("group_names", ()))
+    members_by_group = layout.get("members_by_group", {})
+    _require_exact_group_keys("members_by_group", members_by_group, group_names)
+    expected_members = []
+    for group_name in group_names:
+        expected_members.extend(members_by_group[group_name])
+    if len(expected_members) != len(set(expected_members)):
+        raise ValueError("group_layout assigns a member to more than one scale group")
+    _require_exact_group_keys(
+        "active_scales_by_member", active_scales_by_member, expected_members
+    )
+
+    for group_name in group_names:
+        members = list(members_by_group[group_name])
+        if not members:
+            raise ValueError(f"Scale group '{group_name}' has no members")
+        missing = [name for name in members if name not in active_scales_by_member]
+        if missing:
+            raise ValueError(
+                f"Scale group '{group_name}' is missing active member values: "
+                + ", ".join(missing)
+            )
+        values = np.asarray(
+            [active_scales_by_member[name] for name in members], dtype=float
+        )
+        if np.any(~np.isfinite(values)) or np.any(values <= 0.0):
+            raise ValueError(
+                f"Scale group '{group_name}' has a non-positive or non-finite active scale"
+            )
+        if not np.all(values == values[0]):
+            raise ValueError(
+                f"Scale group '{group_name}' members do not share one exact active scale"
+            )
+        result[str(group_name)] = float(values[0])
+    return result
+
 
 def build_scale_parameter_rows(
     *,
@@ -31,6 +114,7 @@ def build_scale_parameter_rows(
     sample_index_offset: int | None = None,
     variance_by_group: Mapping[str, float] | None = None,
     diagnostics_by_group: Mapping[str, Mapping[str, Any]] | None = None,
+    value_source_by_group: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build canonical, physical-scale report rows.
 
@@ -60,6 +144,10 @@ def build_scale_parameter_rows(
         Global vector offset used only for display.
     variance_by_group, diagnostics_by_group : mappings, optional
         VCE-specific values associated with the same active model.
+    value_source_by_group : mapping, optional
+        Human-readable provenance for each active group value.  Provenance is
+        descriptive only; it must be frozen by the solver or model-activation
+        layer and is never used to reconstruct a numerical scale.
 
     Returns
     -------
@@ -69,6 +157,10 @@ def build_scale_parameter_rows(
 
     group_names = list(layout.get("group_names", ()))
     members_by_group = layout.get("members_by_group", {})
+    _require_exact_group_keys("members_by_group", members_by_group, group_names)
+    _require_exact_group_keys(
+        "active_scales_by_group", active_scales_by_group, group_names
+    )
     update_by_group = np.asarray(
         layout.get("update_by_group", np.ones(len(group_names), dtype=bool)),
         dtype=bool,
@@ -96,6 +188,11 @@ def build_scale_parameter_rows(
 
     variance_by_group = variance_by_group or {}
     diagnostics_by_group = diagnostics_by_group or {}
+    value_source_by_group = value_source_by_group or {}
+    if value_source_by_group:
+        _require_exact_group_keys(
+            "value_source_by_group", value_source_by_group, group_names
+        )
     rows = []
     for group_index, group_name in enumerate(group_names):
         if group_name not in active_scales_by_group:
@@ -150,6 +247,7 @@ def build_scale_parameter_rows(
                 "group": str(group_name),
                 "members": list(members_by_group.get(group_name, ())),
                 "state": str(update_state) if updated else "fixed",
+                "value_source": str(value_source_by_group.get(group_name, "-")),
                 # VCE estimates a physical scale but has no Bayesian sampling
                 # coordinate.  Keep the shared column for a stable table
                 # layout while publishing ``-`` for estimated/fixed groups.
@@ -173,11 +271,66 @@ def build_scale_parameter_rows(
     return rows
 
 
+def build_fixed_scale_parameter_rows(
+    *,
+    kind: str,
+    layout: Mapping[str, Any],
+    row_multipliers_by_group: Mapping[str, float],
+    value_source_by_group: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Build BLSE rows from the exact group multipliers used by the solver.
+
+    BLSE consumes row multipliers directly.  A positive finite multiplier
+    ``w`` has the physical-scale interpretation ``s = 1 / w``.  A non-positive
+    or non-finite direct multiplier is preserved verbatim but is not assigned a
+    fictitious scale or logarithm.  The function never re-reads configuration
+    or converts an input coordinate after the solve.
+    """
+
+    group_names = list(layout.get("group_names", ()))
+    members_by_group = layout.get("members_by_group", {})
+    _require_exact_group_keys("members_by_group", members_by_group, group_names)
+    _require_exact_group_keys(
+        "row_multipliers_by_group", row_multipliers_by_group, group_names
+    )
+    _require_exact_group_keys(
+        "value_source_by_group", value_source_by_group, group_names
+    )
+
+    rows = []
+    for group_name in group_names:
+        multiplier = float(row_multipliers_by_group[group_name])
+        has_scale = np.isfinite(multiplier) and multiplier > 0.0
+        scale = float(1.0 / multiplier) if has_scale else None
+        rows.append(
+            {
+                "index": None,
+                "kind": str(kind),
+                "group": str(group_name),
+                "members": list(members_by_group.get(group_name, ())),
+                "state": "fixed",
+                "value_source": str(value_source_by_group.get(group_name, "-")),
+                "sampling_space": "-",
+                "scale": scale,
+                "posterior_scale_std": None,
+                "log10_scale": None if scale is None else float(np.log10(scale)),
+                "posterior_log10_std": None,
+                "row_multiplier": multiplier,
+                "variance": None,
+                "weighted_quadratic": None,
+                "reduced_weighted_misfit": None,
+            }
+        )
+    return rows
+
+
 def format_scale_parameter_report(
     rows: Sequence[Mapping[str, Any]],
     *,
     title: str,
     show_index: bool = True,
+    show_value_source: bool = False,
+    show_sampling_space: bool = True,
     show_posterior_uncertainty: bool = True,
     show_variance: bool = False,
     show_diagnostics: bool = False,
@@ -194,7 +347,11 @@ def format_scale_parameter_report(
     headers = []
     if show_index:
         headers.append("Index")
-    headers.extend(["Kind", "Group", "Members", "State", "Sampling"])
+    headers.extend(["Kind", "Group", "Members", "State"])
+    if show_value_source:
+        headers.append("Value source")
+    if show_sampling_space:
+        headers.append("Sample coord.")
     if show_variance:
         headers.append("Variance (v)")
     headers.append("Scale (s)")
@@ -218,9 +375,12 @@ def format_scale_parameter_report(
                 row.get("group", ""),
                 ", ".join(str(value) for value in row.get("members", ())) or "-",
                 row.get("state", ""),
-                row.get("sampling_space", "-"),
             ]
         )
+        if show_value_source:
+            values.append(row.get("value_source", "-"))
+        if show_sampling_space:
+            values.append(row.get("sampling_space", "-"))
         if show_variance:
             values.append(_format_optional_float(row.get("variance")))
         values.append(_format_optional_float(row.get("scale")))
@@ -261,13 +421,11 @@ def build_geometry_parameter_rows(
         if samples.ndim != 2:
             raise ValueError("posterior_samples must be a two-dimensional array")
 
-    by_slice: dict[tuple[int, int], list[Any]] = {}
-    for resolved in resolved_updates:
-        start, end = (int(value) for value in resolved.sample_slice)
-        by_slice.setdefault((start, end), []).append(resolved)
-
     rows = []
-    for (start, end), owners in sorted(by_slice.items()):
+    layout_rows, _notes = build_geometry_layout_rows(resolved_updates)
+    for layout_row in layout_rows:
+        start = int(layout_row["start"])
+        end = int(layout_row["stop"])
         if start < 0 or end < start or end > active.size:
             raise ValueError(
                 f"Geometry sample slice [{start}, {end}) is outside active vector"
@@ -277,42 +435,22 @@ def build_geometry_parameter_rows(
                 f"Geometry sample slice [{start}, {end}) is outside posterior samples"
             )
 
-        methods = list(dict.fromkeys(owner.method_name for owner in owners))
-        contracts = [owner.registry_contract or {} for owner in owners]
-        item_specs = [
-            tuple((contract.get("parameter_spec") or {}).get("items") or ())
-            for contract in contracts
-        ]
-        shared_contract = item_specs[0] if all(spec == item_specs[0] for spec in item_specs) else ()
-        count = end - start
-        for local_index in range(count):
-            item = {}
-            repeated = False
-            if len(shared_contract) == count:
-                item = shared_contract[local_index]
-            elif len(shared_contract) == 1:
-                item = shared_contract[0]
-                repeated = count > 1
-
-            role = str(item.get("role") or "parameter")
-            if repeated or (not item and count > 1):
-                role += f"[{local_index}]"
-            unit = item.get("unit")
-            unit_from = item.get("unit_from")
-            if unit is None and unit_from:
-                owner = owners[0]
-                unit = owner.method_kwargs.get(unit_from)
-                if unit is None:
-                    unit = (owner.registry_contract.get("kwargs") or {}).get(unit_from)
-            unit = "-" if unit is None else str(unit)
+        details = layout_row.get("details", {})
+        parameters = list(details.get("parameters", ()))
+        units = list(layout_row.get("units", ()))
+        faults = list(details.get("faults", ()))
+        methods = list(details.get("methods", ()))
+        if len(parameters) != end - start or len(units) != end - start:
+            raise ValueError("Geometry layout row does not match its sample slice width")
+        for local_index, (role, unit) in enumerate(zip(parameters, units)):
             index = start + local_index
             rows.append(
                 {
                     "index": index,
-                    "faults": [owner.fault_name for owner in owners],
+                    "faults": faults,
                     "method": ", ".join(methods),
-                    "parameter": role,
-                    "unit": unit,
+                    "parameter": str(role),
+                    "unit": str(unit),
                     "value": float(active[index]),
                     "posterior_std": (
                         None if samples is None else float(np.std(samples[:, index]))

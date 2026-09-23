@@ -253,8 +253,9 @@ def parse_update(config, n_datasets, param_name="update", dataset_names=None):
         raise ValueError(msg)
 
 
-def parse_initial_values(config, n_datasets, param_name="initial_value", default_value=0.0, 
-                        min_value=None, dataset_names=None, print_name=None):
+def parse_initial_values(config, n_datasets, param_name="initial_value", default_value=0.0,
+                        min_value=None, dataset_names=None, print_name=None,
+                        reject_unknown_keys=False):
     """
     Parse initial values from configuration with enhanced flexibility and validation.
     
@@ -274,6 +275,11 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
         Minimum allowed value. Default is None (no minimum check)
     dataset_names : list, optional
         List of dataset names for name-based indexing
+    reject_unknown_keys : bool, optional
+        If True, dictionary keys must all belong to ``dataset_names``. Missing
+        known names still receive ``default_value``. This is useful at solver
+        boundaries where silently ignoring a misspelled group name would
+        change the active objective.
     
     Returns:
     --------
@@ -349,6 +355,17 @@ def parse_initial_values(config, n_datasets, param_name="initial_value", default
             msg = f"dataset_names must be provided when using dictionary format for {print_name}"
             logger.error(msg)
             raise ValueError(msg)
+        if reject_unknown_keys:
+            unknown = [name for name in initial_value if name not in dataset_names]
+            if unknown:
+                msg = (
+                    f"Unknown key(s) in '{print_name}': {unknown}. Expected only "
+                    f"the configured names {list(dataset_names)}. For grouped "
+                    "alpha, use the names declared under alpha.groups; legacy "
+                    "Event_* aliases are not accepted."
+                )
+                logger.error(msg)
+                raise ValueError(msg)
         
         processed_values = []
         for i, dataset_name in enumerate(dataset_names):
@@ -750,8 +767,8 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value',
     must use ``group_layout`` when reasoning about cardinality.
 
     Scalar values broadcast.  List/array values and update flags must match the
-    number of groups exactly.  Dictionary values must cover every group (or its
-    documented alias) without unknown keys.
+    number of groups exactly. Dictionary values must cover every canonical
+    group without unknown keys.
     """
 
     if not faultnames:
@@ -813,20 +830,17 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value',
         group_faults = config.get("faults")
         named_groups = config.get("groups")
         if group_faults is not None:
-            if not isinstance(group_faults, list) or not all(
-                isinstance(group, list) for group in group_faults
-            ):
-                raise ValueError("'faults' must be a list of fault-name lists")
-            raw_groups = {
-                f"Event_{index}": members
-                for index, members in enumerate(group_faults)
-            }
-        elif named_groups is not None:
-            raw_groups = named_groups
-        else:
             raise ValueError(
-                "In grouped mode, 'faults' or 'groups' must define the alpha groups"
+                "alpha.mode='grouped' no longer accepts the anonymous "
+                "'faults' list. Define named 'groups', for example "
+                "groups: {west: [FaultA], east: [FaultB]}, and use those "
+                "group names in dictionary values."
             )
+        if named_groups is None:
+            raise ValueError(
+                "alpha.mode='grouped' requires a named 'groups' mapping"
+            )
+        raw_groups = named_groups
 
     layout = resolve_group_layout(
         smoothing_names,
@@ -840,12 +854,6 @@ def parse_alpha_config(alpha_config, faultnames, param_name='initial_value',
         value_aliases = {
             group_name: member
             for group_name, (member,) in layout["members_by_group"].items()
-        }
-    elif mode == "grouped":
-        # Stringified indices were accepted historically for alpha values.
-        value_aliases = {
-            group_name: str(index)
-            for index, group_name in enumerate(layout["group_names"])
         }
 
     raw_values = config.get(param_name, 0.0)

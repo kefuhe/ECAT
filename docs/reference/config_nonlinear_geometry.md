@@ -52,6 +52,9 @@ ecat-generate-nonlinear -o default_config.yml
 ```yaml
 nchains: 100
 chain_length: 50
+smc_tempering:
+  target_cov: 1.0
+  max_delta_beta: 0.5
 nfaults: 1
 fault_aliasnames: [DR]
 lon_lat_0: null
@@ -63,11 +66,18 @@ slip_sampling_mode: mag_rake
 | --- | --- |
 | `nchains` | SMC 粒子数。 |
 | `chain_length` | 每个 stage 的 mutation 链长度。 |
+| `smc_tempering.target_cov` | 增量重要性权重的目标 COV；标准值为 `1.0`。 |
+| `smc_tempering.max_delta_beta` | 单个 stage 最大 beta 增量；通常保持 `0.5`。 |
 | `nfaults` | 紧凑几何源数量。 |
 | `fault_aliasnames` | 可选断层别名，用于屏幕输出和绘图标签。 |
 | `lon_lat_0` | 可选 CSI 投影原点；也可在脚本构造对象时传入。 |
 | `prior_bounds_format` | 用户 YAML 中 `Uniform` 的解释方式。新版默认 `lower_upper`。 |
 | `slip_sampling_mode` | 常用 `mag_rake`；也可使用 `ss_ds`。 |
+
+`target_cov` 和 `max_delta_beta` 共同决定 beta stage；它们不属于几何、sigma 或数据
+协方差参数。默认配置保持当前标准路径，只有在做调度敏感性和耗时对照时才建议修改。
+公式、有效样本量和 `0.75` 对短尾 stage 的影响见
+[SMC 温度调度](smc_tempering.md)。
 
 ## 几何参数边界
 
@@ -249,8 +259,9 @@ data_corrections.datasets.<data>.parameter_bounds.<parameter>
 非线性几何反演不设置 `alpha`。`alpha` 是后续分布式滑动反演中的平滑尺度，放在线性滑动或滑动 Bayesian 配置中说明。
 
 结果文件和屏幕摘要中的 `Sigma parameters (Bayesian physical scale)` 使用统一尺度表：
-`Scale (s)` 是当前 likelihood 使用的物理 sigma，`Sampling` 说明保存的样本列是 `s` 还是
-`log10(s)`，`Post. SD(s)` 由整列物理 posterior 样本计算。原始样本向量仍按
+`Scale (s)` 是当前 likelihood 使用的物理 sigma，`Sample coord.` 说明保存的样本列是
+`s` 还是 `log10(s)`，`Value source` 说明当前激活的 posterior 代表模型，`Post. SD(s)`
+由整列物理 posterior 样本计算。原始样本向量仍按
 `ParameterSpec` 顺序单独保留，便于与 HDF5、KDE 和参数索引逐列核对。固定 sigma 组会以
 `State=fixed` 出现，但不具有 posterior 标准差。本入口不显示 alpha 行。
 

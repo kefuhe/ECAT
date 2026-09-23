@@ -9,6 +9,12 @@ Typical uses:
 3. Save total and per-fault displacement as HDF5/TXT for plotting or export.
 """
 
+# Editing guide
+# Edit User-editable parameters; customize the reader/model blocks as needed.
+# Relative paths in this template start from the script directory.
+# Choose point mode and output formats in the parameter block; keep execution order.
+# Template selection and setup: docs/examples/script_templates.md
+
 import os
 from pathlib import Path
 
@@ -73,7 +79,7 @@ INCLUDE_BY_FAULT = True
 if __name__ == "__main__":
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    # --------------------- Read fault models --------------------- #
+    # ======================== Read fault models =========================
     faults = {}
     for info in FAULT_FILES:
         fault_type = info["type"].lower()
@@ -91,7 +97,7 @@ if __name__ == "__main__":
         faults[info["name"]] = fault
         print(f"Read fault {info['name']}: {fault_path}, patches={fault.numpatch}")
 
-    # --------------------- Choose observation points --------------------- #
+    # ==================== Choose observation points =====================
     if POINT_MODE == "box":
         sample_kwargs = {"box": BOX, "npoints": NPOINTS}
         print(f"Observation points: regular box grid, npoints={NPOINTS}")
@@ -104,7 +110,7 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unsupported POINT_MODE: {POINT_MODE}")
 
-    # --------------------- Compute ENU displacement --------------------- #
+    # ===================== Compute ENU displacement =====================
     result = compute_multifault_surface_displacement(
         faults,
         nu=NU,
@@ -133,7 +139,7 @@ if __name__ == "__main__":
             f"U[{disp[:, 2].min():.5g}, {disp[:, 2].max():.5g}]"
         )
 
-    # --------------------- Save outputs --------------------- #
+    # =========================== Save outputs ===========================
     if SAVE_H5:
         out_h5 = save_surface_forward_h5(
             OUTDIR / "surface_displacement_enu.h5",

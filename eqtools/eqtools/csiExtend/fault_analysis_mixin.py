@@ -100,9 +100,13 @@ class FaultAnalysisMixin:
         Return configured fault groups when available.
         """
         if (hasattr(self, 'config') and hasattr(self.config, 'alpha')
-            and isinstance(self.config.alpha, dict)
-            and 'faults' in self.config.alpha):
-            return self.config.alpha['faults']
+            and isinstance(self.config.alpha, dict)):
+            layout = self.config.alpha.get('group_layout')
+            if isinstance(layout, dict):
+                names = list(layout.get('group_names', ()))
+                members = layout.get('members_by_group', {})
+                if names and isinstance(members, dict):
+                    return [list(members[name]) for name in names]
         return None
 
     def _resolve_slip_factor(self, slip_factor=None):
