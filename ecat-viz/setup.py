@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='ecat-viz',
-    version='0.1.1',
+    version='0.1.2',
     description='General scientific plotting styles, rasters, axes and CPT colors',
     author='Kefeng He',
     python_requires='>=3.10,<3.13',

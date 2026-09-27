@@ -575,10 +575,6 @@ def _warn_if_geo_axis_has_limited_georeferencing(src, *, axis):
         reasons.append(f"projected CRS {src.crs}")
     if _transform_is_identity_like(src.transform):
         reasons.append("identity-like transform")
-    if not np.isclose(float(src.transform.b), 0.0) or not np.isclose(
-        float(src.transform.d), 0.0
-    ):
-        reasons.append("rotated or sheared transform")
     if _bounds_are_index_like(src):
         reasons.append("index-like bounds")
     if not reasons:
@@ -587,8 +583,9 @@ def _warn_if_geo_axis_has_limited_georeferencing(src, *, axis):
     warnings.warn(
         "plot_geotiff(axis='geo') is using a GeoTIFF with limited "
         f"georeferencing ({', '.join(reasons)}). Axis values come from the "
-        "file bounds and are not guaranteed to be longitude/latitude. "
-        "Reproject the raster before requesting geographic labels.",
+        "native affine pixel coordinates and are not guaranteed to be "
+        "longitude/latitude. Verify the CRS/transform; reproject projected "
+        "data before requesting geographic labels.",
         UserWarning,
         stacklevel=3,
     )

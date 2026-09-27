@@ -133,5 +133,5 @@ def register_style_directory(path):
 from .axes3d import optimize_3d_plot
 from .colors import get_cmap, load_cpt, list_cmaps
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ['PlotStyle', 'Presets', 'register_preset', 'unregister_preset', 'list_presets', 'register_style_directory', 'list_chinese_fonts', 'bake_text_fonts', 'publication_figsize', 'register_column_width', 'save_column_width', 'list_column_widths', 'save_fig', 'normalize_image_format', 'cap_interactive_dpi', 'show_fig', 'finish_fig', 'DegreeFormatter', 'LatFormatter', 'LonFormatter', 'DMSFormatter', 'set_degree_formatter', 'get_color_cycle', 'plot_raster', 'plot_dataarray', 'plot_geotiff', 'plot_netcdf_grid', 'raster_limits', 'sci_plot_style', 'set_plot_style', 'update_style_library', 'optimize_3d_plot', 'get_cmap', 'load_cpt', 'list_cmaps']

@@ -12,6 +12,18 @@
 
 只想复制常用画法，先看 [科研绘图短例](../examples/viztools_scientific_figures.md)。本页用于查完整语义、参数优先级和兼容边界。
 
+## 组织与文档入口
+
+| 所在位置 | 用户与维护职责 |
+| --- | --- |
+| 独立 ecat-viz README | 通用用户安装、尺寸配置、字体、色表、栅格与保存的直接用法；不要求安装 CSI/eqtools |
+| 本页及科研绘图短例 | ECAT 三包关系、总体使用合同、领域入口、旧脚本迁移与兼容边界 |
+| CSI / eqtools 领域绘图 | 接受科学对象并解释领域字段，调用通用工具完成绘制 |
+
+新通用功能只在 `ecat_viz` 实现和扩展；CSI 和 eqtools 的内部通用调用直接导入它。
+旧 eqtools 通用入口只维护既有公开兼容集合。需要理解 fault、dip、solver 的函数继续留在
+领域包，不为统一外观引入反向依赖或另一份注册状态。
+
 ## 阅读路径
 
 | 想完成的事 | 从这里开始 |
@@ -205,12 +217,39 @@ publication_figsize((10, 8), unit="cm")
 命名列宽及 `register_column_width()`/`save_column_width()` 的宽度始终以英寸保存。
 `unit="cm"` 只换算数字/二元组输入以及显式 `height`，不会再次换算命名列宽。
 尺寸、fraction 和实际使用的 aspect 必须是有限正数；fraction 可大于 1。
+NumPy 整数/实数标量与 Python 数字使用相同单位和校验，不会误作命名列宽。
 二元组已经指定完整尺寸，因此忽略 fraction、height 和 aspect。
 
 ```python
 publication_figsize("single", unit="cm")  # 仍是英寸命名列宽 (3.5, 2.625)
 publication_figsize("single", height=5.08, unit="cm")  # 高度 2 inch
 ```
+
+## 列宽配置与字体诊断
+
+```python
+from ecat_viz import register_column_width, save_column_width, list_chinese_fonts
+
+register_column_width("my_journal", 3.25)  # 当前会话，单位 inch
+save_column_width("my_journal", 3.25)      # 写默认配置，后续进程读取
+print(list_chinese_fonts(refresh=True))
+```
+
+加载顺序保持 `~/.config/eqtools/viztools.json`、`~/.config/eqtools/plottools.json`、
+旧 `~/.config/statutils/plottools.json`、`~/.plottools.json`；只读取第一个存在的文件。
+旧路径会发出迁移警告。配置为 JSON 对象，其 `column_widths` 是名称到英寸宽度的对象。
+自选 `config_path` 只决定保存位置，不能使该任意文件自动进入下一进程的搜索路径。
+
+名称不区分大小写。保存将宽度键统一为小写，相同值的别名合并；相同名称的不同值是
+配置冲突。加载冲突文件时告警，整段不应用；保存时抛出异常并保留原文件和当前注册值。
+损坏 JSON、非法宽度也按完整配置校验，不部分加载、不覆盖掩盖；其他顶层字段保留。
+保存使用同目录临时文件和原子替换，跨进程并发更新仍需用户协调。
+
+`list_chinese_fonts(refresh=True)` 绕过内存与磁盘缓存，探测当前 Matplotlib fontManager，
+并更新内存结果，即使磁盘无法写入也不退回旧结果。可选缓存使用 JSON，损坏、过期或
+不可读写时不阻断绘图；旧 pickle 缓存忽略，无需迁移。新字体必须先被 Matplotlib 识别，
+安装后可重启 Python 或显式 `fontManager.addfont(...)`。字体安装和所需字形覆盖由用户
+决定；探测返回 `None` 表示没有候选字体，不会自动下载或安装。
 
 ## GeoTIFF 坐标
 
@@ -309,7 +348,7 @@ plot_netcdf_grid("los.nc", variable="los", colorbar_label="LOS displacement (m)"
 
 - 同时给 `x`、`y` 时使用 `pcolormesh`，支持一维坐标或二维 mesh，不把二维经纬度错误压成一维插值。
 - 只给 `extent` 时使用 `imshow`。
-- `plot_geotiff(axis="geo")` 不做重投影。缺少 CRS、使用投影 CRS、旋转/剪切 transform 或索引式坐标时会告警；应先把数据重投影到经纬度后再使用地理标签。
+- `plot_geotiff(axis="geo")` 不做重投影。缺少/投影 CRS、identity-like transform 或索引式坐标仍会告警；正确的地理 CRS 旋转/剪切 affine 已支持，不再单独告警。投影坐标应先重投影到所需地理坐标。
 
 这些入口只画已准备好的二维数据，不读取 GAMMA/GMTSAR/HyP3 物理约定，也不改变 LOS 正负号或单位。
 
@@ -423,7 +462,7 @@ from ecat_viz import get_cmap, load_cpt, list_cmaps
 cmap = get_cmap("viridis")  # Matplotlib 名称
 cmap = get_cmap("cpt:precip3_16lev_change", samples=15)
 cmap = load_cpt(Path("custom.cpt"))  # 显式本地文件
-print(list_cmaps())  # 内置 CPT 名称，不含扩展名
+print(list_cmaps())  # 内置 .cpt/.2cpt 名称，不含扩展名
 ```
 
 `load_cpt(source, *, name=None, kind="continuous", samples=None)` 返回标准 Matplotlib
@@ -431,6 +470,10 @@ Colormap；`kind="listed"` 使用 CPT 的原始颜色，samples 只截取原始�
 连续色表未指定 samples 时沿用历史插值，指定后按该数量采样。裸名称用于 Matplotlib；
 CPT 用 `cpt:` 前缀或显式 Path，URL 只能显式请求并有 30 秒超时。不会隐式注册全局色表、
 搜索当前目录、建立 norm 或显示图件。历史解析保留忽略 B/F/N 和归一化色表位置的行为。
+
+资源发现和无扩展名查找使用同一规则：当前 84 份色表为 81 `.cpt` 加 3 `.2cpt`，
+另有 1 份来源说明，不是色表。`get_cmap("cpt:GMT_topo")` 可加载 `GMT_topo.2cpt`。
+同名两种扩展时优先 `.cpt`；显式 `.2cpt` 选择对应文件。既有颜色、插值及资源字节不变。
 
 旧 CPT 调用需要保留 `method`、`N` 和返回值合同，而只更新导入时，可以使用：
 

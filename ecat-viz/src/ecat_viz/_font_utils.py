@@ -7,9 +7,11 @@ list_chinese_fonts   : Probe system for available CJK fonts
 bake_text_fonts      : Fix Text artist fonts before PlotStyle.reset()
 """
 
+import json
+import os
+import tempfile
 import time
 import warnings
-from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -29,72 +31,51 @@ from ._constants import (
 # Font cache persistence utilities
 # --------------------------------------------------------------------------
 
-def _get_font_cache_path() -> Path:
-    """Get the path to the font cache file.
+# None means unprobed; a dictionary may legitimately contain two None values.
+_font_probe_cache: Optional[Dict[str, Optional[str]]] = None
 
-    Returns
-    -------
-    Path
-        Path to font cache file (~/.cache/eqtools/font_cache.pkl)
-    """
-    cache_dir = Path.home() / FONT_CACHE_DIR_NAME
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / FONT_CACHE_FILE_NAME
+
+def _get_font_cache_path() -> Path:
+    """Locate the optional cache without creating directories on read."""
+    return Path.home() / FONT_CACHE_DIR_NAME / FONT_CACHE_FILE_NAME
 
 
 def _load_font_cache() -> Optional[Dict]:
-    """Load font cache from disk.
-
-    Returns
-    -------
-    dict or None
-        Cached font data if valid, None if cache doesn't exist or is expired
-    """
-    cache_path = _get_font_cache_path()
-
-    if not cache_path.exists():
-        return None
-
-    # Check if cache is expired
+    """Unreadable, expired or malformed JSON is a cache miss, never a plot error."""
     try:
-        age_seconds = time.time() - cache_path.stat().st_mtime
-        age_days = age_seconds / (24 * 3600)
-
-        if age_days > FONT_CACHE_EXPIRY_DAYS:
-            # Cache expired, delete it
-            cache_path.unlink(missing_ok=True)
+        path = _get_font_cache_path()
+        if time.time() - path.stat().st_mtime > FONT_CACHE_EXPIRY_DAYS * 86400:
             return None
-    except (OSError, AttributeError):
-        return None
-
-    # Load cache
-    try:
-        import pickle
-        with open(cache_path, 'rb') as f:
-            return pickle.load(f)
-    except Exception:
-        # Cache corrupted, delete it
-        cache_path.unlink(missing_ok=True)
+        data = json.loads(path.read_text(encoding='utf-8'))
+        fonts = data.get('cjk_fonts') if isinstance(data, dict) else None
+        if (not isinstance(fonts, dict) or set(fonts) != {'sans', 'serif'}
+                or any(value is not None and not isinstance(value, str)
+                       for value in fonts.values())):
+            return None
+        return data
+    except (OSError, RuntimeError, ValueError, TypeError):
         return None
 
 
 def _save_font_cache(data: Dict) -> None:
-    """Save font cache to disk.
-
-    Parameters
-    ----------
-    data : dict
-        Font data to cache
-    """
-    cache_path = _get_font_cache_path()
-
+    """Best-effort atomic persistence; a read-only home does not block plotting."""
+    temporary = None
     try:
-        import pickle
-        with open(cache_path, 'wb') as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception:
-        # Silently fail if we can't write cache
+        path = _get_font_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix='.' + path.name + '.', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(data, stream, ensure_ascii=False)
+        os.replace(temporary, path)
+    except (OSError, RuntimeError, ValueError, TypeError):
         pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _font_exists(font_name: str) -> bool:
@@ -118,47 +99,30 @@ def _font_exists(font_name: str) -> bool:
         return False
 
 
-@lru_cache(maxsize=1)
-def _probe_chinese_fonts() -> Dict[str, Optional[str]]:
-    """Probe system fonts once with persistent caching; return best available CJK font names.
+def _probe_chinese_fonts(refresh: bool = False) -> Dict[str, Optional[str]]:
+    """Own the memory cache; refresh replaces it without reading the disk cache."""
+    global _font_probe_cache
+    if not refresh and _font_probe_cache is not None:
+        return _font_probe_cache.copy()
+    cache = None if refresh else _load_font_cache()
+    if cache is not None:
+        cached = cache['cjk_fonts']
+        if all(name is None or _font_exists(name) for name in cached.values()):
+            _font_probe_cache = cached.copy()
+            return cached.copy()
 
-    This function checks a persistent disk cache first. If the cache is valid
-    (less than 7 days old), it uses the cached result. Otherwise, it performs
-    a full font probe and caches the result for future use.
-
-    Returns
-    -------
-    dict
-        {'sans': name_or_None, 'serif': name_or_None}
-    """
-    # Try to load from persistent cache first
-    cache = _load_font_cache()
-    if cache is not None and 'cjk_fonts' in cache:
-        fonts = cache['cjk_fonts']
-
-        # Validate that cached fonts still exist
-        sans_valid = fonts['sans'] is None or _font_exists(fonts['sans'])
-        serif_valid = fonts['serif'] is None or _font_exists(fonts['serif'])
-
-        if sans_valid and serif_valid:
-            return fonts
-
-    # Cache miss or invalid - perform full probe
     try:
         from matplotlib.font_manager import fontManager
         available = {f.name for f in fontManager.ttflist}
     except Exception:
-        return {'sans': None, 'serif': None}
-
+        available = set()
     result = {
         'sans': next((f for f in _CHINESE_SANS_CANDIDATES if f in available), None),
         'serif': next((f for f in _CHINESE_SERIF_CANDIDATES if f in available), None),
     }
-
-    # Save to persistent cache
+    _font_probe_cache = result
     _save_font_cache({'cjk_fonts': result})
-
-    return result
+    return result.copy()
 
 
 def list_chinese_fonts(refresh: bool = False) -> Dict[str, Optional[str]]:
@@ -168,8 +132,9 @@ def list_chinese_fonts(refresh: bool = False) -> Dict[str, Optional[str]]:
     Parameters
     ----------
     refresh : bool, optional
-        If True, clear the cache and re-probe system fonts.
-        Use this after installing new fonts. Default is False.
+        If True, bypass both caches and re-probe Matplotlib's active fontManager.
+        Newly installed fonts must first be visible to Matplotlib (restart or
+        register them with fontManager.addfont). Default is False.
 
     Returns
     -------
@@ -185,9 +150,7 @@ def list_chinese_fonts(refresh: bool = False) -> Dict[str, Optional[str]]:
     >>> # After installing new fonts
     >>> fonts = list_chinese_fonts(refresh=True)
     """
-    if refresh:
-        _probe_chinese_fonts.cache_clear()
-    return _probe_chinese_fonts()
+    return _probe_chinese_fonts(refresh=refresh)
 
 
 def bake_text_fonts(fig) -> None:

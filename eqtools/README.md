@@ -29,6 +29,14 @@ The manual is organized by scientific workflow rather than source-code layout:
 4. Use advanced joint Bayesian geometry-slip inversion only after the standard
    two-step workflow is understood and checked.
 
+General plotting and CPT resources are supplied by the independent `ecat-viz`
+distribution (`import ecat_viz`), required by CSI and eqtools. The ECAT installer
+resolves all three local components together. See the
+[ecat-viz guide](../ecat-viz/README.md) for standalone plotting and the
+[plotting reference](../docs/reference/viztools.md) for overall organization
+and compatibility. Existing public function imports remain available; the old
+physical CPT/style directories have been removed.
+
 ## Installation
 
 Create a complete user environment from the ECAT repository root as described

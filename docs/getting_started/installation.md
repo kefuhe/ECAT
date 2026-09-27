@@ -224,8 +224,8 @@ python -m pip install --no-deps --force-reinstall ./csi_cutde_mpiparallel
 CSI 与 eqtools 分别保留科学对象和工作流职责。若 Python 不在 3.10--3.12 范围内，或缺少 `okada4py`，脚本会停止并
 给出提示。
 
-本轮对应组件为 eqtools `2.0.2`、CSI `1.0.1`、ecat-viz `0.1.1`；CSI/eqtools
-声明绘图库最低版本为 `0.1.1`。CSI fork 仍由 ECAT 提供，不应混入名称相同的其他发行。
+本轮对应组件为 eqtools `2.0.3`、CSI `1.0.2`、ecat-viz `0.1.2`；CSI/eqtools
+声明绘图库最低版本为 `0.1.2`。CSI fork 仍由 ECAT 提供，不应混入名称相同的其他发行。
 旧 eqtools 与 CSI 的卸载清单曾重复拥有 `ecat-psgrn`；更新后的 eqtools 不再声明它。
 上面的最后一次 CSI 重装可以恢复旧卸载清单误删的命令文件，此后卸载 eqtools 不影响该命令。
 

@@ -360,8 +360,8 @@ commands, path checks, and temporary MKL/OpenBLAS tests without silently
 changing persistent settings.
 
 
-The coordinated fixes use eqtools 2.0.2, CSI 1.0.1 and ecat-viz 0.1.1. CSI/eqtools require
-ecat-viz >=0.1.1,<0.2. Use the CSI fork distributed with ECAT. CSI alone now owns ecat-psgrn;
+The coordinated fixes use eqtools 2.0.3, CSI 1.0.2 and ecat-viz 0.1.2. CSI/eqtools require
+ecat-viz >=0.1.2,<0.2. Use the CSI fork distributed with ECAT. CSI alone now owns ecat-psgrn;
 the eqtools Python module still delegates to it. Older uninstall records from both packages
 could remove the same command file during upgrades. The final CSI reinstall restores it;
 subsequent eqtools uninstalls no longer own this command. It does not upgrade numerical dependencies.

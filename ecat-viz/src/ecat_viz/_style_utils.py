@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 import warnings
+from numbers import Real
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -109,7 +110,13 @@ def _validated_config_widths(data):
     widths = data.get('column_widths', {})
     if not isinstance(widths, dict):
         raise ValueError("column_widths must be a JSON object.")
-    return dict(_validate_column_width(name, value) for name, value in widths.items())
+    normalized = {}
+    for name, value in widths.items():
+        key, width = _validate_column_width(name, value)
+        if key in normalized and normalized[key] != width:
+            raise ValueError(f"Column-width conflict for case-insensitive name '{key}'.")
+        normalized[key] = width
+    return normalized
 
 
 def _load_config_file(cfg_path: Path, legacy: bool = False) -> None:
@@ -148,7 +155,8 @@ def save_column_width(name: str, width_inch: float,
     -----
     - The column width is also registered in the current session
     - Creates the config directory if it doesn't exist
-    - Preserves existing configuration entries
+    - Preserves unrelated configuration entries and normalizes width names
+    - Conflicting case aliases raise before changing the file or registry
     """
     name, width_inch = _validate_column_width(name, width_inch)
     if config_path is None:
@@ -156,8 +164,8 @@ def save_column_width(name: str, width_inch: float,
     config_path = Path(config_path)
     # Parse and validate before creating directories or changing the file.
     data = json.loads(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
-    _validated_config_widths(data)
-    data.setdefault('column_widths', {})[name] = width_inch
+    data['column_widths'] = _validated_config_widths(data)
+    data['column_widths'][name] = width_inch
     payload = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
     _ensure_initialized()
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +254,7 @@ def publication_figsize(column='single', fraction=1.0, aspect=0.75, height=None,
         return (_positive_finite(_positive_finite(column[0], 'Width') * scale, 'Width'),
                 _positive_finite(_positive_finite(column[1], 'Height') * scale, 'Height'))
 
-    if isinstance(column, (int, float)):
+    if isinstance(column, Real):
         w = _positive_finite(column, 'Width') * scale
     else:
         w = _registry.get_column_width(str(column).lower())

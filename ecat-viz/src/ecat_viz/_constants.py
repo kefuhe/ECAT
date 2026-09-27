@@ -131,7 +131,7 @@ KNOWN_IMAGE_FORMATS: set = {
 
 FONT_CACHE_EXPIRY_DAYS: int = 7  # 字体缓存过期时间（天）
 FONT_CACHE_DIR_NAME: str = '.cache/eqtools'  # 相对于用户主目录
-FONT_CACHE_FILE_NAME: str = 'font_cache.pkl'
+FONT_CACHE_FILE_NAME: str = 'font_cache.json'
 
 # ==============================================================================
 # 预设名称常量类

@@ -62,16 +62,20 @@ import matplotlib.pyplot as plt
 
 
 
+def _bundled_cpts():
+    """Index both resource suffixes; .cpt wins a shared stem."""
+    resources = {}
+    for entry in sorted(files('ecat_viz').joinpath('cpt').iterdir(), key=lambda p: p.name):
+        if entry.name.endswith(('.cpt', '.2cpt')) and entry.is_file():
+            stem = entry.name.rsplit('.', 1)[0]
+            if stem not in resources or entry.name.endswith('.cpt'):
+                resources[stem] = entry
+    return resources
+
+
 def list_cpts():
-
-    """List bundled CPT names without requiring physical resource paths."""
-
-    return sorted(p.name[:-4] for p in files('ecat_viz').joinpath('cpt').iterdir()
-
-                  if p.name.endswith('.cpt'))
-
-
-
+    """List loadable bundled .cpt/.2cpt names without extensions."""
+    return sorted(_bundled_cpts())
 
 
 @contextmanager
@@ -110,9 +114,19 @@ def _open_cpt(source):
 
             raise ValueError('Bundled CPT name must not contain a directory')
 
-        filename = value if value.endswith(('.cpt', '.2cpt')) else value + '.cpt'
+        if value.endswith(('.cpt', '.2cpt')):
 
-        with files('ecat_viz').joinpath('cpt', filename).open('r', encoding='utf-8') as handle:
+            resource = files('ecat_viz').joinpath('cpt', value)
+
+        else:
+
+            resource = _bundled_cpts().get(value)
+
+            if resource is None:
+
+                raise FileNotFoundError(f'Bundled CPT not found: {value}')
+
+        with resource.open('r', encoding='utf-8') as handle:
 
             yield handle
 

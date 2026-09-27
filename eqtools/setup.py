@@ -15,7 +15,7 @@ setup(
     description='Earthquake Cycle Analysis Toolkit (ECAT)',
     python_requires='>=3.10,<3.13',
     install_requires=[
-        "ecat-viz>=0.1.1,<0.2",
+        "ecat-viz>=0.1.2,<0.2",
         # Direct runtime dependencies imported by eqtools. A dependency that
         # is also imported by CSI is intentionally declared in both packages
         # so each standalone checkout remains installable on its own.
