@@ -13,11 +13,18 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .data_vector_layout import gps_component_major_vector
+from .data_vector_layout import data_observation_vector, data_synthetic_vector
 from .hyperparameter_reporting import (
     build_scale_parameter_rows,
     format_scale_parameter_report,
 )
+
+
+def _variance_reduction_percent(ss_res: float, ss_obs: float) -> float:
+    """Return ECAT variance reduction, or NaN when its denominator is zero."""
+    if ss_obs == 0.0:
+        return float("nan")
+    return float((1.0 - ss_res / ss_obs) * 100.0)
 
 
 def data_fit_vectors(data: Any, vertical: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -27,30 +34,10 @@ def data_fit_vectors(data: Any, vertical: bool = True) -> tuple[np.ndarray, np.n
     datasets use their native flat arrays; optical offsets concatenate east
     and north.
     """
-    dtype = getattr(data, "dtype", None)
-    if dtype == "insar":
-        observed = data.vel
-        synthetic = data.synth
-    elif dtype == "gps":
-        observed = gps_component_major_vector(
-            data.vel_enu, vertical=vertical, name=f"{data.name} GPS observations"
-        )
-        synthetic = gps_component_major_vector(
-            data.synth, vertical=vertical, name=f"{data.name} GPS synthetics"
-        )
-    elif dtype in ("opticorr", "optical"):
-        observed = np.hstack((data.east, data.north))
-        synthetic = np.hstack((data.east_synth, data.north_synth))
-    elif dtype == "leveling":
-        observed = data.vel
-        synthetic = data.synth
-    elif dtype == "crossfaultoffset":
-        observed = data.data_vector
-        synthetic = data.synth_vector
-    else:
-        raise ValueError(f"Unsupported data type: {dtype}")
-
-    return np.asarray(observed, dtype=float).reshape(-1), np.asarray(synthetic, dtype=float).reshape(-1)
+    return (
+        data_observation_vector(data, vertical=vertical),
+        data_synthetic_vector(data, vertical=vertical),
+    )
 
 
 def fit_metrics_from_vectors(observed: Any, synthetic: Any) -> dict[str, float | int]:
@@ -63,7 +50,7 @@ def fit_metrics_from_vectors(observed: Any, synthetic: Any) -> dict[str, float |
     ss_res = float(np.sum(residuals ** 2))
     ss_obs = float(np.sum(observed ** 2))
     rms = float(np.sqrt(np.mean(residuals ** 2)))
-    vr = float((1.0 - ss_res / ss_obs) * 100.0) if ss_obs != 0.0 else 0.0
+    vr = _variance_reduction_percent(ss_res, ss_obs)
     return {
         "rms": rms,
         "vr": vr,
@@ -113,7 +100,7 @@ def aggregate_dataset_fit_rows(
         "poly": None,
         "sigma_group": None,
         "rms": float(np.sqrt(ss_res / n_observations)),
-        "vr": float((1.0 - ss_res / ss_obs) * 100.0) if ss_obs != 0.0 else 0.0,
+        "vr": _variance_reduction_percent(ss_res, ss_obs),
         "ss_res": ss_res,
         "ss_obs": ss_obs,
         "n_observations": n_observations,

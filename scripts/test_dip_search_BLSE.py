@@ -44,15 +44,19 @@ if __name__ == "__main__":
     sar_ascending = insar(
         "Ascending", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=verbose
     )
-    sar_ascending.read_from_varres(sar_ascending_file, triangular=False, cov=True)
+    sar_ascending.read_from_varres(sar_ascending_file, triangular=None, cov=True)
 
     sar_descending = insar(
         "Descending", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=verbose
     )
-    sar_descending.read_from_varres(sar_descending_file, triangular=False, cov=True)
+    sar_descending.read_from_varres(sar_descending_file, triangular=None, cov=True)
 
     gpsdata = []
     insardata = [sar_ascending, sar_descending]
+    # Optional test: set cov=False above, then build a diagonal covariance from err.
+    # for sar_data in insardata:
+    #     sar_data.err[:] = 1.0  # Or keep scientifically reviewed positive .txt errors.
+    #     sar_data.buildDiagCd()
     # Keep this order consistent with the YAML data settings.
     geodata = gpsdata + insardata
 

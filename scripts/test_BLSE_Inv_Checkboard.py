@@ -54,7 +54,7 @@ def main():
     #     "Optical", lon0=lon0, lat0=lat0, utmzone=None,
     #     ellps="WGS84", verbose=False,
     # )
-    # optical_offsets.read_from_varres(optical_file, triangular=True, cov=True)
+    # optical_offsets.read_from_varres(optical_file, triangular=None, cov=True)
 
     sar_t012a_file = (
         Path("..") / "InSAR" / "downsample" / "T012A" / "S1_T012A_ifg"
@@ -68,12 +68,12 @@ def main():
     sar_t012a = insar(
         "T012A", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
-    sar_t012a.read_from_varres(sar_t012a_file, triangular=False, cov=True)
+    sar_t012a.read_from_varres(sar_t012a_file, triangular=None, cov=True)
 
     sar_t121d = insar(
         "T121D", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
-    sar_t121d.read_from_varres(sar_t121d_file, triangular=False, cov=True)
+    sar_t121d.read_from_varres(sar_t121d_file, triangular=None, cov=True)
 
     gpsdata = []  # Replace with [gps_network] after enabling the block above.
     opticaldata = []  # Replace with [optical_offsets] after enabling its block.

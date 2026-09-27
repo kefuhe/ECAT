@@ -1,0 +1,3 @@
+include README.md LICENSE COPYING-GPL-3.0 NOTICE
+recursive-include src/ecat_viz/styles *.mplstyle
+recursive-include src/ecat_viz/cpt *

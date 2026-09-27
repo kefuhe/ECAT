@@ -14,6 +14,7 @@ import scipy.spatial.distance as scidis
 
 # Personals
 from .SourceInv import SourceInv
+from ._slip_direction import resolve_prediction_slipdir
 from .geodeticplot import geodeticplot as geoplot
 from . import csiutils as utils
 from .decimation_geometry import (
@@ -1221,9 +1222,10 @@ class opticorr(SourceInv):
             * faults        : List of faults.
 
         Kwargs:
-            * direction     : Direction of slip to use.
+            * direction     : Slip components to use, or ``'source'`` to
+                              follow each Fault's assembled ``slipdir``.
             * vertical      : use verticals
-            * include_poly  : if a polynomial function has been estimated, include it.
+            * poly          : if a polynomial function has been estimated, include it.
             * custom        : if True, uses the fault.custom and fault.G[data.name]['custom'] to correct
             * computeNormFact : if False, uses TransformNormalizingFactor set with self.setTransformNormalizingFactor
         '''
@@ -1246,9 +1248,10 @@ class opticorr(SourceInv):
             * faults        : List of faults.
 
         Kwargs:
-            * direction     : Direction of slip to use.
+            * direction     : Slip components to use, or ``'source'`` to
+                              follow each Fault's assembled ``slipdir``.
             * vertical      : use verticals
-            * include_poly  : if a polynomial function has been estimated, include it.
+            * poly          : if a polynomial function has been estimated, include it.
             * custom        : if True, uses the fault.custom and fault.G[data.name]['custom'] to correct
             * computeNormFact : if False, uses TransformNormalizingFactor set with self.setTransformNormalizingFactor
             * verbose       : if True, enables verbose output
@@ -1270,8 +1273,22 @@ class opticorr(SourceInv):
 
             # Get the good part of G
             G = fault.G[self.name]
+            source_type = getattr(fault, 'type', None)
+            if source_type == 'Fault':
+                active_direction = resolve_prediction_slipdir(
+                    fault, direction, G
+                )
+            elif direction == 'source':
+                # Optical offsets currently have no non-Fault source replay
+                # contract. Do not interpret the letters in ``"source"`` as
+                # explicit slip-component codes.
+                active_direction = ''
+            else:
+                # Preserve legacy explicit-direction behavior for compatible
+                # third-party source objects.
+                active_direction = direction
 
-            if ('s' in direction) and ('strikeslip' in G.keys()):
+            if ('s' in active_direction) and ('strikeslip' in G.keys()):
                 Gs = G['strikeslip']
                 Ss = fault.slip[:,0]
                 ss_synth = np.dot(Gs, Ss)
@@ -1279,7 +1296,7 @@ class opticorr(SourceInv):
                 self.north_synth += ss_synth[Nd:2*Nd]
                 if vertical:
                     self.up_synth += ss_synth[2*Nd:]
-            if ('d' in direction) and ('dipslip' in G.keys()):
+            if ('d' in active_direction) and ('dipslip' in G.keys()):
                 Gd = G['dipslip']
                 Sd = fault.slip[:,1]
                 sd_synth = np.dot(Gd, Sd)
@@ -1287,7 +1304,7 @@ class opticorr(SourceInv):
                 self.north_synth += sd_synth[Nd:2*Nd]
                 if vertical:
                     self.up_synth += sd_synth[2*Nd:]
-            if ('t' in direction) and ('tensile' in G.keys()):
+            if ('t' in active_direction) and ('tensile' in G.keys()):
                 Gt = G['tensile']
                 St = fault.slip[:,2]
                 st_synth = np.dot(Gt, St)
@@ -1295,7 +1312,7 @@ class opticorr(SourceInv):
                 self.north_synth += st_synth[Nd:2*Nd]
                 if vertical:
                     self.up_synth += st_synth[2*Nd:]
-            if ('c' in direction) and ('coupling' in G.keys()):
+            if ('c' in active_direction) and ('coupling' in G.keys()):
                 Gc = G['coupling']
                 Sc = fault.coupling
                 dc_synth = np.dot(Gc, Sc)
@@ -1313,7 +1330,10 @@ class opticorr(SourceInv):
                 if vertical:
                     self.up_synth += dc_synth[2*Nd:]
 
-            if poly is not None:
+            if (
+                poly is not None
+                and (getattr(fault, 'poly', {}) or {}).get(self.name) is not None
+            ):
                 self.computePoly(fault, computeNormFact=computeNormFact, verbose=verbose)
                 if poly == 'include':
                     self.east_synth += self.east_orbit
@@ -1991,6 +2011,152 @@ class opticorr(SourceInv):
         self.fig.append(fig)
 
         # All done
+        return
+
+    def plot_fit_comparison(self, faults=None, components=('east', 'north'),
+                            cmap='RdBu_r', figsize='double', unit='inch',
+                            fig_height=None, aspect=0.66,
+                            style=['science', 'no-latex'], style_kwargs=None,
+                            vmin=None, vmax=None,
+                            res_vmin=None, res_vmax=None,
+                            share_colorbar=False,
+                            cbaxis=[0.1, 0.15, 0.35, 0.04],
+                            decim=1, markersize=2,
+                            render_mode='points', cell_edge_width=0.25,
+                            alpha=1.0, save_path=None, show=True,
+                            antisymmetric=True):
+        """Plot optical data, synthetics, and residuals by component.
+
+        The default ``components=('east', 'north')`` creates a 2x3 figure:
+        component rows and Data/Model/Residual columns. A one-component tuple
+        creates a 1x3 figure. ``render_mode='points'`` preserves the historical
+        sample-center representation; ``'cells'`` draws stored VarRes cells;
+        ``'auto'`` uses cells when corner geometry exists and otherwise points.
+
+        Parameters
+        ----------
+        components : sequence of {'east', 'north'} or str
+            Components to display, in row order.
+        cell_edge_width : float
+            Cell boundary line width in points when cell rendering is active.
+        antisymmetric : bool
+            If true (default), automatically selected Data/Model limits are
+            symmetric about zero for each component. Explicit ``vmin`` and
+            ``vmax`` always remain authoritative.
+        """
+        import matplotlib.pyplot as plt
+        from ecat_viz import (
+            publication_figsize,
+            sci_plot_style,
+            set_degree_formatter,
+        )
+        from ._spatial_plotting import (
+            colorbar_ticks,
+            draw_spatial_field,
+            resolve_color_limits,
+        )
+
+        if isinstance(components, str):
+            components = (components,)
+        components = tuple(str(item).strip().lower() for item in components)
+        if not components or any(item not in ('east', 'north') for item in components):
+            raise ValueError("components must contain 'east' and/or 'north'")
+        if len(set(components)) != len(components):
+            raise ValueError("components must not contain duplicates")
+
+        component_arrays = {
+            'east': (self.east, self.east_synth),
+            'north': (self.north, self.north_synth),
+        }
+        for component in components:
+            observed, synthetic = component_arrays[component]
+            if synthetic is None:
+                raise ValueError(
+                    f"{component} synthetic values are unavailable; call buildsynth first"
+                )
+            if len(observed) != len(synthetic):
+                raise ValueError(
+                    f"{component} data and synthetic values must have the same length"
+                )
+
+        if style_kwargs is None:
+            style_kwargs = {}
+        effective_aspect = aspect if len(components) > 1 else aspect / 2.0
+        final_figsize = publication_figsize(
+            column=figsize,
+            height=fig_height,
+            aspect=effective_aspect,
+            unit=unit,
+        )
+
+        with sci_plot_style(style=style, **style_kwargs):
+            fig, axes = plt.subplots(
+                len(components), 3,
+                figsize=final_figsize,
+                constrained_layout=True,
+                squeeze=False,
+            )
+            for row, component in enumerate(components):
+                observed, synthetic = component_arrays[component]
+                residual = observed - synthetic
+                component_vmin, component_vmax = resolve_color_limits(
+                    observed, vmin=vmin, vmax=vmax,
+                    antisymmetric=antisymmetric,
+                )
+                if share_colorbar:
+                    component_res_vmin = component_vmin
+                    component_res_vmax = component_vmax
+                else:
+                    component_res_vmin, component_res_vmax = resolve_color_limits(
+                        residual, vmin=res_vmin, vmax=res_vmax,
+                        antisymmetric=True,
+                    )
+
+                items = (
+                    (f"{self.name} {component.title()} Data", observed,
+                     component_vmin, component_vmax),
+                    ("Model", synthetic, component_vmin, component_vmax),
+                    ("Residuals", residual,
+                     component_res_vmin, component_res_vmax),
+                )
+                for ax, (title, values, item_vmin, item_vmax) in zip(axes[row], items):
+                    mappable, bounds, _resolved_mode = draw_spatial_field(
+                        ax, self.lon, self.lat, values,
+                        corners=getattr(self, 'corner', None),
+                        render_mode=render_mode, cmap=cmap,
+                        vmin=item_vmin, vmax=item_vmax,
+                        decim=decim, markersize=markersize, alpha=alpha,
+                        cell_edge_width=cell_edge_width,
+                    )
+                    ax.set_aspect('equal')
+                    ax.set_xlim(bounds[0], bounds[1])
+                    ax.set_ylim(bounds[2], bounds[3])
+                    if faults is not None:
+                        plot_faults = faults if isinstance(faults, list) else [faults]
+                        for fault in plot_faults:
+                            if hasattr(fault, 'lon') and hasattr(fault, 'lat'):
+                                ax.plot(
+                                    fault.lon, fault.lat, 'k-', linewidth=0.5,
+                                    zorder=2, alpha=0.7,
+                                )
+                    ax.set_title(title)
+                    set_degree_formatter(ax)
+                    ax.minorticks_off()
+                    colorbar_axis = ax.inset_axes(cbaxis)
+                    colorbar = plt.colorbar(
+                        mappable, cax=colorbar_axis, orientation='horizontal'
+                    )
+                    colorbar.set_ticks(colorbar_ticks(item_vmin, item_vmax))
+                    colorbar.ax.tick_params(labelsize=7, length=2, pad=1)
+                    colorbar.outline.set_linewidth(0.5)
+
+            if save_path:
+                fig.savefig(save_path, dpi=300)
+            if show:
+                plt.show()
+            else:
+                plt.close(fig)
+
         return
 
     def write2binary(self, prefix, dtype=float):

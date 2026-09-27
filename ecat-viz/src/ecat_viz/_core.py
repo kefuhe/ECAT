@@ -65,16 +65,16 @@ def _ensure_initialized() -> None:
 # --------------------------------------------------------------------------
 # scienceplots registration (kept for backward compatibility)
 # --------------------------------------------------------------------------
-def _register_package_styles() -> None:
+def _register_package_styles(*, force: bool = False) -> None:
     """Register package .mplstyle files and scienceplots styles (once, lazily)."""
-    if _registry.is_styles_registered():
+    if _registry.is_styles_registered() and not force:
         return
     # 1. Register scienceplots styles first (lower priority baseline)
     if HAS_SCIENCEPLOTS:
         try:
             register_science_styles()
         except Exception as e:
-            warnings.warn(f"eqtools.viztools: could not register scienceplots styles: {e}")
+            warnings.warn(f"ecat_viz: could not register scienceplots styles: {e}")
     # 2. Register our own eqtools-*.mplstyle files (override / supplement)
     if _STYLES_DIR.exists():
         try:
@@ -82,7 +82,17 @@ def _register_package_styles() -> None:
             plt.style.core.update_nested_dict(plt.style.library, styles)
             plt.style.core.available[:] = sorted(plt.style.library.keys())
         except Exception as e:
-            warnings.warn(f"eqtools.viztools: could not register package styles: {e}")
+            warnings.warn(f"ecat_viz: could not register package styles: {e}")
+    if force:
+        # Restore user directories after Matplotlib reloads its own library.
+        # Read styles without replacing registered preset overrides.
+        for directory in _registry.list_custom_style_directories():
+            try:
+                styles = plt.style.core.read_style_directory(str(directory))
+                plt.style.core.update_nested_dict(plt.style.library, styles)
+                plt.style.core.available[:] = sorted(plt.style.library.keys())
+            except Exception as e:
+                warnings.warn(f"ecat_viz: could not refresh styles from {directory}: {e}")
     _registry.mark_styles_registered()
 
 
@@ -151,6 +161,16 @@ def register_preset(
     >>> with PlotStyle('my_lab', figsize='single'):
     ...     fig, ax = plt.subplots()
     """
+    _ensure_initialized()
+    _register_preset_spec(
+        name, base=base, mplstyles=mplstyles, rcparams=rcparams, chinese=chinese,
+        chinese_prefer_serif=chinese_prefer_serif, description=description,
+    )
+
+
+def _register_preset_spec(name, *, base=None, mplstyles=None, rcparams=None,
+                          chinese=False, chinese_prefer_serif=False, description=""):
+    """Write a preset during initialization without re-entering public APIs."""
     spec = {
         'base': base,
         'mplstyles': list(mplstyles or []),
@@ -183,6 +203,7 @@ def unregister_preset(name: str) -> None:
     >>> register_preset('test', base='science', rcparams={'axes.grid': True})
     >>> unregister_preset('test')
     """
+    _ensure_initialized()
     _registry.unregister_preset(name)
 
 
@@ -211,7 +232,10 @@ class PlotStyle:
     """Style preset context manager, persistent-apply helper, and decorator.
 
     Applies a named preset (or list of presets) to matplotlib's rcParams,
-    then restores **only the changed keys** on exit.
+    then restores **only the changed keys** on exit. Instances support nested
+    reuse. Final rcParams are validated before application; invalid settings
+    and circular preset inheritance raise ValueError. Styling is process-global,
+    not isolated between threads.
 
     Parameters
     ----------
@@ -343,18 +367,19 @@ class PlotStyle:
         self._usetex = usetex
         self._mathfont = mathfont
         self._extra_rcparams = dict(rcparams or {})
-        self._saved: Dict = {}
+        self._context_stack: List[Dict] = []
 
     # ------------------------------------------------------------------
     # Preset resolution helpers
     # ------------------------------------------------------------------
-    def _resolve_preset(self, name: str, _visited: Optional[set] = None) -> Dict:
+    def _resolve_preset(self, name: str, _visited=None) -> Dict:
         """Recursively resolve preset inheritance, return merged entry dict."""
         if _visited is None:
-            _visited = set()
+            _visited = []
         if name in _visited:
-            return {'mplstyles': [], 'rcparams': {}, 'chinese': False, 'chinese_prefer_serif': False}
-        _visited.add(name)
+            raise ValueError('PlotStyle: circular preset inheritance: ' +
+                             ' -> '.join([*_visited, name]))
+        _visited.append(name)
 
         if name not in _PRESET_REGISTRY:
             # Enhanced error message with suggestions
@@ -582,17 +607,25 @@ class PlotStyle:
 
         Only stores values that actually change to minimize memory usage.
         """
-        import copy
         final = self._build_final_rcparams()
+        validated = mpl.RcParams()
         for k, v in final.items():
             try:
+                validated[k] = v
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"PlotStyle: invalid rcParam {k!r}={v!r}: {exc}"
+                ) from exc
+        try:
+            for k, v in validated.items():
                 current = mpl.rcParams[k]
-                # Only save and update if the value actually changes
                 if current != v:
                     save_target[k] = copy.deepcopy(current)
                     mpl.rcParams[k] = v
-            except (KeyError, ValueError):
-                pass  # unknown or invalid key
+        except Exception:
+            self._restore(save_target)
+            save_target.clear()
+            raise
 
     @staticmethod
     def _restore(saved: Dict) -> None:
@@ -607,13 +640,13 @@ class PlotStyle:
     # Context manager interface
     # ------------------------------------------------------------------
     def __enter__(self) -> 'PlotStyle':
-        self._saved = {}
-        self._apply_to(self._saved)
+        saved: Dict = {}
+        self._apply_to(saved)
+        self._context_stack.append(saved)
         return self
 
     def __exit__(self, *args) -> None:
-        self._restore(self._saved)
-        self._saved = {}
+        self._restore(self._context_stack.pop())
 
     # ------------------------------------------------------------------
     # Persistent apply / reset
@@ -1095,75 +1128,78 @@ class PlotStyle:
 # --------------------------------------------------------------------------
 # Built-in presets
 # --------------------------------------------------------------------------
+def _register_builtin_preset(name, **kwargs):
+    _register_preset_spec(name, **kwargs)
+    _registry.mark_builtin_preset(name)
+
+
 def _register_builtin_presets() -> None:
-    register_preset(
+    _register_builtin_preset(
         'science',
         mplstyles=['eqtools-science'],
         description='Sans-serif publication style (default)',
     )
-    register_preset(
+    _register_builtin_preset(
         'science-serif',
         mplstyles=['eqtools-science-serif'],
         description='Serif publication style',
     )
-    register_preset(
+    _register_builtin_preset(
         'chinese',
         base='science',
         chinese=True,
         description='Sans-serif + auto-detected CJK font',
     )
-    register_preset(
+    _register_builtin_preset(
         'chinese-serif',
         base='science-serif',
         chinese=True,
         chinese_prefer_serif=True,
         description='Serif + auto-detected CJK serif font',
     )
-    register_preset(
+    _register_builtin_preset(
         'presentation',
         mplstyles=['eqtools-presentation'],
         description='Large fonts for slides / posters',
     )
-    register_preset(
+    _register_builtin_preset(
         'notebook',
         mplstyles=['eqtools-notebook'],
         description='Moderate size for Jupyter notebooks',
     )
-    register_preset(
+    _register_builtin_preset(
         'minimal',
         base='science',
         mplstyles=['eqtools-minimal'],
         description='Clean: no top/right spines, no minor ticks',
     )
     # ── Color palette presets (overlay on top of any base preset) ──────────
-    register_preset(
+    _register_builtin_preset(
         'colors-bright',
         mplstyles=['eqtools-colors-bright'],
         description='Colorblind-safe bright palette (Paul Tol, 7 colors)',
     )
-    register_preset(
+    _register_builtin_preset(
         'colors-vibrant',
         mplstyles=['eqtools-colors-vibrant'],
         description='Colorblind-safe vibrant palette (Paul Tol, 7 colors)',
     )
-    register_preset(
+    _register_builtin_preset(
         'colors-contrast',
         mplstyles=['eqtools-colors-contrast'],
         description='High-contrast 3-color palette (colorblind + B&W print safe)',
     )
     # ── Plot-mode presets (overlay on top of any base preset) ───────────────
-    register_preset(
+    _register_builtin_preset(
         'scatter',
         base='science',
         mplstyles=['eqtools-scatter'],
         description='Scatter mode: markers only, no connecting lines (7 markers x std-colors)',
     )
-    register_preset(
+    _register_builtin_preset(
         'ieee',
         base='science-serif',
         mplstyles=['eqtools-ieee'],
         description='IEEE linestyle cycling: 4 colors x 4 linestyles, B&W print safe',
     )
-    # Mark all registered presets as built-in (for unregister_preset guard)
-    for name in _registry.list_presets().keys():
-        _registry.mark_builtin_preset(name)
+

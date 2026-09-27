@@ -10,7 +10,7 @@ from pathlib import Path
 
 # CSI / EqTools Imports
 from ..blse_multifaults_inversion import BoundLSEMultiFaultsInversion
-from ...viztools import sci_plot_style, publication_figsize, set_degree_formatter
+from ecat_viz import sci_plot_style, publication_figsize, set_degree_formatter
 
 logger = logging.getLogger(__name__)
 

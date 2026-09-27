@@ -28,7 +28,7 @@ from .imagecovariance import imagecovariance as imcov
 from .csiutils import _split_seq
 
 # Plot styling helpers
-from eqtools.viztools import sci_plot_style
+from ecat_viz import sci_plot_style
 
 
 class _SerialQueue:

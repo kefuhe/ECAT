@@ -163,6 +163,10 @@ Laplacian 下可比较不同候选。`resolved_penalty_order` 和
 `resolved_penalty_weights` 以 JSON 数组记录按断层顺序解析后的实际权重，可以安全经过
 CSV 往返。全局 RMS/VR 直接来自组装后的求解向量，不是逐数据集指标的平均值。
 
+候选的逐数据集统计也由同一次 `G @ mpost` 按 `data_ranges` 切分；扫描不会调用
+`buildsynth()`、不会发布 geodata synthetic，也不会因统计或绘图改变进入扫描前的数据
+对象状态。普通 RMS/VR 与可选 `Qw/wRMS` 因而始终属于同一个候选残差。
+
 模板使用 `data_poly="config"`，因此拟合统计包含配置中实际求解的 offset/ramp。完整统计
 定义见 [Fit Statistics](../reference/fit_statistics.md)。
 

@@ -1,5 +1,5 @@
 """
-_color_utils.py — Color-cycle utilities for eqtools.viztools.
+_color_utils.py — Color-cycle utilities for ecat_viz.
 
 Public API
 ----------

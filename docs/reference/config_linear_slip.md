@@ -291,6 +291,8 @@ alpha: [-3, 3]
 这个例子由 `rake_angle` 表达滑动方向，`strikeslip`/`dipslip` 只提供宽泛分量幅值
 保护。若 rake 扇区已经推出某一分量非正或非负，不要在没有独立物理理由时再把该分量
 bound 卡在 0；这种重复约束不会缩小可行域，却可能使连续 VCE 的活动工作集线性相关。
+`ecat-generate-boundary` 生成的默认模板采用这种跨零分量区间；它们是可编辑的分量
+幅值保护，不是总滑动量级边界。
 只知道分量符号而不知道 rake 范围时，则删除 `rake_angle` 并直接使用单边 component
 bound。完整判断和诊断方法见 [Rake Constraints](rake_constraints.md#避免用-component-bounds-重复表达-rake-方向)。
 

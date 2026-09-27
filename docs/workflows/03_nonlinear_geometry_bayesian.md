@@ -119,6 +119,9 @@ inv.extract_and_plot_bayesian_results(
     plot_data_corrections=True,
     print_fit_statistics=True,
     sar_corner="auto",
+    antisymmetric=True,  # False 使用 InSAR 的实际有限数据范围
+    raster_render_mode="points",  # "cells" 或 corner-aware "auto"
+    raster_cell_edge_width=0.25,
 )
 
 if rank == 0:
@@ -134,6 +137,13 @@ if rank == 0:
 类型；`None` 或 `"point"` 显式请求点表。这个选择只改变文件表示，不改变似然、预测或代表
 模型。GPS 始终走自己的 EN/ENU 点表输出；启用模板中的 GPS 块时，只需把对象加入
 `gpsdata` 并同步 YAML 中各个 `geodata` 列表的顺序。
+
+`raster_render_mode` 是独立的图件选项：`"points"` 保持中心点图，`"cells"` 要求
+corner 并绘制单元，`"auto"` 有 corner 时绘制单元、否则回退为点。
+`raster_cell_edge_width` 是单元边界线宽（point）。它们不改变 `sar_corner` 的文件输出，
+也不会让当前非线性几何似然新增 opticorr 数据类型支持。
+拟合图默认 `antisymmetric=True`，即 Data/Model 自动使用零中心对称色标；改为
+`False` 只改变显示范围，不改变似然、代表模型或输出数据。
 
 <a id="geometry-results-to-linear-inversion"></a>
 

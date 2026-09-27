@@ -16,7 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
-from eqtools.viztools import PlotStyle, finish_fig
+from ecat_viz import PlotStyle, finish_fig
 
 
 _DEFAULT_STYLE = dict(

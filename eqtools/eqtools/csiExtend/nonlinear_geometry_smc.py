@@ -3174,6 +3174,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         convergence_report_file=None,
         force_diagnose=False,
         print_fit_statistics=True,
+        raster_render_mode="points",
+        raster_cell_edge_width=0.25,
     ):
         """Load samples, plot posterior summaries, and rebuild a selected model.
 
@@ -3185,6 +3187,11 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         object carries valid decimation geometry.  ``None`` or ``"point"``
         requests point output; legacy ``"tri"`` and ``"quad"`` values only
         validate an explicitly expected polygon type.
+        ``raster_render_mode`` independently controls the InSAR fit figure:
+        ``"points"`` (default), ``"cells"``, or ``"auto"``. It does not
+        change ``sar_corner`` or the stored observations.
+        ``antisymmetric=True`` keeps automatic data/model limits symmetric
+        about zero; ``False`` uses the finite InSAR data range.
         """
         if rank != 0:
             return None
@@ -3286,6 +3293,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 antisymmetric=antisymmetric,
                 res_use_data_norm=res_use_data_norm,
                 cmap=cmap,
+                raster_render_mode=raster_render_mode,
+                raster_cell_edge_width=raster_cell_edge_width,
                 show=show,
             )
         return faults
@@ -3405,6 +3414,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         antisymmetric,
         res_use_data_norm,
         cmap,
+        raster_render_mode,
+        raster_cell_edge_width,
         show,
     ):
         out_dir = Path(modeling_dir)
@@ -3442,15 +3453,13 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         for sardata in grouped_data["insar"]:
             if not hasattr(sardata, "plot_fit_comparison"):
                 continue
-            datamin, datamax = float(sardata.vel.min()), float(sardata.vel.max())
-            absmax = max(abs(datamin), abs(datamax))
-            norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
             sardata.plot_fit_comparison(
                 faults=faults,
                 cmap=cmap,
-                vmin=norm[0],
-                vmax=norm[1],
+                antisymmetric=antisymmetric,
                 share_colorbar=res_use_data_norm,
+                render_mode=raster_render_mode,
+                cell_edge_width=raster_cell_edge_width,
                 save_path=str(out_dir / f"{sardata.name}_fit_comparison.pdf"),
                 show=show,
             )

@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 
 # Personals
 from .SourceInv import SourceInv
+from ._slip_direction import resolve_prediction_slipdir
 
 
 class leveling(SourceInv):
@@ -376,7 +377,8 @@ class leveling(SourceInv):
             * faults    : Fault or list of Fault instances
 
         Kwargs:
-            * direction         : slip components ('s', 'd', 't', 'c')
+            * direction         : slip components ('s', 'd', 't', 'c'), or
+                                  ``'source'`` to follow the Fault ``slipdir``
             * poly              : 'build'/'include', int, str or list
             * vertical          : ignored (leveling is always vertical)
             * custom            : include custom GFs
@@ -392,14 +394,17 @@ class leveling(SourceInv):
             if fault.type != "Fault":
                 continue
             G = fault.G[self.name]
+            active_direction = resolve_prediction_slipdir(
+                fault, direction, G
+            )
 
-            if 's' in direction and G.get('strikeslip') is not None:
+            if 's' in active_direction and G.get('strikeslip') is not None:
                 self.synth += G['strikeslip'].dot(fault.slip[:, 0])
-            if 'd' in direction and G.get('dipslip') is not None:
+            if 'd' in active_direction and G.get('dipslip') is not None:
                 self.synth += G['dipslip'].dot(fault.slip[:, 1])
-            if 't' in direction and G.get('tensile') is not None:
+            if 't' in active_direction and G.get('tensile') is not None:
                 self.synth += G['tensile'].dot(fault.slip[:, 2])
-            if 'c' in direction and G.get('coupling') is not None:
+            if 'c' in active_direction and G.get('coupling') is not None:
                 self.synth += G['coupling'].dot(fault.coupling)
 
             if custom and G.get('custom') is not None:
@@ -458,6 +463,9 @@ class leveling(SourceInv):
                     computeNormFact=True, computeIntStrainNormFact=True):
         '''
         Remove synthetic from observed data.
+
+        ``direction`` accepts explicit ``s/d/t/c`` components or ``'source'``
+        with the same meaning as :meth:`buildsynth`.
         '''
         self.buildsynth(faults, direction=direction, poly=poly, custom=custom,
                         computeNormFact=computeNormFact,
@@ -557,7 +565,7 @@ class leveling(SourceInv):
 
         Returns (context_manager, resolved_figsize):
           - PlotStyle available → resolved_figsize is None (rcParams handles it)
-          - PlotStyle missing   → resolved_figsize is a (w, h) tuple fallback
+          - style=None          → resolved_figsize is a (w, h) tuple fallback
         '''
         import contextlib
 
@@ -581,16 +589,13 @@ class leveling(SourceInv):
         if style is None:
             return contextlib.nullcontext(), _resolve_fallback(figsize, figsize_aspect)
 
-        try:
-            from eqtools.viztools import PlotStyle
-            kw = dict(style_kwargs or {})
-            if figsize is not None and 'figsize' not in kw:
-                kw['figsize'] = figsize
-            if figsize_aspect is not None and 'figsize_aspect' not in kw:
-                kw['figsize_aspect'] = figsize_aspect
-            return PlotStyle(style, **kw), None
-        except Exception:
-            return contextlib.nullcontext(), _resolve_fallback(figsize, figsize_aspect)
+        from ecat_viz import PlotStyle
+        kw = dict(style_kwargs or {})
+        if figsize is not None and 'figsize' not in kw:
+            kw['figsize'] = figsize
+        if figsize_aspect is not None and 'figsize_aspect' not in kw:
+            kw['figsize_aspect'] = figsize_aspect
+        return PlotStyle(style, **kw), None
 
     # ------------------------------------------------------------------
     # Plotting

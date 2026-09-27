@@ -12,9 +12,9 @@ from contextlib import nullcontext
 
 import numpy as np
 
-from ._core import PlotStyle
-from ._formatters import LatFormatter, LonFormatter
-from ._style_utils import finish_fig
+from ecat_viz import PlotStyle
+from ecat_viz import LatFormatter, LonFormatter
+from ecat_viz import finish_fig
 
 
 def plot_dip_profile_diagnostics(

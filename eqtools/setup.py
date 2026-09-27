@@ -1,35 +1,10 @@
 from setuptools import find_packages, setup
-from setuptools.command.install import install
 import os
-import shutil
-import site
-import logging
 
 
 _version_ns = {}
 with open(os.path.join(os.path.dirname(__file__), 'eqtools', '_version.py'), encoding='utf-8') as _version_file:
     exec(_version_file.read(), _version_ns)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class CustomInstallCommand(install):
-    """Customized setuptools install command - removes old data directory in the installation directory."""
-    def run(self):
-        # Define the data directory in the installation directory
-        install_dir = site.getsitepackages()[0]
-        data_dir = os.path.join(install_dir, 'eqtools', 'earthquake_clients', 'data')
-        
-        # Remove the old data directory if it exists
-        if os.path.exists(data_dir):
-            logger.info(f"Removing old data directory: {data_dir}")
-            shutil.rmtree(data_dir)
-        else:
-            logger.info(f"No old data directory found at: {data_dir}")
-        
-        # Proceed with the standard installation
-        install.run(self)
 
 setup(
     name='eqtools',
@@ -40,6 +15,7 @@ setup(
     description='Earthquake Cycle Analysis Toolkit (ECAT)',
     python_requires='>=3.10,<3.13',
     install_requires=[
+        "ecat-viz>=0.1.1,<0.2",
         # Direct runtime dependencies imported by eqtools. A dependency that
         # is also imported by CSI is intentionally declared in both packages
         # so each standalone checkout remains installable on its own.
@@ -96,10 +72,13 @@ setup(
             "h5netcdf>=1.2",
         ],
     },
-    packages=find_packages(),
-    include_package_data=True,
+    packages=find_packages(
+        include=['eqtools', 'eqtools.*'],
+        exclude=['*.test', '*.test.*', '*.tests', '*.tests.*'],
+    ),
+    # Ship the explicit runtime resources below, independently of stale manifests.
+    include_package_data=False,
     package_data={
-        'eqtools': ['cpt/*'],  # , 'examples/*'
         'eqtools.cli_tools': ['templates/adapter_downsampling/*'],
         'eqtools.Tectonic_Utils': ['README.md', 'cover_picture.png'],
         'eqtools.earthquake_clients': [
@@ -108,7 +87,6 @@ setup(
             'data/Blocks/*',
             'data/GNSS/*',
         ],
-        'eqtools.viztools': ['styles/*.mplstyle'],
     },
     classifiers=[
         # Choose classifiers from https://pypi.org/classifiers/
@@ -129,7 +107,6 @@ setup(
             "ecat-generate-nonlinear-geometry=eqtools.cli_tools.generate_nonlinear_geometry_config:main",
             "ecat-generate-downsample=eqtools.cli_tools.generate_downsample_config:main",
             "ecat-downsample=eqtools.cli_tools.process_data_downsampling:main",
-            "ecat-psgrn=eqtools.cli_tools.psgrn_cli:main",
             "ecat-pscmp=eqtools.cli_tools.pscmp_cli:main",
             "ecat-edgrn=eqtools.cli_tools.edgrn_cli:main",
             "ecat-edcmp=eqtools.cli_tools.edcmp_cli:main",
@@ -143,8 +120,5 @@ setup(
             "ecat-map=eqtools.map_viewer.cli:main",
             "ecat-trace-edit=eqtools.map_viewer.interactive.cli:main",
         ],
-    },
-    cmdclass={
-        'install': CustomInstallCommand,
     },
 )

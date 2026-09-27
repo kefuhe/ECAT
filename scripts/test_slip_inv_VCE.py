@@ -88,15 +88,19 @@ if __name__ == '__main__':
     sar_t012a = insar(
         'T012A', lon0=lon0, lat0=lat0, utmzone=None, ellps='WGS84', verbose=verbose
     )
-    sar_t012a.read_from_varres(sar_t012a_file, triangular=False, cov=True)
+    sar_t012a.read_from_varres(sar_t012a_file, triangular=None, cov=True)
 
     sar_t121d = insar(
         'T121D', lon0=lon0, lat0=lat0, utmzone=None, ellps='WGS84', verbose=verbose
     )
-    sar_t121d.read_from_varres(sar_t121d_file, triangular=False, cov=True)
+    sar_t121d.read_from_varres(sar_t121d_file, triangular=None, cov=True)
 
     gpsdata = []  # Use [cogps6_4] after enabling the GPS block.
     insardata = [sar_t012a, sar_t121d]
+    # Optional test: set cov=False above, then build a diagonal covariance from err.
+    # for sar_data in insardata:
+    #     sar_data.err[:] = 1.0  # Or keep scientifically reviewed positive .txt errors.
+    #     sar_data.buildDiagCd()
     # Keep this order consistent with the YAML data settings.
     geodata = gpsdata + insardata
 
@@ -173,6 +177,11 @@ if __name__ == '__main__':
         depth_range=25, z_ticks=[-20, -10, 0],
         remove_direction_labels=True,
         fault_cbaxis=[0.45, 0.32, 0.15, 0.02],
+        # True keeps raster color limits symmetric about zero; set False
+        # to use each field's finite data range.
+        antisymmetric=True,
+        # Use 'cells' to draw stored VarRes/optical support cells.
+        raster_render_mode='points', raster_cell_edge_width=0.25,
         data_poly='config', fault_outdir=str(output_dir),
         data_outdir=str(modeling_dir), show=False,
     )

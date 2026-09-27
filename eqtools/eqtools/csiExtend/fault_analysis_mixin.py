@@ -10,13 +10,17 @@ Date: 2025-08-01
 Version: 1.0.0
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
 from tabulate import tabulate
 
 from .config.config_utils import get_observation_unit_info
-from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
+from .data_prediction import (
+    build_diagnostic_prediction_blocks,
+    get_geodata_prediction_specs,
+    publish_prediction_blocks,
+)
 from .fault_summary import print_faults_summary, summarize_faults
 from .fit_statistics import (
     aggregate_dataset_fit_rows,
@@ -29,6 +33,13 @@ from .fit_statistics import (
     weighted_fit_metrics_from_residual,
     write_fit_statistics_report_files,
 )
+
+
+def _requests_complete_fault_model(faults):
+    """Return whether ``faults`` denotes the configured complete model."""
+    return faults is None or (
+        isinstance(faults, str) and faults.strip().lower() == "all"
+    )
 
 
 class FaultAnalysisMixin:
@@ -68,33 +79,48 @@ class FaultAnalysisMixin:
             raise AttributeError("Cannot find faults in this object. "
                                "Please ensure the class has either 'faults' or 'multifaults.faults' attribute.")
 
+    def _formal_fit_prediction_blocks(self):
+        """Return exact assembled-model blocks when the inversion owns them.
+
+        General and nonlinear inversion classes intentionally return ``None``.
+        Fixed-geometry linear solvers override this hook so callers do not
+        infer a scientific route from the incidental presence of attributes.
+        """
+        return None
+
     def _select_faults(self, faults=None):
         """
         Select fault objects from this inversion object.
 
-        ``faults`` may be ``None`` for all faults, a list of fault objects, or
-        a list of fault names. The helper keeps summary and moment APIs aligned.
+        ``faults`` may be ``None``/``"all"`` for all faults, one fault object
+        or name, or an iterable of objects/names. The helper keeps summary,
+        prediction, and figure-product APIs on one selection contract.
         """
-        if faults is None:
-            return self._get_faults()
+        all_faults = list(self._get_faults())
+        if faults is None or (
+            isinstance(faults, str) and faults.strip().lower() == "all"
+        ):
+            return all_faults
+        if isinstance(faults, str) or not isinstance(faults, Iterable):
+            requested = [faults]
+        else:
+            requested = list(faults)
+        if not requested:
+            return all_faults
 
-        if isinstance(faults, list):
-            if len(faults) == 0:
-                return self._get_faults()
-            if isinstance(faults[0], str):
-                all_faults = self._get_faults()
-                fault_dict = {fault.name: fault for fault in all_faults}
-                target_faults = []
-                for fault_name in faults:
-                    if fault_name in fault_dict:
-                        target_faults.append(fault_dict[fault_name])
-                    else:
-                        print(f"Warning: Fault '{fault_name}' not found in available faults")
-                return target_faults
-            return faults
-
-        print("Warning: Invalid faults parameter, using available faults")
-        return self._get_faults()
+        fault_dict = {
+            str(getattr(fault, "name", "")): fault for fault in all_faults
+        }
+        selected = []
+        for value in requested:
+            if not isinstance(value, str):
+                selected.append(value)
+                continue
+            try:
+                selected.append(fault_dict[value])
+            except KeyError as exc:
+                raise ValueError(f"Fault '{value}' was not found") from exc
+        return selected
 
     def _default_fault_groups(self, target_faults):
         """
@@ -598,33 +624,53 @@ class FaultAnalysisMixin:
         rebuild_synth=True,
         faults=None,
     ):
-        """Collect RMS/VR diagnostics without changing the numerical formula.
+        """Collect RMS/VR diagnostics from one coherent prediction contract.
 
-        Dataset rows reuse the legacy ``calculate_data_fit_metrics`` vector
-        definitions.  The global solver row, when available, is computed from
-        the assembled solver vector, e.g. ``G @ mpost - d`` for BLSE.
+        Fixed-geometry linear solvers publish exact per-dataset blocks from
+        their assembled ``G @ mpost`` prediction. General or explicitly
+        selected source/correction diagnostics consume CSI synthetic fields.
+        Ordinary and weighted metrics in any one row therefore use the same
+        observation/prediction pair.
 
         When ``include_weighted`` is true and the active inversion exposes a
         prepared covariance metric plus the sigma scale used for each data
         set, dataset rows also contain ``Qw`` and whitened RMS diagnostics.
         Collection never refactorizes covariance or changes the active model.
+        ``rebuild_synth`` controls publication/rebuilding only; it never
+        changes the numerical prediction used for a formal linear row.
         """
         rows = []
         dataset_rows = []
-        data_objects, verticals, polys = self._get_fit_geodata_config()
-        target_faults = self._select_faults(faults)
+        specs = get_geodata_prediction_specs(self)
         weight_context = self._fit_weight_context() if include_weighted else None
+        formal_blocks = None
+        if _requests_complete_fault_model(faults) and data_poly == "config":
+            formal_blocks = self._formal_fit_prediction_blocks()
 
-        if (
-            include_dataset
-            or include_dataset_average
-            or (include_global and include_weighted)
-        ):
-            for data, vertical, config_poly in zip(data_objects, verticals, polys):
-                resolved_poly = resolve_data_poly(config_poly, requested=data_poly)
-                if rebuild_synth:
-                    data.buildsynth(target_faults, direction="sd", poly=resolved_poly, vertical=vertical)
-                observed, synthetic = data_fit_vectors(data, vertical=vertical)
+        if formal_blocks is not None:
+            if rebuild_synth:
+                publish_prediction_blocks(formal_blocks)
+            prediction_blocks = formal_blocks
+        else:
+            target_faults = self._select_faults(faults)
+            prediction_blocks = build_diagnostic_prediction_blocks(
+                specs,
+                target_faults,
+                requested_poly=data_poly,
+                rebuild_synth=rebuild_synth,
+            )
+
+        if include_dataset or include_dataset_average or include_global:
+            for block in prediction_blocks:
+                data = block.spec.data
+                vertical = block.spec.vertical
+                observed = block.observed
+                synthetic = block.predicted
+                reported_poly = (
+                    None
+                    if formal_blocks is None and data_poly is None
+                    else block.spec.configured_poly
+                )
                 metrics = fit_metrics_from_vectors(observed, synthetic)
                 weighted = {}
                 sigma_group = None
@@ -638,10 +684,7 @@ class FaultAnalysisMixin:
                             sigma_group, []
                         )
                         effective_dof = None
-                        # VCE effective degrees of freedom belong to a group.
-                        # They are attached to a dataset row only when the
-                        # group contains that dataset alone.
-                        if len(group_members) == 1:
+                        if formal_blocks is not None and len(group_members) == 1:
                             effective_dof = weight_context["group_dofs"].get(
                                 sigma_group
                             )
@@ -658,7 +701,7 @@ class FaultAnalysisMixin:
                         "dataset": getattr(data, "name", None),
                         "data_type": getattr(data, "dtype", None),
                         "vertical": bool(vertical),
-                        "poly": resolved_poly,
+                        "poly": reported_poly,
                         "sigma_group": sigma_group,
                         **metrics,
                         **weighted,
@@ -688,29 +731,66 @@ class FaultAnalysisMixin:
             )
 
         if include_global:
-            global_row = self._collect_global_solver_fit_statistics(model=model)
-            if global_row is not None:
-                weighted_global = aggregate_dataset_fit_rows(
-                    dataset_rows,
-                    model=model,
+            global_row = aggregate_dataset_fit_rows(
+                dataset_rows,
+                scope=(
+                    "global_solver_vector"
+                    if formal_blocks is not None
+                    else "global_observation_vector"
+                ),
+                model=model,
+            )
+            if global_row is None and formal_blocks is None:
+                global_row = self._collect_global_solver_fit_statistics(
+                    model=model
                 )
-                if (
-                    weighted_global is not None
-                    and weighted_global.get("weighted_quadratic") is not None
-                ):
-                    for key in (
-                        "sigma_scale",
-                        "base_marginal_std",
-                        "effective_marginal_std",
-                        "weighted_quadratic",
-                        "weighted_rms",
-                        "weighted_effective_dof",
-                        "reduced_weighted_misfit",
-                    ):
-                        global_row[key] = weighted_global.get(key)
+            if global_row is not None:
                 rows.append(global_row)
 
         return rows
+
+    def publish_fit_predictions(
+        self,
+        *,
+        data_poly="config",
+        faults=None,
+        data_objects=None,
+    ):
+        """Publish one coherent active-model prediction to configured data.
+
+        Fixed-geometry BLSE/VCE use exact assembled ``G @ m`` blocks for the
+        complete configured model. Explicit source or correction subsets are
+        diagnostic CSI forward calculations.
+        """
+        selected_ids = (
+            None
+            if data_objects is None
+            else {id(data) for data in data_objects}
+        )
+        if _requests_complete_fault_model(faults) and data_poly == "config":
+            formal_blocks = self._formal_fit_prediction_blocks()
+            if formal_blocks is not None:
+                if selected_ids is not None:
+                    formal_blocks = [
+                        block
+                        for block in formal_blocks
+                        if id(block.spec.data) in selected_ids
+                    ]
+                publish_prediction_blocks(formal_blocks)
+                return formal_blocks
+
+        target_faults = self._select_faults(faults)
+        specs = [
+            spec
+            for spec in get_geodata_prediction_specs(self)
+            if selected_ids is None or id(spec.data) in selected_ids
+        ]
+        return build_diagnostic_prediction_blocks(
+            specs,
+            target_faults,
+            requested_poly=data_poly,
+            rebuild_synth=True,
+        )
 
     def _fit_weight_context(self):
         """Return the active, report-only covariance/sigma mapping.
@@ -748,6 +828,17 @@ class FaultAnalysisMixin:
         self.current_data_weights = {}
         self.current_data_sigma_groups = {}
         self.current_data_sigma_group_members = {}
+        self._clear_fit_derived_diagnostics()
+
+    def _clear_fit_derived_diagnostics(self):
+        """Invalidate diagnostics that belong to one fitted model only.
+
+        Covariance metrics, active sigma scales, and their group mapping can
+        still evaluate another model under the same weighting convention.
+        Effective degrees of freedom, in contrast, describe the fit that
+        produced the active solution and cannot be transferred to a supplied
+        model vector.
+        """
         self.current_data_effective_dof = {}
 
     def _collect_global_solver_fit_statistics(self, *, model="median"):

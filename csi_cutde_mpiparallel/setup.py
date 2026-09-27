@@ -1,15 +1,15 @@
 from setuptools import setup, find_packages
-from setuptools.command.install import install
 
 setup(
     name="csi",
-    version="1.0.0",
+    version="1.0.1",
     description="CSI stands for Classic Slip Inversion",
     author="jolivet",
     author_email="romain.jolivet@ens.fr",
     url="http://www.geologie.ens.fr/~jolivet/csi/index.html",
     packages=find_packages(),
-    include_package_data=True,
+    # Runtime resources are explicit; exclude tracked/generated cache artifacts.
+    include_package_data=False,
     package_data={
         "csi": [
             "bin/edcmp4py_ctypes.py",
@@ -30,6 +30,7 @@ setup(
     },
     python_requires=">=3.10,<3.13",
     install_requires=[
+        "ecat-viz>=0.1.1,<0.2",
         # Direct runtime dependencies imported by CSI. A dependency that is
         # also imported by eqtools is intentionally declared in both packages
         # so each standalone checkout remains installable on its own. Keep

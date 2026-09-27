@@ -621,6 +621,9 @@ inversion.extract_and_plot_bayesian_results(
     plot_std=args.plot_std and not args.no_plot,  # 显式请求，计算可能较慢。
     plot_sigmas=False,  # 关闭内置 KDE，避免与下面的联合 KDE 重复。
     data_poly="config",  # 沿用每个数据集解析后的 poly 设置。
+    antisymmetric=True,  # False 使用各 raster 场的实际数据范围。
+    raster_render_mode="points",  # "cells" 或 corner-aware "auto"
+    raster_cell_edge_width=0.25,
     fault_outdir="output", data_outdir="Modeling", show=False,
 )
 
@@ -643,6 +646,11 @@ CSI 的只读 `corner_mode` 选择表示：点输入调用 `write2file()`，有�
 `writeDecim2file(..., triangular=None)`。`data`、`synth` 和 `resid` 均为有效选择；writer
 按同一个中央契约处理三角形、完整四边形或旧式对角格式。synthetic 本身由上面的高层
 入口依据 `verticals`/`polys` 生成，脚本不再按 SAR/opticorr 类型自行复制一套正演逻辑。
+拟合图的 `raster_render_mode` 只选择中心点或 corner 单元；opticorr 默认在同一图中显示
+East/North 两行。需要单一分量时可传
+`opticorr_kwargs={"components": ("east",)}`，不会改变反演使用的双分量数据。
+自动色标默认由 `antisymmetric=True` 约束为零中心对称范围；设为 `False` 后使用每个
+raster 场的有限数据范围，显式 `vmin`/`vmax` 则保持原值。
 
 三份公共模板默认只保存代表滑动；传入 `--plot-std` 后，才额外计算并保存 posterior
 滑动分量离散度。该开关还受 `--no-plot` 约束。离散度绘制完成后，高层入口会恢复所选代表

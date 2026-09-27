@@ -1,7 +1,7 @@
 # 安装与环境检查
 
 本页区分两种安装场景：第一次部署完整 ECAT，以及在已有 ECAT 环境中增量更新
-`eqtools` 或 CSI。完整环境从 ECAT 仓库根目录建立；包级更新进入相应子目录执行。
+`eqtools`、CSI 或 ecat-viz。完整环境从 ECAT 仓库根目录建立；包级更新进入相应子目录执行。
 
 ECAT 支持 64 位 Windows 和 Linux 上的 CPython 3.10、3.11 和 3.12。当前默认
 推荐并重点验证 CPython 3.10；3.11 和 3.12 保留为支持的安装目标。推荐使用
@@ -141,12 +141,11 @@ conda create -n ecat --override-channels -c conda-forge \
 把代理处理与 MKL/MPI 选择组合使用时，再进入
 [安装与运行故障排查](troubleshooting.md#2-conda-创建环境失败或很慢)。
 
-`requirements/ecat-requirements.txt` 是 ECAT 唯一的用户环境清单，包含 CSI 与
-eqtools 的直接运行依赖和兼容范围。
+`requirements/ecat-requirements.txt` 是 ECAT 唯一的用户环境清单，包含 CSI、eqtools 与 ecat-viz 的直接运行依赖和兼容范围。
 
-清单按“CSI 与 eqtools 共享”“仅 CSI”“仅 eqtools”分组。共享包会分别保留在两个
-独立包的 `setup.py` 中，因为 CSI 和 eqtools 都直接使用它们；清单生成时只去重一次，
-不能根据它在清单中的显示位置判断依赖归属。
+清单按多个组件共享和各组件独有的直接依赖分组。直接导入的依赖仍分别声明在
+对应组件 setup.py 中，生成环境清单时去重；本地 ecat-viz 组件由 pip 安装，不写入
+Conda 环境清单，也不依赖它已发布到 PyPI。
 
 依赖清单保留 Python 3.10--3.12 的兼容范围，但主安装命令明确选择经过最多实际
 案例验证的 3.10。需要测试较新解释器时，可以改为：
@@ -213,11 +212,41 @@ Remove-Item Env:PIP_INDEX_URL -ErrorAction SilentlyContinue
 影响从本地路径安装的 `okada4py` wheel。普通安装不需要永久执行
 `pip config set global.index-url ...`。
 
-脚本使用当前解释器的 `python -m pip`，先安装 CSI，再安装 eqtools，并检查两者
-能否导入。若 Python 不在 3.10--3.12 范围内，或缺少 `okada4py`，脚本会停止并
+脚本使用当前解释器的 `python -m pip`，一次解析三个本地组件，再无依赖重装 CSI 以恢复其命令文件，最后检查
+`ecat_viz`、`csi` 和 `eqtools` 能否导入。也可从 ECAT 根目录直接执行：
+
+```bash
+python -m pip install ./ecat-viz ./csi_cutde_mpiparallel ./eqtools
+python -m pip install --no-deps --force-reinstall ./csi_cutde_mpiparallel
+```
+
+`ecat-viz` 的分发名与导入名 `ecat_viz` 不同；它只提供通用绘图、CPT 色表和资源。
+CSI 与 eqtools 分别保留科学对象和工作流职责。若 Python 不在 3.10--3.12 范围内，或缺少 `okada4py`，脚本会停止并
 给出提示。
 
+本轮对应组件为 eqtools `2.0.2`、CSI `1.0.1`、ecat-viz `0.1.1`；CSI/eqtools
+声明绘图库最低版本为 `0.1.1`。CSI fork 仍由 ECAT 提供，不应混入名称相同的其他发行。
+旧 eqtools 与 CSI 的卸载清单曾重复拥有 `ecat-psgrn`；更新后的 eqtools 不再声明它。
+上面的最后一次 CSI 重装可以恢复旧卸载清单误删的命令文件，此后卸载 eqtools 不影响该命令。
+
 ## 4. 在已有环境中增量更新
+
+跨过本次绘图拆分与预测协议对齐的首次更新，应重新运行安装脚本或上面的三路径
+pip 命令，同时更新 CSI、eqtools 和 ecat-viz。仅补装 ecat-viz 不能补齐旧 CSI 的
+`direction="source"` 预测协议。后续没有跨包合同变化时，可分别更新兼容组件；通用
+绘图库的增量更新进入 `ecat-viz` 执行 `python -m pip install .`。
+
+三个包的版本号分别由各自打包元数据声明，不能用 ECAT 的历史引用版本代替，也不能
+仅凭版本号相同判断源码已同步。安装后可检查版本及下列快速检查中的实际导入来源：
+
+```bash
+python -c "from importlib.metadata import version; print({p: version(p) for p in ('ecat-viz', 'csi', 'eqtools')})"
+```
+
+仅需通用科研绘图时，可单独安装 ecat-viz，无需 CSI 或 eqtools；文件读取扩展使用
+`python -m pip install ".[raster]"`。旧物理 CPT/样式目录的迁移见
+[绘图接口与色表](../reference/viztools.md#色表与资源迁移)。
+
 
 日常更新 eqtools 不需要重新创建整个 Conda 环境。拉取新代码后，进入 eqtools
 项目目录执行普通安装：
@@ -321,7 +350,7 @@ Cholesky/条件估计，CVXOPT 处理活动边界及一般线性约束，Clarabe
 这些包也不会改变 ECAT 的生产求解路由。
 
 ```bash
-python -c "import csi, eqtools, okada4py; print('ECAT imports succeeded')"
+python -c "import ecat_viz, csi, eqtools, okada4py; print('ECAT imports succeeded')"
 python -c "import cvxopt, clarabel; from scipy.linalg.lapack import dpocon; print('ECAT linear solvers succeeded')"
 ecat-generate-downsample --help
 ecat-generate-nonlinear --help

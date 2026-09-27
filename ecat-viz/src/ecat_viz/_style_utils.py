@@ -13,12 +13,15 @@ normalize_image_format: Normalize and validate a requested image format
 """
 
 import json
+import os
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Dict, Optional
 
 # Import the centralized registry
-from ._registry import _registry
+from ._registry import _registry, _positive_finite, _validate_column_width
+from ._core import _ensure_initialized
 
 
 def normalize_image_format(file_type: str) -> str:
@@ -50,7 +53,7 @@ def register_column_width(name: str, width_inch: float) -> None:
     name : str
         Case-insensitive key, e.g. ``'agu_single'``, ``'copernicus'``.
     width_inch : float
-        Column width **in inches**.
+        Finite positive column width **in inches**.
 
     Example
     -------
@@ -58,6 +61,8 @@ def register_column_width(name: str, width_inch: float) -> None:
     >>> register_column_width('copernicus', 3.15)
     >>> publication_figsize('agu_single')           # (3.37, 2.5275)
     """
+    name, width_inch = _validate_column_width(name, width_inch)
+    _ensure_initialized()
     _registry.register_column_width(name, width_inch)
 
 
@@ -65,12 +70,12 @@ def _load_user_config() -> None:
     """Load user column-width overrides from the first existing config file.
 
     Search order (highest priority first):
-    1. ``~/.config/eqtools/viztools.json``   (new standard path)
+    1. ``~/.config/eqtools/viztools.json``   (retained compatibility path)
     2. ``~/.config/eqtools/plottools.json``
     3. ``~/.config/statutils/plottools.json``  (legacy, emits DeprecationWarning)
     4. ``~/.plottools.json``                   (legacy, emits DeprecationWarning)
 
-    Silently skipped if no file exists or the JSON is malformed.
+    No file is a no-op; malformed configuration emits a warning.
     """
     new_paths = [
         Path.home() / '.config' / 'eqtools' / 'viztools.json',
@@ -89,7 +94,7 @@ def _load_user_config() -> None:
     for cfg_path in legacy_paths:
         if cfg_path.exists():
             warnings.warn(
-                f"eqtools.viztools: config file '{cfg_path}' is at a legacy path. "
+                f"ecat_viz: config file '{cfg_path}' is at a legacy path. "
                 f"Move it to ~/.config/eqtools/viztools.json to suppress this warning.",
                 DeprecationWarning, stacklevel=3,
             )
@@ -97,16 +102,26 @@ def _load_user_config() -> None:
             return
 
 
+def _validated_config_widths(data):
+    """Validate the complete width section before applying any entries."""
+    if not isinstance(data, dict):
+        raise ValueError("Column-width configuration must be a JSON object.")
+    widths = data.get('column_widths', {})
+    if not isinstance(widths, dict):
+        raise ValueError("column_widths must be a JSON object.")
+    return dict(_validate_column_width(name, value) for name, value in widths.items())
+
+
 def _load_config_file(cfg_path: Path, legacy: bool = False) -> None:
-    """Parse a JSON config file and register column widths from it."""
+    """Read validated overrides without re-entering public initialization."""
     try:
         data = json.loads(cfg_path.read_text(encoding='utf-8'))
-        for name, w in data.get('column_widths', {}).items():
-            register_column_width(name, float(w))
-    except Exception as e:
-        warnings.warn(
-            f"eqtools.viztools: could not load config {cfg_path}: {e}"
-        )
+        widths = _validated_config_widths(data)
+    except (OSError, ValueError) as exc:
+        warnings.warn(f"ecat_viz: could not load config {cfg_path}: {exc}")
+        return
+    for name, width in widths.items():
+        _registry.register_column_width(name, width)
 
 
 def save_column_width(name: str, width_inch: float,
@@ -135,38 +150,32 @@ def save_column_width(name: str, width_inch: float,
     - Creates the config directory if it doesn't exist
     - Preserves existing configuration entries
     """
+    name, width_inch = _validate_column_width(name, width_inch)
     if config_path is None:
         config_path = Path.home() / '.config' / 'eqtools' / 'viztools.json'
-
-    # Ensure parent directory exists
+    config_path = Path(config_path)
+    # Parse and validate before creating directories or changing the file.
+    data = json.loads(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
+    _validated_config_widths(data)
+    data.setdefault('column_widths', {})[name] = width_inch
+    payload = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+    _ensure_initialized()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load existing config or create new
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text(encoding='utf-8'))
-        except Exception:
-            data = {}
-    else:
-        data = {}
-
-    # Update column_widths section
-    if 'column_widths' not in data:
-        data['column_widths'] = {}
-    data['column_widths'][str(name).lower()] = float(width_inch)
-
-    # Write back
+    temporary = None
     try:
-        config_path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding='utf-8'
-        )
-    except Exception as e:
-        warnings.warn(f"Failed to save column width to {config_path}: {e}")
-        return
-
-    # Also register in current session
-    register_column_width(name, width_inch)
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=config_path.parent, prefix='.' + config_path.name + '.',
+                                         suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, config_path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    # A failed write must not register an unsaved override.
+    _registry.register_column_width(name, width_inch)
 
 
 def list_column_widths() -> Dict[str, float]:
@@ -187,6 +196,7 @@ def list_column_widths() -> Dict[str, float]:
     nature          3.42 inch
     ...
     """
+    _ensure_initialized()
     return _registry.list_column_widths()
 
 
@@ -202,7 +212,7 @@ def publication_figsize(column='single', fraction=1.0, aspect=0.75, height=None,
         - Custom numeric width (interpreted as *unit*).
         - ``(width, height)`` tuple (interpreted as *unit*).
     fraction : float
-        Fraction of the column width (0..1).
+        Positive scale factor for the column width; ignored for a size tuple.
     aspect : float
         Height-to-width ratio when *height* is None.
     height : float, optional
@@ -225,41 +235,33 @@ def publication_figsize(column='single', fraction=1.0, aspect=0.75, height=None,
     >>> publication_figsize((10, 8), unit='cm')
     (3.937..., 3.149...)
     """
-    cm_to_inch = 1 / 2.54
+    if unit not in {'inch', 'cm'}:
+        raise ValueError("unit must be 'inch' or 'cm'.")
+    _ensure_initialized()
+    scale = 1 / 2.54 if unit == 'cm' else 1.0
 
-    if isinstance(column, (tuple, list)) and len(column) == 2:
-        w_raw, h_raw = float(column[0]), float(column[1])
-        if unit == 'cm':
-            return (w_raw * cm_to_inch, h_raw * cm_to_inch)
-        return (w_raw, h_raw)
+    if isinstance(column, (tuple, list)):
+        if len(column) != 2:
+            raise ValueError("Figure size must contain exactly width and height.")
+        return (_positive_finite(_positive_finite(column[0], 'Width') * scale, 'Width'),
+                _positive_finite(_positive_finite(column[1], 'Height') * scale, 'Height'))
 
     if isinstance(column, (int, float)):
-        w = float(column)
+        w = _positive_finite(column, 'Width') * scale
     else:
         w = _registry.get_column_width(str(column).lower())
         if w is None:
             available = list(_registry.list_column_widths().keys())
             warnings.warn(
                 f"Column width '{column}' not found. "
-                f"Available: {available}. Using 'single' (3.5 in).",
-                UserWarning,
-                stacklevel=2
+                f"Available: {available}. Using 'single'.",
+                UserWarning, stacklevel=2,
             )
-            w = _registry.get_column_width('single')  # fallback
-
-    if unit == 'cm':
-        w = w * cm_to_inch
-
-    w = w * float(fraction)
-
-    if height is not None:
-        h = float(height)
-        if unit == 'cm':
-            h = h * cm_to_inch
-    else:
-        h = w * float(aspect)
-
-    return (w, h)
+            w = _registry.get_column_width('single')
+    w = _positive_finite(w * _positive_finite(fraction, 'Fraction'), 'Width')
+    h = (_positive_finite(height, 'Height') * scale if height is not None
+         else w * _positive_finite(aspect, 'Aspect'))
+    return w, _positive_finite(h, 'Height')
 
 
 def save_fig(fig, path: str, fmts=None, dpi: int = 300,
@@ -403,7 +405,10 @@ def cap_interactive_dpi(fig, max_dpi: Optional[float] = 200, *, redraw: bool = T
 
 
 def show_fig(fig=None, *, max_dpi: Optional[float] = 200, block=None):
-    """Show a Matplotlib figure after applying an interactive dpi cap.
+    """Show open Matplotlib figures, optionally capping one figure's dpi.
+
+    ``fig`` selects the DPI adjustment target, not the windows shown.
+    Display uses pyplot.show(), which may show all open figures.
 
     Parameters
     ----------
@@ -487,8 +492,8 @@ def finish_fig(
             from ._font_utils import bake_text_fonts
 
             bake_text_fonts(fig)
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"Could not fix figure fonts: {exc}", UserWarning, stacklevel=2)
 
     if save:
         save_fig(

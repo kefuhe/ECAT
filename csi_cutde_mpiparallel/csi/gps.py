@@ -14,6 +14,7 @@ import sys
 
 # Personals
 from .SourceInv import SourceInv
+from ._slip_direction import resolve_prediction_slipdir
 from .gpstimeseries import gpstimeseries
 from .geodeticplot import geodeticplot as geoplot
 from . import csiutils as utils
@@ -3394,13 +3395,14 @@ class gps(SourceInv):
 
     def removeSynth(self, faults, direction='sd', poly=None, custom=False):
         '''
-        Removes the synthetics from a slip model.
+        Removes synthetics from fault-slip or supported pressure-source models.
 
         Args:
-            * faults        : list of faults to include.
+            * faults        : source object or list of source objects to include.
 
         Kwargs:
-            * direction     : list of directions to use. Can be any combination of 's', 'd' and 't'.
+            * direction     : slip components to use, or ``'source'`` to
+                              follow each Fault's assembled ``slipdir``.
             * poly          : if a polynomial function has been estimated, include it.
             * custom        : if some custom green's function was used, include it.
 
@@ -3420,15 +3422,16 @@ class gps(SourceInv):
     # ---------------------------------------------------------------------- 
     def buildsynth(self, faults, direction='sd', poly=None, vertical=True, custom=False, computeNormFact=True, computeIntStrainNormFact=True, verbose=False):
         '''
-        Takes the slip model in each of the faults and builds the synthetic displacement using the Green's functions.
+        Build synthetic displacement from fault-slip or pressure-source models.
 
         Args:
-            * faults        : list of faults to include.
+            * faults        : source object or list of source objects to include.
 
         Kwargs:
-            * direction     : list of directions to use. Can be any combination of 's', 'd' and 't'.
+            * direction     : slip components to use, or ``'source'`` to
+                              follow each Fault's assembled ``slipdir``.
             * vertical      : True/False
-            * include_poly  : if a polynomial function has been estimated, include it.
+            * poly          : if a polynomial function has been estimated, include it.
             * custom        : if some custom green's function was used, include it.
             * verbose       : if True, enables verbose output
 
@@ -3463,8 +3466,21 @@ class gps(SourceInv):
 
             # Get the good part of G
             G = fault.G[self.name]
+            source_type = getattr(fault, 'type', None)
+            if source_type == 'Fault':
+                active_direction = resolve_prediction_slipdir(
+                    fault, direction, G
+                )
+            elif source_type == 'Pressure':
+                # ``direction`` selects Fault slip components only. Pressure
+                # sources have their own parameterization below.
+                active_direction = ''
+            else:
+                # Preserve the historical explicit-direction behavior for
+                # third-party source objects that emulate Fault GFs.
+                active_direction = direction
 
-            if ('s' in direction) and ('strikeslip' in G.keys()):
+            if ('s' in active_direction) and ('strikeslip' in G.keys()):
                 Gs = G['strikeslip']
                 Ss = fault.slip[:,0]
                 ss_synth = np.dot(Gs,Ss)
@@ -3478,7 +3494,7 @@ class gps(SourceInv):
                 if vertical:
                     # if ss_synth.size > 2*Nd and east and north:
                     self.synth[:,2] += ss_synth[N:N+Nd]
-            if ('d' in direction) and ('dipslip' in G.keys()):
+            if ('d' in active_direction) and ('dipslip' in G.keys()):
                 Gd = G['dipslip']
                 Sd = fault.slip[:,1]
                 ds_synth = np.dot(Gd, Sd)
@@ -3492,7 +3508,7 @@ class gps(SourceInv):
                 if vertical:
                     #if ds_synth.size > 2*Nd and east and north:
                     self.synth[:,2] += ds_synth[N:N+Nd]
-            if ('t' in direction) and ('tensile' in G.keys()):
+            if ('t' in active_direction) and ('tensile' in G.keys()):
                 Gt = G['tensile']
                 St = fault.slip[:,2]
                 op_synth = np.dot(Gt, St)
@@ -3506,7 +3522,7 @@ class gps(SourceInv):
                 if vertical:
                     #if op_synth.size > 2*Nd and east and north:
                     self.synth[:,2] += op_synth[N:N+Nd]
-            if ('c' in direction) and ('coupling' in G.keys()):
+            if ('c' in active_direction) and ('coupling' in G.keys()):
                 Gc = G['coupling']
                 Sc = fault.coupling
                 dc_synth = np.dot(Gc,Sc)
@@ -3521,7 +3537,7 @@ class gps(SourceInv):
                     #if dc_synth.size > 2*Nd and east and north:
                     self.synth[:,2] += dc_synth[N:N+Nd]
 
-            elif fault.type == "Pressure":
+            if source_type == "Pressure":
 
                 if fault.source in {"Mogi", "Yang"}:
                     Gp = G['pressure']

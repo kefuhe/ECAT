@@ -234,7 +234,7 @@ class PolygonIntersector:
         """
         绘制顶边、底边和交点。
         """
-        from ..viztools import sci_plot_style
+        from ecat_viz import sci_plot_style
         with sci_plot_style(style=style):
             fig = plt.figure()
             if plot_on_2d:

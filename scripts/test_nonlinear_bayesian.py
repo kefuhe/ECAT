@@ -149,19 +149,21 @@ if __name__ == '__main__':
         name='T012A', utmzone=None, ellps='WGS84',
         lon0=lon0, lat0=lat0, verbose=verbose,
     )
-    sar_t012a.read_from_varres(sar_t012a_file, triangular=False, cov=True)
-    # Optional: build the diagonal covariance matrix
-    # sar_t012a.buildDiagCd()
+    sar_t012a.read_from_varres(sar_t012a_file, triangular=None, cov=True)
 
     sar_t121d = insar(
         name='T121D', utmzone=None, ellps='WGS84',
         lon0=lon0, lat0=lat0, verbose=verbose,
     )
-    sar_t121d.read_from_varres(sar_t121d_file, triangular=False, cov=True)
+    sar_t121d.read_from_varres(sar_t121d_file, triangular=None, cov=True)
 
     gpsdata = []
-    sardata = [sar_t012a, sar_t121d]
-    geodata = gpsdata + sardata
+    insardata = [sar_t012a, sar_t121d]
+    # Optional test: set cov=False above, then build a diagonal covariance from err.
+    # for sar_data in insardata:
+    #     sar_data.err[:] = 1.0  # Or keep scientifically reviewed positive .txt errors.
+    #     sar_data.buildDiagCd()
+    geodata = gpsdata + insardata
     # ------------------------------ Set ExploreFault Object ---------------------------#
     expfault = explorefault(
         'invrc', lat0=lat0, lon0=lon0,
@@ -189,6 +191,9 @@ if __name__ == '__main__':
             rank=rank, filename='samples_mag_rake_multifaults.h5',
             fault_figsize=None, sigmas_figsize=None, plot_faults=False,
             plot_sigmas=True, plot_data=False, save_data=True, sar_corner='auto',
+            # True: zero-centred symmetric limits; False: finite data range.
+            antisymmetric=True,
+            raster_render_mode='points', raster_cell_edge_width=0.25,
         )
 
         if rank == 0:

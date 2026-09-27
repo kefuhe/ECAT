@@ -108,3 +108,11 @@ software components used in your workflow.  Common background references include
   deformation rates to earthquake potential.
 
 Case-specific references are listed in the documentation and case materials.
+
+General plotting and CPT resources are supplied by the independent `ecat-viz`
+distribution (`import ecat_viz`), required by CSI and eqtools. Install the sibling
+`ecat-viz` project with `python -m pip install .` first when using local checkouts;
+the ECAT installer resolves all three local components together. Existing
+`eqtools.viztools`, `eqtools.plottools` and `eqtools.getcpt.get_cpt` function
+imports remain compatible; old physical CPT/style directories are removed.
+See the [plotting reference](../docs/reference/viztools.md) for resource migration.

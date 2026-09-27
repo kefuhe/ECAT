@@ -16,7 +16,7 @@ Date: 2025-06-13
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from eqtools.plottools import sci_plot_style, set_degree_formatter
+from ecat_viz import sci_plot_style, set_degree_formatter
 from scipy.stats import linregress
 from collections.abc import Sequence
 

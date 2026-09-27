@@ -1,4 +1,34 @@
+# Ignore dot-prefixed local files/directories at every level.
+.*
+!.gitignore
+!.gitmodules
+# Preserve the existing CI workflow.
+!.github/
+!.github/**
+
+# Build and Python artifacts
 build/
-example_tests/
+**/build/
+site/
 *.egg-info/
+**/*.egg-info/
 __pycache__/
+**/__pycache__/
+
+# Local examples and private working data
+example_tests/
+
+
+
+# LaTeX build intermediates
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Generated distribution artifacts.
+build/
+dist/
+*.egg-info/
+*.py[cod]

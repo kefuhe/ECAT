@@ -1,20 +1,30 @@
 """
-eqtools.plottools — Deprecated. API has moved to eqtools.viztools.
+eqtools.plottools — Deprecated compatibility entry for plotting functions.
 
 This module is kept for backward compatibility only.
-Import from eqtools.viztools instead::
+Import general plotting from ecat_viz instead::
 
-    from eqtools.viztools import PlotStyle, bake_text_fonts, save_fig
+    from ecat_viz import PlotStyle, bake_text_fonts, save_fig
+
+Fault, dip and slip diagnostics remain in eqtools.viztools.
 """
 import warnings
 
 warnings.warn(
     "eqtools.plottools is deprecated and will be removed in a future version. "
-    "Use eqtools.viztools instead:\n"
-    "    from eqtools.viztools import PlotStyle, bake_text_fonts, save_fig",
+    "Use ecat_viz for general plotting and eqtools.viztools for fault diagnostics:\n"
+    "    from ecat_viz import PlotStyle, bake_text_fonts, save_fig",
     DeprecationWarning,
     stacklevel=2,
 )
 
-from .viztools import *        # noqa: F401, F403
-from .viztools import __all__  # noqa: F401
+from . import viztools as _viztools
+__all__ = _viztools.__all__
+
+def __getattr__(name):
+    if name in __all__:
+        return getattr(_viztools, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

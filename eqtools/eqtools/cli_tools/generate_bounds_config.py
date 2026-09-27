@@ -63,8 +63,8 @@ def generate_bounds_config(output_path, faultnames=None, pressure_sources=None, 
     geometry_bounds = "\n".join([f"    {fault}: [-10, 10]  # Mixed geometry units; see sampled parameter definitions" for fault in faultnames])
     slip_magnitude_bounds = "\n".join([f"    {fault}: [0, 15]  # Slip magnitude bounds for {fault} (unit: meters)" for fault in faultnames])
     rake_angle_bounds = "\n".join([f"    {fault}: [-120, -60]  # Rake sector for {fault} (degrees; CSI rake convention)" for fault in faultnames])
-    strikeslip_bounds = "\n".join([f"    {fault}: [-10, 10]  # Strike-slip bounds for {fault} (unit: meters)" for fault in faultnames])
-    dipslip_bounds = "\n".join([f"    {fault}: [-10, 0]  # Dip-slip bounds for {fault} (unit: meters)" for fault in faultnames])
+    strikeslip_bounds = "\n".join([f"    {fault}: [-10, 10]  # Strike-slip amplitude guard for {fault} (unit: meters)" for fault in faultnames])
+    dipslip_bounds = "\n".join([f"    {fault}: [-10, 10]  # Dip-slip amplitude guard for {fault} (unit: meters)" for fault in faultnames])
     poly_bounds = "\n".join([f"    {fault}: [-1000, 1000]  # Data-correction bounds in observation units" for fault in faultnames])
 
     # Build source_bounds section for non-Fault sources.  A comments-only YAML
@@ -165,6 +165,9 @@ slip_magnitude:
 {slip_magnitude_bounds}
 rake_angle:
 {rake_angle_bounds}
+# For BLSE/VCE and SMC_FJ + ss_ds, rake_angle defines slip direction.
+# Keep component bounds broad across zero unless a separate sign prior is intended.
+# FULLSMC + magnitude_rake uses slip_magnitude and rake_angle instead.
 strikeslip:
 {strikeslip_bounds}
 dipslip:

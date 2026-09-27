@@ -1,12 +1,12 @@
 # 科研绘图短例
 
-本页只给最常复制的 `eqtools.viztools` 画法。完整参数、优先级和兼容说明见 [Viztools 参考](../reference/viztools.md)；反演结果批量图见 [Figure Products](../reference/figure_products.md)。
+本页给出通用 `ecat_viz` 画法和保留在 `eqtools.viztools` 的领域诊断图。完整参数、优先级和兼容说明见 [Viztools 参考](../reference/viztools.md)；反演结果批量图见 [Figure Products](../reference/figure_products.md)。
 
 ## 1. 论文单栏曲线图
 
 ```python
 import matplotlib.pyplot as plt
-from eqtools.viztools import PlotStyle, Presets
+from ecat_viz import PlotStyle, Presets
 
 with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
     fig, ax = plt.subplots()
@@ -20,7 +20,7 @@ with PlotStyle(Presets.SCIENCE, figsize="single", fontsize=8, dpi=600):
 
 ```python
 import matplotlib.pyplot as plt
-from eqtools.viztools import PlotStyle, Presets
+from ecat_viz import PlotStyle, Presets
 
 with PlotStyle(
     [Presets.SCIENCE, Presets.COLORS_BRIGHT],
@@ -40,7 +40,7 @@ with PlotStyle(
 
 ```python
 import matplotlib.pyplot as plt
-from eqtools.viztools import PlotStyle, Presets
+from ecat_viz import PlotStyle, Presets
 
 with PlotStyle(Presets.CHINESE, figsize="single", fontsize=9):
     fig, ax = plt.subplots()
@@ -56,7 +56,7 @@ with PlotStyle(Presets.CHINESE, figsize="single", fontsize=9):
 
 ```python
 import matplotlib.pyplot as plt
-from eqtools.viztools import LonFormatter, LatFormatter, PlotStyle
+from ecat_viz import LonFormatter, LatFormatter, PlotStyle
 
 with PlotStyle("science", figsize="single", fontsize=8):
     fig, ax = plt.subplots()
@@ -70,7 +70,7 @@ with PlotStyle("science", figsize="single", fontsize=8):
 ## 5. 二维 SAR/光学网格 quick-look
 
 ```python
-from eqtools.viztools import plot_raster
+from ecat_viz import plot_raster
 
 fig, ax, image = plot_raster(
     displacement,
@@ -90,7 +90,7 @@ fig, ax, image = plot_raster(
 ## 6. 一次保存 PDF 和 PNG
 
 ```python
-from eqtools.viztools import save_fig
+from ecat_viz import save_fig
 
 save_fig(fig, "result", fmts=["pdf", "png"], dpi=600)
 ```

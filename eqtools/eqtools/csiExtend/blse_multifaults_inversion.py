@@ -12,12 +12,15 @@ from .config.parameter_groups import attach_group_parameters, resolve_group_layo
 from .data_correction_constraints import DataCorrectionConstraintMixin
 from .data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
-from .data_prediction import get_prediction_result_state_attributes
+from .data_prediction import (
+    build_linear_prediction_blocks,
+    get_geodata_prediction_specs,
+)
 from .blse_diagnostics import plot_blse_roughness_rms
 from .interseismic_mixin import InterseismicKinematicsMixin
 from .plot_product_mixin import FigureProductMixin
 from .patch_indices import normalize_patch_indices
-from .fit_statistics import build_vce_component_rows
+from .fit_statistics import build_vce_component_rows, solver_fit_metrics
 from .hyperparameter_reporting import (
     build_fixed_scale_parameter_rows,
     format_scale_parameter_report,
@@ -31,7 +34,7 @@ from .parameter_layout_reporting import (
     make_parameter_layout_report,
 )
 from .config.config_utils import get_observation_unit_info, parse_observation_unit
-from ..viztools import normalize_image_format
+from ecat_viz import normalize_image_format
 
 
 _PENALTY_SCAN_SUMMARY_COLUMNS = (
@@ -1365,6 +1368,35 @@ class BoundLSEMultiFaultsInversion(
         }
         self.current_data_effective_dof = dict(group_dofs or {})
 
+    def _formal_fit_prediction_blocks(self):
+        """Return exact configured data blocks from the active linear result."""
+        required = ('G', 'mpost', 'd', 'data_ranges')
+        missing = [
+            name
+            for name in required
+            if not hasattr(self, name) or getattr(self, name) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "No complete active BLSE/VCE result is available for formal "
+                "prediction; missing " + ", ".join(missing) + ". Run or "
+                "activate the linear solution before requesting result "
+                "statistics, figures, or exports."
+            )
+        specs = get_geodata_prediction_specs(self)
+        if not specs:
+            return []
+        model = np.asarray(self.mpost, dtype=float).reshape(-1)
+        predicted = self.G.dot(model) if hasattr(self.G, 'dot') else np.dot(
+            self.G, model
+        )
+        return build_linear_prediction_blocks(
+            specs,
+            self.data_ranges,
+            self.d,
+            predicted,
+        )
+
     def _publish_data_weight_context(self, *, data_weights, group_members):
         """Publish fixed-BLSE weights when they have a sigma interpretation."""
         data_names = list(self.data_ranges)
@@ -1423,31 +1455,6 @@ class BoundLSEMultiFaultsInversion(
                 elif hasattr(source, name):
                     delattr(source, name)
 
-    def _snapshot_prediction_result_state(self):
-        """Capture only geodata fields rebuilt by fit-statistics collection."""
-        data_objects, _, _ = self._get_fit_geodata_config()
-        states = []
-        for data in data_objects:
-            state = {
-                name: (
-                    hasattr(data, name),
-                    copy.deepcopy(getattr(data, name, None)),
-                )
-                for name in get_prediction_result_state_attributes(data)
-            }
-            states.append((data, state))
-        return states
-
-    @staticmethod
-    def _restore_prediction_result_state(states):
-        """Restore a snapshot created by ``_snapshot_prediction_result_state``."""
-        for data, state in states:
-            for name, (existed, value) in state.items():
-                if existed:
-                    setattr(data, name, value)
-                elif hasattr(data, name):
-                    delattr(data, name)
-
     def scan_penalty_weights(
         self,
         penalty_weights,
@@ -1461,8 +1468,9 @@ class BoundLSEMultiFaultsInversion(
         The scan owns candidate execution, scan-local quadratic reuse and
         restoration of the active result.  It performs no plotting or file
         output.  The returned summary always contains global solver-vector
-        RMS/VR and unweighted model roughness.  Per-dataset rows are optional
-        because rebuilding their synthetic fields has a measurable cost.
+        RMS/VR and unweighted model roughness. Per-dataset rows are optional;
+        when requested, they are sliced from the same in-memory ``G @ m``
+        vector and do not publish or rebuild CSI synthetic fields.
 
         Returns
         -------
@@ -1495,10 +1503,6 @@ class BoundLSEMultiFaultsInversion(
         summary_records = []
         fit_records = []
         entry_state = self._snapshot_linear_result_state()
-        prediction_state = (
-            self._snapshot_prediction_result_state()
-            if include_fit_statistics else None
-        )
         try:
             with self._blse_quadratic_scan_context():
                 for candidate_index, candidate in enumerate(candidates):
@@ -1516,7 +1520,7 @@ class BoundLSEMultiFaultsInversion(
                         include_dataset=include_fit_statistics,
                         include_global=True,
                         include_weighted=include_weighted,
-                        rebuild_synth=include_fit_statistics,
+                        rebuild_synth=False,
                     )
                     global_rows = [
                         row for row in rows
@@ -1580,11 +1584,7 @@ class BoundLSEMultiFaultsInversion(
                             f'VR: {float(global_fit["vr"]):.2f}%'
                         )
         finally:
-            try:
-                if prediction_state is not None:
-                    self._restore_prediction_result_state(prediction_state)
-            finally:
-                self._restore_linear_result_state(entry_state)
+            self._restore_linear_result_state(entry_state)
 
         summary = pd.DataFrame(
             summary_records, columns=_PENALTY_SCAN_SUMMARY_COLUMNS
@@ -1795,7 +1795,9 @@ class BoundLSEMultiFaultsInversion(
         and returned RMS/VR on that same vector. Roughness is computed from
         the unscaled smoothing matrix published by the successful solve;
         solver weighting remains available in
-        ``current_model_smoothing_matrix``.
+        ``current_model_smoothing_matrix``. Active covariance/sigma context
+        can still evaluate a supplied vector, while fit-derived effective
+        degrees of freedom are invalidated for that new model.
         """
         if print_fit_statistics is not None:
             print_stat = bool(print_fit_statistics)
@@ -1804,6 +1806,7 @@ class BoundLSEMultiFaultsInversion(
             # APIs of the Bayesian solvers.  Keeping self.mpost, distributed
             # source parameters, predictions, and reported statistics on one
             # vector avoids the former half-temporary state.
+            self._clear_fit_derived_diagnostics()
             self.mpost = np.asarray(mpost, dtype=float).copy()
         self.distributem()
         
@@ -1811,9 +1814,10 @@ class BoundLSEMultiFaultsInversion(
         if print_stat:
             self.calculate_and_print_fit_statistics()
 
-        # Caluculate RMS and VR for the solution and print the results
-        rms = np.sqrt(np.mean((np.dot(self.G, self.mpost) - self.d)**2))
-        vr = (1 - np.sum((np.dot(self.G, self.mpost) - self.d)**2) / np.sum(self.d**2)) * 100
+        # Reuse the same solver-vector convention as the structured report.
+        fit_metrics = solver_fit_metrics(self.G, self.mpost, self.d)
+        rms = fit_metrics['rms']
+        vr = fit_metrics['vr']
         active_smoothing = getattr(
             self,
             'current_smoothing_matrix',
@@ -1837,8 +1841,16 @@ class BoundLSEMultiFaultsInversion(
         """
         Calculate and print fit statistics for all datasets.
         """
-        # Call parent class method with 'BLSE' model
-        super().calculate_and_print_fit_statistics(model='BLSE')
+        rows = self.collect_fit_statistics(
+            model='BLSE',
+            data_poly='config',
+            include_dataset=True,
+            include_global=True,
+            include_weighted=True,
+            rebuild_synth=False,
+        )
+        from .fit_statistics import format_fit_statistics_table
+        print('\n' + format_fit_statistics_table(rows, model='BLSE'))
         
 
     def combine_GL_poly(self, GL_combined=None, penalty_weight=None):
@@ -1994,6 +2006,7 @@ class BoundLSEMultiFaultsInversion(
                                           fault_outdir='output',
                                           data_outdir='Modeling',
                                           show=True,
+                                          raster_render_mode='points', raster_cell_edge_width=0.25,
                                           ):
         """
         Extract and plot the Bayesian results.
@@ -2003,7 +2016,9 @@ class BoundLSEMultiFaultsInversion(
         filename: name of the HDF5 file to save the samples (default is 'samples_mag_rake_multifaults.h5')
         plot_faults: whether to plot faults (default is True)
         plot_data: whether to plot data (default is True)
-        antisymmetric: whether to set the colormap to be antisymmetric (default is True)
+        antisymmetric: whether automatic InSAR/optical Data and Model color
+            limits are symmetric about zero (default is True). False uses the
+            finite data range; explicit vmin/vmax remain authoritative.
         res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
         cmap: colormap to use (default is 'RdBu_r')
         slip_cmap: colormap for slip (default is 'precip3_16lev_change.cpt')
@@ -2017,6 +2032,10 @@ class BoundLSEMultiFaultsInversion(
         sar_figsize: figure size for SAR data plots (default is (3.5, 2.7))
         gps_scale: scale for GPS data plots (default is 0.05)
         gps_legendscale: legend scale for GPS data plots (default is 0.2)
+        raster_render_mode: InSAR/optical figure carrier: ``'points'``
+            (default), ``'cells'``, or ``'auto'``.
+        raster_cell_edge_width: boundary width in points for cell rendering
+            (default is 0.25).
         file_type: file type to save the figures (default is 'png')
         remove_direction_labels : If True, remove E, N, S, W from axis labels (default is False)
         fault_cbaxis: colorbar axis position for fault plots (default is [0.15, 0.22, 0.15, 0.02])
@@ -2034,7 +2053,7 @@ class BoundLSEMultiFaultsInversion(
         """
         if rank == 0:
             import cmcrameri
-            from ..getcpt import get_cpt 
+            from ecat_viz import cpt as get_cpt
 
             file_type = normalize_image_format(file_type)
     
@@ -2078,11 +2097,11 @@ class BoundLSEMultiFaultsInversion(
                     remove_direction_labels=remove_direction_labels,
                 )
 
-            # The product layer preserves the established buildsynth contract:
-            # GPS(vertical, poly), InSAR(vertical=True, poly), leveling
-            # (vertical=True, poly), and cross-fault offsets(poly).
+            # The product layer publishes the formal G @ m prediction once;
+            # explicit diagnostic routes retain each CSI data type's
+            # established vertical/poly buildsynth contract.
             self.plot_data_fits(
-                data_types=("gps", "insar", "leveling", "crossfaultoffset"),
+                data_types=("gps", "insar", "opticorr", "leveling", "crossfaultoffset"),
                 outdir=data_outdir,
                 file_type=file_type,
                 plot_data=plot_data,
@@ -2096,6 +2115,8 @@ class BoundLSEMultiFaultsInversion(
                 sar_figsize=sar_figsize,
                 gps_scale=gps_scale,
                 gps_legendscale=gps_legendscale,
+                raster_render_mode=raster_render_mode,
+                raster_cell_edge_width=raster_cell_edge_width,
                 sar_cbaxis=sar_cbaxis,
                 remove_direction_labels=remove_direction_labels,
                 gps_fault_color='k',

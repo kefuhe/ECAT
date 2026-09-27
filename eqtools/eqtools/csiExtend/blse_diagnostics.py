@@ -13,7 +13,7 @@ from matplotlib.ticker import LogLocator, NullFormatter
 import numpy as np
 import pandas as pd
 
-from eqtools.viztools import PlotStyle, bake_text_fonts
+from ecat_viz import PlotStyle, bake_text_fonts
 
 
 _SUMMARY_COLUMNS = {

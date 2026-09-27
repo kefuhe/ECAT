@@ -19,6 +19,12 @@
 | 导出 Google Earth KMZ | `ecat-export-google-earth` | 选择标准网格、CSI varres、地震 CSV 或多图层 project |
 | 打开本地科研地图 | `ecat-map` | 读取短 project YAML，按需显示地震、断层、GNSS、标准观测或 varres |
 
+`ecat-psgrn` 的安装入口只由 CSI 声明，指向 `csi.cli_tools.psgrn_cli:main`。
+`eqtools.cli_tools.psgrn_cli` 保留模块调用兼容并直接委托 CSI，参数和退出状态不变。
+命令存在不等于平台上的本机后端可用；先按 CSI 的二进制说明准备输入与运行环境。
+从旧版两个包都声明该命令的环境升级时，应运行最新 ECAT 安装脚本，或在三包更新后
+重新安装 CSI 以恢复命令文件，见[安装说明](../getting_started/installation.md)。
+
 <a id="downsampling-config"></a>
 
 ## SAR 降采样配置

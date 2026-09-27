@@ -2684,8 +2684,8 @@ class seismiclocations(SourceInv):
                       style=['notebook'], fontsize=None, save_fig=False, 
                       file_path='profile.png', dpi=300, scatter_props=None,
                       show=True, draw_trace_arrow=True):
-        from eqtools.plottools import DegreeFormatter
-        from eqtools.plottools import sci_plot_style
+        from ecat_viz import DegreeFormatter
+        from ecat_viz import sci_plot_style
         with sci_plot_style(style=style, fontsize=fontsize, figsize=figsize):
         # Set default properties for plotting
         # with plt.style.context(style):
@@ -2875,7 +2875,7 @@ class seismiclocations(SourceInv):
         for ax in axes[:, 0]:
             ax.set_aspect('equal', adjustable='box')
             if map_use_degrees:
-                from eqtools.plottools import set_degree_formatter
+                from ecat_viz import set_degree_formatter
                 set_degree_formatter(ax)
 
         # Adjust layout
@@ -2971,7 +2971,7 @@ class seismiclocations(SourceInv):
             ax_map.set_ylim(ylim)
     
         if use_degrees:
-            from eqtools.plottools import set_degree_formatter
+            from ecat_viz import set_degree_formatter
             set_degree_formatter(ax_map)
     
         # Save the figure if requested

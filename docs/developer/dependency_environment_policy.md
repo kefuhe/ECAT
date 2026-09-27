@@ -1,6 +1,6 @@
 # 依赖与运行环境策略
 
-本页面向 eqtools、CSI 和统一 ECAT 的维护者，说明安装文档、包元数据、平台运行时
+本页面向 eqtools、CSI、ecat-viz 和统一 ECAT 的维护者，说明安装文档、包元数据、平台运行时
 和发布验证的边界。普通用户从[安装与环境检查](../getting_started/installation.md)
 和[安装与运行故障排查](../getting_started/troubleshooting.md)进入。
 
@@ -23,7 +23,8 @@ Numba范围。版本范围是兼容窗口，不是完整环境快照。
 
 - 独立 eqtools仓库以自身 `setup.py` 为 eqtools直接依赖事实来源；
 - 独立 CSI仓库以自身 `setup.py` 为 CSI直接依赖事实来源；
-- 统一 ECAT只聚合、去重两个包的直接依赖；
+- 独立 ecat-viz 仓库以自身 setup.py 为通用绘图依赖事实来源；
+- 统一 ECAT 聚合、去重三个包的外部直接依赖；本地 ecat-viz 不进入 Conda 包清单；
 - `okada4py`、MPI运行时和 BLAS实现的安装要求必须与 Python包归属分开说明；
 - 基础清单只收录核心功能直接使用的运行依赖；可选工具通过 extras或专项安装说明维护。
 
@@ -32,8 +33,7 @@ Numba范围。版本范围是兼容窗口，不是完整环境快照。
 
 ## Conda与 pip边界
 
-Conda负责创建支持的 Python环境和解析地学、数值计算编译依赖；pip负责安装 CSI、
-eqtools及其 extras源码。普通安装必须继续支持：
+Conda负责创建支持的 Python环境和解析地学、数值计算编译依赖；pip负责安装 ecat-viz、CSI、eqtools 及其 extras 源码。普通安装必须继续支持：
 
 ```bash
 python -m pip install .
@@ -64,6 +64,15 @@ python -m pip install -e .
 不要要求用户为一次正常安装永久修改 `.condarc`、代理变量、BLAS pin、MPI路径或
 线程数。公共文档只保留可迁移的问题模式、检查方法和解决方案，不记录本地绝对
 路径或仅适用于单台机器的配置。
+
+## 打包与安装副作用
+
+eqtools 使用标准 setuptools 安装，不在构建 wheel 或安装时删除当前环境中的数据。
+eqtools 运行包只发现自身命名空间，排除 test/tests 子包；CSI 与 eqtools 的非代码资源
+由 package_data 明确列出，不由源码跟踪清单自动带入缓存。旧 build 与 egg-info 是生成缓存，.gitignore 只能阻止提交，不能阻止它们
+参与本地打包；迁移后应从干净 checkout 构建发布 wheel，并检查归档内容，确认没有
+旧 CPT/样式、测试、隐藏目录或内部材料。不要把维护源码仓库的默认 sdist 当作公开
+发布清单；它可能包含自动收集的测试，公开发布范围以 ECAT 筛选后的目录为准。
 
 ## 网络、VPN与渠道策略
 
@@ -142,5 +151,18 @@ singleton警告应明确归类为启动器/运行库错配。完整 oneAPI的 sh
 8. 安装页和排错页没有本地绝对路径或不可公开案例；
 9. 相对链接、MkDocs严格构建和 Markdown代码块检查通过。
 
-将独立 eqtools/CSI更新同步到统一 ECAT时，应同步安装页、排错页、导航、依赖聚合
+将独立 eqtools/CSI/ecat-viz 更新同步到统一 ECAT时，应同步安装页、排错页、导航、依赖聚合
 结果和维护者策略；不要在各仓库重新写一套含义不同的线程或版本说明。
+
+## 三组件协调安装
+
+ECAT 安装器在同一次 pip 调用中提供三个本地目录，允许 ecat-viz 尚未发布到 PyPI：
+
+```bash
+python -m pip install ./ecat-viz ./csi_cutde_mpiparallel ./eqtools
+```
+
+CSI 与 eqtools 声明 `ecat-viz>=0.1.0,<0.2`，并直接导入通用工具。更新到这一组织的
+首次安装需要三个目录协调完成；日后可分别更新已满足依赖的组件。独立 ecat-viz 可
+`pip install .` 使用，基础仅依赖 NumPy、Matplotlib 和 SciencePlots，文件读取为 raster extra。
+迁移本身没有调整已有数值、MPI、BLAS 版本范围；跨平台环境矩阵仍须发布前按实际环境验证。

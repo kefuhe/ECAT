@@ -6,7 +6,7 @@ from abc import abstractmethod
 
 # import csi modules and csiExtend modules
 from csi.insar import insar
-from eqtools.viztools import set_degree_formatter, sci_plot_style
+from ecat_viz import set_degree_formatter, sci_plot_style
 from .sar_conventions import (
     AcquisitionLookSide,
     AngleGeometrySpec,

@@ -86,7 +86,7 @@ from matplotlib.ticker import FuncFormatter, AutoLocator
 from csi import gps, insar, leveling, crossfaultoffset
 
 # Local imports - utilities and plotting
-from ..viztools import normalize_image_format, sci_plot_style
+from ecat_viz import normalize_image_format, sci_plot_style
 
 # Local imports - core modules
 from .BayesianAdaptiveTriangularPatches import BayesianAdaptiveTriangularPatches as relocfault
@@ -2520,7 +2520,7 @@ class BayesianMultiFaultsInversion(
         Returns:
         - None
         """
-        from ..viztools import optimize_3d_plot
+        from ecat_viz import optimize_3d_plot
         from matplotlib.ticker import FuncFormatter
         import matplotlib.pyplot as plt
         from mpl_toolkits.mplot3d import Axes3D
@@ -3046,7 +3046,8 @@ class BayesianMultiFaultsInversion(
                                           sar_xticks=None, sar_yticks=None,
                                           gps_kwargs=None, sar_kwargs=None,
                                           fault_outdir='output', data_outdir='Modeling', show=True,
-                                          model=None):
+                                          model=None, opticorr_kwargs=None,
+                                          raster_render_mode='points', raster_cell_edge_width=0.25):
         """
         Extract and plot the Bayesian results.
     
@@ -3061,7 +3062,9 @@ class BayesianMultiFaultsInversion(
             therefore expose it as an explicit opt-in product.
         plot_sigmas: whether to plot sigmas (default is True)
         plot_data: whether to plot data (default is True)
-        antisymmetric: whether to set the colormap to be antisymmetric (default is True)
+        antisymmetric: whether automatic InSAR/optical Data and Model color
+            limits are symmetric about zero (default is True). False uses the
+            finite data range; explicit vmin/vmax remain authoritative.
         res_use_data_norm: whether to make the norm of 'res' consistent with 'data' and 'synth' (default is True)
         cmap: colormap to use (default is 'jet')
         slip_cmap: colormap for slip (default is 'precip3_16lev_change.cpt')
@@ -3098,6 +3101,12 @@ class BayesianMultiFaultsInversion(
         sar_yticks: custom y-ticks for SAR plots (default is None)
         gps_kwargs: additional keyword arguments for GPS plotting (default is empty dict)
         sar_kwargs: additional keyword arguments for SAR plotting (default is empty dict)
+        opticorr_kwargs: additional optical fit-figure display arguments,
+            such as ``components=('east',)`` (default is empty dict)
+        raster_render_mode: InSAR/optical figure carrier: ``'points'``
+            (default), ``'cells'``, or ``'auto'``
+        raster_cell_edge_width: boundary width in points for cell rendering
+            (default is 0.25)
         fault_outdir: directory for posterior and fault-field figures
             (default is 'output')
         data_outdir: directory for GPS/InSAR/leveling/cross-fault figures
@@ -3119,7 +3128,7 @@ class BayesianMultiFaultsInversion(
             )
         if rank == 0:
             import cmcrameri
-            from ..getcpt import get_cpt 
+            from ecat_viz import cpt as get_cpt
 
             file_type = normalize_image_format(file_type)
             fault_output_path = pathlib.Path(fault_outdir)
@@ -3234,6 +3243,9 @@ class BayesianMultiFaultsInversion(
                 remove_direction_labels=remove_direction_labels,
                 gps_kwargs=resolved_gps_kwargs,
                 sar_kwargs=sar_kwargs,
+                opticorr_kwargs=opticorr_kwargs,
+                raster_render_mode=raster_render_mode,
+                raster_cell_edge_width=raster_cell_edge_width,
                 gps_fault_color='b',
                 sar_fault_color='k',
                 fault_linewidth=None,

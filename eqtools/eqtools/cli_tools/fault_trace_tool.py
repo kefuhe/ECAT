@@ -23,7 +23,7 @@ from csi import SourceInv
 from ..csiExtend.trace_io import read_trace, write_trace
 from ..csiExtend.trace_processing import TracePath, process_trace
 from ..csiExtend.trace_ops import simplify_trace, smooth_trace
-from ..viztools import sci_plot_style, set_degree_formatter
+from ecat_viz import sci_plot_style, set_degree_formatter
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)

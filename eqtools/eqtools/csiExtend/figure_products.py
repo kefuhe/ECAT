@@ -9,9 +9,12 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from .data_plot_utils import _plot_crossfaultoffset_fit, _plot_leveling_fit
-from .data_prediction import get_geodata_prediction_specs, resolve_data_poly
+from .data_prediction import (
+    get_geodata_prediction_specs,
+    rebuild_diagnostic_synthetics,
+)
 from .interseismic_fields import get_fault_by_name, get_faults_from_inversion
-from ..viztools import normalize_image_format, sci_plot_style
+from ecat_viz import normalize_image_format, sci_plot_style
 
 
 def _merge_product_plot_kwargs(
@@ -48,14 +51,29 @@ def _as_name_set(values: Sequence[str] | str | None) -> set[str] | None:
     return {str(value) for value in values}
 
 
-def _resolve_faults(inversion: Any, faults: Sequence[Any] | str | Any | None = None) -> list[Any]:
-    all_faults = list(inversion._get_faults() if hasattr(inversion, "_get_faults") else get_faults_from_inversion(inversion))
-    if faults is None or (isinstance(faults, str) and faults == "all"):
+def _resolve_faults(
+    inversion: Any,
+    faults: Sequence[Any] | str | Any | None = None,
+) -> list[Any]:
+    selector = getattr(inversion, "_select_faults", None)
+    if callable(selector):
+        return list(selector(faults))
+    all_faults = list(
+        inversion._get_faults()
+        if hasattr(inversion, "_get_faults")
+        else get_faults_from_inversion(inversion)
+    )
+    if faults is None or (
+        isinstance(faults, str) and faults.strip().lower() == "all"
+    ):
         return all_faults
     if isinstance(faults, str):
         return [get_fault_by_name(inversion, faults)]
     if not isinstance(faults, Iterable):
         return [faults]
+    faults = list(faults)
+    if not faults:
+        return all_faults
     resolved = []
     fault_map = {str(getattr(fault, "name", "")): fault for fault in all_faults}
     for fault in faults:
@@ -176,6 +194,9 @@ def plot_data_fits_product(
     remove_direction_labels=False,
     gps_kwargs=None,
     sar_kwargs=None,
+    opticorr_kwargs=None,
+    raster_render_mode="points",
+    raster_cell_edge_width=0.25,
     gps_fault_color="k",
     sar_fault_color="k",
     fault_linewidth=2.0,
@@ -194,7 +215,14 @@ def plot_data_fits_product(
     corrections into every selected prediction, or ``None`` for the explicit
     source/slip-only diagnostic view.
 
-    ``gps_kwargs`` and ``sar_kwargs`` override display defaults only.  The
+    ``gps_kwargs``, ``sar_kwargs``, and ``opticorr_kwargs`` override display
+    defaults only. ``antisymmetric=True`` uses zero-centred automatic limits;
+    ``False`` uses each raster field's finite data range. Explicit ``vmin``
+    and ``vmax`` in the type-specific kwargs remain authoritative.
+    ``raster_render_mode`` controls only the spatial carrier of
+    InSAR/optical figures: ``"points"`` preserves sample-center plots,
+    ``"cells"`` requires corner geometry, and ``"auto"`` uses cells when
+    available. The
     product owns dataset identity, plotted data roles, output path, and
     ``show``.  Supplying those owned keys in a free-form dictionary raises a
     clear :class:`ValueError`.
@@ -211,9 +239,11 @@ def plot_data_fits_product(
     outdir.mkdir(parents=True, exist_ok=True)
     gps_kwargs = dict(gps_kwargs or {})
     sar_kwargs = dict(sar_kwargs or {})
+    opticorr_kwargs = dict(opticorr_kwargs or {})
     written: dict[str, list[Path] | list[str]] = {
         "gps": [],
         "insar": [],
+        "opticorr": [],
         "leveling": [],
         "crossfaultoffset": [],
         "skipped": [],
@@ -231,6 +261,32 @@ def plot_data_fits_product(
         dtype = str(getattr(spec.data, "dtype", "")).lower()
         grouped_specs[dtype if dtype in grouped_specs else "other"].append(spec)
 
+    publish_predictions = getattr(inversion, "publish_fit_predictions", None)
+    selected_specs = [
+        spec
+        for dtype, specs in grouped_specs.items()
+        if dtype != "other"
+        for spec in specs
+    ]
+    if callable(publish_predictions):
+        prediction_faults = (
+            faults
+            if faults is None
+            or (isinstance(faults, str) and faults.strip().lower() == "all")
+            else target_faults
+        )
+        publish_predictions(
+            data_poly=data_poly,
+            faults=prediction_faults,
+            data_objects=[spec.data for spec in selected_specs],
+        )
+    else:
+        rebuild_diagnostic_synthetics(
+            selected_specs,
+            target_faults,
+            requested_poly=data_poly,
+        )
+
     gps_style = (
         sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=gps_fontsize)
         if pdf_fonttype is not None or gps_fontsize is not None
@@ -244,9 +300,6 @@ def plot_data_fits_product(
     with gps_style:
         for spec in grouped_specs["gps"]:
             data = spec.data
-            vertical = spec.vertical
-            resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-            data.buildsynth(target_faults, vertical=vertical, poly=resolved_poly)
             if not plot_data:
                 continue
             name = str(getattr(data, "name", "dataset"))
@@ -290,26 +343,25 @@ def plot_data_fits_product(
     with sar_style:
         for spec in grouped_specs["insar"]:
             data = spec.data
-            resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-            data.buildsynth(target_faults, vertical=True, poly=resolved_poly)
             if not plot_data:
                 continue
             name = str(getattr(data, "name", "dataset"))
-            datamin, datamax = float(np.nanmin(data.vel)), float(np.nanmax(data.vel))
-            absmax = max(abs(datamin), abs(datamax))
-            data_norm = [-absmax, absmax] if antisymmetric else [datamin, datamax]
             path = outdir / f"{name}_fit_comparison.{file_type}"
             current_sar_kwargs = _merge_product_plot_kwargs(
                 {
                     "cmap": cmap,
-                    "vmin": data_norm[0],
-                    "vmax": data_norm[1],
+                    "antisymmetric": antisymmetric,
                     "share_colorbar": res_use_data_norm,
                     "cbaxis": sar_cbaxis,
                     "figsize": sar_figsize,
+                    "render_mode": raster_render_mode,
+                    "cell_edge_width": raster_cell_edge_width,
                 },
                 sar_kwargs,
-                locked=("faults", "save_path", "show"),
+                locked=(
+                    "faults", "save_path", "show",
+                    "render_mode", "cell_edge_width",
+                ),
                 context="plot_data_fits_product(insar)",
             )
             data.plot_fit_comparison(
@@ -320,19 +372,40 @@ def plot_data_fits_product(
             )
             written["insar"].append(path)
 
-    # Optical data currently has no standard fit-comparison product, but its
-    # synthetic field remains part of the established Bayesian result flow.
-    for spec in grouped_specs["opticorr"]:
-        data = spec.data
-        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
-        data.buildsynth(target_faults, vertical=False, poly=resolved_poly)
-        written["skipped"].append(str(getattr(data, "name", "dataset")))
+        for spec in grouped_specs["opticorr"]:
+            data = spec.data
+            if not plot_data:
+                continue
+            name = str(getattr(data, "name", "dataset"))
+            path = outdir / f"{name}_fit_comparison.{file_type}"
+            current_opticorr_kwargs = _merge_product_plot_kwargs(
+                {
+                    "cmap": cmap,
+                    "antisymmetric": antisymmetric,
+                    "share_colorbar": res_use_data_norm,
+                    "cbaxis": sar_cbaxis,
+                    "figsize": sar_figsize,
+                    "render_mode": raster_render_mode,
+                    "cell_edge_width": raster_cell_edge_width,
+                },
+                opticorr_kwargs,
+                locked=(
+                    "faults", "save_path", "show",
+                    "render_mode", "cell_edge_width",
+                ),
+                context="plot_data_fits_product(opticorr)",
+            )
+            data.plot_fit_comparison(
+                faults=target_faults,
+                save_path=path,
+                show=show,
+                **current_opticorr_kwargs,
+            )
+            written["opticorr"].append(path)
 
     for spec in grouped_specs["leveling"]:
         data = spec.data
-        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
         name = str(getattr(data, "name", "dataset"))
-        data.buildsynth(target_faults, vertical=True, poly=resolved_poly)
         if plot_data:
             for item in ("data", "synth"):
                 data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)
@@ -341,9 +414,7 @@ def plot_data_fits_product(
 
     for spec in grouped_specs["crossfaultoffset"]:
         data = spec.data
-        resolved_poly = resolve_data_poly(spec.configured_poly, requested=data_poly)
         name = str(getattr(data, "name", "dataset"))
-        data.buildsynth(target_faults, poly=resolved_poly)
         if plot_data:
             for item in ("data", "synth"):
                 data.write2file(f"{name}_{item}.txt", outDir=str(outdir), data=item)

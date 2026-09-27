@@ -37,7 +37,7 @@
 ### 3.1 修改前
 
 1. 阅读目标模块、现有测试和当前公开规范入口。
-2. 明确行为由 eqtools、CSI 还是两者的公开交接接口负责。
+2. 明确行为由 eqtools、CSI、ecat-viz 还是包间公开交接接口负责。
 3. 在 ECAT-Cases 中检查稳定公开用法；案例是兼容性证据，不覆盖当前源码、明确契约和科学约定。
 4. 如果公开案例本身需要修改，先单独说明范围、原因、用户影响和验证方法。
 
@@ -54,6 +54,13 @@ python maintainer_tools/check_docs_impact.py --repo eqtools
 ```bash
 python maintainer_tools/check_docs_impact.py \
   --repo csi --paths csi/TriangularPatches.py csi/edge_utils/topology_boundary.py
+```
+
+通用绘图库使用同一路由器分析显式路径：
+
+```bash
+python maintainer_tools/check_docs_impact.py \
+  --repo ecat-viz --paths src/ecat_viz/cpt.py src/ecat_viz/_core.py setup.py
 ```
 
 重点读取以下结果：

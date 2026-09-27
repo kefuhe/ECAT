@@ -1,5 +1,5 @@
 """
-_constants.py — Centralized constants for eqtools.viztools.
+_constants.py — Centralized constants for ecat_viz.
 
 This module provides a single location for all magic numbers, strings,
 and configuration constants used throughout the viztools package.
@@ -142,7 +142,7 @@ class Presets:
 
     Examples
     --------
-    >>> from eqtools.viztools import PlotStyle, Presets
+    >>> from ecat_viz import PlotStyle, Presets
     >>> with PlotStyle(Presets.SCIENCE, figsize='single'):
     ...     fig, ax = plt.subplots()
     """

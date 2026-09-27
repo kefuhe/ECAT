@@ -575,11 +575,35 @@ d = G_slip m_slip + H_corr c + residual
 
 | 操作 | 比较对象 | 是否改变数据对象 |
 | --- | --- | --- |
-| `data.buildsynth(faults, poly="include")` | `data` vs `G_slip m_slip + H_corr c` | 不改变 `data.vel_enu` / `data.vel` |
-| `data.buildsynth(faults, poly=None)` | `data` vs `G_slip m_slip` | 不改变 `data.vel_enu` / `data.vel` |
+| `data.buildsynth(faults, direction="source", poly="include")` | `data` vs `G_slip m_slip + H_corr c` | 不改变 `data.vel_enu` / `data.vel` |
+| `data.buildsynth(faults, direction="source", poly=None)` | `data` vs `G_slip m_slip` | 不改变 `data.vel_enu` / `data.vel` |
 | `data.removeTransformation(fault)` 后再 `buildsynth(poly=None)` | `data - H_corr c` vs `G_slip m_slip` | **会原地修改观测数据** |
 
-上层结果接口（`extract_and_plot_blse_results()`、`plot_data_fits()` 和 `collect_fit_statistics()`）默认使用 `data_poly="config"`。该模式读取配置对象中已经展开并与数据集对齐的 `geodata.polys`：配置了改正项的数据集调用 `poly="include"`，未配置的数据集调用 `poly=None`。上层接口不会再次解析 YAML 单值，也不会用截断或补齐来掩盖长度错配。
+`direction="source"` 按各 Fault 组装时保存的 `slipdir` 使用 `s/d/t/c`；它不会把单分量、
+张开或耦合模型重新解释为默认 `sd`。显式 `direction="sd"` 等历史调用仍保持原语义。
+该语义需要与当前 eqtools 配套的 CSI；若只更新 eqtools，诊断正演会明确拒绝旧 CSI，
+而不会把 `"source"` 静默当作普通分量字符串。此时先按
+[安装页](../getting_started/installation.md#4-在已有环境中增量更新)增量更新 CSI。
+
+上层结果接口默认使用 `data_poly="config"`。BLSE/VCE 的完整正式结果直接把已组装的
+`G @ mpost` 按求解器数据行切分并发布，因此 source、改正项和参数列与实际求解严格同源；
+Bayesian 或显式部分贡献诊断则读取配置中已经展开并与数据集对齐的 `geodata.polys`，配置了
+改正项的数据集调用 `poly="include"`，未配置的数据集调用 `poly=None`。上层接口不会再次
+解析 YAML 单值，也不会用截断或补齐来掩盖长度错配。
+
+cross-fault offset 是这里唯一需要具体 estimator 身份的数据类型：CSI 的
+`crossfaultoffset.buildsynth()` 不使用通用的 `"include"` 标记，而是接收矩阵组装时已经
+解析的具体 estimator 规格。它既可以是单个整数，也可以是 CSI 支持的列表规格；例如一个
+cross-fault 数据集的列表规格在顶层逐数据集配置中写为 `polys=[[1]]`。eqtools 只在真正
+执行诊断正演时，把高层 `config/include` 语义转换为这份已配置规格，并原样交给 CSI；
+统计、发布和图件不各自维护第二套更窄的合法值表。
+
+多断层模型中，改正项仍只有一个明确所有者。求解器可以在其他断层上保留
+`polysol[data.name] = None` 作为“该断层不拥有此改正项”的状态；CSI 诊断正演会跳过这些
+非所有者，只把非空的改正项参数加入一次。脚本不应为规避重复改正而自行删减 fault 列表。
+
+完整 BLSE/VCE 的正式 `G @ mpost` 结果不经过上述转换。其改正项列已经属于组装模型，
+统计表中的 `poly` 只记录当次组装配置，不会在结果阶段再次验证或重新解释。
 
 显式传入 `data_poly=None` 仍表示 source/slip-only 诊断；显式传入 `data_poly="include"` 表示对所有选中数据集强制请求总预测。
 

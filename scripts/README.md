@@ -54,6 +54,13 @@ corner 的点输入直接写点表。`--export-point-values` 只为有 corner �
 分发和文本导出。VCE 模板只执行一次 `run_simple_vce()`，不提供 loop mode。BLSE/VCE
 都是单一最终解，没有联合 Bayesian 的 posterior 滑动标准差图。
 
+标准结果调用中的 `raster_render_mode` 只控制 InSAR/opticorr 拟合图：默认
+`"points"` 保持中心点显示，`"cells"` 按 corner 绘制降采样单元，`"auto"` 在无
+corner 时回退为点；`raster_cell_edge_width` 设置单元边界线宽。它与文本输出的
+corner 策略相互独立，完整说明见 [Figure Products](../docs/reference/figure_products.md)。
+相邻的 `antisymmetric=True` 是常用的零中心对称色标；改为 `False` 后使用各 raster
+场的实际有限数据范围，显式 `vmin`/`vmax` 仍优先。
+
 单次 BLSE/VCE 模板依赖 `verbose=True` 时的默认 compact 尺度报告，不再额外调用第二个
 打印接口。如需在求解后或交互检查时单独重打当前 sigma/alpha，调用
 `inversion.print_scale_parameters()`；该调用只读取已冻结的活动尺度，不会重新求解。

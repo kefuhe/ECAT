@@ -38,6 +38,7 @@ import matplotlib.pyplot as plt
 
 # Personals
 from .SourceInv import SourceInv
+from ._slip_direction import resolve_prediction_slipdir
 
 
 class crossfaultoffset(SourceInv):
@@ -708,8 +709,9 @@ class crossfaultoffset(SourceInv):
             * faults    : list of fault instances
 
         Kwargs:
-            * direction : combination of 's', 'd', 't', 'c'
-            * poly      : polynomial correction (None, int)
+            * direction : combination of 's', 'd', 't', 'c', or ``'source'``
+                          to follow each Fault's assembled ``slipdir``
+            * poly      : polynomial correction (None, int, or list)
             * vertical  : not used, for consistency
             * custom    : use custom GFs
             * computeNormFact : compute normalizing factors
@@ -733,11 +735,14 @@ class crossfaultoffset(SourceInv):
             if fault.type == 'Fault':
 
                 G = fault.G[self.name]
+                active_direction = resolve_prediction_slipdir(
+                    fault, direction, G
+                )
 
                 for slip_char, slip_key, slip_col in [('s', 'strikeslip', 0),
                                                        ('d', 'dipslip', 1),
                                                        ('t', 'tensile', 2)]:
-                    if slip_char in direction and slip_key in G and G[slip_key] is not None:
+                    if slip_char in active_direction and slip_key in G and G[slip_key] is not None:
                         synth_full = G[slip_key].dot(fault.slip[:, slip_col])
                         idx = 0
                         if self.synth_parallel is not None:
@@ -749,7 +754,7 @@ class crossfaultoffset(SourceInv):
                         if self.synth_vertical is not None:
                             self.synth_vertical += synth_full[idx * n:(idx + 1) * n]
 
-                if 'c' in direction and 'coupling' in G and G['coupling'] is not None:
+                if 'c' in active_direction and 'coupling' in G and G['coupling'] is not None:
                     synth_full = G['coupling'].dot(fault.coupling)
                     idx = 0
                     if self.synth_parallel is not None:
@@ -764,8 +769,12 @@ class crossfaultoffset(SourceInv):
         # Handle polynomial correction
         if poly is not None:
             for fault in faults:
-                if fault.type == 'Fault' and hasattr(fault, 'polysol') and self.name in fault.polysol:
-                    params = fault.polysol[self.name]
+                if fault.type == 'Fault' and hasattr(fault, 'polysol'):
+                    # Multi-fault distribution keeps ``None`` on sources that
+                    # do not own this data correction.
+                    params = fault.polysol.get(self.name)
+                    if params is None:
+                        continue
                     if type(params) is dict:
                         params = params[poly]
                     Horb = self.getTransformEstimator(poly, computeNormFact=computeNormFact)
@@ -797,6 +806,9 @@ class crossfaultoffset(SourceInv):
                      custom=False, computeNormFact=True):
         '''
         Computes the synthetics and removes them from the data.
+
+        ``direction`` accepts explicit ``s/d/t/c`` components or ``'source'``
+        with the same meaning as :meth:`buildsynth`.
         '''
         # Build synth first
         self.buildsynth(faults, direction=direction, poly=poly,
@@ -850,104 +862,58 @@ class crossfaultoffset(SourceInv):
             * None
         '''
 
-        # Store the corners
-        self.minlon = minlon
-        self.maxlon = maxlon
-        self.minlat = minlat
-        self.maxlat = maxlat
-
-        # Select on latitude and longitude
         u = np.flatnonzero((self.lat > minlat) & (self.lat < maxlat)
                            & (self.lon > minlon) & (self.lon < maxlon))
-
-        # Select the stations
-        self.station = self.station[u]
-        self.lon = self.lon[u]
-        self.lat = self.lat[u]
-        self.x = self.x[u]
-        self.y = self.y[u]
-        self.lon1 = self.lon1[u]
-        self.lat1 = self.lat1[u]
-        self.x1 = self.x1[u]
-        self.y1 = self.y1[u]
-        self.lon2 = self.lon2[u]
-        self.lat2 = self.lat2[u]
-        self.x2 = self.x2[u]
-        self.y2 = self.y2[u]
-        self.strike = self.strike[u]
-
-        if self.fault_parallel is not None:
-            self.fault_parallel = self.fault_parallel[u]
-        if self.fault_perpendicular is not None:
-            self.fault_perpendicular = self.fault_perpendicular[u]
-        if self.fault_vertical is not None:
-            self.fault_vertical = self.fault_vertical[u]
-        if self.err_parallel is not None:
-            self.err_parallel = self.err_parallel[u]
-        if self.err_perpendicular is not None:
-            self.err_perpendicular = self.err_perpendicular[u]
-        if self.err_vertical is not None:
-            self.err_vertical = self.err_vertical[u]
-
-        if self.Cd is not None:
-            ncomp = self.obs_per_station
-            idx = np.concatenate([u + k * len(u) for k in range(ncomp)])
-            self.Cd = self.Cd[np.ix_(idx, idx)]
-
-        # All done
-        return
+        self._subset_stations(u)
+        self.minlon, self.maxlon = minlon, maxlon
+        self.minlat, self.maxlat = minlat, maxlat
 
     def reject(self, u):
-        '''
-        Reject data points by index.
-
-        Args:
-            * u : array of indices to remove
-        '''
+        """Reject station-pair indices, retaining component-major row order."""
         u = np.array(u, dtype=int)
         if len(u) == 0:
             return
-
         keep = np.ones(len(self.station), dtype=bool)
         keep[u] = False
+        self._subset_stations(np.flatnonzero(keep))
 
-        self.station = self.station[keep]
-        self.lon = self.lon[keep]
-        self.lat = self.lat[keep]
-        self.x = self.x[keep]
-        self.y = self.y[keep]
-        self.lon1 = self.lon1[keep]
-        self.lat1 = self.lat1[keep]
-        self.x1 = self.x1[keep]
-        self.y1 = self.y1[keep]
-        self.lon2 = self.lon2[keep]
-        self.lat2 = self.lat2[keep]
-        self.x2 = self.x2[keep]
-        self.y2 = self.y2[keep]
-        self.strike = self.strike[keep]
+    def _subset_stations(self, indices):
+        """Prepare all owned observation state before applying a subset.
 
-        if self.fault_parallel is not None:
-            self.fault_parallel = self.fault_parallel[keep]
-        if self.fault_perpendicular is not None:
-            self.fault_perpendicular = self.fault_perpendicular[keep]
-        if self.fault_vertical is not None:
-            self.fault_vertical = self.fault_vertical[keep]
-        if self.err_parallel is not None:
-            self.err_parallel = self.err_parallel[keep]
-        if self.err_perpendicular is not None:
-            self.err_perpendicular = self.err_perpendicular[keep]
-        if self.err_vertical is not None:
-            self.err_vertical = self.err_vertical[keep]
-
+        Covariance and combined predictions use component-major rows based on
+        the original station count. External source GFs and assembled solver
+        matrices must be rebuilt by their owners after selection.
+        """
+        n_old = len(self.station)
+        ncomp = self.obs_per_station
+        rows = (np.concatenate([indices + k * n_old for k in range(ncomp)])
+                if ncomp else np.empty(0, dtype=int))
+        fields = ('station', 'lon', 'lat', 'x', 'y', 'lon1', 'lat1', 'x1', 'y1',
+                  'lon2', 'lat2', 'x2', 'y2', 'strike',
+                  'fault_parallel', 'fault_perpendicular', 'fault_vertical',
+                  'err_parallel', 'err_perpendicular', 'err_vertical',
+                  'synth_parallel', 'synth_perpendicular', 'synth_vertical')
+        updates = {}
+        for name in fields:
+            value = getattr(self, name)
+            if value is not None:
+                value = np.asarray(value)
+                if value.shape != (n_old,):
+                    raise ValueError(f"{name} must have shape ({n_old},) before station selection.")
+                updates[name] = value[indices]
         if self.Cd is not None:
-            ncomp = self.obs_per_station
-            n_new = int(keep.sum())
-            keep_idx = np.flatnonzero(keep)
-            n_old = len(keep)
-            idx = np.concatenate([keep_idx + k * n_old for k in range(ncomp)])
-            self.Cd = self.Cd[np.ix_(idx, idx)]
-
-        return
+            covariance = np.asarray(self.Cd)
+            expected = n_old * ncomp
+            if covariance.shape != (expected, expected):
+                raise ValueError(f"Cd must have shape ({expected}, {expected}) before station selection.")
+            updates['Cd'] = covariance[np.ix_(rows, rows)]
+        if self.synth is not None:
+            synth = np.asarray(self.synth)
+            if synth.shape != (n_old * ncomp,):
+                raise ValueError("synth must match the component-major observation vector before station selection.")
+            updates['synth'] = synth[rows]
+        for name, value in updates.items():
+            setattr(self, name, value)
 
     # ------------------------------------------------------------------
     # PlotStyle helper
@@ -960,7 +926,7 @@ class crossfaultoffset(SourceInv):
 
         Returns (context_manager, resolved_figsize):
           - PlotStyle available → resolved_figsize is None (rcParams handles it)
-          - PlotStyle missing   → resolved_figsize is a (w, h) tuple fallback
+          - style=None          → resolved_figsize is a (w, h) tuple fallback
         '''
         import contextlib
 
@@ -984,16 +950,13 @@ class crossfaultoffset(SourceInv):
         if style is None:
             return contextlib.nullcontext(), _resolve_fallback(figsize, figsize_aspect)
 
-        try:
-            from eqtools.viztools import PlotStyle
-            kw = dict(style_kwargs or {})
-            if figsize is not None and 'figsize' not in kw:
-                kw['figsize'] = figsize
-            if figsize_aspect is not None and 'figsize_aspect' not in kw:
-                kw['figsize_aspect'] = figsize_aspect
-            return PlotStyle(style, **kw), None
-        except Exception:
-            return contextlib.nullcontext(), _resolve_fallback(figsize, figsize_aspect)
+        from ecat_viz import PlotStyle
+        kw = dict(style_kwargs or {})
+        if figsize is not None and 'figsize' not in kw:
+            kw['figsize'] = figsize
+        if figsize_aspect is not None and 'figsize_aspect' not in kw:
+            kw['figsize_aspect'] = figsize_aspect
+        return PlotStyle(style, **kw), None
 
     def plot(self, show=True, axis='cumdist', savefig=None,
              residuals=True, ylim=None, unit_label='m',

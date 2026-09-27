@@ -132,7 +132,9 @@ vr = (1 - np.sum(r**2) / np.sum(observed**2)) * 100
 RMS 与观测使用相同单位。VR 为百分数，但这里的参考能量是零模型
 \(d_k^\mathsf Td_k\)，不是减去观测均值后的总平方和，因此不要把它写成普通回归中的
 \(R^2\)。VR 可以为负，表示当前模型的残差能量大于零模型的观测能量；结构化接口保留
-负值。
+负值。若 \(d_k^\mathsf Td_k=0\)，VR 的分母为零，其科学含义未定义；结构化接口和
+`returnModel()` 统一返回 `NaN`，不会把它伪装成 `0%`。此时 RMS、残差平方和和可用的
+协方差加权量仍按原定义返回。
 
 对组装后的线性求解向量，同一定义作用于：
 
@@ -141,6 +143,19 @@ r_{\mathrm{global}}=Gm_{\mathrm{post}}-d.
 \]
 
 全局 RMS/VR 不是逐数据集 RMS/VR 的算术平均。
+
+BLSE/VCE 的正式结果先只计算一次完整预测
+
+\[
+\widehat d=Gm_{\mathrm{post}},
+\]
+
+再按求解器已经建立的 `data_ranges` 切成逐数据集块。逐数据集 RMS/VR、全局
+RMS/VR、`Qw` 与 `wRMS` 全部消费这些相同的数据块，不会再分别调用另一套正演后把
+不同残差拼进同一行。`buildsynth()` 仍用于显式指定部分 source、部分分量或不同
+`data_poly` 的诊断预测；这类结果使用 `global_observation_vector`，不冒充完整求解器向量。
+诊断预测可以继续使用活动模型的 sigma/协方差计算 `Qw` 与 `wRMS`，但不会继承完整
+VCE 拟合的有效自由度，因此诊断行的 `Approx. red.Q` 保持为空。
 
 <a id="covariance-aware-diagnostics"></a>
 
@@ -225,7 +240,10 @@ H_g=\frac{(W_gG_g)^\mathsf T(W_gG_g)}{\sigma_g^2},
 - active bounds、等式和不等式约束没有进入严格的约束自由度推导；
 - 非正自由度时还包含上述显式保护规则；
 - 共享组的 reduced 值只出现在 VCE 分量表，数据集行不复制该值；
-- 单数据集独占一个 VCE 组时，数据集行可以显示同一个近似 reduced 值。
+- 单数据集独占一个 VCE 组、且统计来自完整正式 `G @ mpost` 结果时，数据集行可以显示
+  同一个近似 reduced 值；
+- 显式部分 fault、source/slip-only 或其他贡献诊断不是重新拟合后的模型，即使使用活动
+  VCE 权重评价残差，也不发布该完整模型的有效自由度或 reduced 值。
 
 在简化 VCE 中，数据组或平滑组的方差更新因子正是
 \(u_g=Q_{w,g}/\nu_{\mathrm{eff},g}\)。所有有实际行且设置为更新的分量统一要求
@@ -277,10 +295,15 @@ GPS 排列与 CSI 的 `d/G/Cd` 及 frame transform 行一致。RMS 和 VR 对同
 | 已配置的 poly | 统计使用的 synthetic |
 | --- | --- |
 | `None` | 仅 source/slip 预测 |
-| 任意已配置改正 | `poly="include"` |
+| InSAR/GPS/opticorr/leveling 的已配置改正 | `poly="include"` |
+| cross-fault offset 的已配置改正 | 配置中实际的 estimator 规格：单个 `1/3/4` 或 CSI 支持的列表 |
 
 只有明确检查 slip-only 拟合时才使用 `data_poly=None`；需要无条件包含已求解改正项时
 使用 `data_poly="include"`。
+
+诊断入口只有在 `rebuild_synth=True`、确实调用 CSI 重新正演时，才要求配套的
+source-prediction 协议。`rebuild_synth=False` 只读取调用者已经激活的 synthetic，
+不会因为不需要的正演能力检查而拒绝结果；调用者仍负责保证这些字段属于当前模型。
 
 ## 逐数据集、平均行和全局行
 
@@ -298,14 +321,12 @@ GPS 排列与 CSI 的 `d/G/Cd` 及 frame transform 行一致。RMS 和 VR 对同
 重建该行的平均 RMS/VR。需要正式总体量时使用任一 Global scope，不要把逐数据集平均
 当作全局结果。控制台把两种 Global scope 都显示为 `Global`，内部 scope 仍保留其来源。
 
-`include_global=True` 时，线性路线尝试使用：
+`include_global=True` 时，BLSE/VCE 线性路线使用同一次
+`G @ mpost` 预测切分出的全部数据块：
 
 ```python
 # BLSE
 np.dot(self.G, self.mpost) - self.d
-
-# Bayesian linear vector，维度一致时
-np.dot(self.G_combined, self.mpost) - self.observations
 ```
 
 独立几何 SMC 没有上述组装矩阵，此时精确使用：
@@ -354,7 +375,10 @@ median_rows = inv.collect_fit_statistics(model="median")
 
 BLSE 应使用 `run()` 返回后的同步状态。显式调用 `returnModel(mpost=...)` 时，传入向量会
 成为新的活动解；`self.mpost`、分发到各源的参数、拟合统计和 solver RMS/VR 都使用该向量，
-不会再出现只临时分发、随后用旧向量计算全局量的半状态。
+不会再出现只临时分发、随后用旧向量计算全局量的半状态。当前 sigma、协方差及其分组仍可
+作为评价该向量的权重上下文，因此 `Qw/wRMS` 仍可计算；但 VCE 有效自由度属于产生原活动解
+的拟合过程，显式替换模型后会失效，所以 `Approx. red.Q` 留空。无参数的 `returnModel()`
+只是重放当前活动解，不会清除该解自己的有效自由度。
 
 BLSE `returnModel()` 返回的 `roughness` 是当前求解发布的未缩放平滑矩阵 \(L_0\) 下
 
@@ -367,8 +391,8 @@ BLSE `returnModel()` 返回的 `roughness` 是当前求解发布的未缩放平�
 `current_model_smoothing_matrix`；VCE 平滑组 `Qw` 使用后者对应的
 \(\lVert L_hm/\alpha_h\rVert^2\)。报告动作不会从配置重建任一矩阵；
 `scan_penalty_weights()` 结束后还会恢复调用前的完整活动结果，不能把诊断候选误当成已选
-模型。启用逐数据集统计时，扫描还会恢复观测对象原有的 synthetic 字段，避免模型状态和
-数据拟合状态分别停留在不同候选。
+模型。扫描中的逐数据集统计直接切分每个候选的 `G @ mpost`，不写入 geodata synthetic，
+所以无需快照或恢复数据对象的预测字段。
 
 标准控制台不再把 roughness、RMS 和 VR 混成一条重复摘要：RMS/VR 只出现在
 `Data Fit Statistics` 的 `Global` 行；存在真实 \(L_0\) 时，roughness 只出现在独立的
@@ -378,12 +402,24 @@ BLSE `returnModel()` 返回的 `roughness` 是当前求解发布的未缩放平�
 
 | 方法 | 责任 |
 | --- | --- |
-| `collect_fit_statistics(...)` | 按需重建当前 synthetic，并计算 dataset/global rows |
+| `collect_fit_statistics(...)` | BLSE/VCE 从同一次 `G @ mpost` 生成 dataset/global rows；诊断路线按需重建 synthetic |
 | `scan_penalty_weights(...)` | 固定几何下扫描 BLSE 平滑权重，返回候选摘要和逐数据集长表，并恢复进入前状态 |
 | `fit_statistics_to_dataframe(rows)` | 把已有 rows 转成 DataFrame，不重新计算 |
 | `format_fit_statistics_report(rows)` | 把已有 rows 渲染为文本，不重新计算 |
 | `write_fit_statistics_report(...)` | 写出已有 rows，或在未传 rows 时按显式参数采集后写出 |
 | `calculate_and_print_fit_statistics()` | 当前模型的逐数据集行和末尾 Global 行 |
+
+正式线性结果和贡献诊断在预测生成层保持两条明确路线：
+
+```text
+BLSE/VCE 完整配置模型: G + mpost + data_ranges -> prediction blocks
+显式 source / correction 诊断: configured policy -> CSI buildsynth -> prediction blocks
+```
+
+两条路线生成相同的观测空间数据块，后续 RMS、VR、加权指标、发布和图件再共同消费。正式
+BLSE/VCE 路线不会调用 `buildsynth()`，也不会把已经参与矩阵组装的 `geodata.polys`
+重新转换为 CSI 诊断参数；因此结果统计不会拒绝求解器已经成功组装的改正项规格。只有真正
+执行诊断正演时，`data_poly="config" | "include" | None` 才在统一预测适配层转换一次。
 
 独立几何 SMC 的采集器默认只读取 `returnModel()` 已经写回的完整 synthetic。若其他操作覆盖了
 data 对象，可显式传 `rebuild_synth=True`：它只重复当前向量的预测，不会选择另一组样本，
@@ -409,8 +445,10 @@ df = inv.fit_statistics_to_dataframe(rows)
 inv.write_fit_statistics_report("output", rows=rows)
 ```
 
-`collect_fit_statistics()` 默认重建逐数据集 synthetic；有完整 solver vector 时全局行直接
-使用它，独立几何 SMC 则从同一批 dataset rows 的充分统计量精确汇总。
+`collect_fit_statistics()` 在 BLSE/VCE 正式路线中默认把同一 `G @ mpost` 预测发布到
+geodata，统计值本身始终直接消费对应预测块；`run(report="full")` 和 L-curve 的只读
+统计不会发布。独立几何 SMC 则从当前模型产生的同一批 dataset rows 的充分统计量精确
+汇总。
 结构化 rows 默认不新增 weighted 字段，只有 `include_weighted=True` 时才扩展，避免破坏
 已有 DataFrame 消费者。
 

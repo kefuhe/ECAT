@@ -290,8 +290,9 @@ R_i=\sqrt{\operatorname{mean}[(L_0m_i)^2]},
 
 `scan_penalty_weights()` 是诊断事务：每个候选的模型、活动矩阵和统计量在同一轮内保持
 对应，方法正常结束、候选求解异常或逐数据集统计异常时，都会恢复调用前的活动模型、
-source 参数、平滑矩阵和权重。启用 `include_fit_statistics` 时，还会恢复 InSAR、GPS、
-optical 等观测对象在扫描前的合成结果；关闭时不构建这些逐数据集合成，也不增加对应快照。
+source 参数、平滑矩阵和权重。启用 `include_fit_statistics` 时，逐数据集统计直接由
+当前候选的 `G @ mpost` 按 `data_ranges` 切分，不调用 `buildsynth()`、不写入
+InSAR、GPS、optical 等观测对象，因此不需要预测字段快照或恢复。
 事务内部若 geometry、协方差、数据权重和未缩放的 \(L_0\) 不变，会复用数据项
 \(H_d,q_d\) 与 \(L_0^\mathsf{T}L_0\)；每个候选仍按自己的
 \(w_i^2L_0^\mathsf{T}L_0\) 独立求解。缓存只存在于本次
@@ -587,6 +588,9 @@ inv.extract_and_plot_blse_results(
     plot_data=True,
     data_poly="config",
     file_type="png",
+    antisymmetric=True,  # False 使用各 raster 场的实际数据范围
+    raster_render_mode="points",  # 可改为 "cells" 或 "auto"
+    raster_cell_edge_width=0.25,
     fault_outdir="output",
     data_outdir="Modeling",
 )
@@ -596,18 +600,29 @@ inv.extract_and_plot_blse_results(
 roughness。若只需要数字、不绘图，改为单独调用
 `returnModel(print_fit_statistics=True)`；不要把两个打印入口连续使用。
 
+正式 BLSE/VCE 统计、图件和导出要求当前对象已经具有同一次活动解的 `G`、`mpost`、
+`d` 与 `data_ranges`。应先完成 `run()`、`run_simple_vce()` 或显式激活线性解；若这些
+状态缺失，结果入口会直接报错，不会退回当前 fault/data 对象中可能属于旧模型的
+`buildsynth()` 状态。显式部分 fault 或 `data_poly=None` 仍是独立的贡献诊断路线。
+
 `data_poly="config"` 是推荐默认值：它逐数据集跟随已经解析的 `geodata.polys`。只有在明确诊断 source/slip-only 贡献时才传 `data_poly=None`；`data_poly="include"` 用于强制请求包含已求解改正项的预测。
 
 `extract_and_plot_blse_results(...)` 通常会生成：
 
 - `output/*_slip.<file_type>` 类型的断层滑动图。
 - `Modeling/gps_<DataName>_map.<file_type>` 类型的 GPS data/synth 图。
-- `Modeling/<DataName>_fit_comparison.<file_type>` 类型的 InSAR data/synth/residual 图。
+- `Modeling/<DataName>_fit_comparison.<file_type>` 类型的 InSAR 或 opticorr
+  data/synth/residual 图；opticorr 默认是 East/North 两行。
 - `Modeling/<DataName>_leveling_fit.<file_type>` 或 cross-fault offset 拟合图。
 - 控制台中的拟合统计和断层统计。
 
-该入口生成的 GPS/InSAR 合成观测与直接调用 `plot_data_fits()` 时相同。
+该入口生成的 GPS/InSAR/opticorr 合成观测与直接调用 `plot_data_fits()` 时相同。
 `file_type` 只控制图像格式，不控制科学数据文件格式。
+`raster_render_mode` 只控制 raster 拟合图使用中心点还是 corner 单元；默认
+`"points"` 保持既有行为。`"cells"` 要求 corner，`"auto"` 在无 corner 时回退为点。
+它与文本文件的 corner 输出选择互不替代。
+`antisymmetric=True` 默认生成以 0 为中心的 Data/Model 色标；设为 `False` 时使用
+实际有限数据范围。显式 `sar_kwargs`/`opticorr_kwargs` 色标边界始终优先。
 GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的 `write2file()`
 或 `writeDecim2file()` 明确导出；leveling 和 cross-fault offset 的 data/synth 文本
 仍随各自拟合产品写入 `data_outdir`。
@@ -622,10 +637,20 @@ GPS、InSAR 的 data/synth/resid 文本仍由案例脚本按需要调用 CSI 的
 三种状态统一使用 `data`、`synth`、`resid`，而 optical 多边形内部再准确映射到
 `*East` / `*North` 选择器。
 高层结果入口已经按 `data_poly="config"` 建好 synthetic，脚本层不应重复正演。
+这里的正式 BLSE/VCE synthetic 来自已组装的 `G @ mpost`，随后按数据行布局完成全部
+目标字段预检再批量发布；不是再调用 `buildsynth()` 重新推导分量或 poly，也不会在报告
+阶段用诊断接口重新验证已经组装成功的改正项规格。显式的部分断层、slip-only 或强制包含
+改正项视图仍属于诊断正演，并只在统一预测适配层转换一次 CSI 调用参数。
 
 BLSE 和简化 VCE 在一次运行中只产生一个最终滑动解；它们没有 posterior 样本集合，因此
 不存在联合 Bayesian 意义下的逐滑动分量 posterior 标准差。若需要不确定性，应使用相应的
 Bayesian 路径或另行定义并说明不确定性估计，而不是把某个确定性模型当作 `std` 输出。
+
+显式传入 `returnModel(mpost=...)` 会把该向量设为新的活动模型。已有 sigma、协方差和组
+映射仍用于评价其 `Qw/wRMS`，但原 VCE 拟合产生的有效自由度不会转移到这个外部向量，
+因此 `Approx. red.Q` 留空；不传 `mpost` 时则保留当前活动解自身的诊断上下文。RMS/VR
+与结构化拟合表共用同一 solver-vector 统计实现；若观测向量能量为零，VR 未定义并返回
+`NaN`。
 
 断层统计由 `inv.print_faults_summary()` 使用统一的 [Fault Summary / 断层概览和统计](fault_summary.md) 接口输出。它会报告 trace 长度、patch/mesh 数、面积、深度范围、平均走向倾角、slip 统计；位移单位模型报告 Moment/Mw，速率单位模型报告 moment rate。如果只想在脚本中拿结构化结果，使用 `inv.get_faults_summary()`。
 

@@ -95,7 +95,6 @@ if __name__ == "__main__":
     #     checkNaNs=True,
     # )
     # cogps.buildCd(direction="enu")
-    gpsdata = []  # Replace with [cogps] after enabling the GPS block above.
 
     # InSAR observations
     # Replace these paths and reader options with the actual case inputs.
@@ -111,20 +110,21 @@ if __name__ == "__main__":
     sar_t012a = insar(
         "T012A", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
-    sar_t012a.read_from_varres(sar_t012a_file, triangular=True)
-    sar_t012a.err *= 1.0
-    sar_t012a.buildDiagCd()
+    sar_t012a.read_from_varres(sar_t012a_file, triangular=None, cov=True)
 
     sar_t121d = insar(
         "T121D", lon0=lon0, lat0=lat0, utmzone=None, ellps="WGS84", verbose=False
     )
-    sar_t121d.read_from_varres(sar_t121d_file, triangular=True)
-    sar_t121d.err *= 1.0
-    sar_t121d.buildDiagCd()
+    sar_t121d.read_from_varres(sar_t121d_file, triangular=None, cov=True)
 
     # The geodata order must match geodata.verticals, geodata.faults,
     # geodata.polys and geodata.sigmas in nonlinear_geometry.yml.
+    gpsdata = []  # Replace with [cogps] after enabling the GPS block above.
     insardata = [sar_t012a, sar_t121d]
+    # Optional test: set cov=False above, then build a diagonal covariance from err.
+    # for sar_data in insardata:
+    #     sar_data.err[:] = 1.0  # Or keep scientifically reviewed positive .txt errors.
+    #     sar_data.buildDiagCd()
     geodata = gpsdata + insardata
 
     # =================== Nonlinear geometry inversion ===================
@@ -154,6 +154,10 @@ if __name__ == "__main__":
             plot_faults=True, plot_sigmas=True, plot_data=True,
             plot_data_corrections=True, save_data=True, show=args.show,
             sar_corner="auto",
+            # True: zero-centred symmetric limits; False: finite data range.
+            antisymmetric=True,
+            # Fit figure only: 'points', 'cells', or corner-aware 'auto'.
+            raster_render_mode="points", raster_cell_edge_width=0.25,
             diagnose=True, diagnose_detail=args.diagnose_detail,
         )
 

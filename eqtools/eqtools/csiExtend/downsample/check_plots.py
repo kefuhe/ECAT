@@ -320,7 +320,7 @@ def resolve_figsize(figsize, *, aspect=None, height=None):
         width = float(figsize)
         return (width, width * (0.75 if aspect is None else float(aspect)))
     if isinstance(figsize, str):
-        from eqtools.viztools import list_column_widths, publication_figsize
+        from ecat_viz import list_column_widths, publication_figsize
 
         key = figsize.lower()
         if key not in list_column_widths():
@@ -1054,7 +1054,7 @@ def plot_component_maps(
     import matplotlib.pyplot as plt
 
     try:
-        from eqtools.viztools import PlotStyle, set_degree_formatter
+        from ecat_viz import PlotStyle, set_degree_formatter
     except Exception:
         PlotStyle = None
         set_degree_formatter = None

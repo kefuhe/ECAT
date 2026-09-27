@@ -1,0 +1,16 @@
+Source provenance
+=================
+General plotting tools and mplstyles extracted from eqtools.viztools (Kefeng He).
+Their existing license is retained in LICENSE.
+
+cpt.py preserves the get_cpt parser derived from pycpt:
+Copyright (c) 2020 Dimitrios Bouziotas; original header declares GPL version 3.
+https://github.com/j08lue/pycpt
+See COPYING-GPL-3.0. Changes: resource opening, explicit paths/URL timeout,
+input validation, compact RGB records, missing colorsys import/default RGB, removed local demo.
+Existing interpolation and listed return semantics retained.
+
+CPT resources retain their original bytes, credits and license headers.
+The collection README records cpt-city provenance. Resources include multiple
+licenses (for example afrikakarte.cpt names CC BY-SA 3.0). They must not be
+redistributed as uniformly MIT-licensed. Consult individual headers and sources.

@@ -4,7 +4,7 @@ from ..sarUtils.readTiffUtils import (
     strided_geotransform,
     utm_to_latlon,
 )
-from ...viztools import sci_plot_style, set_degree_formatter
+from ecat_viz import sci_plot_style, set_degree_formatter
 from ..sarUtils.readTiffUtils import save_to_tiff
 from csi.opticorr import opticorr as csiopticorr
 import matplotlib.pyplot as plt

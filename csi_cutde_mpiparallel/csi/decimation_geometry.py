@@ -80,3 +80,28 @@ def classify_corner_array(corner, *, expected_rows=None):
     if not np.all(np.isfinite(array)):
         raise ValueError("corner coordinates must be finite")
     return mode
+
+
+def corner_array_to_polygons(corner, *, expected_rows=None):
+    """Return validated decimation cells as ``(N, M, 2)`` polygons.
+
+    The accepted corner layouts are the same as :func:`classify_corner_array`:
+    legacy upper-left/lower-right rectangles, triangles, and quadrilaterals.
+    ``None`` or an empty array returns ``None`` so callers can distinguish
+    point observations from cell-supported observations.
+    """
+    mode = classify_corner_array(corner, expected_rows=expected_rows)
+    if mode is None:
+        return None
+
+    array = np.asarray(corner, dtype=float)
+    if mode == LEGACY_RECTANGLE:
+        polygons = np.empty((array.shape[0], 4, 2), dtype=float)
+        polygons[:, 0, :] = array[:, (0, 1)]
+        polygons[:, 1, :] = array[:, (2, 1)]
+        polygons[:, 2, :] = array[:, (2, 3)]
+        polygons[:, 3, :] = array[:, (0, 3)]
+        return polygons
+
+    vertex_count = 3 if mode == TRIANGLE else 4
+    return array.reshape(array.shape[0], vertex_count, 2)

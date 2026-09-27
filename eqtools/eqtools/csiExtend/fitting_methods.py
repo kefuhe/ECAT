@@ -19,7 +19,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.svm import SVR
 from sklearn.tree import DecisionTreeRegressor
-from ..viztools import DegreeFormatter
+from ecat_viz import DegreeFormatter
 
 
 class InterpolationModel:
@@ -260,7 +260,7 @@ class RegressionFitter:
         Returns:
         None. This function will plot the figure and display it.
         """
-        from ..viztools import sci_plot_style
+        from ecat_viz import sci_plot_style
 
         if use_lon_lat and fault is None:
             raise ValueError("If use_lon_lat is True, fault cannot be None.")

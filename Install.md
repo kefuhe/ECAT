@@ -4,7 +4,7 @@ ECAT supports CPython 3.10, 3.11, and 3.12 on 64-bit Windows and Linux.
 CPython 3.10 is the recommended and most extensively validated version;
 3.11 and 3.12 remain supported installation targets. Use the ECAT repository
 to create a complete environment. Use the individual package directories only
-when updating an existing installation or developing eqtools/CSI.
+when updating an existing installation or developing eqtools/CSI/ecat-viz.
 
 ### Shell and download-route conventions
 
@@ -131,7 +131,7 @@ for certificates, existing pins, Windows proxy restoration, and combinations
 with an explicit BLAS/MPI profile.
 
 `requirements/ecat-requirements.txt` is the only supported user environment
-file. It contains the direct runtime dependencies of CSI and eqtools with
+file. It contains the direct external runtime dependencies of CSI, eqtools and ecat-viz with
 compatibility ranges.
 
 The stable numerical compatibility window remains:
@@ -142,11 +142,11 @@ scipy>=1.10,<1.12
 numba>=0.58,<0.60
 ```
 
-The generated file has three ownership sections: dependencies imported by both
-CSI and eqtools, CSI-only dependencies, and eqtools-only dependencies. Shared
-packages remain declared in both package `setup.py` files so either standalone
-checkout installs correctly; the ECAT environment file deduplicates them only
-after ownership has been verified.
+The generated file groups shared dependencies (used by two or more components)
+and each component's own dependencies. Shared packages remain declared in every
+component that directly imports them; the environment file deduplicates them
+after ownership has been verified. ecat-viz itself is a local pip component,
+so it is supplied to the coordinated installer rather than to Conda.
 
 The file permits Python 3.10--3.12, while the main command selects the
 recommended 3.10 version explicitly. To test a newer interpreter, use:
@@ -183,7 +183,7 @@ python -m pip install "git+https://github.com/kefuhe/okada4py.git@v12.0.2"
 python -c "import okada4py; print(okada4py.__file__)"
 ```
 
-## 3. Install CSI and eqtools
+## 3. Install ecat-viz, CSI and eqtools
 
 Run the platform script from the ECAT repository root:
 
@@ -215,11 +215,44 @@ This setting affects pip dependency lookup only. It does not affect Conda or
 the preceding installation of a local `okada4py` wheel. ECAT does not require
 a permanent pip or `.condarc` mirror configuration for a normal installation.
 
-The scripts use the active interpreter through `python -m pip`, install CSI
-before eqtools, and verify that both packages import. They stop if the Python
+The scripts use the active interpreter through `python -m pip`, resolve the
+three local components together, reinstall CSI without dependency changes to restore its command files,
+and verify `ecat_viz`, `csi` and `eqtools`.
+You can also install from the repository root explicitly:
+
+```bash
+python -m pip install ./ecat-viz ./csi_cutde_mpiparallel ./eqtools
+python -m pip install --no-deps --force-reinstall ./csi_cutde_mpiparallel
+```
+
+The local `ecat-viz` source is supplied here, so installation does not require
+its publication on PyPI. It provides general scientific plotting and CPTs;
+fault/model/workflow semantics remain in CSI and eqtools. They stop if the Python
 version is outside 3.10--3.12 or if `okada4py` is missing.
 
 ## 4. Update an existing source installation
+
+For the first update across the plotting extraction and prediction-protocol
+alignment, rerun `install.sh` or `install.bat` (or the three-path pip command
+above) to update CSI, eqtools and ecat-viz together. Adding ecat-viz alone does
+not provide the source-component prediction protocol required from CSI. Later
+updates may install a component separately when its cross-package contracts
+remain compatible. Update the shared library with `cd ecat-viz` and
+`python -m pip install .`.
+
+Component versions come from each distribution, independently of the historical
+ECAT version recorded in `CITATION.cff`. Equal version strings do not establish
+source equality. Check installed metadata with:
+
+```bash
+python -c "from importlib.metadata import version; print({p: version(p) for p in ('ecat-viz', 'csi', 'eqtools')})"
+```
+
+For plotting alone, install `ecat-viz` with `python -m pip install .` in its
+project directory; CSI and eqtools are not required. Use `.[raster]` for its
+optional file readers. API and resource migration are in the
+[plotting reference](docs/reference/viztools.md).
+
 
 A normal eqtools source update does not require recreating the Conda
 environment. Pull the new ECAT checkout, enter the eqtools project, and run a
@@ -310,7 +343,7 @@ or BLSE/VCE workflows from running.
 ## 7. Verify the installation
 
 ```bash
-python -c "import csi, eqtools, okada4py; print('ECAT imports succeeded')"
+python -c "import ecat_viz, csi, eqtools, okada4py; print('ECAT imports succeeded')"
 ecat-generate-downsample --help
 ecat-generate-nonlinear --help
 ecat-downsample --help
@@ -325,3 +358,10 @@ GDAL/PROJ ABI errors, or BLSE runs that remain at `Initializing solver object`, 
 It keeps the default command short and supplies symptom-specific fallback
 commands, path checks, and temporary MKL/OpenBLAS tests without silently
 changing persistent settings.
+
+
+The coordinated fixes use eqtools 2.0.2, CSI 1.0.1 and ecat-viz 0.1.1. CSI/eqtools require
+ecat-viz >=0.1.1,<0.2. Use the CSI fork distributed with ECAT. CSI alone now owns ecat-psgrn;
+the eqtools Python module still delegates to it. Older uninstall records from both packages
+could remove the same command file during upgrades. The final CSI reinstall restores it;
+subsequent eqtools uninstalls no longer own this command. It does not upgrade numerical dependencies.

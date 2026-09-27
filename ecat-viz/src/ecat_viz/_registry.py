@@ -7,9 +7,10 @@ _registry.py — 全局状态注册表，避免循环依赖并提供线程安全
 - 样式应用栈
 - 初始化标志
 
-通过单例模式提供线程安全的访问接口。
+锁仅保护注册表和状态栈操作，不隔离 Matplotlib rcParams 或绘图线程。
 """
 
+import math
 import threading
 from typing import Dict, List, Optional, Any
 
@@ -17,11 +18,26 @@ from typing import Dict, List, Optional, Any
 from ._constants import DEFAULT_COLUMN_WIDTHS, MAX_STYLE_STACK_DEPTH
 
 
+def _positive_finite(value, label):
+    """Validate dimensions before they enter the registry or a figure."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite positive number.") from exc
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError(f"{label} must be a finite positive number.")
+    return result
+
+
+def _validate_column_width(name, width_inch):
+    return str(name).lower(), _positive_finite(width_inch, 'Column width')
+
+
 class _StateRegistry:
-    """线程安全的全局状态管理单例。
+    """内部操作受锁保护的全局状态管理单例。
 
     集中管理 viztools 的所有全局状态，避免模块间循环依赖，
-    并提供线程安全的访问接口。
+    锁不覆盖 rcParams 的应用过程或绘图操作。
     """
 
     def __init__(self):
@@ -165,8 +181,9 @@ class _StateRegistry:
         width_inch : float
             宽度（英寸）
         """
+        name, width_inch = _validate_column_width(name, width_inch)
         with self._lock:
-            self._column_widths[str(name).lower()] = float(width_inch)
+            self._column_widths[name] = width_inch
 
     def get_column_width(self, name: str) -> Optional[float]:
         """获取列宽。
@@ -322,7 +339,7 @@ class _StateRegistry:
 
         Examples
         --------
-        >>> from eqtools.viztools import register_style_directory
+        >>> from ecat_viz import register_style_directory
         >>> register_style_directory('~/my_matplotlib_styles')
         >>> # 现在可以使用该目录中的样式
         >>> with PlotStyle('my_custom_style'):

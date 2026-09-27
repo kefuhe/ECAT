@@ -17,11 +17,15 @@ BLAS、指定 MPI 实现或修改线程数。
 
 ```bash
 python -c "import sys; print(sys.executable); print(sys.version)"
-python -c "import csi, eqtools; print(csi.__file__); print(eqtools.__file__)"
+python -c "import ecat_viz, csi, eqtools; print(ecat_viz.__file__); print(csi.__file__); print(eqtools.__file__)"
 python -m pip check
 ```
 
-这些路径分别说明当前 Python 和实际导入的包来自哪里。默认推荐 CPython 3.10；
+这些路径分别说明当前 Python 和实际导入的三个包来自哪里。若出现
+`ModuleNotFoundError: ecat_viz`，首次迁移应从 ECAT 根目录重跑安装脚本或执行
+`python -m pip install ./ecat-viz ./csi_cutde_mpiparallel ./eqtools`；独立 checkout
+先安装同级 ecat-viz。不要通过复制旧绘图模块或修改 sys.path 掩盖缺失依赖。
+默认推荐 CPython 3.10；
 3.11 和 3.12 仍在支持范围内，但必须具有与平台和 CPython ABI 匹配的
 `okada4py` 及其他编译型 wheel。
 

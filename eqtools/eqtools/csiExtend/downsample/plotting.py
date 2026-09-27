@@ -382,7 +382,7 @@ def plot_decimated_geodata(lon, lat, values, corners=None, *,
     from matplotlib.colors import Normalize
 
     try:
-        from eqtools.viztools import sci_plot_style, set_degree_formatter
+        from ecat_viz import sci_plot_style, set_degree_formatter
     except Exception:
         sci_plot_style = None
         set_degree_formatter = None

@@ -14,9 +14,9 @@ from contextlib import nullcontext
 
 import numpy as np
 
-from ._core import PlotStyle
-from ._formatters import LatFormatter, LonFormatter
-from ._style_utils import finish_fig
+from ecat_viz import PlotStyle
+from ecat_viz import LatFormatter, LonFormatter
+from ecat_viz import finish_fig
 
 
 _EDGE_NAMES = ("top", "bottom", "left", "right")
@@ -365,7 +365,7 @@ def _draw_3d_panel(
     _set_3d_limits(ax, vertices)
     ax.invert_zaxis()
 
-    from .viz_3d import optimize_3d_plot
+    from ecat_viz import optimize_3d_plot
 
     optimize_3d_plot(ax, shape=shape, background_color="white", show_grid=True)
     # Axes3D uses one geometric tick-length factor for both major and minor

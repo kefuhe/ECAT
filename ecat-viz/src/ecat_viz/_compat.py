@@ -1,5 +1,5 @@
 """
-_compat.py — Backward-compatible wrappers for eqtools.viztools.
+_compat.py — Backward-compatible wrappers for ecat_viz.
 
 Public API
 ----------
@@ -146,8 +146,6 @@ def set_plot_style(
 
 
 def update_style_library() -> None:
-    """Refresh matplotlib's style library with both scienceplots and package styles."""
-    from ._core import _register_package_styles, HAS_SCIENCEPLOTS, register_science_styles
-    if HAS_SCIENCEPLOTS:
-        register_science_styles()
-    _register_package_styles()
+    """Refresh package, SciencePlots and registered directory styles only."""
+    from ._core import _register_package_styles
+    _register_package_styles(force=True)

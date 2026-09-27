@@ -11,14 +11,13 @@ from .fnnls import fnnls
 from scipy.linalg import block_diag as blkdiag
 # import self-written library
 from . import lsqlin
-from ..viztools import sci_plot_style, DegreeFormatter
+from ecat_viz import sci_plot_style, DegreeFormatter
 from .fault_analysis_mixin import FaultAnalysisMixin
 from .constraint_manager_blse import ConstraintManagerBLSE
 from .covariance_utils import prepare_block_covariance_metrics
 from .source_adapters import make_adapter
 
 # Plot
-from eqtools.getcpt import get_cpt
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 from mpl_toolkits.mplot3d import Axes3D

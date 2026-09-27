@@ -27,6 +27,18 @@
 
 See [Install.md](Install.md) for detailed instructions.
 
+The release bundles three independently installable components: `ecat-viz`
+(`ecat_viz`) for general scientific plotting and CPTs, CSI for scientific
+objects/numerics, and eqtools for workflows and domain products. The installer
+resolves all three local directories together. See [ecat-viz](ecat-viz/README.md)
+for plotting without CSI or eqtools, and the
+[plotting reference](docs/reference/viztools.md) for resource migration.
+The current component metadata declares ecat-viz 0.1.0, CSI 1.0.0 and eqtools
+2.0.1. `CITATION.cff` retains the historical ECAT 1.5.0 citation; it does not
+identify the installed component versions or announce a new DOI release.
+For this update, reinstall the three local components together to align the
+CSI prediction protocol with eqtools reporting.
+
 ### Quick Start
 
 ```bash
@@ -68,7 +80,7 @@ pre-install profiles in [Install.md](Install.md) before creating the
 environment; do not replace BLAS/MPI binaries after installing ECAT.
 
 `csi` and its runtime dependencies are required. The repository dependency list
-contains the direct runtime requirements of CSI and eqtools together with their
+contains the direct runtime requirements of CSI, eqtools and ecat-viz together with their
 compatibility ranges. See
 [Install.md](Install.md) for the wheel and optional-feature instructions. See
 [installation and runtime troubleshooting](docs/getting_started/troubleshooting.md)
@@ -83,7 +95,11 @@ commands.
 
 ### Updating an existing checkout
 
-After pulling a newer ECAT revision, update eqtools from its own project
+For the first update across the plotting extraction, rerun `install.sh` or
+`install.bat` from the ECAT root (or install the three local component paths
+together as shown in [Install.md](Install.md)). This also installs ecat-viz.
+
+For later eqtools-only changes, update eqtools from its own project
 directory instead of recreating the complete environment:
 
 ```bash
@@ -95,7 +111,7 @@ python -m pip install .
 
 Maintainers who need source edits to take effect without reinstalling can use
 `python -m pip install -e .` instead. Reinstall `csi_cutde_mpiparallel`
-separately only when CSI changed. The full
+separately when CSI changed, and `ecat-viz` when shared plotting changed. The full
 update and optional-extra commands are documented in [Install.md](Install.md).
 
 -----

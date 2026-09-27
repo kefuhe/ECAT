@@ -191,117 +191,50 @@ def list_chinese_fonts(refresh: bool = False) -> Dict[str, Optional[str]]:
 
 
 def bake_text_fonts(fig) -> None:
-    """Explicitly resolve and fix Text artist fonts while a PlotStyle is active.
+    """Freeze generic font-family lists on existing Text artists.
 
-    Call this **inside** a ``PlotStyle`` context (or before :meth:`PlotStyle.reset`
-    in visualization functions) so that rendered fonts are independent of later
-    ``rcParams`` changes.
-
-    Background
-    ----------
-    matplotlib ``Text`` objects store the font *family* string (e.g.
-    ``'sans-serif'``), not the specific font name.  At render time the
-    family string is looked up against the current ``font.sans-serif``
-    rcParam list.  If ``PlotStyle.reset()`` has already been called before
-    ``plt.show()``, the lookup uses the *restored* (system default) list and
-    the wrong font is rendered.
-
-    This function walks all ``Text`` artists in *fig*, resolves the first
-    available font from the *currently active* ``font.<family>`` list, and
-    sets it explicitly via ``Text.set_fontname()``.
-
-    Enhanced in Phase 2 to support:
-    - ``Annotation`` objects
-    - ``Text3D`` objects (if mpl_toolkits.mplot3d is available)
-    - Colorbar text elements
-
-    Note
-    ----
-    This function is **not effective** for ``usetex=True`` rendering, which
-    uses an external pdflatex process.  In that case, call ``plt.show()``
-    inside the PlotStyle context instead.
-
-    Parameters
-    ----------
-    fig : matplotlib.figure.Figure
-
-    Example
-    -------
-    ::
-
-        with PlotStyle('science', fontsize=8):
-            fig, ax = plt.subplots()
-            ax.set_xlabel('Distance (km)')
-            bake_text_fonts(fig)   # call while style is still active
-        # now plt.show() uses the baked font, not the restored default
+    Call inside the active PlotStyle context. Each artist retains its explicit
+    font names, font file, fallback order, size, weight and style. Generic
+    families are expanded using the current rcParams; no single font is forced
+    onto the whole figure. TeX text is left unchanged. Text added afterwards
+    still uses the settings active when it is created. Repeated calls are safe.
+    Failures warn once per call and leave the affected artist unchanged.
     """
     import matplotlib.text as _mtext
-    import matplotlib.font_manager as _fm
-    import warnings
 
-    family = mpl.rcParams.get('font.family', ['sans-serif'])
-    if isinstance(family, list):
-        family = family[0] if family else 'sans-serif'
-    font_list = mpl.rcParams.get(f'font.{family}', [])
-    if isinstance(font_list, str):
-        font_list = [font_list]
-    available = {f.name for f in _fm.fontManager.ttflist}
-    resolved = next((f for f in font_list if f in available), None)
-    if resolved is None:
-        warnings.warn(
-            f"Could not resolve any font from '{family}' family: {font_list[:3]}... "
-            f"Text fonts may revert to default after PlotStyle context exit. "
-            f"Ensure matplotlib can find the font, or use a different font family.",
-            UserWarning,
-            stacklevel=2
-        )
-        return  # no matching font found, leave artists unchanged
-
-    def _walk(artist):
-        # Handle regular Text objects
-        if isinstance(artist, _mtext.Text) and artist.get_text():
-            try:
-                artist.set_fontname(resolved)
-            except Exception:
-                pass
-
-        # Handle Annotation objects (subclass of Text)
-        if isinstance(artist, _mtext.Annotation):
-            try:
-                artist.set_fontname(resolved)
-            except Exception:
-                pass
-
-        # Handle Text3D objects (if available)
+    failures = []
+    generic = {'serif', 'sans-serif', 'cursive', 'fantasy', 'monospace'}
+    for text in fig.findobj(match=_mtext.Text):
+        if text.get_usetex():
+            continue
         try:
-            from mpl_toolkits.mplot3d.art3d import Text3D
-            if isinstance(artist, Text3D):
-                try:
-                    artist.set_fontname(resolved)
-                except Exception:
-                    pass
-        except ImportError:
-            pass  # 3D toolkit not available
-
-        # Handle colorbar axes
-        if hasattr(artist, 'colorbar') and artist.colorbar is not None:
-            try:
-                _walk(artist.colorbar.ax)
-            except Exception:
-                pass
-
-        # Handle axes with colorbars
-        if hasattr(artist, 'get_axes') and hasattr(artist.get_axes(), 'collections'):
-            ax = artist.get_axes()
-            for collection in ax.collections:
-                if hasattr(collection, 'colorbar') and collection.colorbar is not None:
-                    try:
-                        _walk(collection.colorbar.ax)
-                    except Exception:
-                        pass
-
-        # Recursively walk children
-        for child in getattr(artist, 'get_children', lambda: [])():
-            _walk(child)
-
-    _walk(fig)
+            props = text.get_fontproperties()
+            if props.get_file() is not None:
+                continue
+            families = props.get_family()
+            expanded = []
+            for family in families:
+                key = family.lower()
+                if key in generic:
+                    # Style lists may end in their own generic family.
+                    # Keep concrete fallbacks only, otherwise later calls
+                    # re-expand that tail using a different global style.
+                    candidates = [name for name in mpl.rcParams[f'font.{key}']
+                                  if name.lower() not in generic]
+                    if not candidates:
+                        raise ValueError(f'empty font.{key} fallback list')
+                    expanded.extend(candidates)
+                else:
+                    expanded.append(family)
+            if expanded != families:
+                updated = props.copy()
+                updated.set_family(expanded)
+                text.set_fontproperties(updated)
+        except Exception as exc:
+            failures.append(f'{type(exc).__name__}: {exc}')
+    if failures:
+        warnings.warn(
+            f'Could not fix font families for {len(failures)} text object(s): '
+            + '; '.join(dict.fromkeys(failures)),
+            UserWarning, stacklevel=2,
+        )

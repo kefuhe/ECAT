@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import logging
 
-from eqtools.viztools import (
+from ecat_viz import (
     PlotStyle,
     publication_figsize,
     save_fig,

@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from eqtools.viztools import set_degree_formatter, sci_plot_style
+from ecat_viz import set_degree_formatter, sci_plot_style
 
 
 # -------------------------For 3D SAR Displacements------------------------------#

@@ -18,7 +18,20 @@
 | 约束共享状态和 registry | [eqtools/csiExtend/constraint_manager_base.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_base.py) |
 | BLSE/VCE 与 SMC 约束编译器 | [constraint_manager_blse.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_blse.py), [constraint_manager_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_smc.py) |
 | VCE 算法 | [simple_vce.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/simple_vce.py), [rigorous_vce.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/rigorous_vce.py) |
-| 图件样式工具 | [eqtools/viztools](https://github.com/kefuhe/eqtools/tree/main/eqtools/viztools) |
+| 通用科研绘图 | `ecat-viz/src/ecat_viz`；独立分发，CSI/eqtools 直接依赖 |
+| 领域图件与兼容入口 | [eqtools/viztools](https://github.com/kefuhe/eqtools/tree/main/eqtools/viztools) |
+
+## 绘图依赖与兼容边界
+
+通用样式、字体、formatter、figure、raster 和 CPT 的实现及状态只属于 `ecat_viz`。
+CSI 与 eqtools 的普通运行模块直接导入这一公开入口；领域图件模块也直接消费这些
+通用工具。断层边界、倾角和滑动诊断继续由 `eqtools.viztools` 持有。
+
+旧 `eqtools.plottools`、`eqtools.getcpt.get_cpt`、`eqtools.viztools` 通用导出及
+`eqtools.viztools.raster` 服务于已有用户脚本。包内普通模块不能把这些兼容入口当作
+基础依赖；新通用功能只在 `ecat_viz` 发布。实现模块不再通过下划线 alias 转包。
+导入方向与兼容范围由依赖契约测试检查，公共入口合同见
+[绘图参考](../reference/viztools.md#兼容入口)。
 
 ## 文档边界
 
@@ -142,3 +155,12 @@ Viztools 也遵守同一阅读顺序：普通用户从
 - BLSE/VCE 线性滑动分布反演
 - Bayesian 联合几何-滑动分布反演
 - 图件样式与出版尺寸
+
+
+## Observation subsets and plotting ownership
+
+CSI owns station selection, covariance row indexing and cached predictions on each data object.
+Source GF and solver state are rebuilt by their owners after observation changes. ecat_viz owns
+one-time style/config initialization, validated inch-based widths and affine raster drawing.
+eqtools compatibility entries share these objects; they do not own a second registry.
+CSI alone declares the installed ecat-psgrn entry point; eqtools keeps a delegating module.

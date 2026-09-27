@@ -178,6 +178,10 @@ inv.extract_and_plot_blse_results(
     file_type="png",
     fault_outdir="output",
     data_outdir="Modeling",
+    antisymmetric=True,  # False 使用各 raster 场的实际数据范围。
+    # 改为 "cells" 可按 VarRes/optical corner 绘制单元。
+    raster_render_mode="points",
+    raster_cell_edge_width=0.25,
     show=False,
 )
 ```
@@ -200,17 +204,26 @@ sigma/alpha 数值仍由 scale parameter report 给出；结构表不会从配�
 部分数据集、多个滑动字段或震间字段时，可以直接调用：
 
 ```python
-inv.plot_data_fits(outdir="Modeling", file_type="png")
+inv.plot_data_fits(
+    outdir="Modeling",
+    file_type="png",
+    antisymmetric=True,
+    raster_render_mode="points",  # 也可用 "cells" 或 "auto"
+)
 inv.plot_fault_fields(fields=("total", "ss"), outdir="output", file_type="png")
 ```
 
-这些接口沿用与正式结果相同的 `buildsynth()` 参数，只统一图件组织、保存目录和格式；
-不会改变 Green's functions、协方差、约束、权重或 BLSE/VCE 解。完整参数见
+正式 BLSE/VCE 图件直接消费求解器的 `G @ mpost` 数据块；只有部分 source、非配置
+`data_poly` 或 Bayesian 诊断才调用 `buildsynth(direction="source")`。接口只发布预测并
+统一图件组织、保存目录和格式，不改变 Green's functions、协方差、约束、权重或
+BLSE/VCE 解。完整参数见
 [Figure Products](../reference/figure_products.md)。
 
-`extract_and_plot_blse_results()` 继续处理 GPS、InSAR、leveling 和 cross-fault offset；
-Bayesian 结果入口还会处理 opticorr。共享绘图产品不会扩大任一结果入口原有的数据类型
-参与范围。
+`extract_and_plot_blse_results()` 可处理 GPS、InSAR、opticorr、leveling 和
+cross-fault offset。`raster_render_mode` 只改变 InSAR/opticorr 拟合图的空间载体，
+不改变 synthetic、权重、协方差或文本输出；完整语义见
+[Figure Products](../reference/figure_products.md#data--synth-图组)。
+`antisymmetric=True` 是默认零中心对称色标；设为 `False` 时使用实际有限数据范围。
 
 公共 `test_slip_inv_BLSE.py --mode single` 与 `test_slip_inv_VCE.py` 在该入口之后直接复用已经生成的 synthetic，
 不再调用第二套 `buildsynth()`。GPS 与没有 corner 的 InSAR/opticorr 输入直接写点表；有

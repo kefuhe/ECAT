@@ -30,31 +30,51 @@ For more details and configuration instructions, see the `README` file in the `c
 
 ## 🚦 Installation and Usage Notes
 
-For a new user environment, create the complete ECAT environment from the
-repository root first. Its supported dependency file and `okada4py`
-instructions prepare CSI and eqtools together.
+CSI's general plotting helpers now depend directly on `ecat-viz` (`ecat_viz`),
+not eqtools. For a local standalone checkout, install the sibling `ecat-viz`
+project with `python -m pip install .` first; ECAT installs all three local
+components together. Numerical source/mesh/Green-function behavior is unchanged
+by this plotting migration.
 
-For an incremental CSI update, reuse that environment and run from this
-directory:
+The aligned ECAT release also includes CSI's source-component prediction
+protocol. `buildsynth(direction="source")` follows each fault's `slipdir` and
+requires Green functions for its declared components; explicit legacy
+directions such as `"sd"` retain their existing behavior. This is a source
+diagnostic, while eqtools' formal linear fit uses its assembled `G @ mpost`.
+Update all three local components together when crossing this release boundary;
+installing the plotting package alone cannot upgrade an older CSI implementation.
+
+
+
+For a new user environment, install the complete
+[ECAT distribution](https://github.com/kefuhe/ECAT) first. Its supported
+dependency file, matching `okada4py` instructions, and installation scripts
+prepare ecat-viz, CSI and eqtools together.
+
+For independent CSI development, reuse the validated ECAT environment and run
+the editable package install from this repository root:
 
 ```bash
 conda activate ecat
 python -m pip install -e .
 ```
 
+This is an incremental package install, not a complete environment bootstrap.
 CSI imports `okada4py` during package import, so a matching wheel must already
-be installed. Every base dependency in `setup.py` is backed by a CSI source
-import; a package is not added there merely because eqtools uses it.
-Dependencies imported by both packages are deliberately declared by both so
-either standalone checkout remains installable.
+be installed. The direct Python dependencies are declared in `setup.py`.
+Every base entry is backed by a CSI source import; a package is not added here
+merely because eqtools uses it. Dependencies imported by both CSI and eqtools
+are deliberately declared by both packages so either standalone checkout can
+be installed without relying on the other package's metadata.
 
 The obsolete CSI `simpleSampler` implementation based on the incompatible
 legacy PyMC API has been removed. PyMC, PyTensor, and Theano are not CSI or
 ECAT installation dependencies; supported nonlinear geometry inversion is
 provided by the eqtools Bayesian SMC workflow.
 
-- **If you only need homogeneous (non-layered) Green's function calculation:**  
-  no EDCMP/PSCMP binary compilation is required. Install this checkout with:
+- **If you only need homogeneous (non-layered) Green's function calculation:**
+  no EDCMP/PSCMP binary compilation is required. After preparing the ECAT
+  environment, install this checkout with:
 
   ```bash
   python -m pip install -e .
@@ -69,6 +89,23 @@ provided by the eqtools Bayesian SMC workflow.
       1. Compile the binaries on your platform (see below for source and patch instructions).
       2. Replace the binaries in the corresponding `csi/bin` subfolder.
       3. Then run `python -m pip install -e .` to install the package.
+
+---
+
+## Observation selection and plotting contracts
+
+In CSI 1.0.1, crossfaultoffset station selection/rejection keeps coordinates, observations,
+errors, existing component/combined predictions and covariance aligned. Covariance uses
+component-major rows based on the original station count, including cross-component correlations.
+Inconsistent shapes raise before observation state is changed. Select before GF/solver assembly;
+after later selection, rebuild external source GFs, data layouts and solver covariance factors.
+Earlier multi-component select_stations calls made after Cd construction could select wrong
+covariance rows. Recompute weighted fits/inversions that used that branch.
+
+CSI requires ecat-viz 0.1.1 or newer within the supported 0.1 series. Invalid plotting style
+arguments propagate; style=None explicitly disables styling. CSI alone installs ecat-psgrn;
+the old eqtools module delegates to CSI. Upgrade all ECAT components together and reinstall
+CSI last when upgrading an environment whose old packages both owned that command.
 
 ---
 

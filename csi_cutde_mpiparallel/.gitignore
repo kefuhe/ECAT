@@ -1,7 +1,19 @@
+# Ignore dot-prefixed local files/directories at every level.
+.*
+!.gitignore
+!.gitmodules
+
 build/
 dist/
 *.egg-info/
+
+
 # Python cache files
-__pycache__/
-csi/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Generated distribution artifacts.
+build/
+dist/
+*.egg-info/
 *.py[cod]

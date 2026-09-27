@@ -27,11 +27,11 @@ from numpy import rad2deg
 from csi import TriangularPatches
 from csi.seismiclocations import seismiclocations
 from .fitting_methods import RegressionFitter
-from ..viztools import DegreeFormatter
+from ecat_viz import DegreeFormatter
 from .MeshGenerator import MeshGenerator
 from .geom_ops import discretize_coords, validate_top_bottom_cells
 from .fault_angle_conventions import canonicalize_compact_fault_angles
-from ..viztools import sci_plot_style
+from ecat_viz import sci_plot_style
 
 def str2num(istr: str, dtype=int) -> List[Union[int, float]]:
     return [dtype(ix.strip()) for ix in istr.strip().split()]
@@ -774,7 +774,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         Returns:
         None
         """
-        from ..viztools import sci_plot_style, set_degree_formatter
+        from ecat_viz import sci_plot_style, set_degree_formatter
     
         if methods is None:
             methods = [result['method'] for result in self.isocurve_fitted_results]
@@ -4020,7 +4020,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         from mpl_toolkits.mplot3d import Axes3D
         import matplotlib.pyplot as plt
-        from ..viztools import sci_plot_style
+        from ecat_viz import sci_plot_style
 
         if '.pdf' in file_path:
             pdf_fonttype = 42 if pdf_fonttype is None else pdf_fonttype
