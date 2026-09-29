@@ -168,7 +168,14 @@ geographic affine is supported and no longer triggers a false warning.
 `with PlotStyle(...)` restores rcParams, including nesting and exceptions.
 `apply()/reset()` change process-wide state and must be paired. Matplotlib is
 not isolated across threads; the registry lock only protects internal updates.
-Font baking preserves explicit fonts, font files, TeX and text properties.
+Call `finish_fig(fig)` or `bake_text_fonts(fig)` inside `PlotStyle` when a
+figure may be saved or edited after the style context exits. Font baking freezes
+existing text's generic families to the installed concrete candidates in the
+active style, in preference order. Unavailable optional candidates are omitted;
+explicit font names, font files, TeX and other text properties are untouched.
+If no configured candidate is installed, one warning leaves the affected text
+unchanged, so its font cannot be guaranteed after the context exits. Register
+new fonts with Matplotlib before baking; text added later uses its own settings.
 `show_fig(fig)` limits this figure's DPI, then calls `plt.show()` for all windows.
 `update_style_library()` reloads bundled, SciencePlots and registered directory
 styles after a Matplotlib library reload; it preserves presets, widths and rcParams.

@@ -158,15 +158,25 @@ def bake_text_fonts(fig) -> None:
 
     Call inside the active PlotStyle context. Each artist retains its explicit
     font names, font file, fallback order, size, weight and style. Generic
-    families are expanded using the current rcParams; no single font is forced
-    onto the whole figure. TeX text is left unchanged. Text added afterwards
-    still uses the settings active when it is created. Repeated calls are safe.
-    Failures warn once per call and leave the affected artist unchanged.
+    families expand to installed concrete candidates from the current rcParams,
+    preserving their order. No single font is forced onto the whole figure.
+    TeX text is unchanged. Text added afterwards uses its creation-time settings.
+    Repeated calls are safe. Failures warn once per call and leave affected
+    artists unchanged.
     """
     import matplotlib.text as _mtext
 
+    try:
+        from matplotlib.font_manager import fontManager
+        available = {entry.name.casefold() for entry in fontManager.ttflist}
+    except Exception as exc:
+        warnings.warn(f'Could not inspect available fonts: {exc}',
+                      UserWarning, stacklevel=2)
+        return
+
     failures = []
     generic = {'serif', 'sans-serif', 'cursive', 'fantasy', 'monospace'}
+    resolved = {}
     for text in fig.findobj(match=_mtext.Text):
         if text.get_usetex():
             continue
@@ -177,16 +187,19 @@ def bake_text_fonts(fig) -> None:
             families = props.get_family()
             expanded = []
             for family in families:
-                key = family.lower()
+                key = family.casefold()
                 if key in generic:
-                    # Style lists may end in their own generic family.
-                    # Keep concrete fallbacks only, otherwise later calls
-                    # re-expand that tail using a different global style.
-                    candidates = [name for name in mpl.rcParams[f'font.{key}']
-                                  if name.lower() not in generic]
-                    if not candidates:
-                        raise ValueError(f'empty font.{key} fallback list')
-                    expanded.extend(candidates)
+                    # Freeze only installed concrete choices. A generic tail
+                    # would re-expand under a later, potentially different style.
+                    if key not in resolved:
+                        resolved[key] = [
+                            name for name in mpl.rcParams[f'font.{key}']
+                            if name.casefold() not in generic
+                            and name.casefold() in available
+                        ]
+                    if not resolved[key]:
+                        raise ValueError(f'no installed font in font.{key} fallback list')
+                    expanded.extend(resolved[key])
                 else:
                     expanded.append(family)
             if expanded != families:

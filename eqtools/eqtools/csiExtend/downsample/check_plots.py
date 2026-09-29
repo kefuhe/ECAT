@@ -1054,9 +1054,10 @@ def plot_component_maps(
     import matplotlib.pyplot as plt
 
     try:
-        from ecat_viz import PlotStyle, set_degree_formatter
+        from ecat_viz import PlotStyle, bake_text_fonts, set_degree_formatter
     except Exception:
         PlotStyle = None
+        bake_text_fonts = None
         set_degree_formatter = None
 
     components = list(components)
@@ -1271,6 +1272,8 @@ def plot_component_maps(
             )
 
         _freeze_manual_layout(fig)
+        if bake_text_fonts is not None:
+            bake_text_fonts(fig)
         if save_fig and file_path:
             file_path = Path(file_path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
