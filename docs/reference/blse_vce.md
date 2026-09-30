@@ -610,13 +610,19 @@ roughness。若只需要数字、不绘图，改为单独调用
 `extract_and_plot_blse_results(...)` 通常会生成：
 
 - `output/*_slip.<file_type>` 类型的断层滑动图。
-- `Modeling/gps_<DataName>_map.<file_type>` 类型的 GPS data/synth 图。
+- 默认 `Modeling/gps_<DataName>_map.<file_type>` 类型的 GPS data/synth 图；
+  `gps_plot_mode="comparison"` 改为单图 EN/U 比较，文件名为
+  `gps_<DataName>_fit_comparison.<file_type>`。
 - `Modeling/<DataName>_fit_comparison.<file_type>` 类型的 InSAR 或 opticorr
   data/synth/residual 图；opticorr 默认是 East/North 两行。
 - `Modeling/<DataName>_leveling_fit.<file_type>` 或 cross-fault offset 拟合图。
 - 控制台中的拟合统计和断层统计。
 
 该入口生成的 GPS/InSAR/opticorr 合成观测与直接调用 `plot_data_fits()` 时相同。
+
+GPS 新图使用 `gps_kwargs` 控制显示换算、纸面箭头比例、站名和 U 圆圈；观测/模拟
+箭头线宽一致，U 是否可显示跟随反演配置。旧地图仍是默认。完整参数及迁移区别见
+[GPS 单图比较](figure_products.md#gps-单图比较)。
 `file_type` 只控制图像格式，不控制科学数据文件格式。
 `raster_render_mode` 只控制 raster 拟合图使用中心点还是 corner 单元；默认
 `"points"` 保持既有行为。`"cells"` 要求 corner，`"auto"` 在无 corner 时回退为点。

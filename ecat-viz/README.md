@@ -197,3 +197,22 @@ retained in this release (`~/.config/eqtools/viztools.json` first).
 
 See LICENSE, COPYING-GPL-3.0, NOTICE and individual CPT headers for provenance
 and licensing; bundled resources are not all MIT-licensed.
+
+
+### Independent font-size controls
+
+`PlotStyle` accepts `tick_fontsize`, `legend_fontsize`, and `title_fontsize`
+independently of the optional base `fontsize`. A component override changes
+only that component; explicit `rcparams` still takes final priority.
+`title_fontsize` controls the figure title (`fig.suptitle`), while axes titles
+use `rcparams={"axes.titlesize": ...}` or `ax.set_title(..., fontsize=...)`.
+
+```python
+import matplotlib.pyplot as plt
+from ecat_viz import PlotStyle
+
+with PlotStyle("science", legend_fontsize=6):
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], label="Data")
+    ax.legend()
+```

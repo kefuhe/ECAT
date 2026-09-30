@@ -500,15 +500,21 @@ class PlotStyle:
     def _apply_fontsize(self, acc: Dict) -> None:
         if self._fontsize is not None:
             fs = float(self._fontsize)
-            acc['font.size']      = fs
+            acc['font.size'] = fs
             acc['axes.labelsize'] = fs
-            _tick_fs  = float(self._tick_fontsize)   if self._tick_fontsize   is not None else max(fs - 1.0, 6.0)
-            _leg_fs   = float(self._legend_fontsize) if self._legend_fontsize is not None else max(fs - 1.0, 6.0)
-            _title_fs = float(self._title_fontsize)  if self._title_fontsize  is not None else fs + 1.0
-            acc['xtick.labelsize']  = _tick_fs
-            acc['ytick.labelsize']  = _tick_fs
-            acc['legend.fontsize']  = _leg_fs
-            acc['figure.titlesize'] = _title_fs
+            acc['xtick.labelsize'] = acc['ytick.labelsize'] = max(fs - 1.0, 6.0)
+            acc['legend.fontsize'] = max(fs - 1.0, 6.0)
+            acc['figure.titlesize'] = fs + 1.0
+        # Component overrides are independent of the optional base fontsize.
+        # Apply them after derived defaults; final rcparams still has priority.
+        for value, keys in (
+            (self._tick_fontsize, ('xtick.labelsize', 'ytick.labelsize')),
+            (self._legend_fontsize, ('legend.fontsize',)),
+            (self._title_fontsize, ('figure.titlesize',)),
+        ):
+            if value is not None:
+                for key in keys:
+                    acc[key] = float(value)
 
     def _apply_legend_frame(self, acc: Dict) -> None:
         if self._legend_frame:

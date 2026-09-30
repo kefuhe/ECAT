@@ -14,7 +14,7 @@ from .data_prediction import (
     rebuild_diagnostic_synthetics,
 )
 from .interseismic_fields import get_fault_by_name, get_faults_from_inversion
-from ecat_viz import normalize_image_format, sci_plot_style
+from ecat_viz import PlotStyle, normalize_image_format
 
 
 def _merge_product_plot_kwargs(
@@ -138,6 +138,51 @@ def _save_geodetic_map(
     return stem.parent / f"{stem.name}_map.{file_type}"
 
 
+def _gps_comparison_kwargs(defaults=None, kwargs=None):
+    """Separate display preferences from the product's scientific ownership.
+
+    show_vertical is a visibility preference; the active-U flag still comes
+    from inversion configuration. Neither output identity nor prediction roles
+    can be replaced through display kwargs. Explicit style fields override only
+    their corresponding defaults, so a legend font override retains PDF/font
+    settings supplied by the result entry point.
+    """
+    options = dict(kwargs or {})
+    show_vertical = options.pop("show_vertical", True)
+    if not isinstance(show_vertical, (bool, np.bool_)):
+        raise ValueError("GPS show_vertical must be a boolean")
+    if "style_kwargs" in options and defaults and "style_kwargs" in defaults:
+        options["style_kwargs"] = {
+            **dict(defaults["style_kwargs"]),
+            **dict(options["style_kwargs"] or {}),
+        }
+    options = _merge_product_plot_kwargs(
+        defaults, options,
+        locked=("vertical", "faults", "data", "show", "save_path", "ax"),
+        context="GPS comparison product",
+    )
+    legacy_keys = set(options) & {"scale", "legendscale", "box", "verticalsize", "verticalnorm", "drawCoastlines", "Map", "Fault"}
+    if legacy_keys:
+        raise ValueError("GPS comparison does not accept legacy map options: " + ", ".join(sorted(legacy_keys)))
+    return options, bool(show_vertical)
+
+
+def plot_gps_comparison_product(data, *, vertical, faults, save_path, show,
+                                defaults=None, kwargs=None):
+    """Render already prepared GPS fields, without rebuilding predictions.
+
+    Shared by Figure Products and the independent geometry SMC result path.
+    Configuration owns the active U flag; display options may only hide it.
+    """
+    method = getattr(data, "plot_fit_comparison", None)
+    if not callable(method):
+        raise RuntimeError("GPS comparison requires the matching CSI update")
+    options, show_vertical = _gps_comparison_kwargs(defaults, kwargs)
+    options.setdefault("close", not show)
+    return method(vertical=bool(vertical) and show_vertical, faults=faults,
+                  save_path=str(save_path), show=show, **options)
+
+
 def _save_last_fault_plot(
     fault: Any,
     path: Path,
@@ -193,6 +238,7 @@ def plot_data_fits_product(
     sar_cbaxis=(0.1, 0.15, 0.35, 0.04),
     remove_direction_labels=False,
     gps_kwargs=None,
+    gps_plot_mode="legacy",
     sar_kwargs=None,
     opticorr_kwargs=None,
     raster_render_mode="points",
@@ -216,7 +262,13 @@ def plot_data_fits_product(
     source/slip-only diagnostic view.
 
     ``gps_kwargs``, ``sar_kwargs``, and ``opticorr_kwargs`` override display
-    defaults only. ``antisymmetric=True`` uses zero-centred automatic limits;
+    defaults only. ``gps_plot_mode="legacy"`` preserves CSI map output;
+    ``"comparison"`` draws one EN/U comparison and uses the configured U flag.
+    Its ``show_vertical=False`` only hides U; it cannot activate an unused
+    component. ``gps_scale`` and ``gps_legendscale`` apply only to legacy maps.
+    Comparison display conversion and paper scaling are explicit in
+    ``gps_kwargs`` (``value_scale``, ``value_unit``, ``arrow_scale``).
+    ``antisymmetric=True`` uses zero-centred automatic limits;
     ``False`` uses each raster field's finite data range. Explicit ``vmin``
     and ``vmax`` in the type-specific kwargs remain authoritative.
     ``raster_render_mode`` controls only the spatial carrier of
@@ -234,6 +286,10 @@ def plot_data_fits_product(
         data type has no product implementation.
     """
     file_type = normalize_image_format(file_type)
+    if gps_plot_mode not in ("legacy", "comparison"):
+        raise ValueError("gps_plot_mode must be 'legacy' or 'comparison'")
+    if gps_plot_mode == "comparison":
+        _gps_comparison_kwargs(kwargs=gps_kwargs)
     target_faults = _resolve_faults(inversion, faults)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -260,6 +316,11 @@ def plot_data_fits_product(
     for spec in _iter_geodata(inversion, datasets=datasets, data_types=data_types):
         dtype = str(getattr(spec.data, "dtype", "")).lower()
         grouped_specs[dtype if dtype in grouped_specs else "other"].append(spec)
+
+    if gps_plot_mode == "comparison" and plot_data:
+        for spec in grouped_specs["gps"]:
+            if not callable(getattr(spec.data, "plot_fit_comparison", None)):
+                raise RuntimeError("GPS comparison requires the matching CSI update")
 
     publish_predictions = getattr(inversion, "publish_fit_predictions", None)
     selected_specs = [
@@ -288,8 +349,8 @@ def plot_data_fits_product(
         )
 
     gps_style = (
-        sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=gps_fontsize)
-        if pdf_fonttype is not None or gps_fontsize is not None
+        PlotStyle("science", usetex=False, pdf_fonttype=pdf_fonttype, fontsize=gps_fontsize)
+        if gps_plot_mode == "legacy" and (pdf_fonttype is not None or gps_fontsize is not None)
         else nullcontext()
     )
     _prepare_fault_traces(
@@ -303,6 +364,30 @@ def plot_data_fits_product(
             if not plot_data:
                 continue
             name = str(getattr(data, "name", "dataset"))
+            if gps_plot_mode == "comparison":
+                path = outdir / f"gps_{name}_fit_comparison.{file_type}"
+                defaults = {
+                    "title": gps_title,
+                    "remove_direction_labels": remove_direction_labels,
+                    "fault_color": gps_fault_color,
+                }
+                if gps_figsize is not None:
+                    defaults["figsize"] = gps_figsize
+                if fault_linewidth is not None:
+                    defaults["fault_linewidth"] = fault_linewidth
+                style_kwargs = {}
+                if pdf_fonttype is not None:
+                    style_kwargs["pdf_fonttype"] = pdf_fonttype
+                if gps_fontsize is not None:
+                    style_kwargs["fontsize"] = gps_fontsize
+                if style_kwargs:
+                    defaults["style_kwargs"] = style_kwargs
+                plot_gps_comparison_product(
+                    data, vertical=spec.vertical, faults=target_faults,
+                    save_path=path, show=show, defaults=defaults, kwargs=gps_kwargs,
+                )
+                written["gps"].append(path)
+                continue
             box = [data.lon.min(), data.lon.max(), data.lat.min(), data.lat.max()]
             current_gps_kwargs = _merge_product_plot_kwargs(
                 {
@@ -335,7 +420,7 @@ def plot_data_fits_product(
             written["gps"].append(path)
 
     sar_style = (
-        sci_plot_style(pdf_fonttype=pdf_fonttype, fontsize=sar_fontsize)
+        PlotStyle("science", usetex=False, pdf_fonttype=pdf_fonttype, fontsize=sar_fontsize)
         if pdf_fonttype is not None or sar_fontsize is not None
         else nullcontext()
     )

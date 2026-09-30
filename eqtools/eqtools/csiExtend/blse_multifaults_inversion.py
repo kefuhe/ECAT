@@ -2007,6 +2007,7 @@ class BoundLSEMultiFaultsInversion(
                                           data_outdir='Modeling',
                                           show=True,
                                           raster_render_mode='points', raster_cell_edge_width=0.25,
+                                          gps_plot_mode='legacy', gps_kwargs=None,
                                           ):
         """
         Extract and plot the Bayesian results.
@@ -2030,7 +2031,9 @@ class BoundLSEMultiFaultsInversion(
         sar_cbaxis: colorbar axis position for SAR data plots (default is [0.1, 0.15, 0.35, 0.04])
         gps_figsize: figure size for GPS data plots (default is None)
         sar_figsize: figure size for SAR data plots (default is (3.5, 2.7))
-        gps_scale: scale for GPS data plots (default is 0.05)
+        gps_plot_mode: legacy map (default) or single-axes comparison.
+        gps_kwargs: display options for the selected GPS renderer.
+        gps_scale: legacy-map scale for GPS data plots (default is 0.05)
         gps_legendscale: legend scale for GPS data plots (default is 0.2)
         raster_render_mode: InSAR/optical figure carrier: ``'points'``
             (default), ``'cells'``, or ``'auto'``.
@@ -2109,6 +2112,8 @@ class BoundLSEMultiFaultsInversion(
                 antisymmetric=antisymmetric,
                 res_use_data_norm=res_use_data_norm,
                 cmap=cmap,
+                gps_plot_mode=gps_plot_mode,
+                gps_kwargs=gps_kwargs,
                 gps_title=gps_title,
                 sar_title=sar_title,
                 gps_figsize=gps_figsize,

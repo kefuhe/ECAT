@@ -50,7 +50,7 @@ output/     # 断层滑动、标准差和后验图
 Modeling/   # GPS、InSAR、opticorr、leveling、cross-fault offset 拟合图
 ```
 
-GPS 使用 CSI `geodeticplot.savefig()` 的 prefix 接口，因此实际文件名带 `_map`：
+默认 legacy GPS 使用 CSI `geodeticplot.savefig()` 的 prefix 接口，因此实际文件名带 `_map`：
 
 ```text
 Modeling/gps_<dataset>_map.<file_type>
@@ -87,7 +87,7 @@ opticorr 和 leveling 使用 `poly="include"`；cross-fault offset 需要改正�
 | `"include"` | 对所有选中数据集强制请求包含已求解改正项的总预测 |
 | `None` | 明确只画 source/slip-only 预测，用于诊断改正项贡献 |
 
-不同数据类型仍由其既有方法处理：GPS 使用 `data.plot()`，InSAR 与 opticorr 使用各自
+不同数据类型仍由其既有方法处理：GPS 默认使用 `data.plot()`，comparison 模式使用 `data.plot_fit_comparison()`，InSAR 与 opticorr 使用各自
 数据对象的 `plot_fit_comparison()`，leveling 和 cross-fault offset 使用 ECAT 的专用比较图。
 
 InSAR 和 opticorr 的空间显示由一个顶层选项控制，不改变数据内容或文本输出格式：
@@ -140,6 +140,116 @@ inv.plot_data_fits(
 
 `faults`、GPS 的 `data=["data", "synth"]`、raster 的 `save_path`、`show`、
 `render_mode` 和 `cell_edge_width` 由产品层拥有，不能在自由 kwargs 中重复指定。
+
+## GPS 单图比较
+
+`gps_plot_mode="comparison"` 显式选择新版 GPS 比较图；默认 `"legacy"` 继续生成
+原 CSI 地图。观测和模拟 EN 箭头使用相同线宽、箭头形状和纸面长度比例，默认分别
+为红色和蓝色。参与反演的 U 同时显示：观测是底层大圆，模拟是上层小圆，填色表示
+带符号的 Up 位移；大小只区分角色，不表示位移幅值。两个 U 场共用一个色标。
+
+```python
+written = inv.plot_data_fits(
+    data_types=("gps",),
+    gps_plot_mode="comparison",
+    gps_figsize=(3.5, 2.7),
+    gps_kwargs={
+        "coordinates": "lonlat",  # 默认区域经纬度，保留度数刻度，不显示轴标题
+        "value_scale": 1000.0,  # 当前数组为 m 时，仅显示换算为 mm
+        "value_unit": "mm",
+        "arrow_scale": 500.0,  # 显示值单位/inch；100 mm 箭头长 0.2 inch
+        "legend_value": 100.0,
+        "vertical_sizes": (64, 25),  # 观测/模拟面积，单位 point²
+        "colorbar_size": 0.35,  # 右侧竖直色条，底端对齐主轴底边
+        "error": False,
+    },
+    outdir="Modeling",
+    file_type="pdf",
+    show=False,
+)
+```
+
+新版输出 `Modeling/gps_<dataset>_fit_comparison.<file_type>`，返回路径与实际文件一致。
+`extract_and_plot_blse_results()`、联合 Bayesian 和独立几何 SMC 的
+`extract_and_plot_bayesian_results()` 也接受 `gps_plot_mode` 和 `gps_kwargs`。
+独立几何 SMC 保持其现有输出格式，新 GPS 比较图为 PNG。
+
+| 参数 | 语义 |
+| --- | --- |
+| `coordinates="lonlat"` | 默认区域经纬度显示，按局地纬度修正轴比例，EN 箭头使用屏幕东/北方向；不提供全球制图或底图 |
+| `coordinates="xy"` | 显式使用该 GPS 对象的投影公里坐标，等比例轴，ENU 方向转换为投影方向 |
+| `xlabel`, `ylabel` | None 在 lonlat 中不显示轴标题，在 xy 中显示公里标题；字符串显式覆盖，空字符串隐藏；不隐藏刻度 |
+| `remove_direction_labels` | 仅移除经纬度刻度的 E/W/N/S 后缀，保留度数及足以区分刻度的精度 |
+| `extent` | 所选坐标下的 `[xmin, xmax, ymin, ymax]`；默认从有效配对站点生成带边距的范围，并包含箭头端点 |
+| `figsize`, `unit` | 通用发表图幅，`unit` 为图幅 inch/cm，与位移单位分开 |
+| `value_scale`, `value_unit` | 显式显示换算和标签，同时用于两组值及可选误差；不修改原数组 |
+| `arrow_scale` | 显示数值单位/inch；None 从两组水平幅值生成同一自动比例 |
+| `legend_value` | 红蓝标定棒共同代表的 EN 数值；每根长度为 `legend_value / arrow_scale` inch；默认对应 0.2 inch |
+| `color` | 观测/模拟颜色对；默认红/蓝 |
+| `width`, `headwidth`, `headlength`, `headaxislength` | 两组箭头共用的外观控制；width 为主轴宽度比例，值越大越粗 |
+| `show_vertical` | 默认 True；只能隐藏已采用的 U，不能开启未参与反演的 U |
+| `vertical_sizes` | 观测/模拟圆圈面积，要求观测大于模拟且均大于零；默认 `(64, 25)` |
+| `vertical_cmap` | 默认 `RdBu_r`，正值表示 Up，负值表示 Down |
+| `vertical_vmin`, `vertical_vmax` | 显示单位下的 U 色标边界；自动范围覆盖两组值并以零为中心，显式值不再对称化 |
+| `colorbar_orientation="vertical"` | 默认 U 色条在轴外右侧，底端对齐主轴底边；horizontal 时默认放在主轴下方 |
+| `colorbar_size=0.35` | 相对于最终主轴高度（竖直）或宽度（水平）的色条长度，要求 `0 < size <= 1` |
+| `cbaxis` | 手动指定 `[left, bottom, width, height]`，单位为主轴比例；覆盖自动位置/长度，方向仍由 colorbar_orientation 决定 |
+| `name`, `title`, `xticks`, `yticks` | 站名、标题和所选坐标下的刻度 |
+| `legend_loc` | 合并图例位置，默认 best；包含两根标定棒、一次居中的共同尺度文字，以及可选 U 角色样本 |
+| `key_position` | 已弃用：发出 FutureWarning，提示改用 legend_loc；不再绘制独立黑色箭头 |
+| `error=False` | 默认不画误差；True 使用 `err_enu` 的 E/N 边际标准差，假定独立，不代替完整 Cd 或 VCE 结果 |
+| `style="science"`, `style_kwargs` | 直接使用 ecat_viz `PlotStyle`；例如 `{"fontsize": 9, "pdf_fonttype": 42}` |
+| `close`, `dpi` | 高层默认无显示时关闭批量图件；底层默认保留可编辑 Figure，保存 dpi 默认 300 |
+
+水平身份图例同时承担尺度标定，不另外绘制黑色箭头。红蓝两根棒分别完整表示同一个
+`legend_value`，共同数值居中放在标定棒列上方。例如 `legend_value=100`、
+`arrow_scale=500` 时，每根棒和 100 显示单位的数据箭头均长 0.2 inch（5.08 mm）。
+字体、DPI 和地图坐标单位不会改变这一长度。箭头长度随 arrow_scale 增大而缩短；
+改变 legend_value 只改变标定棒，不改变数据箭头。只有 U 有效时不显示 EN 标定图例。
+
+**分量和单位由当前科学流程决定。** 高层读取规范化反演配置中的 `vertical`，不会根据
+数组有三列、U 是否有限或是否为零来猜测。EN 正式预测仍可能有零占位 U 列，那不是
+拟合得到的 U。绘图不改变 `verticals`、模型、观测、协方差或预测发布合同。
+`value_scale` 也不会读取或修正 reader 的 `factor`；数组曾被手动换算时，用户必须按
+当前单位设置显示换算。位移与速度之间的转换不属于绘图。
+
+E/N 与 U 各自使用观测/模拟共同的有效站点掩码。缺失值不补零，不改变源对象的站点；
+跳过的数量会发出警告。没有任何有效配对或没有预先准备的 synth 时明确报错。
+
+旧 `gps_scale`/`gps_legendscale` 只作用于 `legacy`，不是新版的 `arrow_scale`/
+`legend_value`。旧地图的经纬度缩放不能按数值原样迁移为纸面长度比例。新版拒绝
+`scale`、`legendscale`、`box`、`verticalsize`、`verticalnorm`、`drawCoastlines`、
+`Map`、`Fault` 等旧地图选项；产品层还拥有 `vertical`、`faults`、`save_path`、
+`show`、`data` 和 `ax`，不允许在 `gps_kwargs` 中覆盖。
+
+新版默认值迁移时，原先省略 coordinates、但 extent 使用公里坐标的调用必须补上
+`coordinates="xy"`；不根据数值猜测坐标单位。已有横向 cbaxis 需要显式指定
+`colorbar_orientation="horizontal"`。原 key_position 应改为 legend_loc。上述变化
+只作用于 comparison，legacy 的颜色、地图参数和输出保持原合同。
+
+需要自行组合或进一步编辑图时，直接使用 CSI：
+
+```python
+# gps_data.synth 必须已由当前模型准备；vertical 由调用者明确声明。
+fig, ax = gps_data.plot_fit_comparison(
+    vertical=True,
+    value_scale=1000.0,
+    value_unit="mm",
+    style="science",
+    style_kwargs={"fontsize": 9},
+    show=False,
+)
+ax.set_title("GNSS displacement comparison")
+fig.savefig("gps_comparison.pdf", dpi=300, bbox_inches="tight")
+```
+
+底层可以借用 `ax`，并返回普通 `(fig, ax)`；不会覆盖旧 `gps_data.fig`。
+借用的 Figure 不允许由绘图方法关闭。仅处理 EN 时直接传 `vertical=False`。
+
+实现阅读顺序是 CSI `gps.plot_fit_comparison` 的参数合同、`csi._gps_plotting` 的
+七个绘制步骤，再到 eqtools Figure Products 的分量/文件组织。坐标投影只决定箭头方向，
+原始 `sqrt(E² + N²)` 决定箭头幅值；颜色 normalization 只影响 U 显示，不参与预测。
+这是一张二维图表达 ENU 三个位移分量，不是空间三维箭头图。
 
 ## 断层滑动图组
 

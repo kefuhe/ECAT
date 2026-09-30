@@ -3176,8 +3176,13 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         print_fit_statistics=True,
         raster_render_mode="points",
         raster_cell_edge_width=0.25,
+        gps_plot_mode="legacy",
+        gps_kwargs=None,
     ):
         """Load samples, plot posterior summaries, and rebuild a selected model.
+
+        ``gps_plot_mode="comparison"`` adds the shared single-axes EN/U
+        comparison; ``gps_kwargs`` controls display only.
 
         This is a compatibility entry for old example scripts.  It keeps the
         old high-level workflow name, while using the new parameter registry
@@ -3293,6 +3298,8 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
                 antisymmetric=antisymmetric,
                 res_use_data_norm=res_use_data_norm,
                 cmap=cmap,
+                gps_plot_mode=gps_plot_mode,
+                gps_kwargs=gps_kwargs,
                 raster_render_mode=raster_render_mode,
                 raster_cell_edge_width=raster_cell_edge_width,
                 show=show,
@@ -3417,27 +3424,40 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         raster_render_mode,
         raster_cell_edge_width,
         show,
+        gps_plot_mode="legacy",
+        gps_kwargs=None,
     ):
+        from .figure_products import (
+            _gps_comparison_kwargs, _merge_product_plot_kwargs, plot_gps_comparison_product,
+        )
+
+        if gps_plot_mode not in ("legacy", "comparison"):
+            raise ValueError("gps_plot_mode must be 'legacy' or 'comparison'")
+        if gps_plot_mode == "comparison":
+            _gps_comparison_kwargs(kwargs=gps_kwargs)
         out_dir = Path(modeling_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         for fault in faults:
             fault.color = "b"
         for gpsdata, _vertical in grouped_data["gps"]:
+            if gps_plot_mode == "comparison":
+                plot_gps_comparison_product(
+                    gpsdata, vertical=_vertical, faults=faults,
+                    save_path=out_dir / f"gps_{gpsdata.name}_fit_comparison.png",
+                    show=show, kwargs=gps_kwargs,
+                )
+                continue
             if not hasattr(gpsdata, "plot"):
                 continue
             box = [gpsdata.lon.min(), gpsdata.lon.max(), gpsdata.lat.min(), gpsdata.lat.max()]
-            gpsdata.plot(
-                faults=faults,
-                drawCoastlines=True,
-                data=["data", "synth"],
-                scale=0.2,
-                legendscale=0.05,
-                color=["k", "r"],
-                seacolor="lightblue",
-                box=box,
-                titleyoffset=1.02,
+            options = _merge_product_plot_kwargs(
+                {"drawCoastlines": True, "scale": 0.2, "legendscale": 0.05,
+                 "color": ["k", "r"], "seacolor": "lightblue", "box": box,
+                 "titleyoffset": 1.02}, gps_kwargs,
+                locked=("faults", "data", "show"), context="geometry SMC GPS map",
             )
+            gpsdata.plot(faults=faults, data=["data", "synth"], show=show, **options)
             if hasattr(gpsdata, "fig"):
                 gpsdata.fig.savefig(
                     f"gps_{gpsdata.name}",

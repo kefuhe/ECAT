@@ -135,9 +135,9 @@ PlotStyle(
 | `preset` | 一个 preset 名或从左到右覆盖的名称列表 |
 | `figsize` | 列宽名、数值宽度或 `(width, height)` |
 | `fontsize` | 基础字号和轴标签字号；未单设时派生 tick、legend 和 figure title 字号 |
-| `tick_fontsize` | `xtick.labelsize` 与 `ytick.labelsize` |
-| `legend_fontsize` | legend 字号 |
-| `title_fontsize` | `figure.titlesize`，即 `fig.suptitle()` 的默认字号；轴标题用 `rcparams={"axes.titlesize": ...}` 或 `ax.set_title(..., fontsize=...)` |
+| `tick_fontsize` | 独立覆盖 `xtick.labelsize` 与 `ytick.labelsize`，无需同时设置 fontsize |
+| `legend_fontsize` | 独立覆盖 legend 字号，无需同时设置 fontsize |
+| `title_fontsize` | 独立覆盖 `figure.titlesize`，无需同时设置 fontsize；即 `fig.suptitle()` 的默认字号；轴标题用 `rcparams={"axes.titlesize": ...}` 或 `ax.set_title(..., fontsize=...)` |
 | `dpi` | 默认 `savefig.dpi`，不改变交互窗口的 figure dpi |
 | `figure_dpi` | 显式设置交互 figure dpi；普通用户通常不需要 |
 | `pdf_fonttype` | PDF/PS 字体类型；可编辑文本常用 42 |

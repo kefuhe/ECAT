@@ -636,6 +636,12 @@ if rank == 0:
     )
 ```
 
+GPS 可显式选择 `gps_plot_mode="comparison"`，用 `gps_kwargs` 设置显示单位、
+统一箭头比例和 U 圆圈。新版默认观测红/模拟蓝且线宽相同，U 跟随活动反演分量；
+默认 `legacy` 保留原地图及颜色。参数和输出合同见
+[GPS 单图比较](figure_products.md#gps-单图比较)。
+
+
 `axis_labels=None` 使用内部顺序和默认标签。若手工提供标签，可以只列实际采样列，也可以按
 请求顺序列出 geometry、sigma 和 alpha 的全部组；固定 sigma/alpha 没有后验 KDE 列，接口会
 连同对应标签一起跳过。除此之外，标签顺序仍必须与参数顺序一致。

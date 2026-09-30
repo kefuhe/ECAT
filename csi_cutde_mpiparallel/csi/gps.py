@@ -4384,6 +4384,142 @@ class gps(SourceInv):
         # All done
         return
 
+    def plot_fit_comparison(
+        self, *, vertical=False, coordinates="lonlat", extent=None,
+        figsize="single", unit="inch", ax=None,
+        value_scale=1.0, value_unit="", arrow_scale=None, legend_value=None,
+        color=("#e33e1c", "#2e5b99"), width=0.005,
+        headwidth=3, headlength=5, headaxislength=4.5,
+        vertical_sizes=(64, 25), vertical_cmap="RdBu_r",
+        vertical_vmin=None, vertical_vmax=None, cbaxis=None,
+        colorbar_orientation="vertical", colorbar_size=0.35,
+        name=False, title=True, error=False,
+        legend_loc="best", key_position=None,
+        faults=None, fault_color="k", fault_linewidth=0.8,
+        xticks=None, yticks=None, remove_direction_labels=False,
+        xlabel=None, ylabel=None,
+        style="science", style_kwargs=None,
+        save_path=None, show=True, close=False, dpi=300,
+    ):
+        """Compare observed/model EN arrows and optional U on one 2-D axes.
+
+        Parameters
+        ----------
+        vertical : bool, default False
+            Explicitly include Up in the fit comparison. The caller knows
+            whether U was used; a third array column alone does not establish
+            this. Both ``vel_enu`` and prepared ``synth`` use station-by-ENU rows.
+        coordinates : {"lonlat", "xy"}, default "lonlat"
+            ``xy`` uses this object's projected kilometre frame and converts
+            true EN directions to grid directions. ``lonlat`` is a regional,
+            non-polar view with local latitude aspect correction and EN screen
+            directions; it does not provide a basemap or global cartography.
+        extent : sequence of four floats, optional
+            [xmin, xmax, ymin, ymax] in the chosen coordinate system.
+            Automatic bounds include finite compared stations with padding.
+        figsize, unit : figure size, figure-dimension unit
+            ``figsize`` accepts a publication width name, scalar width, or
+            (width, height). ``unit`` is "inch" or "cm", not displacement units.
+        ax : matplotlib.axes.Axes, optional
+            Draw into an existing axes; no additional figure is created.
+        value_scale : positive float, default 1
+            Multiply observations, synthetics and displayed errors locally.
+            For metre arrays, use 1000 with ``value_unit="mm"``. Source arrays,
+            file-reading factors and covariance are not changed or reinterpreted.
+        value_unit : str, default ""
+            Display-unit label, such as "mm" or "mm/yr". Labels do not convert
+            displacement to velocity or infer a numerical unit.
+        arrow_scale : positive float, optional
+            Displayed-value units per inch of arrow length. For example,
+            500 mm/inch draws 100 mm as 0.2 inch. The same scale and width/head
+            geometry apply to both roles; None chooses one shared automatic scale.
+        legend_value : positive float, optional
+            Shared EN legend magnitude in displayed-value units. Each colored
+            bar has length legend_value / arrow_scale inches, identical to a
+            data arrow of that magnitude. One centered label serves both roles;
+            no separate black arrow is drawn. Default bar length is 0.2 inch.
+        color : pair of colors
+            Observed/model horizontal colors, default red/blue. ``width``,
+            ``headwidth``, ``headlength`` and ``headaxislength`` are shared
+            Matplotlib quiver geometry controls; no role-specific thickness.
+        vertical_sizes : pair of positive floats, default (64, 25)
+            Observed/model marker areas in points squared. Observed must be
+            larger and is drawn below model. Area encodes role, not U magnitude.
+        vertical_cmap : colormap name or object, default "RdBu_r"
+            Signed Up colormap; both roles share one normalization and colorbar.
+        vertical_vmin, vertical_vmax : floats, optional
+            Explicit displayed-U limits. Missing limits are filled from a
+            symmetric bound over both fields; explicit limits are not recentered.
+            Out-of-range values are indicated by colorbar extensions.
+        cbaxis : sequence of four floats, optional
+            Inset colorbar [left, bottom, width, height] in axes fractions.
+            Explicit geometry takes precedence over colorbar_size. Specify
+            colorbar_orientation="horizontal" for a historical horizontal inset.
+        colorbar_orientation : {"vertical", "horizontal"}, default "vertical"
+            Default U colorbar is outside the right edge, aligned with the
+            bottom spine. Horizontal automatic placement is below the axes.
+        colorbar_size : float, default 0.35
+            Colorbar length as a fraction of the final main-axes height
+            (vertical) or width (horizontal); 0 < size <= 1. Ignored for geometry
+            when cbaxis is supplied. Color limits and normalization are unchanged.
+        name, title : display controls
+            ``name=True`` labels station names. ``title`` is True (dataset
+            name), False, or a string. ``xticks``/``yticks`` use chosen map units.
+        xlabel, ylabel : str, optional
+            None uses no axis titles for lonlat and kilometre titles for xy.
+            An explicit string overrides the title; "" hides it. Degree ticks
+            remain visible; remove_direction_labels hides only E/W/N/S suffixes.
+        legend_loc : legend location, default "best"
+            Position of the combined calibrated EN and optional U role legend.
+        key_position : deprecated, optional
+            Accepted with FutureWarning but no longer positions an independent
+            arrow key. Migrate to legend_loc.
+        error : bool, default False
+            Draw +/- one marginal ``err_enu`` standard deviation at observed
+            EN arrow tips, assuming independent E/N errors. This is not the
+            full ``Cd`` or estimated VCE uncertainty; model errors are not invented.
+        faults, fault_color, fault_linewidth : trace display controls
+            Draw available lon/lat traces in the GPS coordinate frame, without
+            constructing geometry or changing fault attributes.
+        style, style_kwargs : PlotStyle preset and explicit options
+            Default "science"; options are passed directly to ``PlotStyle``.
+            TeX is disabled unless explicitly requested via ``usetex=True``.
+        save_path, show, close, dpi : figure lifecycle
+            Save/show the explicit figure using ``finish_fig``. ``close`` is
+            False by default and cannot be True when borrowing ``ax``.
+
+        Returns
+        -------
+        fig, ax : matplotlib Figure and Axes
+            Editable ordinary Matplotlib objects. Legacy ``self.fig`` is untouched.
+
+        Notes
+        -----
+        This method never runs a solver or ``buildsynth``. Prepare ``synth``
+        first. E/N arrows require finite paired E and N values; U markers use
+        their own finite observation/model pair mask. Omitted rows are reported
+        with warnings, never filled with zeros or removed from the data object.
+        """
+        from ._gps_plotting import plot_gps_fit_comparison
+
+        return plot_gps_fit_comparison(
+            self, vertical=vertical, coordinates=coordinates, extent=extent,
+            figsize=figsize, unit=unit, ax=ax, value_scale=value_scale,
+            value_unit=value_unit, arrow_scale=arrow_scale, legend_value=legend_value,
+            color=color, width=width, headwidth=headwidth, headlength=headlength,
+            headaxislength=headaxislength, vertical_sizes=vertical_sizes,
+            vertical_cmap=vertical_cmap, vertical_vmin=vertical_vmin,
+            vertical_vmax=vertical_vmax, cbaxis=cbaxis,
+            colorbar_orientation=colorbar_orientation, colorbar_size=colorbar_size,
+            name=name, title=title,
+            error=error, legend_loc=legend_loc, key_position=key_position,
+            faults=faults, fault_color=fault_color,
+            fault_linewidth=fault_linewidth, xticks=xticks, yticks=yticks,
+            remove_direction_labels=remove_direction_labels, xlabel=xlabel, ylabel=ylabel,
+            style=style,
+            style_kwargs=style_kwargs, save_path=save_path, show=show, close=close, dpi=dpi,
+        )
+
     def plot_gpstimeseries_at_site(self, sitename, reference_time, direction='EN', timeunit='D', figsize=(7.0, 1.8), 
                     dispunit='cm', style=['science', 'nature'], fontsize=None, 
                     legend_frame=True, xlim=None):

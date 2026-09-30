@@ -3047,7 +3047,8 @@ class BayesianMultiFaultsInversion(
                                           gps_kwargs=None, sar_kwargs=None,
                                           fault_outdir='output', data_outdir='Modeling', show=True,
                                           model=None, opticorr_kwargs=None,
-                                          raster_render_mode='points', raster_cell_edge_width=0.25):
+                                          raster_render_mode='points', raster_cell_edge_width=0.25,
+                                          gps_plot_mode='legacy'):
         """
         Extract and plot the Bayesian results.
     
@@ -3099,6 +3100,7 @@ class BayesianMultiFaultsInversion(
         gps_yticks: custom y-ticks for GPS plots (default is None)
         sar_xticks: custom x-ticks for SAR plots (default is None)
         sar_yticks: custom y-ticks for SAR plots (default is None)
+        gps_plot_mode: legacy map (default) or single-axes comparison.
         gps_kwargs: additional keyword arguments for GPS plotting (default is empty dict)
         sar_kwargs: additional keyword arguments for SAR plotting (default is empty dict)
         opticorr_kwargs: additional optical fit-figure display arguments,
@@ -3216,10 +3218,11 @@ class BayesianMultiFaultsInversion(
                 pdf_fonttype = None
 
             resolved_gps_kwargs = {
-                'color': ['k', 'r'],
                 'xticks': gps_xticks,
                 'yticks': gps_yticks,
             }
+            if gps_plot_mode == "legacy":
+                resolved_gps_kwargs["color"] = ["k", "r"]
             resolved_gps_kwargs.update(dict(gps_kwargs or {}))
 
             # Reuse the same prediction specifications as the legacy flow.
@@ -3241,6 +3244,7 @@ class BayesianMultiFaultsInversion(
                 gps_legendscale=gps_legendscale,
                 sar_cbaxis=sar_cbaxis,
                 remove_direction_labels=remove_direction_labels,
+                gps_plot_mode=gps_plot_mode,
                 gps_kwargs=resolved_gps_kwargs,
                 sar_kwargs=sar_kwargs,
                 opticorr_kwargs=opticorr_kwargs,

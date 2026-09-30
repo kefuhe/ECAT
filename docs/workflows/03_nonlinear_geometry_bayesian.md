@@ -138,6 +138,11 @@ if rank == 0:
 模型。GPS 始终走自己的 EN/ENU 点表输出；启用模板中的 GPS 块时，只需把对象加入
 `gpsdata` 并同步 YAML 中各个 `geodata` 列表的顺序。
 
+GPS 可通过结果入口的 `gps_plot_mode="comparison"` 生成单图 EN/U 比较，
+`gps_kwargs` 只控制显示；U 是否显示跟随已采用的分量。它读取已激活模型的 synth，
+不再次正演。默认仍保留旧地图，完整用法见
+[GPS 单图比较](../reference/figure_products.md#gps-单图比较)。
+
 `raster_render_mode` 是独立的图件选项：`"points"` 保持中心点图，`"cells"` 要求
 corner 并绘制单元，`"auto"` 有 corner 时绘制单元、否则回退为点。
 `raster_cell_edge_width` 是单元边界线宽（point）。它们不改变 `sar_corner` 的文件输出，

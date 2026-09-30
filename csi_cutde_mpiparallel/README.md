@@ -28,6 +28,67 @@ For more details and configuration instructions, see the `README` file in the `c
 
 ---
 
+## GPS fit comparison
+
+`gps.plot_fit_comparison()` adds a single 2-D comparison figure; `gps.plot()`
+retains its existing map behavior. Prepare `gps_data.synth` from the intended
+model before plotting. The renderer never solves or rebuilds predictions.
+
+```python
+fig, ax = gps_data.plot_fit_comparison(
+    vertical=True,  # explicitly include U only when it belongs to the comparison
+    value_scale=1000.0,  # arrays currently in m -> display in mm
+    value_unit="mm",
+    arrow_scale=500.0,  # displayed-value units per inch
+    legend_value=100.0,
+    vertical_sizes=(64, 25),  # observed/model areas, in points squared
+    style="science",
+    style_kwargs={"fontsize": 9},  # direct ecat_viz PlotStyle options
+    show=False,
+)
+fig.savefig("gps_comparison.pdf", dpi=300, bbox_inches="tight")
+```
+
+Observed/model EN arrows have identical width and head geometry, using red/blue
+by default. Optional Up is signed color: the observed outer ring and model inner
+disk share one colorbar. Marker size distinguishes roles, not displacement
+magnitude. `vertical=False` hides U, including any unused zero storage column.
+
+The default `coordinates="lonlat"` is a regional, non-polar view with local
+latitude aspect correction. Degree ticks remain visible; longitude/latitude
+axis titles are hidden by default. `xlabel` and `ylabel` explicitly override
+titles. Select `coordinates="xy"` for the GPS object's projected km frame and
+true-EN-to-grid directions. `extent` and ticks use the chosen coordinate units;
+existing kilometre extents must explicitly select `xy`.
+
+Each red/blue legend bar represents the same `legend_value`, with one centered
+magnitude above both bars. Its physical length is `legend_value / arrow_scale`
+inches, matching the horizontal arrows independently of font size, DPI and map
+units. No separate black arrow key is drawn. `legend_loc` controls this combined
+legend; old `key_position` emits a migration warning. The arrow scale still
+uses the original EN magnitude, and observed/model arrow geometry remains equal.
+
+The signed-U colorbar defaults to vertical, outside the right edge, aligned
+with the main axes' bottom spine. `colorbar_size=0.35` gives 35% of the final
+axes height. Choose `colorbar_orientation="horizontal"` for a bar below the
+axes, where size is a fraction of axes width. An explicit `cbaxis` overrides
+automatic geometry; historical horizontal insets must also specify horizontal
+orientation. Marker areas default to `(64, 25)` points squared.
+
+Display conversion is explicit and leaves observations, synth, errors and Cd
+unchanged. `unit="inch"/"cm"` refers to figure size, while `value_unit` labels the
+scientific values. Missing observed/model pairs are omitted with warnings;
+missing synth or an entirely empty comparison raises an error. `error=True`
+uses independent marginal E/N `err_enu` standard deviations, not full Cd or VCE
+uncertainties; it is off by default.
+
+The method returns ordinary Figure/Axes and accepts a borrowed `ax`. It does not
+overwrite the legacy `gps_data.fig`; borrowed figures cannot be closed by it.
+See `help(gps.plot_fit_comparison)` for all parameters and the numbered rendering
+steps in `csi/_gps_plotting.py` for implementation semantics. ECAT high-level
+usage and migration controls are documented in
+[Figure Products](https://github.com/kefuhe/ECAT/blob/main/docs/reference/figure_products.md#gps-单图比较).
+
 ## 🚦 Installation and Usage Notes
 
 CSI's general plotting helpers now depend directly on `ecat-viz` (`ecat_viz`),
