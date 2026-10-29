@@ -252,3 +252,50 @@ These commands correspond to running the respective programs or generating input
 ---
 
 For usage instructions and examples, see the documentation and code comments.
+
+## Source reading and extension boundaries
+
+
+Public data and fault classes retain their established module paths. For GPS
+comparison figures, start at `gps.plot_fit_comparison()` and follow its private
+renderer in `csi/_plotting/gps.py`. InSAR and optical-offset comparisons share
+`csi/_plotting/spatial.py`. User scripts call object methods; these internal
+renderers consume prepared fields and display options.
+
+Observation-cell geometry remains in `decimation_geometry.py`, and source
+component prediction remains in `_slip_direction.py`. Their contracts serve
+readers and prediction as well as display. New internal data-rendering code
+belongs in `_plotting`; it must not import eqtools, activate models, rebuild
+Green functions or take ownership of observation layout/state.
+
+The ECAT manual's [source architecture and reading routes](https://github.com/kefuhe/ECAT/blob/main/docs/developer/architecture.md)
+describes the three-package hierarchy and rules for adding modules. Installation,
+plot method signatures, defaults, scientific units and result fields are unchanged.
+
+## Independent triangular subdivision
+
+```python
+refined, parent_face_ids = fault.subdivided_copy(3)
+refined_with_slip, parent_face_ids = fault.subdivided_copy(3, slip_mode="inherit")
+```
+
+The result is a new plain `TriangularPatches` with complete `Vertices/Faces`,
+patch and geographic-coordinate state. Each unordered input edge receives one
+midpoint ID. Child order matches `splitPatch()` and winding follows the input;
+coincident vertices with distinct IDs are not welded. Input objects are unchanged.
+`parent_face_ids[i]` is the zero-based input face row for output face `i`, even
+after multiple levels. This is a return array, not an event-assignment attribute.
+
+Positive levels initialize zero slip by default. Explicit `slip_mode="inherit"`
+extends valid face-based three-component slip as a piecewise constant field;
+`slip=None` stays `None`. Zero levels preserve independent input geometry and
+slip, including `None`. Refinement does not copy GF, solver/subclass state,
+parameter indices or derived caches. Save through existing writers explicitly;
+keep the lineage array separately if it is needed after loading geometry.
+
+The internal array kernel is `csi/_mesh/subdivision.py`; object construction and
+one final `set_mesh(..., check_order=False)` remain on the fault class. This
+method requires consistent input `Vertices/Faces/patch` and a non-negative
+integer level. It does not change the existing single-patch `splitPatch()` API.
+Event projection and counts belong to eqtools; see the
+[projection reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/seismic_projection.md).

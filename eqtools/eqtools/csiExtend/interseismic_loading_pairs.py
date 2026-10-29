@@ -17,13 +17,10 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 import numpy as np
 
 from .interseismic_fields import summarize_values
-from .interseismic_parameter_model import (
-    calculate_loading_from_terms,
-    get_fault_by_name,
-    get_fault_loading_params,
-)
+from .interseismic_parameter_model import calculate_loading_from_terms, get_fault_loading_params
+from .source_adapters import get_fault_by_name
 from .interseismic_overrides import get_loading_overrides
-from .patch_indices import normalize_patch_indices, select_patch_indices
+from .geometry.patch_indices import normalize_patch_indices, select_patch_indices
 
 
 PAIR_TABLE_COLUMNS = [

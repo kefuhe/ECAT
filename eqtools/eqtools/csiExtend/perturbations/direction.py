@@ -7,7 +7,7 @@ pair and determines at runtime whether the displacement is rigid or deforming.
 """
 import numpy as np
 from ..bayesian_perturbation_base import track_mesh_update
-from .angle_utils import (
+from ..geometry.angle_utils import (
     circular_mean_radians,
     expand_angles_to_radians,
     normalize_angle_unit,

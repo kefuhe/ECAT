@@ -9,7 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
-from .patch_indices import (
+from .geometry.patch_indices import (
     get_patches_in_trace_segment,
     resolve_trace_marker,
     trace_range_selector_from_markers,

@@ -30,14 +30,14 @@ from .bayesian_perturbation_base import (
     GeometryReference,
     DensificationConfig,
 )
-from .dip_profile import (
+from .geometry.dip_profile import (
     DipProfileSpec,
     build_dip_profile_spec,
     transform_dip_profile_coordinates,
 )
-from .MeshGenerator import MeshGenerator
-from . import mesh_registry
-from .geom_ops import resample_boundaries_by_normalized_arclength
+from .geometry.MeshGenerator import MeshGenerator
+from .geometry import mesh_registry
+from .geometry.geom_ops import resample_boundaries_by_normalized_arclength
 
 
 class BayesianAdaptiveTriangularPatches(
@@ -324,7 +324,7 @@ class BayesianAdaptiveTriangularPatches(
                 "reference top not set. Declare the dip profile or snapshot "
                 "the geometry before curvature analysis."
             )
-        from .dip_transition_analysis import analyze_top_curvature
+        from .geometry.dip_transition_analysis import analyze_top_curvature
 
         return analyze_top_curvature(
             self.geometry_ref.top_coords,

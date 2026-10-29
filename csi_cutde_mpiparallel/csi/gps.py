@@ -4500,7 +4500,7 @@ class gps(SourceInv):
         their own finite observation/model pair mask. Omitted rows are reported
         with warnings, never filled with zeros or removed from the data object.
         """
-        from ._gps_plotting import plot_gps_fit_comparison
+        from ._plotting.gps import plot_gps_fit_comparison
 
         return plot_gps_fit_comparison(
             self, vertical=vertical, coordinates=coordinates, extent=extent,

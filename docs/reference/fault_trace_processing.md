@@ -353,23 +353,25 @@ fault.set_top_coords_from_trace(discretized=True)
 
 ## 实现分层
 
-```text
-trace_ops.py -> trace_markers.py -> trace_processing.py
-纯 x/y 算法    定位语义             TracePath、投影和有序操作
+这些实现位于 `eqtools/csiExtend/geometry/`。箭头指向被调用者：
 
-trace_io.py
-TXT/GMT/GeoJSON 的唯一分段折线协议
-       ↓
-fault_trace_tool.py / interactive editor / downsample fault_inputs.py
-CLI 与编辑器模型适配 / 显示多段或为计算显式选择单段
+```text
+fault_trace_tool.py -> trace_processing.py -> trace_markers.py -> trace_ops.py
+CLI                  TracePath/投影/历史      定位语义             纯 x/y 算法
+
+CLI / interactive editor / downsample fault_inputs.py -> trace_io.py
+输入与模型适配                                         唯一分段折线协议
 
 patch_indices.py -> trace_markers.py
 fault 与 patch 选择适配
 ```
 
 增加新操作时先实现纯函数和单元测试，再决定是否加入 `TracePath.apply()` 和 CLI。patch selector
-继续通过兼容 `resolve_trace_marker(fault, ...)` 入口调用同一个通用 marker 实现。普通折线 GMT 与
+继续通过面向 fault 的 `resolve_trace_marker(fault, ...)` 入口调用同一个通用 marker 实现。普通折线 GMT 与
 CSI patch GMT 使用不同 reader：前者是本页的分段表面迹线，后者属于断层 patch 模型协议。
+模块归属、计算差异和依赖见[几何支撑源码与依赖](../developer/geometry_support.md)。
+旧 `eqtools.csiExtend.trace_*` 模块路径已移除；包级 `TracePath` 等公开入口仍可使用，
+直接模块导入按[旧路径迁移表](../developer/geometry_support.md#geometry-import-migration)调整。
 
 ## 旧命令兼容
 

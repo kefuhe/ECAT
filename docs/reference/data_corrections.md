@@ -3,6 +3,9 @@
 本页说明 `geodata.polys`、`poly_bounds` 和 `data_corrections` 的统一语义。这里的
 `poly` 是历史字段名，更准确的概念是数据改正项或 nuisance transform：
 
+实现阅读和旧模块导入迁移见[观测与约束支撑源码](../developer/observation_constraint_support.md)。
+规格与系数解释属于 `observations`，命名参数约束属于 `constraints`，结果报告属于 `reporting`。
+
 如果目的是在降采样前用指定参考区确定性归零或去一阶平面，应使用
 [观测参考改正](observation_correction_export.md)，而不是本页的反演参数。
 

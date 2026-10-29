@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..trace_io import read_trace_segments
+from ..geometry.trace_io import read_trace_segments
 
 
 def _entries(section):

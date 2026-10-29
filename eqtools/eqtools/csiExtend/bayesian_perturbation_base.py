@@ -30,8 +30,8 @@ import numpy as np
 # Import geometry base classes
 # Ensure these files exist in the same directory
 from .AdaptiveLayeredDipTriangularPatches import AdaptiveLayeredDipTriangularPatches
-from . import mesh_registry
-from .dip_profile import DipProfileSpec
+from .geometry import mesh_registry
+from .geometry.dip_profile import DipProfileSpec
 
 
 # =============================================================================
@@ -691,7 +691,7 @@ class PerturbationBase:
         if not config.enabled:
             return False
 
-        from .geom_ops import discretize_coords
+        from .geometry.geom_ops import discretize_coords
 
         n_before = self.top_coords.shape[0]
         if config.num_segments is not None and n_before >= config.num_segments:
@@ -818,7 +818,7 @@ class PerturbationBase:
                 f"transitions={len(profile.transition_zones)}"
             )
             if profile.perturbation_groups is not None:
-                from .dip_profile import resolve_dip_perturbation_layout
+                from .geometry.dip_profile import resolve_dip_perturbation_layout
 
                 layout = resolve_dip_perturbation_layout(
                     controls,

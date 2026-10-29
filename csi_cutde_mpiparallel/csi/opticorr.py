@@ -2050,7 +2050,7 @@ class opticorr(SourceInv):
             sci_plot_style,
             set_degree_formatter,
         )
-        from ._spatial_plotting import (
+        from ._plotting.spatial import (
             colorbar_ticks,
             draw_spatial_field,
             resolve_color_limits,

@@ -15,13 +15,13 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from typing import Union, List, Dict, Callable, Optional, Tuple
 from .AdaptiveTriangularPatches import AdaptiveTriangularPatches
-from .DipInterpolation import (
+from .geometry.DipInterpolation import (
     LayeredDipInterpolator,
     DepthDipProfile,
     normalize_dip_to_neg90_90,
 )
-from .fault_angle_conventions import normalize_oriented_reference_dip
-from .geom_ops import validate_top_bottom_cells
+from .geometry.fault_angle_conventions import normalize_oriented_reference_dip
+from .geometry.geom_ops import validate_top_bottom_cells
 
 
 class AdaptiveLayeredDipTriangularPatches(AdaptiveTriangularPatches):

@@ -9,23 +9,23 @@ import pandas as pd
 from .multifaults_base import MyMultiFaultsInversion
 from .config.blse_config import BoundLSEInversionConfig
 from .config.parameter_groups import attach_group_parameters, resolve_group_layout
-from .data_correction_constraints import DataCorrectionConstraintMixin
-from .data_correction_report_mixin import DataCorrectionReportMixin
+from .constraints.data_correction_constraints import DataCorrectionConstraintMixin
+from .reporting.data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
-from .data_prediction import (
+from .observations.data_prediction import (
     build_linear_prediction_blocks,
     get_geodata_prediction_specs,
 )
 from .blse_diagnostics import plot_blse_roughness_rms
 from .interseismic_mixin import InterseismicKinematicsMixin
-from .plot_product_mixin import FigureProductMixin
-from .patch_indices import normalize_patch_indices
-from .fit_statistics import build_vce_component_rows, solver_fit_metrics
-from .hyperparameter_reporting import (
+from .reporting.plot_product_mixin import FigureProductMixin
+from .geometry.patch_indices import normalize_patch_indices
+from .reporting.fit_statistics import build_vce_component_rows, solver_fit_metrics
+from .reporting.hyperparameter_reporting import (
     build_fixed_scale_parameter_rows,
     format_scale_parameter_report,
 )
-from .parameter_layout_reporting import (
+from .reporting.parameter_layout_reporting import (
     build_active_scale_layout_rows,
     build_linear_layout_rows,
     build_scale_layout_rows,
@@ -1849,7 +1849,7 @@ class BoundLSEMultiFaultsInversion(
             include_weighted=True,
             rebuild_synth=False,
         )
-        from .fit_statistics import format_fit_statistics_table
+        from .reporting.fit_statistics import format_fit_statistics_table
         print('\n' + format_fit_statistics_table(rows, model='BLSE'))
         
 

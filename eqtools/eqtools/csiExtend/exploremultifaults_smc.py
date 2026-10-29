@@ -32,7 +32,7 @@ from csi import SourceInv
 from csi import planarfault
 from csi import gps, insar, leveling, crossfaultoffset
 from csi.decimation_geometry import LEGACY_RECTANGLE, QUADRILATERAL, TRIANGLE
-from .data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
+from .reporting.data_plot_utils import _plot_leveling_fit, _plot_crossfaultoffset_fit
 from .SMC_MPI import SMC_samples_parallel_mpi
 from .smc_tempering import (
     read_smc_tempering_metadata,
@@ -47,13 +47,13 @@ import yaml
 import glob
 import os
 
-from .fault_angle_conventions import canonicalize_compact_fault_angles
-from .covariance_utils import gaussian_log_likelihood, prepare_covariance_metric
-from .data_vector_layout import (
+from .geometry.fault_angle_conventions import canonicalize_compact_fault_angles
+from .observations.covariance_utils import gaussian_log_likelihood, prepare_covariance_metric
+from .observations.data_vector_layout import (
     gps_component_major_vector,
     write_data_synthetic_vector,
 )
-from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
+from .reporting.nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 
 @njit
 def compute_data_log_likelihood(

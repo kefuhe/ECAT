@@ -28,9 +28,9 @@ from csi import TriangularPatches
 from csi.seismiclocations import seismiclocations
 from .fitting_methods import RegressionFitter
 from ecat_viz import DegreeFormatter
-from .MeshGenerator import MeshGenerator
-from .geom_ops import discretize_coords, validate_top_bottom_cells
-from .fault_angle_conventions import canonicalize_compact_fault_angles
+from .geometry.MeshGenerator import MeshGenerator
+from .geometry.geom_ops import discretize_coords, validate_top_bottom_cells
+from .geometry.fault_angle_conventions import canonicalize_compact_fault_angles
 from ecat_viz import sci_plot_style
 
 def str2num(istr: str, dtype=int) -> List[Union[int, float]]:
@@ -2032,7 +2032,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         """
         import pandas as pd
         import numpy as np
-        from .DipInterpolation import (
+        from .geometry.DipInterpolation import (
             normalize_dip_to_0_180,
             validate_dip_angles_for_depth_projection,
         )
@@ -2324,7 +2324,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
             are also updated.
         """
         from numpy import deg2rad, sin, cos
-        from .DipInterpolation import (
+        from .geometry.DipInterpolation import (
             normalize_dip_to_neg90_90,
             validate_dip_angles_for_depth_projection,
         )
@@ -2586,8 +2586,8 @@ class AdaptiveTriangularPatches(TriangularPatches):
           nearest-endpoint filling is applied; numerical behavior is unchanged.
         """
         from numpy import deg2rad, sin, cos
-        from .DipInterpolation import normalize_dip_to_neg90_90
-        from .fault_angle_conventions import normalize_oriented_reference_dip
+        from .geometry.DipInterpolation import normalize_dip_to_neg90_90
+        from .geometry.fault_angle_conventions import normalize_oriented_reference_dip
         import os
     
         # Extract the iso-depth curve information.
@@ -4423,7 +4423,7 @@ class AdaptiveTriangularPatches(TriangularPatches):
         >>> buffer_coords = obj.create_fault_trace_buffer(1, use_discrete_trace=True, return_lonlat=True)
         """
         import numpy as np
-        from .trace_ops import buffer_trace
+        from .geometry.trace_ops import buffer_trace
 
         # Select the trace to use based on the value of use_discrete_trace
         x = self.xi if use_discrete_trace else self.xf

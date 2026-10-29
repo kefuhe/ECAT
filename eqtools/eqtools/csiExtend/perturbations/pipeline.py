@@ -28,8 +28,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..bayesian_perturbation_base import GeometryReference, DensificationConfig
-from ..dip_profile import DipProfileSpec
-from .angle_utils import angles_to_radians, normalize_angle_unit
+from ..geometry.dip_profile import DipProfileSpec
+from ..geometry.angle_utils import angles_to_radians, normalize_angle_unit
 
 
 # ============================================================================
@@ -430,7 +430,7 @@ class RotateStage(Stage):
             any(target.kind == 'top' for target in self.targets)
             and 'top_strike' in state.meta
         ):
-            from .dip_ops import compute_strike
+            from ..geometry.dip_geometry import compute_strike
             state.meta['top_strike'] = compute_strike(state.top)
         return state
 
@@ -546,7 +546,7 @@ class DipGeneratorStage(Stage):
         3. Interpolate dip onto densified top nodes
         4. Compute bottom = top + dip_vector * width
 
-    The frozen :class:`~eqtools.csiExtend.dip_profile.DipProfileSpec` owns
+    The frozen :class:`~eqtools.csiExtend.geometry.dip_profile.DipProfileSpec` owns
     controls, sampled/fixed roles, interpolation coordinate, and transition
     zones.  This stage only supplies candidate perturbations and generator
     options.  A single resolver projects every position-like declaration onto
@@ -595,7 +595,7 @@ class DipGeneratorStage(Stage):
         if cfg is None or not cfg.enabled:
             return state.top.copy() if state.top is not None else None
 
-        from ..geom_ops import densify_polyline_preserving_vertices
+        from ..geometry.geom_ops import densify_polyline_preserving_vertices
 
         if state.top is None:
             return None
@@ -623,10 +623,10 @@ class DipGeneratorStage(Stage):
         Control-point values remain immutable, and generated strike/dip arrays
         are stored in ``state.meta`` for publication after all stages succeed.
         """
-        from .dip_ops import compute_strike, generate_bottom_from_dips
-        from ..DipInterpolation import normalize_dip_to_neg90_90
-        from ..dip_profile import resolve_dip_profile
-        from ..geom_ops import densify_polyline_preserving_vertices
+        from ..geometry.dip_geometry import compute_strike, generate_bottom_from_dips
+        from ..geometry.DipInterpolation import normalize_dip_to_neg90_90
+        from ..geometry.dip_profile import resolve_dip_profile
+        from ..geometry.geom_ops import densify_polyline_preserving_vertices
 
         if not isinstance(self.dip_profile, DipProfileSpec):
             raise TypeError("DipGeneratorStage.dip_profile must be DipProfileSpec")
@@ -752,7 +752,7 @@ class MeshPolicy(ABC):
         if cfg is None or not cfg.enabled:
             return
 
-        from ..geom_ops import discretize_coords
+        from ..geometry.geom_ops import discretize_coords
 
         if state.top is None:
             return

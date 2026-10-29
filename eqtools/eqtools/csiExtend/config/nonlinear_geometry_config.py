@@ -6,7 +6,7 @@ import logging
 
 import yaml
 
-from ..data_corrections import normalize_data_correction_specs
+from ..observations.data_corrections import normalize_data_correction_specs
 from .base_config import CommonConfigBase
 from .config_utils import normalize_units_config, parse_sigmas_config
 from .explore_config import AliasManager

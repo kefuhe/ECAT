@@ -1,28 +1,19 @@
 from csi import seismiclocations
-from csi import RectangularPatches as Rect
 from csi import TriangularPatches as Tri
 from csi import SourceInv
 
 import pandas as pd
-from scipy.interpolate import griddata
 import numpy as np
 import os
 import copy
 
 
-def _split_patch_batch_helper(args):
-    """Helper function for parallel patch splitting"""
-    patch_batch, receiver = args
-    results = []
-    for patch in patch_batch:
-        p1, p2, p3, p4 = receiver.splitPatch(patch)
-        results.extend([p1, p2, p3, p4])
-    return results
-
-
 class EqseqProj2Fault(SourceInv):
-    '''
-    '''
+    """Project a seismic catalog onto a CSI triangular receiver and count events.
+
+    CSI owns complete mesh subdivision and boundary state. This object owns
+    event assignments and analysis results; it never writes counts into slip.
+    """
     
     def __init__(self, name, utmzone=None, ellps='WGS84', lon0=None, lat0=None, 
                  seismic=None, receiver=None, outputfile='earthquakes_projed.dat'):
@@ -40,10 +31,15 @@ class EqseqProj2Fault(SourceInv):
         self.outputfile = outputfile
     
     def setReceiver(self, receiver):
+        """Replace the input fault and discard results tied to its face IDs."""
         self.receiver = receiver
+        self.__dict__.pop('receiver_dense', None)
+        self.__dict__.pop('seis_proj', None)
     
     def setSeismic(self, seismic):
+        """Replace the catalog; the existing dense receiver remains reusable."""
         self.seismic = seismic
+        self.__dict__.pop('seis_proj', None)
     
     def setSeismicFromFile(self, seisfile, header=0):
         '''
@@ -61,6 +57,7 @@ class EqseqProj2Fault(SourceInv):
         seis.mag = seis_info.Mag.values
         seis.depth = seis_info.Dep.values
         seis.lonlat2xy()
+        self.__dict__.pop("seis_proj", None)
 
         # All Done
         return
@@ -68,184 +65,27 @@ class EqseqProj2Fault(SourceInv):
     def setOutputfile(self, outputfile):
         self.outputfile = outputfile
 
-    # def splitReceiver(self, num_splits):
-    #     """
-    #     Split the receiver patches into smaller subpatches and store the original indices.
-    
-    #     Args:
-    #         num_splits (int): The number of times to split each patch.
-    
-    #     Returns:
-    #         None
-    #     """
-    #     receiver = self.receiver.duplicateFault()
-    #     original_indices = list(range(len(self.receiver.patch)))  # Initialize with original indices
-    
-    #     for _ in range(num_splits):
-    #         subpatches = []
-    #         new_indices = []
-    #         for ip, original_index in enumerate(original_indices):
-    #             ipatch = receiver.patch[ip]
-    #             p1, p2, p3, p4 = receiver.splitPatch(ipatch)
-    #             subpatches.extend(np.array([p1, p2, p3, p4]))
-    #             new_indices.extend([original_index, original_index, original_index, original_index])  # Store the original index for each new subpatch
-    #         receiver.patch = subpatches
-    #         original_indices = new_indices  # Update the original indices list
-    #         # receiver.computeEquivRectangle()
-    #         receiver.patch2ll()
-    #         receiver.initializeslip()
-    #         # Too slow
-    #         # receiver.setVerticesFromPatches()
-    
-    #     self.receiver_dense = receiver
-    #     self.receiver_dense.original_indices = original_indices  # Store the original indices in the receiver_dense
-    
-    #     # All Done
-    #     return
+    def splitReceiver(self, num_splits):
+        """Prepare an independent, complete receiver mesh for projection.
 
-    def splitReceiver(self, num_splits, use_parallel=False, n_workers=None):
+        ``num_splits`` is a non-negative integer. CSI supplies shared midpoint
+        IDs and input-face lineage. Only the existing ``original_indices``
+        attribute stores that lineage here; it is not duplicated on this object.
+        Positive levels retain the historical zero-slip receiver convention.
+        The vectorized kernel replaces the former multiprocessing interface.
         """
-        Split the receiver patches with optional parallel processing.
-        """
-        if use_parallel and num_splits > 1:
-            return self._splitReceiver_parallel(num_splits, n_workers)
-        else:
-            return self._splitReceiver_sequential(num_splits)
-    
-    def _splitReceiver_parallel(self, num_splits, n_workers=None):
-        """
-        Parallel version of splitReceiver using multiprocessing with progress bar.
-        """
-        from multiprocessing import Pool, cpu_count
-        try:
-            from tqdm import tqdm
-            use_tqdm = True
-        except ImportError:
-            use_tqdm = False
-            print("tqdm not available, using simple progress indication")
-        
-        if n_workers is None:
-            n_workers = min(cpu_count(), 8)
-        
-        receiver = self.receiver.duplicateFault()
-        original_indices = np.arange(len(self.receiver.patch))
-        
-        print(f"Starting parallel patch splitting with {n_workers} workers...")
-        print(f"Initial patches: {len(self.receiver.patch)}")
-        
-        # Progress bar for splits
-        split_iterator = tqdm(range(num_splits), desc="Splitting") if use_tqdm else range(num_splits)
-        
-        for split_idx in split_iterator:
-            patches = receiver.patch
-            num_patches = len(patches)
-            
-            if not use_tqdm:
-                print(f"\n--- Split {split_idx + 1}/{num_splits} ---")
-                print(f"Processing {num_patches} patches...")
-    
-            # Batch processing
-            batch_size = max(1, num_patches // n_workers)
-            patch_batches = [patches[i:i+batch_size] 
-                            for i in range(0, num_patches, batch_size)]
-    
-            # Prepare arguments for parallel processing
-            args_list = [(batch, receiver) for batch in patch_batches]
-    
-            # Parallel processing
-            with Pool(n_workers) as pool:
-                if use_tqdm:
-                    batch_results = list(tqdm(
-                        pool.imap(_split_patch_batch_helper, args_list), 
-                        total=len(args_list), 
-                        desc=f"Split {split_idx+1} batches",
-                        leave=False
-                    ))
-                else:
-                    batch_results = pool.map(_split_patch_batch_helper, args_list)
-                    print("[v] Parallel processing completed")
-    
-            # Merge results
-            new_patches = []
-            batch_iterator = tqdm(batch_results, desc="Merging", leave=False) if use_tqdm else batch_results
-            
-            for batch_result in batch_iterator:
-                new_patches.extend(batch_result)
-            
-            receiver.patch = new_patches
-            original_indices = np.repeat(original_indices, 4)
-            
-            if use_tqdm:
-                split_iterator.set_postfix(patches=len(receiver.patch))
-            else:
-                print(f"Split {split_idx + 1} completed: {len(receiver.patch)} patches")
-        
-        print(f"\nFinalizing... Converting {len(receiver.patch)} patches to numpy array")
-        receiver.patch = np.array(receiver.patch)
-        
-        print("Converting patches to lat/lon coordinates...")
-        receiver.patch2ll()
-        
-        print("Initializing slip values...")
-        receiver.initializeslip()
-        
+        subdivide = getattr(self.receiver, 'subdivided_copy', None)
+        if not callable(subdivide):
+            raise TypeError(
+                "A CSI triangular receiver with subdivided_copy() is required; "
+                "update the CSI fork and eqtools together."
+            )
+        receiver, parent_face_ids = subdivide(num_splits)
+        receiver.original_indices = parent_face_ids.tolist()
+        # Commit only after successful construction; old results survive failure.
         self.receiver_dense = receiver
-        self.receiver_dense.original_indices = original_indices.tolist()
-        
-        print(f"[v] Parallel splitting completed successfully!")
-        print(f"Final result: {len(receiver.patch)} patches from {len(self.receiver.patch)} original patches")
-        
-        return
-    
-    def _splitReceiver_sequential(self, num_splits):
-        """
-        Split the receiver patches into smaller subpatches and store the original indices.
-        Optimized version with pre-allocation.
-    
-        Args:
-            num_splits (int): The number of times to split each patch.
-    
-        Returns:
-            None
-        """
-        receiver = self.receiver.duplicateFault()
-        
-        # Pre-calculate the number of patches after all splits
-        initial_patch_count = len(self.receiver.patch)
-        final_patch_count = initial_patch_count * (4 ** num_splits)
+        self.__dict__.pop('seis_proj', None)
 
-        # Pre-allocate arrays
-        final_indices = np.zeros(final_patch_count, dtype=int)
-
-        # Initialize indices
-        current_indices = np.arange(initial_patch_count)
-        
-        for split_idx in range(num_splits):
-            num_current_patches = len(receiver.patch)
-            new_patches = []
-
-            # Batch processing
-            for ip in range(num_current_patches):
-                ipatch = receiver.patch[ip]
-                p1, p2, p3, p4 = receiver.splitPatch(ipatch)
-                new_patches.extend([p1, p2, p3, p4])
-
-            # Update indices: each original index is copied 4 times
-            current_indices = np.repeat(current_indices, 4)
-            receiver.patch = new_patches
-
-            # Only update other attributes after the last iteration
-            if split_idx == num_splits - 1:
-                # Convert patch list to numpy array before calling patch2ll()
-                receiver.patch = np.array(receiver.patch)
-                receiver.patch2ll()
-                receiver.initializeslip()
-    
-        self.receiver_dense = receiver
-        self.receiver_dense.original_indices = current_indices.tolist()
-        
-        return
-    
     def write2file(self, outputfile=None, cotime=None):
         if outputfile is not None:
             self.outputfile = outputfile
@@ -263,90 +103,69 @@ class EqseqProj2Fault(SourceInv):
         return 
 
     def calproj(self, write2file=False, remove_fault_edge_events=False):
+        """Project events to nearest fine-face centers without changing inputs.
+
+        ``splitReceiver`` must run first, including ``splitReceiver(0)`` when no
+        refinement is wanted. ``ipatch`` remains a local event-to-fine-face map.
+        The projected catalog stores event-to-input-face IDs as
+        ``original_patch_indices``. Boundary filtering removes assignments to
+        fine faces on left/right/bottom; the top edge is retained.
         """
-        Calculate the projection of seismic events onto the fault patches and store the original indices.
-    
-        Args:
-            write2file (bool): Whether to write the projection results to a file (default is False).
-            remove_fault_edge_events (bool): Whether to remove seismic events on the fault edge triangles (default is False).
-    
-        Returns:
-            None
-        """
+        if not hasattr(self, 'receiver_dense'):
+            raise ValueError("Call splitReceiver(num_splits) before calproj().")
         seis = self.seismic
         receiver = self.receiver_dense
-    
-        # The patch number nearest to the fault is obtained successively
-        ipatch = seis.getClosestFaultPatch(receiver)
-    
-        # Create a list of patch centers
-        Centers = [receiver.getpatchgeometry(i, center=True)[:3] for i in ipatch]
-    
-        seis_llh = []
-        for i in range(len(Centers)):
-            lon, lat = receiver.xy2ll(Centers[i][0], Centers[i][1])
-            seis_llh.append([lon, lat, Centers[i][2]])
-    
-        seis_llh = pd.DataFrame(seis_llh, columns='lon lat dep'.split())
-    
-        seis_proj = copy.deepcopy(self.seismic)
-        seis_proj.lon = seis_llh.lon.values
-        seis_proj.lat = seis_llh.lat.values
-        seis_proj.depth = seis_llh.dep.values
-        seis_proj.lonlat2xy()
-    
-        # Store the original indices of the patches
-        seis_proj.original_patch_indices = [receiver.original_indices[i] for i in ipatch]
-    
-        # Optionally remove seismic events on the fault edge triangles
-        if remove_fault_edge_events:
-            # Too slow
-            receiver.setVerticesFromPatches()
-            receiver.find_fault_edge_vertices(refind=True)
-            edge_patches = []
-            for iedge in ['left', 'right', 'bottom']:
-                iedge_triangles = receiver.edge_triangles_indices[iedge]
-                if isinstance(iedge_triangles, list):
-                    edge_patches.extend(iedge_triangles)
-                else:
-                    edge_patches.extend(iedge_triangles.tolist())
-            edge_patches = np.unique(edge_patches)
 
+        # Keep CSI's nearest-center assignment and its historical tie behavior.
+        if len(seis.lon):
+            ipatch = np.asarray(seis.getClosestFaultPatch(receiver), dtype=int)
+        else:
+            ipatch = np.empty(0, dtype=int)
+        centers = np.asarray([
+            receiver.getpatchgeometry(i, center=True)[:3] for i in ipatch
+        ]).reshape(-1, 3)
+        lon, lat = receiver.xy2ll(centers[:, 0], centers[:, 1])
+        original_patch_indices = np.asarray(receiver.original_indices, dtype=int)[ipatch]
+
+        seis_proj = copy.deepcopy(seis)
+        seis_proj.lon = np.asarray(lon)
+        seis_proj.lat = np.asarray(lat)
+        seis_proj.depth = centers[:, 2].copy()
+        seis_proj.lonlat2xy()
+
+        if remove_fault_edge_events:
+            # The mesh is already complete. CSI reuses its valid boundary cache;
+            # rebuilding connectivity from patch coordinates would break it.
+            receiver.find_fault_fouredge_vertices(refind=False)
+            edge_patches = np.unique(np.concatenate([
+                np.asarray(receiver.edge_triangles_indices[edge], dtype=int)
+                for edge in ('left', 'right', 'bottom')
+            ]))
             mask = ~np.isin(ipatch, edge_patches)
-            seis_proj.lon = seis_proj.lon[mask]
-            seis_proj.lat = seis_proj.lat[mask]
-            seis_proj.depth = seis_proj.depth[mask]
-            seis_proj.original_patch_indices = np.array(seis_proj.original_patch_indices)[mask].tolist()
-    
+            # CSI owns synchronized selection of all standard catalog fields.
+            # This extension owns the custom event-to-input-face metadata.
+            seis_proj._select(mask)
+            original_patch_indices = original_patch_indices[mask]
+
+        seis_proj.original_patch_indices = original_patch_indices.tolist()
         self.seis_proj = seis_proj
-    
         if write2file:
             self.write2file(self.outputfile)
-    
-        # All Done 
-        return
-    
+
     def calculate_seismic_projection_statistics(self):
+        """Return integer event counts in input-face order, including zeros.
+
+        Count only events retained in ``seis_proj``. The returned array has one
+        entry per original receiver patch; physical ``receiver.slip`` is never
+        used as statistical storage or changed by this operation.
         """
-        Calculate the statistics of seismic event projections onto the fault patches.
-    
-        Returns:
-            None
-        """
-        receiver = self.receiver
-        seis_proj = self.seis_proj
-    
-        # Initialize slip to zero
-        receiver.slip = np.zeros((len(receiver.patch), 3))
-    
-        # Count the number of seismic events in each patch using numpy's advanced indexing
-        unique_indices, counts = np.unique(seis_proj.original_patch_indices, return_counts=True)
-        receiver.slip[unique_indices, 0] = counts
-        receiver.slip[:, 1:] = 0.0  # Set the dip and open slip to zero
-    
-        # All Done
-        return
-    
+        if not hasattr(self, 'seis_proj'):
+            raise ValueError("Call calproj() before calculating event counts.")
+        original_patch_indices = np.asarray(
+            self.seis_proj.original_patch_indices, dtype=int,
+        )
+        return np.bincount(original_patch_indices, minlength=len(self.receiver.patch))
+
     def plot_seismic_projection_statistics(self, norm=None, cmap='precip3_16lev_change.cpt', figsize=(None, None),
                                            drawCoastlines=False, cbaxis=[0.1, 0.2, 0.1, 0.02],
                                            cblabel='', show=True, savefig=False, ftype='pdf', dpi=600, bbox_inches=None,
@@ -369,11 +188,11 @@ class EqseqProj2Fault(SourceInv):
             None
         """
         from ...viztools import plot_slip_distribution
-        self.calculate_seismic_projection_statistics()
+        counts = self.calculate_seismic_projection_statistics()
     
         # Plot the statistics
         figname = f'seismic_stat_in_{self.receiver.name}' if figname is None else figname
-        plot_slip_distribution(self.receiver, add_faults=[self.receiver], slip='strikeslip', cmap=cmap, norm=norm, figsize=figsize,
+        plot_slip_distribution(self.receiver, add_faults=[self.receiver], slip=counts, cmap=cmap, norm=norm, figsize=figsize,
                                drawCoastlines=drawCoastlines, plot_on_2d=False, cbaxis=cbaxis, cblabel=cblabel,
                                show=show, savefig=savefig, ftype=ftype, dpi=dpi, bbox_inches=bbox_inches,
                                remove_direction_labels=remove_direction_labels, cbticks=cbticks, cblinewidth=cblinewidth,
@@ -399,14 +218,14 @@ class EqseqProj2Fault(SourceInv):
         Returns:
             None
         """
-        self.calculate_seismic_projection_statistics()
+        counts = self.calculate_seismic_projection_statistics()
     
         receiver = self.receiver
     
         # Save the statistics to a file
         if filename is None:
             filename = f'seismic_stat_in_{self.receiver.name}.gmt'
-        receiver.writePatches2File(filename, add_slip='total')
+        receiver.writePatches2File(filename, add_slip=counts)
     
         # All Done
         return

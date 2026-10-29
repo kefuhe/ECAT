@@ -107,19 +107,19 @@ from .config.bayesian_config import (
 )
 from .config.parameter_groups import attach_group_parameters, resolve_group_layout
 from .fault_analysis_mixin import FaultAnalysisMixin
-from .data_correction_constraints import DataCorrectionConstraintMixin
-from .data_correction_report_mixin import DataCorrectionReportMixin
+from .constraints.data_correction_constraints import DataCorrectionConstraintMixin
+from .reporting.data_correction_report_mixin import DataCorrectionReportMixin
 from .deep_slip_loading_mixin import DeepSlipLoadingMixin
 from .interseismic_mixin import InterseismicKinematicsMixin
-from .patch_indices import normalize_patch_indices
-from .constraint_manager_smc import ConstraintManagerSMC
+from .geometry.patch_indices import normalize_patch_indices
+from .constraints.constraint_manager_smc import ConstraintManagerSMC
 from .multifaults_base import MyMultiFaultsInversion
 from .multifaultsolve_boundLSE import _validate_lsqlin_status
 from .source_adapters import FaultAdapter
-from .plot_product_mixin import FigureProductMixin
-from .geom_ops import InvalidFaultGeometryError
-from .covariance_utils import gaussian_log_likelihood
-from .hyperparameter_reporting import (
+from .reporting.plot_product_mixin import FigureProductMixin
+from .geometry.geom_ops import InvalidFaultGeometryError
+from .observations.covariance_utils import gaussian_log_likelihood
+from .reporting.hyperparameter_reporting import (
     build_geometry_parameter_rows,
     build_scale_parameter_rows,
     collapse_member_scales_to_groups,
@@ -133,12 +133,12 @@ from .quadratic_objective import (
     gaussian_curvature_log_term,
     weighted_residual_quadratic,
 )
-from .perturbations.angle_utils import normalize_angle_unit
+from .geometry.angle_utils import normalize_angle_unit
 from .posterior_statistics import (
     OnlineVectorMoments,
     PosteriorSlipStatistics,
 )
-from .parameter_layout_reporting import (
+from .reporting.parameter_layout_reporting import (
     build_geometry_layout_rows,
     build_linear_layout_rows,
     build_sampled_source_rows,

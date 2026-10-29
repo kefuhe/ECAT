@@ -14,6 +14,7 @@ Reference 是查阅层，不替代工作流教程。第一次跑案例时先读 
 | sigma/alpha 的分组、初值和对数尺度 | [Sigmas 与 Alpha](sigmas_alpha.md) | [BLSE 最小脚本](../examples/blse_minimal_run.md) |
 | 怎样设置 bounds、rake 和 patch 约束 | [约束管理器](constraint_manager.md) | [约束配置与运行时调整](../examples/constraint_config_runtime.md) |
 | 怎样解释拟合统计和保存报告 | [拟合统计量](fit_statistics.md) | [循环统计示例](../examples/script_templates.md#loop-statistics) |
+| 已有地震目录，需要投影或按原面片计数 | [地震投影与计数](seismic_projection.md) | 本页最短流程 |
 | 已有模型，计算地表位移或震间派生量 | [地表正演](surface_displacement_forward.md)、[震间运动学](interseismic_kinematics.md) | [地表位移短例](../examples/surface_forward_grid.md) |
 
 下方分类表继续提供全部参考入口；查到具体字段后可直接返回原工作流，无需顺序阅读所有页面。

@@ -10,7 +10,7 @@ import numpy as np
 from scipy.sparse import csr_matrix, block_diag
 
 # import internal modules
-from .covariance_utils import prepare_covariance_metric
+from .observations.covariance_utils import prepare_covariance_metric
 from .multifaultsolve_boundLSE import multifaultsolve_boundLSE as multifaultsolve
 
 

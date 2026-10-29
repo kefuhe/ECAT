@@ -36,6 +36,7 @@
 | 需要在观测图上调整断层迹线 | [交互调整断层迹线](workflows/02c_interactive_trace_editing.md) | 复用降采样 reader 或直接打开标准观测，另存两列经纬度迹线 |
 | 需要由非线性结果或地表迹线构建断层 | [断层构建入口](workflows/04_linear_slip_blse_vce.md#linear-inputs) | 选择非线性结果、单倾角、多倾角或固定拓扑路线 |
 | 已完成两步走，需要传播几何不确定性到滑动后验 | [联合 Bayesian workflow](workflows/05_joint_bayesian_geometry_slip.md) | 先理解冻结几何参考，再对齐样本位置、bounds、扰动和 mesh 更新 |
+| 已有断层和地震目录，需要投影及原面片事件数 | [地震投影与计数](reference/seismic_projection.md) | 保留原滑移，按原面片聚合保留事件 |
 | 需要统一科研图件字体、尺寸和保存 | [科研绘图短例](examples/viztools_scientific_figures.md) | 先复制常用场景，再到 Viztools reference 查高级参数 |
 
 ### 运行环境与科学约定
@@ -43,6 +44,7 @@
 | 当前目标 | 入口 | 用法 |
 | --- | --- | --- |
 | 安装、导入或运行速度异常 | [安装与运行故障排查](getting_started/troubleshooting.md) | 按症状检查版本、wheel、MPI、BLAS 和线程数 |
+| 升级后旧脚本导入失败或旧对象不能恢复 | [升级与依赖迁移](getting_started/upgrading.md) | 先核对包来源，再查权威迁移表和序列化边界 |
 | 不清楚 `-n`、rank、进程、线程或 affinity | [并行运行基础](concepts/parallel_process_rank_thread.md) | 先理解运行单位，再决定是否需要调参 |
 | 需要可编辑的 Windows/WSL MPI 启动器 | [MPI 启动脚本](examples/mpi_launcher_scripts.md) | 把 rank、每 rank 线程和案例入口集中在启动层 |
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
@@ -87,4 +89,8 @@ BLSE/VCE 线性滑动分布反演
 真实案例材料维护在
 [ECAT-Cases](https://github.com/kefuhe/ECAT-Cases)；本仓库维护代码、用户手册与接口参考。
 文档和发布维护者从 [Developer Notes](developer/index.md) 进入，参阅文档架构、
-贡献规范以及独立 eqtools/CSI 与统一 ECAT 的同步边界。
+贡献规范以及独立 eqtools/CSI 与统一 ECAT 的同步边界。阅读实现或扩展功能时，从
+[源码层级与阅读路线](developer/architecture.md#源码层级与阅读路线)进入；新增模块遵循同页的文件归属规则。
+迹线、倾角、边界与网格的实现关系见[几何支撑源码与依赖](developer/geometry_support.md)；
+旧模块导入失败时，查阅[旧路径迁移表](developer/geometry_support.md#geometry-import-migration)。
+数据、约束和改正报告的实现归属与迁移见[观测与约束支撑源码](developer/observation_constraint_support.md)。

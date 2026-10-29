@@ -20,7 +20,7 @@ from .interseismic_parameter_model import (
     _loading_overrides,
     resolve_euler_block_vectors as _resolve_euler_block_vectors,
 )
-from .patch_indices import normalize_patch_indices
+from .geometry.patch_indices import normalize_patch_indices
 
 
 FIELD_ALIASES = {

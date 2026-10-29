@@ -204,6 +204,82 @@ class TriangularPatches(Fault):
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
+    def subdivided_copy(self, levels=1, *, slip_mode="zero"):
+        """Return an independent triangular fault and input-face lineage.
+
+        Parameters
+        ----------
+        levels : int
+            Non-negative subdivision count. Each input face produces
+            ``4 ** levels`` children, in the same order as ``splitPatch``.
+        slip_mode : {"zero", "inherit"}
+            Positive-level subdivision initializes zero slip by default.
+            ``inherit`` copies each input face's three slip components to all
+            its children; input ``slip=None`` remains ``None``. At zero levels,
+            either mode preserves the input slip, giving an independent copy.
+
+        Returns
+        -------
+        fault : TriangularPatches
+            A plain CSI triangular fault with complete mesh and coordinate
+            state. Trace arrays and the vertical flag are retained. Solver,
+            GF, parameter-index, subclass and derived cache state are not copied.
+        parent_face_ids : ndarray of int, shape (n_child_faces,)
+            Zero-based row in this call's input ``Faces`` for each output face,
+            including after multiple levels. No event assignment is stored here.
+
+        Notes
+        -----
+        Shared edges are identified by vertex IDs, never coordinate equality.
+        Input winding, cracks and child order are preserved. The input object
+        is unchanged. Use the returned fault's writers to save it explicitly.
+        Inherited slip is piecewise constant, not a new inversion solution.
+        """
+        from ._mesh.subdivision import subdivide_triangles
+
+        if slip_mode not in ("zero", "inherit"):
+            raise ValueError("slip_mode must be 'zero' or 'inherit'.")
+        vertices, faces, parent_face_ids = subdivide_triangles(
+            getattr(self, 'Vertices', None), getattr(self, 'Faces', None), levels,
+        )
+        # Reject an incomplete legacy mesh rather than silently choosing between
+        # stale patches and connectivity. Geometry has one canonical pair.
+        if not np.array_equal(np.asarray(self.patch), self.Vertices[self.Faces]):
+            raise ValueError("patch must agree with Vertices/Faces before subdivision.")
+
+        inherited_slip = None
+        preserve_slip = levels == 0 or slip_mode == "inherit"
+        if preserve_slip and self.slip is not None:
+            input_slip = np.asarray(self.slip)
+            if input_slip.shape != (len(self.Faces), 3):
+                raise ValueError("inherited slip must have shape (n_input_faces, 3).")
+            inherited_slip = input_slip[parent_face_ids].copy()
+
+        # Construct fresh state instead of deep-copying an inversion object with
+        # stale GF, smoothing, area, boundary or parameter-layout information.
+        result = TriangularPatches(
+            self.name, utmzone=self.utmzone, ellps=self.ellps,
+            lon0=self.lon0, lat0=self.lat0, verbose=self.verbose,
+        )
+        # Preserve the active coordinate frame, including a prior public
+        # set_utmzone() call; constructor hints alone need not describe it.
+        for name in ('wgs', 'utm', 'proj2utm', 'proj2wgs'):
+            setattr(result, name, copy.deepcopy(getattr(self, name)))
+        if hasattr(self, 'code'):
+            result.code = self.code
+        result.vertical = self.vertical
+        for name in ('xf', 'yf', 'xi', 'yi', 'lon', 'lat', 'loni', 'lati'):
+            value = getattr(self, name)
+            setattr(result, name, None if value is None else copy.deepcopy(value))
+        result.set_mesh(vertices, faces, check_order=False)
+        if preserve_slip:
+            result.slip = inherited_slip
+            result.N_slip = None if inherited_slip is None else len(inherited_slip)
+        else:
+            result.initializeslip()
+        return result, parent_face_ids
+
+    # ----------------------------------------------------------------------
     def selectPatches(self,minlon,maxlon,minlat,maxlat,mindep,maxdep):
         '''
         Removes patches that are outside of a 3D box.

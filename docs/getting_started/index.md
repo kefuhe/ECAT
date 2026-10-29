@@ -12,6 +12,7 @@
   的一般差异，并复制不绑定 MPI 实现的检查模板。
 - [安装与运行故障排查](troubleshooting.md)：默认命令失败或速度异常时，按症状检查
   版本、wheel、导入路径、MPI runtime、BLAS 后端和线程性能。
+- [升级与依赖迁移](upgrading.md)：先确认实际运行来源，再处理模块迁移、跨包协议和旧序列化对象。
 - [计算运行栈](../concepts/compute_runtime_stack.md)：进阶理解 oneAPI、oneMKL、
   OpenBLAS、mpi4py、Open MPI、MPICH、Intel MPI 和 MS-MPI 的层级与配套关系。
 

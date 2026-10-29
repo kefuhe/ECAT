@@ -734,7 +734,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
             profile = getattr(reference, 'dip_profile', None)
             if profile is None:
                 return None
-            from ..dip_profile import resolve_dip_perturbation_layout
+            from ..geometry.dip_profile import resolve_dip_perturbation_layout
             dip_parameter_count = sample_count
             if kind == 'sampled_dip_controls_plus_rigid_transform':
                 suffix_count = cardinality.get('suffix_count')
@@ -847,7 +847,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
     def _validate_mesh_replay_readiness(self):
         """Check fixed-topology replay mappings for effective mesh paths."""
         import inspect
-        from .. import mesh_registry as _mesh_registry
+        from ..geometry import mesh_registry as _mesh_registry
 
         for resolved in self.resolved_geometry_updates:
             if resolved.follows:
@@ -912,7 +912,7 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
         6. mesh_valid=False + inherited/missing unregistered → try get_mesh_params()
         7. Auto-filled update_mesh also gets forbidden + spelling check
         """
-        from .. import mesh_registry as _mesh_registry
+        from ..geometry import mesh_registry as _mesh_registry
         from ..bayesian_perturbation_base import PerturbationRegistry
 
         if not hasattr(self, 'faults') or not self.faults:

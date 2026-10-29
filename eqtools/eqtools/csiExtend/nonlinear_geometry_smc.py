@@ -47,29 +47,29 @@ from csi.decimation_geometry import LEGACY_RECTANGLE, QUADRILATERAL, TRIANGLE
 
 from .config.nonlinear_geometry_config import NonlinearGeometryConfig
 from .config.parameter_groups import attach_group_parameters, resolve_group_layout
-from .covariance_utils import (
+from .observations.covariance_utils import (
     DataCovarianceMetric,
     gaussian_log_likelihood,
     prepare_covariance_metric,
 )
-from .data_corrections import (
+from .observations.data_corrections import (
     assign_parameter_slices,
     build_correction_design_matrix,
     correction_coefficients_from_theta,
 )
-from .data_vector_layout import (
+from .observations.data_vector_layout import (
     gps_component_major_vector,
     write_data_synthetic_vector,
 )
-from .fault_angle_conventions import canonicalize_compact_fault_angles
-from .hyperparameter_reporting import (
+from .geometry.fault_angle_conventions import canonicalize_compact_fault_angles
+from .reporting.hyperparameter_reporting import (
     build_scale_parameter_rows,
     collapse_member_scales_to_groups,
     describe_bayesian_value_source,
     format_scale_parameter_report,
 )
 from .logging_utils.mpi_logging import ensure_default_logging
-from .nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
+from .reporting.nonlinear_fit_statistics_mixin import NonlinearFitStatisticsMixin
 from .smc_mpi_nonlinear import SMC_samples_parallel_mpi_nonlinear
 from .smc_tempering import (
     read_smc_tempering_metadata,
@@ -3427,7 +3427,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
         gps_plot_mode="legacy",
         gps_kwargs=None,
     ):
-        from .figure_products import (
+        from .reporting.figure_products import (
             _gps_comparison_kwargs, _merge_product_plot_kwargs, plot_gps_comparison_product,
         )
 
@@ -3485,7 +3485,7 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
             )
 
         try:
-            from .data_plot_utils import _plot_crossfaultoffset_fit, _plot_leveling_fit
+            from .reporting.data_plot_utils import _plot_crossfaultoffset_fit, _plot_leveling_fit
         except Exception:
             return
         for levdata in grouped_data["leveling"]:
@@ -3532,43 +3532,43 @@ class NonlinearGeometrySMCInversion(NonlinearFitStatisticsMixin, SourceInv):
 
     def plot_kde_matrix(self, **kwargs):
         """Plot a KDE matrix with the nonlinear SMC plotting conventions."""
-        from .nonlinear_geometry_plots import plot_kde_matrix
+        from .reporting.nonlinear_geometry_plots import plot_kde_matrix
 
         return plot_kde_matrix(self, **kwargs)
 
     def plot_parameter_marginals(self, **kwargs):
         """Plot posterior marginal distributions using the standalone plot module."""
-        from .nonlinear_geometry_plots import plot_parameter_marginals
+        from .reporting.nonlinear_geometry_plots import plot_parameter_marginals
 
         return plot_parameter_marginals(self, **kwargs)
 
     def plot_parameter_pairs(self, **kwargs):
         """Plot a lightweight corner-style parameter matrix."""
-        from .nonlinear_geometry_plots import plot_parameter_pairs
+        from .reporting.nonlinear_geometry_plots import plot_parameter_pairs
 
         return plot_parameter_pairs(self, **kwargs)
 
     def plot_sample_traces(self, **kwargs):
         """Plot posterior samples in saved order for selected parameters."""
-        from .nonlinear_geometry_plots import plot_sample_traces
+        from .reporting.nonlinear_geometry_plots import plot_sample_traces
 
         return plot_sample_traces(self, **kwargs)
 
     def plot_parameter_intervals(self, **kwargs):
         """Plot posterior medians and credible intervals."""
-        from .nonlinear_geometry_plots import plot_parameter_intervals
+        from .reporting.nonlinear_geometry_plots import plot_parameter_intervals
 
         return plot_parameter_intervals(self, **kwargs)
 
     def plot_smc_progress(self, **kwargs):
         """Plot saved SMC beta and posterior values when available."""
-        from .nonlinear_geometry_plots import plot_smc_progress
+        from .reporting.nonlinear_geometry_plots import plot_smc_progress
 
         return plot_smc_progress(self, **kwargs)
 
     def plot_fault_parameter_trends(self, **kwargs):
         """Plot fault-parameter median and credible interval evolution by SMC stage."""
-        from .nonlinear_geometry_plots import plot_fault_parameter_trends
+        from .reporting.nonlinear_geometry_plots import plot_fault_parameter_trends
 
         return plot_fault_parameter_trends(self, **kwargs)
 

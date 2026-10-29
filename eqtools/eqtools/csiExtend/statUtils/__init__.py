@@ -3,7 +3,7 @@
 '''
 
 from .contour3D_extraction import Contour3DExtraction
-from .fault_contours import (
+from ..geometry.fault_contours import (
     extract_isodepth_contours,
     fault_to_triangle_mesh,
     mesh_plane_segments,

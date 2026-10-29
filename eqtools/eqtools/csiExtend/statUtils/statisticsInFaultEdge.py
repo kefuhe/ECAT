@@ -13,7 +13,7 @@ import copy
 # CSI routines
 from csi import TriangularPatches
 from csi import SourceInv as csiSourceInv
-from ..geom_ops import calculate_average_direction
+from ..geometry.geom_ops import calculate_average_direction
 
 
 class StatisticsInFault(csiSourceInv):

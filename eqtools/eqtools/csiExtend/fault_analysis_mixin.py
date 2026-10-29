@@ -16,13 +16,13 @@ import numpy as np
 from tabulate import tabulate
 
 from .config.config_utils import get_observation_unit_info
-from .data_prediction import (
+from .observations.data_prediction import (
     build_diagnostic_prediction_blocks,
     get_geodata_prediction_specs,
     publish_prediction_blocks,
 )
 from .fault_summary import print_faults_summary, summarize_faults
-from .fit_statistics import (
+from .reporting.fit_statistics import (
     aggregate_dataset_fit_rows,
     data_fit_vectors,
     fit_metrics_from_vectors,

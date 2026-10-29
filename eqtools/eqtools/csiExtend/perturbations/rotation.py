@@ -8,7 +8,7 @@ and Laplacian caches may remain valid.
 import numpy as np
 from scipy.spatial import cKDTree
 from ..bayesian_perturbation_base import track_mesh_update
-from .angle_utils import angles_to_radians, normalize_angle_unit
+from ..geometry.angle_utils import angles_to_radians, normalize_angle_unit
 
 
 class RotationPerturbationMixin:

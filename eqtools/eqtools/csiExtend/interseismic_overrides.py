@@ -8,8 +8,9 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 import numpy as np
 
-from .interseismic_parameter_model import get_fault_by_name, get_fault_loading_params
-from .patch_indices import normalize_patch_indices, select_patch_indices
+from .source_adapters import get_fault_by_name
+from .interseismic_parameter_model import get_fault_loading_params
+from .geometry.patch_indices import normalize_patch_indices, select_patch_indices
 
 
 MOTION_SENSE_TABLE_COLUMNS = [

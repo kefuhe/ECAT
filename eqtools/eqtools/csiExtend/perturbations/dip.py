@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..bayesian_perturbation_base import track_mesh_update
-from ..dip_profile import (
+from ..geometry.dip_profile import (
     build_dip_profile_spec,
     transform_dip_profile_coordinates,
     resolve_dip_profile as _resolve_dip_profile,

@@ -90,7 +90,7 @@ class EndpointDuttaPerturbationMixin:
         bias (float, optional): Bias parameter for the mesh.
         min_dx (float, optional): Minimum size of the mesh.
         """
-        from ..make_mesh_dutta import makemesh as make_mesh_dutta
+        from ..geometry.make_mesh_dutta import makemesh as make_mesh_dutta
         top_coords = self.top_coords.copy()
         top_coords[:, 2] = -top_coords[:, 2]
         p, q, r, trired, ang, xfault, yfault, zfault = make_mesh_dutta(self.depth, 
@@ -113,7 +113,7 @@ class EndpointDuttaPerturbationMixin:
         positive-down depth on the returned start/end points.  The intersector
         is stored on ``self`` for diagnostics.
         """
-        from ..geom_ops import PolygonIntersector
+        from ..geometry.geom_ops import PolygonIntersector
         if top_coords is None:
             top_coords = self.top_coords
         if bottom_coords is None:

@@ -365,3 +365,17 @@ ecat-viz >=0.1.2,<0.2. Use the CSI fork distributed with ECAT. CSI alone now own
 the eqtools Python module still delegates to it. Older uninstall records from both packages
 could remove the same command file during upgrades. The final CSI reinstall restores it;
 subsequent eqtools uninstalls no longer own this command. It does not upgrade numerical dependencies.
+
+## Updating triangular subdivision and seismic projection
+
+Update the CSI fork and eqtools together in an existing complete environment:
+
+```bash
+python -m pip install --no-deps --force-reinstall ./csi_cutde_mpiparallel ./eqtools
+python -c "from csi import TriangularPatches; assert callable(getattr(TriangularPatches, 'subdivided_copy', None)); print('subdivision API OK')"
+```
+
+The recommended installers also check this CSI interface. Event counts now
+return an array instead of overwriting physical slip. Ordinary `splitReceiver(n)`
+usage remains valid; old multiprocessing arguments are removed. See
+[seismic projection and migration](docs/reference/seismic_projection.md).

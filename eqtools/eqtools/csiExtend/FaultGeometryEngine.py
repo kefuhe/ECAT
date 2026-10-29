@@ -822,7 +822,7 @@ class FaultGeometryEngine(SourceInv):
         legacy_methods = {'legacy_map_contour', 'map_contour', 'tricontour', 'legacy'}
 
         if method in geometric_methods:
-            from .statUtils.fault_contours import extract_isodepth_contours
+            from .geometry.fault_contours import extract_isodepth_contours
 
             contour_result = extract_isodepth_contours(
                 fault_obj,

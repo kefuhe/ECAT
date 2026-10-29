@@ -7,6 +7,9 @@ so the inversion framework can operate on any source through a common API.
 Design pattern: Adapter + Simple Factory
 """
 
+from __future__ import annotations
+
+from typing import Any, Sequence
 from abc import ABC, abstractmethod
 import warnings
 import numpy as np
@@ -958,3 +961,22 @@ def make_adapter(source, **kwargs):
             f"Known types: {list(_ADAPTER_MAP.keys())}"
         )
     return cls(source, **kwargs)
+
+
+def get_faults_from_inversion(inversion: Any) -> Sequence[Any]:
+    """Return source/fault objects from a BLSE, VCE, or Bayesian inversion."""
+    if hasattr(inversion, "_get_faults"):
+        return inversion._get_faults()
+    if hasattr(inversion, "multifaults") and hasattr(inversion.multifaults, "faults"):
+        return inversion.multifaults.faults
+    if hasattr(inversion, "faults"):
+        return inversion.faults
+    raise AttributeError("Cannot find fault list on inversion object")
+
+
+def get_fault_by_name(inversion: Any, fault_name: str) -> Any:
+    """Return one source/fault object by name."""
+    for fault in get_faults_from_inversion(inversion):
+        if getattr(fault, "name", None) == fault_name:
+            return fault
+    raise ValueError(f"Fault/source '{fault_name}' not found")

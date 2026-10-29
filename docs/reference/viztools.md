@@ -532,3 +532,10 @@ from ecat_viz import PlotStyle, Presets, save_fig
 - [Figure Products](figure_products.md)
 - [SAR Reader](sar_reader.md)
 - [降采样应用](downsampling_app.md)
+
+## 自定义断层数值的滑移恢复
+
+`eqtools.viztools.plot_slip_distribution(fault, slip=values)` 可显示长度等于面片数的
+自定义数组，例如事件计数。绘制时使用独立的临时滑移数组，成功或异常退出均恢复
+原引用；调用者持有的物理滑移数组不会被改写。原滑移为 None 或未设置时也保持原状态。
+它只负责显示已计算数值，事件统计见[地震投影与计数](seismic_projection.md)。

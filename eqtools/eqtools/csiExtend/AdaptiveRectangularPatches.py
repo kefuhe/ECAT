@@ -1,7 +1,7 @@
 import numpy as np
 from csi.planarfault import planarfault
 
-from .fault_angle_conventions import canonicalize_compact_fault_angles
+from .geometry.fault_angle_conventions import canonicalize_compact_fault_angles
 
 
 class AdaptiveRectangularPatches(planarfault):

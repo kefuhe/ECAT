@@ -2,7 +2,7 @@ from collections import Counter
 
 import numpy as np
 from . import lsqlin
-from .covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
+from .observations.covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
 from .quadratic_objective import (
     LeastSquaresBlock,
     assemble_quadratic_objective,

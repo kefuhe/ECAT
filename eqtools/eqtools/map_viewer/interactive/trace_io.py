@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ...csiExtend.trace_io import read_trace_segments, write_trace
+from ...csiExtend.geometry.trace_io import read_trace_segments, write_trace
 from .models import PathDraft, ReferencePath
 
 

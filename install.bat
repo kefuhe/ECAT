@@ -17,7 +17,7 @@ if errorlevel 1 exit /b 1
 REM Restore CSI-owned scripts after old eqtools uninstall records may remove them.
 "%PYTHON_BIN%" -m pip install --no-deps --force-reinstall "%REPO_DIR%csi_cutde_mpiparallel"
 if errorlevel 1 exit /b 1
-"%PYTHON_BIN%" -c "import ecat_viz, csi, eqtools; print('ECAT package imports succeeded.')"
+"%PYTHON_BIN%" -c "import ecat_viz, csi, eqtools; from csi import TriangularPatches; assert callable(getattr(TriangularPatches, 'subdivided_copy', None)), 'Update CSI fork and eqtools together'; print('ECAT package imports succeeded.')"
 if errorlevel 1 exit /b 1
 echo Installation complete. See Install.md for component updates and optional extras.
 endlocal

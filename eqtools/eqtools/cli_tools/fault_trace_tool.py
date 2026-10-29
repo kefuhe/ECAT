@@ -3,7 +3,7 @@
 The subcommand interface provides inspect, locate, clean, orient, reverse,
 trim, extend, resample, simplify, smooth, and ordered YAML ``apply`` steps.
 Distance calculations use a local CSI projection and the numerical operations
-are delegated to :mod:`eqtools.csiExtend.trace_ops` through ``TracePath``.
+are delegated to :mod:`eqtools.csiExtend.geometry.trace_ops` through ``TracePath``.
 
 The historical ``INPUT --algo {vw,rdp,bspline}`` invocation remains available
 and keeps its original three-output behavior for compatibility.
@@ -20,9 +20,9 @@ from pathlib import Path
 
 # Ensure csi is installed in the environment
 from csi import SourceInv
-from ..csiExtend.trace_io import read_trace, write_trace
-from ..csiExtend.trace_processing import TracePath, process_trace
-from ..csiExtend.trace_ops import simplify_trace, smooth_trace
+from ..csiExtend.geometry.trace_io import read_trace, write_trace
+from ..csiExtend.geometry.trace_processing import TracePath, process_trace
+from ..csiExtend.geometry.trace_ops import simplify_trace, smooth_trace
 from ecat_viz import sci_plot_style, set_degree_formatter
 
 # Initialize logger for this module

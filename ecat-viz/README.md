@@ -216,3 +216,19 @@ with PlotStyle("science", legend_fontsize=6):
     ax.plot([0, 1], [0, 1], label="Data")
     ax.legend()
 ```
+
+## Reading and extending the implementation
+
+
+Start with the public entry points above. Their implementation is in `_core`
+(PlotStyle and initialization), `_registry` (shared presets/widths/apply stack),
+`_font_utils` (font handling), `_formatters` (coordinate labels), and
+`_style_utils` (publication sizes and save/show/close). `_compat` holds historical
+style signatures; new runtime code imports the public ecat_viz API directly.
+
+Keep the current shallow module layout. Add general display features to their
+existing owning module first; extract a clearly named helper only when it has
+an independent responsibility or repeated callers. A new public module should
+have a real user-facing purpose and be listed in the ownership table. Fault,
+inversion and data-component semantics remain in CSI/eqtools, and compatibility
+exports must use the same implementation and state.

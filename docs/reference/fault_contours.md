@@ -58,13 +58,16 @@ for line in contours[25.0]:
 
 ### 低层等深线函数
 
-纯几何 helper 位于 `statUtils`：
+纯几何 helper 的实现位于 `geometry.fault_contours`：
 
 ```python
-from eqtools.csiExtend.statUtils.fault_contours import extract_isodepth_contours
+from eqtools.csiExtend.geometry.fault_contours import extract_isodepth_contours
 
 contours = extract_isodepth_contours(fault, [25.0])
 ```
+
+`statUtils.fault_contours` 保留为等深线兼容入口，转出同一实现；新脚本使用上面的规范路径。
+这不改变 `statUtils.contour3D_extraction` 的标量等值线实现，二者计算职责不同。
 
 没有传入 `engine` 或其他带 `xy2ll(x, y)` 方法的对象时，输出列为：
 

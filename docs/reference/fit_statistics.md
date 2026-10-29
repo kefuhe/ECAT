@@ -5,6 +5,10 @@
 统计接口只检查已经求得的模型，不参与求解，也不会改变 Green's functions、协方差、
 约束或后验样本。
 
+统计与参数报告实现位于 `eqtools.csiExtend.reporting`；原根层实现模块路径已移除，
+对象方法和既有包级公开导出保持不变。旧 helper 导入按[结果模块迁移表](../developer/architecture.md#reporting-import-migration)
+调整，不改公式、数据或预期结果。
+
 ## 统一的结果使用顺序
 
 不同反演方法的求解入口可以不同，但用户理解结果时统一遵循五个阶段：

@@ -33,6 +33,9 @@ from .interseismic_parameter_model import (
     get_blocks_config,
     get_fault_loading_config,
     resolve_transform_columns,
+    calculate_euler_matrix_for_points,
+    convert_euler_pole_to_vector,
+    project_euler_to_strike,
 )
 from .interseismic_loading_pairs import (
     export_interseismic_loading_pair_table as _export_interseismic_loading_pair_table,
@@ -45,15 +48,12 @@ from .interseismic_overrides import (
     resolve_interseismic_motion_sense as _resolve_interseismic_motion_sense,
     summarize_interseismic_motion_sense_diagnostics,
 )
-from .euler_inequality_constraints import (
-    calculate_euler_matrix_for_points,
-    convert_euler_pole_to_vector,
+from .constraints.euler_inequality_constraints import (
     filter_cap_patch_indices_for_hard_constraints,
     normalize_cap_hard_overlap_policy,
     normalize_interseismic_backslip_state,
-    project_euler_to_strike,
 )
-from .patch_indices import select_patch_indices
+from .geometry.patch_indices import select_patch_indices
 
 
 class InterseismicKinematicsMixin:

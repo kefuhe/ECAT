@@ -13,5 +13,5 @@ fi
 "$python_bin" -m pip install "$repo_dir/ecat-viz" "$repo_dir/csi_cutde_mpiparallel" "$repo_dir/eqtools"
 # Restore CSI scripts after legacy shared command ownership during upgrades.
 "$python_bin" -m pip install --no-deps --force-reinstall "$repo_dir/csi_cutde_mpiparallel"
-"$python_bin" -c 'import ecat_viz, csi, eqtools; print("ECAT package imports succeeded.")'
+"$python_bin" -c 'import ecat_viz, csi, eqtools; from csi import TriangularPatches; assert callable(getattr(TriangularPatches, "subdivided_copy", None)), "Update CSI fork and eqtools together"; print("ECAT package imports succeeded.")'
 echo "Installation complete. See Install.md for component updates and optional extras."

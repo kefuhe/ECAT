@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.optimize import lsq_linear
-from .covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
+from .observations.covariance_utils import prepare_block_covariance_metrics, whiten_data_blocks
 from eqtools.csiExtend.config.parameter_groups import resolve_group_layout
 
 

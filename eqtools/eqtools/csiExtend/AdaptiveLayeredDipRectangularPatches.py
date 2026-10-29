@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Union, List, Dict, Callable, Tuple
-from .DipInterpolation import LayeredDipInterpolator, DepthDipProfile
+from .geometry.DipInterpolation import LayeredDipInterpolator, DepthDipProfile
 from csi.faultwithlistric import faultwithlistric
 
 class AdaptiveLayeredDipRectangularPatches(faultwithlistric):

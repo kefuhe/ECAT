@@ -17,7 +17,7 @@ from .interseismic_fields import (
     _get_source_start,
     normalize_slip_component,
 )
-from .patch_indices import (
+from .geometry.patch_indices import (
     get_patch_centers,
     normalize_patch_indices,
     select_patch_indices,

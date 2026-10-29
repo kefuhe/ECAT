@@ -12,29 +12,12 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .source_adapters import get_fault_by_name, get_faults_from_inversion
+
 from .config.config_utils import (
     m_per_year_to_observation_factor,
     observation_to_m_per_year_factor,
 )
-
-
-def get_faults_from_inversion(inversion: Any) -> Sequence[Any]:
-    """Return source/fault objects from a BLSE, VCE, or Bayesian inversion."""
-    if hasattr(inversion, "_get_faults"):
-        return inversion._get_faults()
-    if hasattr(inversion, "multifaults") and hasattr(inversion.multifaults, "faults"):
-        return inversion.multifaults.faults
-    if hasattr(inversion, "faults"):
-        return inversion.faults
-    raise AttributeError("Cannot find fault list on inversion object")
-
-
-def get_fault_by_name(inversion: Any, fault_name: str) -> Any:
-    """Return one source/fault object by name."""
-    for fault in get_faults_from_inversion(inversion):
-        if getattr(fault, "name", None) == fault_name:
-            return fault
-    raise ValueError(f"Fault/source '{fault_name}' not found")
 
 
 def get_interseismic_config(inversion: Any) -> Mapping[str, Any]:
@@ -335,8 +318,6 @@ def resolve_euler_block_vectors(
 
 
 def _project_loading_coefficients(inversion: Any, fault_name: str, patch_indices: np.ndarray, params) -> np.ndarray:
-    from .euler_inequality_constraints import calculate_euler_matrix_for_points, project_euler_to_strike
-
     fault = get_fault_by_name(inversion, fault_name)
     centers = np.asarray(fault.getcenters(), dtype=float)[patch_indices]
     lonc, latc = fault.xy2ll(centers[:, 0], centers[:, 1])
@@ -414,7 +395,7 @@ def _add_regioned_loading_terms(
     fixed_loading: np.ndarray,
 ) -> None:
     """Fill loading terms using optional manual region overrides."""
-    from .patch_indices import select_patch_indices
+    from .geometry.patch_indices import select_patch_indices
 
     fault = get_fault_by_name(inversion, fault_name)
     assigned = np.zeros(len(patch_indices), dtype=bool)
@@ -616,88 +597,86 @@ def calculate_loading_from_terms(
     return A_loading @ sol + fixed_loading
 
 
-def generate_block_euler_equality_constraints(
-    inversion: Any,
-    interseismic_config: Mapping[str, Any],
-    n_total: int,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Generate equality rows tying dataset Euler vectors to block Euler.
+def calculate_euler_matrix_for_points(lonc: np.ndarray, latc: np.ndarray) -> np.ndarray:
+    """Return the matrix mapping Cartesian Euler vectors to EN velocities.
 
-    For ``mode: estimate``, every dataset in a block shares one estimated
-    ``eulerrotation`` vector.  For ``mode: fixed_pole`` or ``mode:
-    fixed_vector``, any listed dataset that has an ``eulerrotation`` transform
-    is fixed to the block Euler vector.
+    Parameters
+    ----------
+    lonc, latc : numpy.ndarray
+        Point longitudes and latitudes in radians.
+
+    Returns
+    -------
+    numpy.ndarray
+        Matrix with shape ``(2 * n_points, 3)``.  The first ``n_points`` rows
+        are east-velocity coefficients, and the remaining rows are north.
     """
-    loading = get_fault_loading_config(interseismic_config)
-    blocks = get_blocks_config(interseismic_config)
-    if not loading.get("enabled", False) or not blocks.get("enabled", False):
-        return None, None
+    num_points = len(lonc)
+    euler_mat = np.zeros((2 * num_points, 3), dtype=float)
+    radius = 6378137.0
 
-    rows = []
-    rhs = []
-    for block_name, block in blocks.get("items", {}).items():
-        datasets = _block_datasets(block)
-        if not datasets:
-            continue
-        euler_config = block.get("euler", {})
-        mode = _block_euler_mode(block)
-        owner_source = euler_config.get("owner_source")
+    cos_lat = np.cos(latc)
+    sin_lat = np.sin(latc)
+    cos_lon = np.cos(lonc)
+    sin_lon = np.sin(lonc)
 
-        if mode == "estimate":
-            if len(datasets) <= 1:
-                continue
-            anchor_dataset = _block_anchor_dataset(block)
-            ref_columns, _ = resolve_transform_columns(
-                inversion,
-                anchor_dataset,
-                owner_source=owner_source,
-                n_total=n_total,
-            )
-            if ref_columns.size != 3:
-                raise ValueError(f"Expected 3 Euler parameters for block '{block_name}' anchor dataset")
-            for dataset in datasets:
-                if dataset == anchor_dataset:
-                    continue
-                columns, _ = resolve_transform_columns(
-                    inversion,
-                    dataset,
-                    owner_source=owner_source,
-                    n_total=n_total,
-                )
-                if columns.size != 3:
-                    raise ValueError(f"Expected 3 Euler parameters for block '{block_name}' dataset '{dataset}'")
-                for local_idx in range(3):
-                    row = np.zeros(int(n_total), dtype=float)
-                    row[columns[local_idx]] = 1.0
-                    row[ref_columns[local_idx]] = -1.0
-                    rows.append(row)
-                    rhs.append(0.0)
-        elif mode in {"fixed_pole", "fixed_vector"}:
-            fixed_vector = _physical_euler_to_model_units(inversion, _block_fixed_euler_vector(block))
-            for dataset in datasets:
-                try:
-                    columns, _ = resolve_transform_columns(
-                        inversion,
-                        dataset,
-                        owner_source=owner_source,
-                        n_total=n_total,
-                    )
-                except ValueError:
-                    # A fixed block may list datasets whose rigid Euler motion
-                    # has already been removed before inversion.  Preflight
-                    # diagnostics report that case; constraint generation can
-                    # safely skip missing eulerrotation columns.
-                    continue
-                if columns.size != 3:
-                    raise ValueError(f"Expected 3 Euler parameters for block '{block_name}' dataset '{dataset}'")
-                for local_idx in range(3):
-                    row = np.zeros(int(n_total), dtype=float)
-                    row[columns[local_idx]] = 1.0
-                    rows.append(row)
-                    rhs.append(float(fixed_vector[local_idx]))
-        else:
-            raise ValueError(f"Unsupported block Euler mode '{mode}'")
+    euler_mat[:num_points, 0] = -radius * sin_lat * cos_lon
+    euler_mat[:num_points, 1] = -radius * sin_lat * sin_lon
+    euler_mat[:num_points, 2] = radius * cos_lat
+    euler_mat[num_points:, 0] = radius * sin_lon
+    euler_mat[num_points:, 1] = -radius * cos_lon
+    euler_mat[num_points:, 2] = 0.0
+    return euler_mat
 
-    if not rows:
-        return None, None
-    return np.vstack(rows), np.asarray(rhs, dtype=float)
+
+def calculate_reference_strike_vector(reference_strike_deg: float, num_patches: int) -> np.ndarray:
+    """Return EN unit vectors for a reference strike angle."""
+    reference_strike_rad = np.deg2rad(reference_strike_deg)
+    vec_reference = np.zeros((num_patches, 2), dtype=float)
+    vec_reference[:, 0] = np.sin(reference_strike_rad)
+    vec_reference[:, 1] = np.cos(reference_strike_rad)
+    return vec_reference
+
+
+def convert_euler_pole_to_vector(lon_pole: float, lat_pole: float, omega: float) -> np.ndarray:
+    """Convert Euler pole ``(lon, lat, omega)`` to Cartesian vector.
+
+    Angles are radians and ``omega`` is radians/year.  The argument order
+    matches the public ``fixed_pole`` convention used by interseismic configs.
+    """
+    return np.array([
+        omega * np.cos(lat_pole) * np.cos(lon_pole),
+        omega * np.cos(lat_pole) * np.sin(lon_pole),
+        omega * np.sin(lat_pole),
+    ], dtype=float)
+
+
+def project_euler_to_strike(
+    euler_mat: np.ndarray,
+    fault: object,
+    patch_indices: Sequence[int],
+    reference_strike_deg: float,
+    num_patches: int,
+) -> np.ndarray:
+    """Project EN Euler velocities to each selected patch strike direction.
+
+    The reference strike only chooses the sign-consistent branch of each
+    patch's own strike vector.  Projection is still done on the local patch
+    strike.
+    """
+    vel_east = euler_mat[:num_patches, :]
+    vel_north = euler_mat[num_patches:, :]
+
+    all_strikes = np.asarray(fault.getStrikes(), dtype=float)
+    patch_strikes_rad = all_strikes[np.asarray(patch_indices, dtype=int)]
+    strike_east = np.sin(patch_strikes_rad)
+    strike_north = np.cos(patch_strikes_rad)
+
+    reference_strike_rad = np.deg2rad(reference_strike_deg)
+    ref_east = np.sin(reference_strike_rad)
+    ref_north = np.cos(reference_strike_rad)
+    reverse_mask = strike_east * ref_east + strike_north * ref_north < 0
+    strike_east[reverse_mask] = -strike_east[reverse_mask]
+    strike_north[reverse_mask] = -strike_north[reverse_mask]
+
+    return vel_east * strike_east[:, None] + vel_north * strike_north[:, None]

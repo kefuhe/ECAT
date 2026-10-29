@@ -1,6 +1,117 @@
-# 文档架构说明
+# 源码与文档架构
 
 用户手册按科研工作流组织，源码按可复用组件组织。两者不要混在一起。
+
+## 源码层级与阅读路线
+
+三个独立分发包的依赖方向是 `eqtools -> CSI / ecat_viz` 和 `CSI -> ecat_viz`。
+ECAT 组合发布这些包；通用绘图库不依赖 CSI 或 eqtools。
+
+| 层级 | 主要入口 | 实现归属 |
+| --- | --- | --- |
+| 通用绘图 | `ecat_viz.PlotStyle`、`finish_fig`、`get_cmap` | ecat-viz 的 `src/ecat_viz/`；样式、字体、颜色、尺寸、坐标格式和通用栅格显示 |
+| CSI 基础对象 | `csi.gps.gps`、`csi.insar.insar`、断层类 | CSI 的 `csi/`；观测、坐标框架、source、mesh、GF 与基础对象方法 |
+| CSI 内部显示 | 数据对象的 `plot_fit_comparison()` | `csi/_plotting/gps.py`、`csi/_plotting/spatial.py`；只消费准备好的字段 |
+| eqtools 反演 | BLSE/VCE、Bayesian、`NonlinearGeometrySMCInversion` | `eqtools/csiExtend/` 的反演入口和现有计算、配置、约束模块 |
+| eqtools 几何支撑 | `TracePath`、patch 查询、剖面解析与网格后端 | `eqtools/csiExtend/geometry/`；各模块分别保持自己的坐标、距离、角度与索引合同 |
+| eqtools 观测支撑 | 行向量、预测块、改正解释与精确白化 | `eqtools/csiExtend/observations/`；不接管数据对象和物理 source |
+| eqtools 约束支撑 | 公开 inversion 的约束方法 | `eqtools/csiExtend/constraints/`；声明、当前状态和目标参数空间编译 |
+| eqtools 结果组织 | `plot_data_fits()`、拟合统计与参数报告 | `eqtools/csiExtend/reporting/`；标准图件、结果统计、报告格式与非线性结果显示 |
+| eqtools 领域图件 | 断层边界、倾角、滑动诊断 | `eqtools/viztools/`；直接使用 ecat_viz 通用工具 |
+
+先从用户实际调用的方法或类开始，再进入其实现模块；解释结果时再阅读相应的科学合同。
+以下是常用阅读顺序：
+
+- GPS 比较图：`gps.plot_fit_comparison()` -> `csi/_plotting/gps.py` -> ecat_viz；
+  上层是否使用 U、如何发布 synthetic 则查 `observations/data_prediction.py` 和 `data_vector_layout.py`。
+- 标准反演图件：反演类的 `plot_data_fits()` -> `reporting/plot_product_mixin.py` ->
+  `reporting/figure_products.py` -> 数据对象绘图方法。预测准备仍委托预测拥有者。
+- 非线性结果与统计：`nonlinear_geometry_smc.py` -> `reporting/nonlinear_geometry_plots.py`
+  或 `reporting/nonlinear_fit_statistics_mixin.py` -> 对应的报告模块。
+- 观测和约束：inversion 入口 -> `observations` 的明确合同或 `constraints` 的对应 manager；
+  文件职责、参数空间差异和导入迁移见[观测与约束支撑源码](observation_constraint_support.md)。
+- 迹线处理：`TracePath` / trace CLI -> `geometry/trace_processing.py` ->
+  `geometry/trace_markers.py` -> `geometry/trace_ops.py`；文件格式查 `geometry/trace_io.py`。
+- 倾角与网格：fault 对象 / `perturbations/pipeline.py` -> `geometry/dip_profile.py`、
+  `geometry/dip_geometry.py` 和具体 mesh 后端 -> 原有 fault/CSI 发布入口。
+  科学差异和完整模块导航见[几何支撑源码与依赖](geometry_support.md)。
+
+`reporting` 的入口不批量导入绘图或求解器；按具体模块导入即可。
+八个原根层结果兼容模块已移除。包内代码和功能测试直接导入 `reporting` 实现；
+稳定对象方法与既有包级公开导出保持不变。旧导入与序列化边界见[结果模块迁移](#reporting-import-migration)。
+原 CSI 私有 `_gps_plotting`、`_spatial_plotting` 实现已归入 `_plotting`，用户继续调用对象方法。
+`csi._slip_direction` 的跨包协议探测和 `decimation_geometry` 的观测几何合同保持原位。
+`geometry` 入口同样不批量加载数值或后端库。几何支撑直接从具名实现模块导入，原根层
+14 个几何模块及 `perturbations.angle_utils/dip_ops` 的旧路径已移除；仅
+`statUtils.fault_contours` 保留等深线兼容入口。稳定的包级公开类/函数入口保持不变。
+迁移路径及旧对象序列化边界见[几何导入迁移](geometry_support.md#geometry-import-migration)。
+距离定义、重复节点处理、倾角转换、参数映射和网格后端不因归组而合并。
+
+## 结果模块导入迁移 {#reporting-import-migration}
+
+八个原根层结果模块已移除兼容壳，直接导入 `eqtools.csiExtend.reporting` 中的具名模块。
+既有 inversion 对象方法和 `eqtools.csiExtend` 包级公开类/函数导出保持不变；本次只收紧
+旧实现模块路径，不改变统计公式、图件参数、返回值、模型激活或预测发布。
+
+| 原 `eqtools.csiExtend` 下的模块 | 当前相对模块 |
+| --- | --- |
+| `figure_products` | `reporting.figure_products` |
+| `plot_product_mixin` | `reporting.plot_product_mixin` |
+| `data_plot_utils` | `reporting.data_plot_utils` |
+| `nonlinear_geometry_plots` | `reporting.nonlinear_geometry_plots` |
+| `fit_statistics` | `reporting.fit_statistics` |
+| `hyperparameter_reporting` | `reporting.hyperparameter_reporting` |
+| `parameter_layout_reporting` | `reporting.parameter_layout_reporting` |
+| `nonlinear_fit_statistics_mixin` | `reporting.nonlinear_fit_statistics_mixin` |
+
+```python
+from eqtools.csiExtend import FigureProductMixin, fit_metrics_from_vectors
+from eqtools.csiExtend.reporting.parameter_layout_reporting import make_parameter_layout_report
+from eqtools.csiExtend.reporting.nonlinear_geometry_plots import SMCPlotData
+```
+
+显式使用 `_plot_leveling_fit`、`_plot_crossfaultoffset_fit` 等内部 helper 的脚本也应改为
+从 `reporting.data_plot_utils` 导入；长期用户脚本优先使用对象方法。功能测试导入真实实现；
+结构测试检查旧路径明确失败、稳定导出身份和当前 pickle 往返，不以旧测试依赖保留壳。
+
+旧脚本可能收到 `ModuleNotFoundError: eqtools.csiExtend.<旧模块>`，或在访问旧包属性时
+收到 `AttributeError`；先确认实际安装来源，再按上表修改 import。若报错缺少的是其他
+依赖，应处理 traceback 中真正缺失的模块，不能把所有导入错误都归为路径迁移。
+
+旧 `SMCPlotData` pickle 若记录了 `eqtools.csiExtend.nonlinear_geometry_plots`，已不再
+保证直接恢复；其他按旧模块路径保存的类或函数也需单独检查。在可信且能读取旧对象的
+旧环境中导出样本数组、参数名和必要元数据，用当前类重建并另存。修改脚本 import
+不能改写存档；不提供隐式模块 alias、自定义通用 unpickler 或同名壳补丁。
+当前 `reporting` 类路径的 pickle 往返保持有效；纯数组/文本文件不因模块删除自动改变。
+
+`statUtils.fault_contours` 保持已明确的等深线兼容例外，其实现仍由 `geometry.fault_contours`
+唯一拥有。运行来源、生成缓存和升级排查见[升级与依赖迁移](../getting_started/upgrading.md)。
+
+## 新增文件归属规则
+
+1. **先确定状态和科学语义的拥有者。** 绘图模块不能因为需要一个字段，就接管模型激活、
+   预测发布、观测行布局、GF 或缓存失效；通用显示工具进入 ecat_viz，领域语义留在 CSI/eqtools。
+2. **优先放入已有职责子包。** CSI 内部数据图放 `_plotting`；eqtools 的图件产品和纯结果报告
+   放 `csiExtend/reporting`；断层领域诊断放 `viztools`；reader、降采样、配置分别放已有对应子包。
+   共享迹线、边界、倾角、patch 查询和网格后端放 `csiExtend/geometry`；候选状态管理仍放
+   `perturbations` 和原 owning fault 类。
+   观测行布局、预测块、改正系数解释、精确协方差度量放 `csiExtend/observations`；约束声明、
+   编译与有效状态放 `csiExtend/constraints`；纯改正结果报告放 `reporting`。
+   readers、确定性预处理、协方差估计、时间序列、物理加载模型和求解器保留各自拥有者。
+   不为每一种图新建子包，也不建立统一的 `helpers` 或 `internal` 杂物目录。
+3. **根目录保留稳定对象和主要入口。** 新增支撑代码不自动与反演入口并列。单次使用、很短且
+   紧贴一个实现的函数可以留在同一模块；形成独立责任或被多处复用后，再拆出命名明确的文件。
+4. **依赖直接指向拥有者。** 包内实现不能经过旧兼容模块绕回实现，也不能让基础对象反向依赖
+   结果产品。新增文件不默认生成旧路径壳层；明确保留的兼容入口只转出对象，不复制函数、
+   状态、注册表或默认值。
+5. **模块开头说明输入、职责和状态边界。** 用户入口提供参数与返回值说明；新文件在本页的
+   实现位置或阅读路线中可发现。职责子包的 README 提供短文件索引和阅读顺序，完整合同
+   链接到公开手册，不复制两套参考页。不要以文件数量或行数阈值机械拆分模块。
+6. **迁移同时检查使用和发布。** 检查公开调用、序列化路径和相关测试，更新文档影响映射，
+   验证 wheel 包含新子包；ECAT 同步运行源码和公开文档，保留现有发布排除规则。
+
+反演类、CSI 数据对象、主要 fault 对象和加载模型保留现有位置。支撑职责使用浅层子包，
+不改变参考冻结、候选物化、mesh 发布和缓存生命周期；同名前缀不是合并算法的充分依据。
 
 ## 主要实现位置
 
@@ -9,16 +120,20 @@
 | SAR 读取 | [eqtools/csiExtend/sarUtils](https://github.com/kefuhe/eqtools/tree/main/eqtools/csiExtend/sarUtils) |
 | 降采样 CLI | [eqtools/cli_tools/process_data_downsampling.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/cli_tools/process_data_downsampling.py) |
 | 降采样配置校验 | [eqtools/csiExtend/downsample/config.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/downsample/config.py) |
-| 断层迹线数值、marker、处理对象与文件 I/O | [trace_ops.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_ops.py)、[trace_markers.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_markers.py)、[trace_processing.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_processing.py)、[trace_io.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/trace_io.py) |
-| 非线性几何反演 | [eqtools/csiExtend/exploremultifaults_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/exploremultifaults_smc.py) |
+| 断层迹线数值、marker、处理对象与文件 I/O | [geometry/trace_ops.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/geometry/trace_ops.py)、[trace_markers.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/geometry/trace_markers.py)、[trace_processing.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/geometry/trace_processing.py)、[trace_io.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/geometry/trace_io.py) |
+| 倾角、边界、patch 查询与网格支撑 | [geometry](https://github.com/kefuhe/eqtools/tree/main/eqtools/csiExtend/geometry)，[模块与依赖导航](geometry_support.md) |
+| 非线性几何反演（新项目入口） | [nonlinear_geometry_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/nonlinear_geometry_smc.py)，`NonlinearGeometrySMCInversion` |
+| 非线性几何反演（旧案例入口） | [exploremultifaults_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/exploremultifaults_smc.py) |
 | Bayesian 联合几何-滑动反演 | [eqtools/csiExtend/bayesian_multifaults_inversion.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/bayesian_multifaults_inversion.py) |
 | 可扰动三角断层几何 | [eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/BayesianAdaptiveTriangularPatches.py) |
 | BLSE/VCE | [eqtools/csiExtend/blse_multifaults_inversion.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/blse_multifaults_inversion.py) |
 | 线性求解器 | [eqtools/csiExtend/multifaultsolve_boundLSE.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/multifaultsolve_boundLSE.py) |
-| 约束共享状态和 registry | [eqtools/csiExtend/constraint_manager_base.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_base.py) |
-| BLSE/VCE 与 SMC 约束编译器 | [constraint_manager_blse.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_blse.py), [constraint_manager_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraint_manager_smc.py) |
+| 观测行布局、预测、改正与精确白化 | `eqtools/csiExtend/observations`；[模块与依赖导航](observation_constraint_support.md) |
+| 约束共享状态和 registry | [constraints/constraint_manager_base.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraints/constraint_manager_base.py) |
+| BLSE/VCE 与 SMC 约束编译器 | [constraint_manager_blse.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraints/constraint_manager_blse.py), [constraint_manager_smc.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/constraints/constraint_manager_smc.py) |
 | VCE 算法 | [simple_vce.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/simple_vce.py), [rigorous_vce.py](https://github.com/kefuhe/eqtools/blob/main/eqtools/csiExtend/rigorous_vce.py) |
 | 通用科研绘图 | `ecat-viz/src/ecat_viz`；独立分发，CSI/eqtools 直接依赖 |
+| 图件产品、结果统计与报告 | [eqtools/csiExtend/reporting](https://github.com/kefuhe/eqtools/tree/main/eqtools/csiExtend/reporting)；结果模块直接导入 reporting 拥有者；八个原根层壳已移除，见本页迁移表 |
 | 领域图件与兼容入口 | [eqtools/viztools](https://github.com/kefuhe/eqtools/tree/main/eqtools/viztools) |
 
 ## 绘图依赖与兼容边界
@@ -164,3 +279,12 @@ Source GF and solver state are rebuilt by their owners after observation changes
 one-time style/config initialization, validated inch-based widths and affine raster drawing.
 eqtools compatibility entries share these objects; they do not own a second registry.
 CSI alone declares the installed ecat-psgrn entry point; eqtools keeps a delegating module.
+
+## 网格细分与事件后分析
+
+`TriangularPatches.subdivided_copy()` -> `csi/_mesh/subdivision.py`：CSI 生成共享中点
+和输入面片映射，在新普通断层上一次发布完整网格；不复制原反演状态。
+`statUtils/earthquakesProj2Fault.py` 消费这一接口，把来源映射保存为既有
+`receiver_dense.original_indices`；事件归属及计数留在 eqtools，计数不写入滑移。
+目录内 README 是文件功能导航。新数组级 mesh 核归 CSI `_mesh`；事件分析不能接管
+底层连接关系或边界缓存。接口和迁移见[地震投影参考](../reference/seismic_projection.md)。

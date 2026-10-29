@@ -13,8 +13,7 @@ def _snapshot_slip(fault):
     """Return enough state to restore ``fault.slip`` exactly."""
     if not hasattr(fault, 'slip'):
         return _MISSING_SLIP
-    value = fault.slip
-    return None if value is None else value.copy()
+    return fault.slip
 
 
 def _restore_slip(fault, snapshot):
@@ -44,6 +43,10 @@ def _install_custom_slip(faults, slips):
                 raise ValueError("Custom slip must be a one-dimensional array.")
             if snapshot is _MISSING_SLIP or snapshot is None:
                 current_fault.slip = np.zeros((len(slip_array), 3))
+            else:
+                # Install a private array, so external references to physical
+                # slip remain unchanged even while the renderer is running.
+                current_fault.slip = snapshot.copy()
             if np.asarray(current_fault.slip).ndim != 2 or current_fault.slip.shape[1] < 1:
                 raise ValueError("fault.slip must be a two-dimensional component array.")
             if current_fault.slip.shape[0] != len(slip_array):

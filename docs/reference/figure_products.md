@@ -11,6 +11,10 @@ Figure Products 是已完成计算后的批量出图层。它把常见科研图�
 
 只想画一张自定义图，直接使用底层 `fault.plot()`、`data.plot()`、`plot_multifaults_slip()` 或 [Viztools](viztools.md)；需要重复生成一组标准图时再使用本页接口。
 
+实现与报告模块集中在 `eqtools.csiExtend.reporting`。已有对象方法和 `eqtools.csiExtend`
+包级公开导出保持不变；原 `figure_products` 等八个根层转包模块已移除，显式导入改用
+真实实现位置。完整路径及旧 pickle 边界见[结果模块迁移](../developer/architecture.md#reporting-import-migration)。
+
 ## 科学边界
 
 Figure Products：

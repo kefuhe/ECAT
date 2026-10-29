@@ -7,6 +7,9 @@ ECAT 用一个约束管理器统一保存参数边界、线性不等式
 普通用户应通过 inversion 对象的公开方法更新约束；不要直接修改
 `inversion.constraint_manager` 的内部字典。
 
+实现现归入 `eqtools.csiExtend.constraints`；inversion 公开约束方法保持不变。
+文件归属与旧模块导入迁移见[观测与约束支撑源码](../developer/observation_constraint_support.md)。
+
 ## 阅读路径
 
 | 当前问题 | 阅读位置 |
