@@ -2451,85 +2451,48 @@ class insar(SourceInv):
         return
     
     def getDistance2Faults(self, faults):
-        '''
-        Returns the minimum distance to a fault for each pixel
+        """Return distances to continuous original surface traces, in km.
 
-        Args:
-            * faults    : a fault or a list of faults.
+        Accept one fault or a list of faults in the observation projected CRS.
+        Distances use representative x/y positions and original xf/yf segments,
+        not mesh vertices, discretized xi/yi nodes, or pixel footprints.
+        """
+        from .fault_trace_selection import distances_to_faults
 
-        Return:
-            * distance  : array
-        '''
-
-        # Check something
-        if faults.__class__ is not list:
-            faults = [faults]
-
-        # Build a line object with the faults
-        fl = []
-        for flt in faults:
-            f = [[x, y] for x,y in np.vstack((flt.xf, flt.yf)).T.tolist()]
-            fl = fl + f
-
-        # Get all the positions
-        pp = [[x, y] for x,y in zip(self.x, self.y)]
-
-        # Get distances
-        D = scidis.cdist(pp, fl)
-
-        # Get minimums
-        d = np.min(D, axis=1)
-        del D
-
-        # All done
-        return d
+        return distances_to_faults(self, faults)
 
     def reject_pixels_fault(self, dis, faults):
-        '''
-        Rejects the pixels that are {dis} km close to the fault.
+        """Remove observation points selected by an original-trace buffer.
 
-        Args:
-            * dis       : Threshold distance.
-            * faults    : list of fault objects.
+        Parameters
+        ----------
+        dis : float
+            Distance in km. Positive values remove points on/inside a round
+            trace buffer; negative values remove points on/outside it. Zero
+            preserves the historical behavior of removing all points.
+        faults : fault or list of faults
+            Original xf/yf traces in the same projected CRS as this data set.
 
-        Returns:
-            * None
-        '''
+        Returns
+        -------
+        numpy.ndarray
+            Ascending indices in the data layout BEFORE deletion.
 
-        # Variables to trim are  self.corner,
-        # self.xycorner, self.Cd, (self.synth)
+        Notes
+        -----
+        Selection uses representative points, not entire pixel footprints.
+        The round buffer is a polygon approximation (about 0.6 m arc error at
+        500 m radius), replacing the old nearest-vertex approximation that
+        could miss near-trace points between sparse vertices. No mesh or
+        Green functions are changed. Apply this before assembling inversion
+        matrices; existing reject_pixel handles the observation array slices.
+        """
+        from .fault_trace_selection import fault_rejection_indices
 
-        # Check something
-        if faults.__class__ is not list:
-            faults = [faults]
-
-        # Build a line object with the faults
-        fl = []
-        for flt in faults:
-            f = [[x, y] for x,y in np.vstack((flt.xf, flt.yf)).T.tolist()]
-            fl = fl + f
-
-        # Get all the positions
-        pp = [[x, y] for x,y in zip(self.x, self.y)]
-
-        # Get distances
-        D = scidis.cdist(pp, fl)
-
-        # Get minimums
-        d = np.min(D, axis=1)
-        del D
-
-        # Find the close ones
-        if dis>0.:
-            u = np.where(d<=dis)[0]
-        else:
-            u = np.where(d>=(-1.0*dis))[0]
-
-        # Reject
-        self.reject_pixel(u)
-
-        # All done
-        return u
+        indices = fault_rejection_indices(self, dis, faults)
+        if indices.size:
+            self.reject_pixel(indices)
+        return indices
 
     def getprofile(self, name, loncenter=None, latcenter=None, length=None, azimuth=None, 
                    width=None, lonend=None, latend=None, ref_to_start=False):

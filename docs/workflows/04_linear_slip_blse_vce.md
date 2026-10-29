@@ -43,6 +43,11 @@ GF、Laplacian 和约束。
 不要把示例中的坐标、数据文件名或 `MyFault/MainFault` 当作本项目的默认值。
 先完成一次固定权重求解与输出检查，再进入 VCE 或参数搜索。
 
+需要排除近断层观测时，在创建 inversion 前调用数据对象的
+`reject_pixels_fault(distance_km, faults_list)`；它使用原始连续迹线周围的缓冲区，
+不依赖 mesh 加密。阈值方向、索引和协方差约束见
+[近断层观测剔除](../reference/config_linear_slip.md#近断层观测剔除)。
+
 ## 运行与诊断入口
 
 | 你要确认的问题 | 推荐入口 | 相关参考 |

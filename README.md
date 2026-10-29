@@ -33,8 +33,8 @@ objects/numerics, and eqtools for workflows and domain products. The installer
 resolves all three local directories together. See [ecat-viz](ecat-viz/README.md)
 for plotting without CSI or eqtools, and the
 [plotting reference](docs/reference/viztools.md) for resource migration.
-The current component metadata declares ecat-viz 0.1.0, CSI 1.0.0 and eqtools
-2.0.1. `CITATION.cff` retains the historical ECAT 1.5.0 citation; it does not
+The current component metadata declares ecat-viz 0.1.2, CSI 1.0.2 and eqtools
+2.0.3. `CITATION.cff` retains the historical ECAT 1.5.0 citation; it does not
 identify the installed component versions or announce a new DOI release.
 For this update, reinstall the three local components together to align the
 CSI prediction protocol with eqtools reporting.

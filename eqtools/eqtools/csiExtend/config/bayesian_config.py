@@ -10,6 +10,24 @@ from .linear_config import LinearInversionConfig
 from ..multifaults_base import MyMultiFaultsInversion
 
 
+def _copy_geometry_gf_kwargs(kwargs):
+    """Detach GF configuration containers while retaining live observations.
+
+    Data objects belong to the observation assembly, not to the geometry
+    replay envelope. Copying them duplicates potentially large arrays and
+    changes their identity on every otherwise unchanged preflight. The
+    container and all non-observation options remain independent snapshots.
+    """
+    kwargs = kwargs or {}
+    geodata = kwargs.get('geodata')
+    observations = (
+        geodata if isinstance(geodata, (list, tuple))
+        else (() if geodata is None else (geodata,))
+    )
+    memo = {id(data): data for data in observations}
+    return copy.deepcopy(kwargs, memo)
+
+
 @dataclass(frozen=True)
 class ResolvedGeometryUpdate:
     """Frozen envelope describing one enabled geometry update.
@@ -585,8 +603,8 @@ class BayesianMultiFaultsInversionConfig(LinearInversionConfig):
                 mesh_kwargs=copy.deepcopy(
                     method_params.get('update_mesh', {}) or {}
                 ),
-                gf_kwargs=copy.deepcopy(
-                    method_params.get('update_GFs', {}) or {}
+                gf_kwargs=_copy_geometry_gf_kwargs(
+                    method_params.get('update_GFs', {})
                 ),
                 laplacian_kwargs=copy.deepcopy(
                     method_params.get('update_Laplacian', {}) or {}

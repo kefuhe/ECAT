@@ -1528,51 +1528,37 @@ class opticorr(SourceInv):
         return
 
     def reject_pixels_fault(self, dis, faults):
-        '''
-        Rejects the pixels that are dis km close to the fault.
+        """Remove observation points selected by an original-trace buffer.
 
-        Args:
-            * dis       : Threshold distance. If the distance is negative, rejects the pixels that are more than -1.0*distance away from the fault.
-            * faults    : list of fault objects.
+        Parameters
+        ----------
+        dis : float
+            Distance in km. Positive values remove points on/inside a round
+            trace buffer; negative values remove points on/outside it. Zero
+            preserves the historical behavior of removing all points.
+        faults : fault or list of faults
+            Original xf/yf traces in the same projected CRS as this data set.
 
-        Returns:
-            * None
-        '''
+        Returns
+        -------
+        numpy.ndarray
+            Ascending indices in the data layout BEFORE deletion.
 
-        # Variables to trim are  self.corner,
-        # self.xycorner, self.Cd, (self.synth)
+        Notes
+        -----
+        Selection uses representative points, not entire pixel footprints.
+        The round buffer is a polygon approximation (about 0.6 m arc error at
+        500 m radius), replacing the old nearest-vertex approximation that
+        could miss near-trace points between sparse vertices. No mesh or
+        Green functions are changed. Apply this before assembling inversion
+        matrices; existing reject_pixel handles the observation array slices.
+        """
+        from .fault_trace_selection import fault_rejection_indices
 
-        # Check something
-        if faults.__class__ is not list:
-            faults = [faults]
-
-        # Build a line object with the faults
-        fl = []
-        for flt in faults:
-            f = [[x, y] for x,y in np.vstack((flt.xf, flt.yf)).T.tolist()]
-            fl = fl + f
-
-        # Get all the positions
-        pp = [[x, y] for x,y in zip(self.x, self.y)]
-
-        # Get distances
-        D = scidis.cdist(pp, fl)
-
-        # Get minimums
-        d = np.min(D, axis=1)
-        del D
-
-        # Find the close ones
-        if dis>0.:
-            u = np.where(d<=dis)[0]
-        else:
-            u = np.where(d>=(-1.0*dis))[0]
-
-        # Delete
-        self.reject_pixel(u)
-
-        # All done
-        return u
+        indices = fault_rejection_indices(self, dis, faults)
+        if indices.size:
+            self.reject_pixel(indices)
+        return indices
 
     def getprofile(self, name, loncenter, latcenter, length, azimuth, width):
         '''

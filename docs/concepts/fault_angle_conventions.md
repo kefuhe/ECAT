@@ -161,3 +161,10 @@ reference -80° == 100°；二者加 -20° 后都得到 80°
 - [Fault Geometry Construction](../reference/fault_geometry_construction.md)
 - [倾角剖面模式总览](../reference/dip_profile/index.md)
 - [旧倾角剖面调用迁移](../reference/dip_profile/migration.md)
+
+## 统计展示的有向分支
+
+沿 top edge 展示统计柱时，应先把 patch 的 canonical 角度展开到同一有向参考分支，再加
+展示偏转。反向分支采用 `(strike + 180°, 180° - dip)`，保留全球下倾向量和局部走向。
+这仅作用于展示副本，不修改 solver geometry 或滑动基底。接口与共享接缝规则见
+[沿断层边界统计](../reference/fault_edge_statistics.md)。

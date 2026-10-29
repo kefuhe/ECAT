@@ -79,6 +79,39 @@ inv = BoundLSEMultiFaultsInversion(
 )
 ```
 
+## 近断层观测剔除
+
+如果需要排除断层附近的 InSAR 观测，在创建 inversion、组装 Green's functions 和
+反演矩阵之前执行：
+
+```python
+for sar in geodata:
+    if sar.dtype == "insar":
+        rejected = sar.reject_pixels_fault(0.5, faults_list)
+        print(sar.name, len(rejected))
+```
+
+距离单位为 km。筛选使用观测代表点与原始 `fault.xf/yf` 连续迹线的圆形缓冲区，
+不是到迹线顶点的距离，也不是整个降采样三角形或矩形的覆盖范围。断层和观测必须
+位于相同投影坐标系；不会因存在 `xi/yi` 或更密 mesh 而自动更换参考迹线。
+
+正阈值删除缓冲区内部及边界，负阈值删除缓冲区外部及边界；`0` 保留历史的删除全部
+观测语义。返回值是删除前的升序索引，观测和协方差由数据对象的 `reject_pixel()`
+同步裁剪。不要在 inversion 已组装之后原地筛选观测。
+
+圆弧采用多边形近似，500 m 半径时圆弧误差约为亚米量级，适用于近断层遮罩。
+`sar.getDistance2Faults(faults_list)` 返回到同一连续迹线的数值距离，可用于诊断；
+非常靠近阈值的点可能与缓冲多边形判断略有不同。新版会删除旧顶点距离算法漏掉的
+近迹线点，因此保留数据量和后续反演结果可能改变。
+
+筛选按数据块查询，不创建观测点数乘迹线节点数的距离矩阵；已有稠密 `Cd` 的行列复制
+仍可能是主要内存开销。光学数据的同名接口沿用已有 `reject_pixel()`：目前它不保留
+东西、南北分量间的交叉协方差，不能把本次筛选修复视为完整光学协方差支持。
+
+配置中的 `clipping_options` 启用 `method: distance_to_fault` 时也调用上述 CSI 接口。
+降采样 CLI 的基础 `std` 路线不会自动增加该筛选，见
+[两步降采样工作流](../workflows/02a_insar_downsampling_two_step.md)。
+
 ## 主配置
 
 最小可读结构：

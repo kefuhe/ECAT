@@ -28,6 +28,45 @@ For more details and configuration instructions, see the `README` file in the `c
 
 ---
 
+## Near-fault observation selection
+
+`insar.reject_pixels_fault(dis, faults)` and
+`opticorr.reject_pixels_fault(dis, faults)` keep their existing signatures and
+return ascending indices in the observation layout before deletion. A single
+fault or a list of faults is accepted. Run selection before assembling Green
+functions or inversion matrices.
+
+Selection uses representative observation x/y points and continuous original
+`fault.xf/yf` surface traces in the same projected kilometre frame. It does
+not use mesh vertices, `xi/yi`, or the entire downsampled pixel footprint.
+Positive `dis` removes points on/inside a round trace buffer; negative `dis`
+removes points on/outside it. Zero retains the historical remove-all behavior.
+
+```python
+distance_km = sar.getDistance2Faults(faults)
+rejected_indices = sar.reject_pixels_fault(0.5, faults)
+```
+
+The round buffer uses 16 segments per quadrant (about 0.6 m arc approximation
+at 500 m radius). Numerical distance queries use the same continuous traces;
+points extremely close to the threshold can differ from the polygon mask.
+This corrects the old nearest-vertex approximation, which could leave points
+close to long trace segments. Observation counts and subsequent inversions can
+therefore change even though the call signature is unchanged.
+
+Buffer preparation is local to each call; batched x/y queries avoid a dense
+observations-by-trace-vertices matrix and a persistent geometry cache. Original
+trace changes are picked up on the next call. Empty/degenerate or non-finite
+traces, non-finite observations/thresholds, and mismatched available CRS metadata
+raise before observations are removed. Lightweight trace objects without CRS
+metadata must already use the observation frame.
+
+Array deletion still belongs to each data object's `reject_pixel()`; dense
+covariance row/column copying can dominate memory. The existing optical
+deletion routine discards E/N cross-covariance blocks, so this selection change
+does not provide full coupled optical covariance support. The downsampling
+wrapper continues to use the returned indices to trim its blocks.
+
 ## GPS fit comparison
 
 `gps.plot_fit_comparison()` adds a single 2-D comparison figure; `gps.plot()`

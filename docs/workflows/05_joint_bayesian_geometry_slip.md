@@ -57,6 +57,11 @@ Sbarbot 等非断层源时，`FULLSMC` 使用 `ss_ds`。
 可辨识性，而不是放宽数值标准。完整推导和约束近似边界见
 [Bayesian 联合反演参考：为什么消去线性参数会产生 log-determinant](../reference/bayesian_joint_inversion.md#为什么消去线性参数会产生-log-determinant)。
 
+采样前预检会重复解析几何执行计划。GF 参数中的观测对象复用数据装配时的实例，
+预检只复制配置容器和选项，不复制观测数组；配置未修改时不会因对象副本地址变化而
+误报几何布局改变。构造反演对象后若修改采样切片、几何方法或执行选项，仍需重建
+`BayesianMultiFaultsInversion`，使几何与 sigma/alpha 的参数位置保持一致。
+
 ## 输入和完成标准
 
 联合反演仍使用 CSI/ECAT 标准数据对象。开始前应有：

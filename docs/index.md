@@ -48,6 +48,7 @@
 | 不清楚 `-n`、rank、进程、线程或 affinity | [并行运行基础](concepts/parallel_process_rank_thread.md) | 先理解运行单位，再决定是否需要调参 |
 | 需要可编辑的 Windows/WSL MPI 启动器 | [MPI 启动脚本](examples/mpi_launcher_scripts.md) | 把 rank、每 rank 线程和案例入口集中在启动层 |
 | 不清楚 oneAPI、MKL、OpenBLAS 或 MPI 实现的关系 | [计算运行栈](concepts/compute_runtime_stack.md) | 先分清数值线程、MPI 进程、Python 绑定和启动器 |
+| 沿 top edge 的统计柱在倾向切换处断开 | [沿断层边界统计](reference/fault_edge_statistics.md) | 用有向角度和共享边界生成连续展示 |
 | 需要设置跨直立倾角或核对 `strike/dip/rake` | [断层角度约定](concepts/fault_angle_conventions.md) | 先确认输入、solver geometry 和滑动基底的区别 |
 | 不清楚 `d/G/Cd/H` 的行列和 GPS/optical 分量顺序 | [观测与矩阵排列合同](concepts/observation_matrix_layout.md) | 先统一观测行，再检查协方差、设计矩阵和参数列 |
 | 需要理解或试验 SMC beta stage | [SMC 温度调度](reference/smc_tempering.md) | 区分 `target_cov` 与 `max_delta_beta`，保持默认值作为对照基线 |

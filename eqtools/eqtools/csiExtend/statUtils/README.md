@@ -21,3 +21,9 @@ Generic figure style belongs to ecat_viz; domain rendering belongs to viztools.
 New analysis helpers stay near their scientific consumer. Reusable mesh kernels
 belong in CSI. Do not import inversion sample machinery solely to analyze a fault.
 Directory-wide relocation is a separate API migration, not part of this fix.
+
+Fault-top display direction consumes the angle convention in
+`geometry.fault_angle_conventions` and the existing trace/arc-length helpers.
+Analysis owns aggregation and shared bar boundaries; it never rewrites CSI patch
+geometry or slip bases. See the
+[fault-edge statistics reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/fault_edge_statistics.md).

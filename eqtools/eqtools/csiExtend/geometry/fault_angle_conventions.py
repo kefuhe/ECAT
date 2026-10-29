@@ -89,3 +89,32 @@ def canonicalize_compact_fault_angles(strike, dip):
         side_flipped = True
     return float(strike), float(dip), side_flipped
 
+
+def align_fault_angles_to_reference(strike, dip, reference_strike):
+    """Select a directed strike branch without changing the down-dip vector.
+
+    All angles are degrees and may be broadcast arrays. Strike is geographic
+    azimuth clockwise from North. Dip is in [0, 180]. Opposite strikes become
+    ``(strike + 180, 180 - dip)``; local strike variation is retained. This is
+    an oriented representation, not canonical solver geometry. Apply display
+    rotation only *after* alignment; do not mutate patch angles or slip bases.
+    A reference perpendicular to a local strike cannot choose its branch.
+    """
+    strike, dip, reference = np.broadcast_arrays(
+        np.asarray(strike, dtype=float), np.asarray(dip, dtype=float),
+        np.asarray(reference_strike, dtype=float),
+    )
+    if not all(np.all(np.isfinite(a)) for a in (strike, dip, reference)):
+        raise ValueError("strike, dip and reference_strike must be finite")
+    if np.any((dip < 0.0) | (dip > 180.0)):
+        raise ValueError("dip must lie in [0, 180] degrees")
+    alignment = np.cos(np.deg2rad(np.mod(strike - reference, 360.0)))
+    if np.any(np.abs(alignment) <= 1e-12):
+        raise ValueError("reference_strike is perpendicular to a local strike")
+    flipped = alignment < 0.0
+    oriented_strike = np.mod(strike + np.where(flipped, 180.0, 0.0), 360.0)
+    oriented_dip = np.where(flipped, 180.0 - dip, dip)
+    if strike.ndim == 0:
+        return float(oriented_strike), float(oriented_dip), bool(flipped)
+    return oriented_strike, oriented_dip, flipped
+

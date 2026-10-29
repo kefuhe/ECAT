@@ -200,3 +200,13 @@ from eqtools.csiExtend.geometry.dip_profile import DipControlPoints
 [断层角度](../concepts/fault_angle_conventions.md)、
 [等深线提取](../reference/fault_contours.md)和
 [MeshPolicy 与派生状态](../reference/geometry_perturbation/mesh_cache.md)。
+
+## 沿 top edge 的统计展示坐标
+
+`geometry.fault_angle_conventions.align_fault_angles_to_reference` 拥有按参考走向展开
+180° 分支的纯角度转换；输入输出单位度，转换保持全球下倾向量。它不修改 canonical
+solver 几何或滑动基底，也不接管统计聚合。`statUtils.statisticsInFaultEdge` 消费现有
+`polyline_arclength`、`project_points_to_trace` 和 PCA 工具，沿弧长取样局部展示方向并
+生成相邻柱共享边界。展示偏转在角度展开之后应用；legacy 保留旧输出。
+
+完整接口、兼容策略和统计含义见[沿断层边界统计](../reference/fault_edge_statistics.md)。

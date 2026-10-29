@@ -14,6 +14,9 @@ import copy
 from csi import TriangularPatches
 from csi import SourceInv as csiSourceInv
 from ..geometry.geom_ops import calculate_average_direction
+from ..geometry.geom_ops import polyline_arclength
+from ..geometry.trace_ops import project_points_to_trace
+from ..geometry.fault_angle_conventions import align_fault_angles_to_reference
 
 
 class StatisticsInFault(csiSourceInv):
@@ -573,10 +576,47 @@ class StatisticsInFault(csiSourceInv):
         # All Done
         return value, depth, val_max
     
+    def _top_display_angles(self, triangle_indices, strikes, dips, xy,
+                            strike_alignment, reference_strike):
+        """Sample an oriented top-edge frame by arc length, not patch x.
+
+        One triangle owns each ordered top segment. Its angles are defined at
+        the segment midpoint; interpolation supplies a single frame at every
+        shared boundary. Geometry helpers own angle conventions and projection.
+        """
+        top = self.edge_vertices['top']
+        arc, lengths = polyline_arclength(top)
+        if len(triangle_indices) != len(lengths):
+            raise ValueError("each top-edge segment must have one owning triangle")
+        if strike_alignment == 'auto':
+            delta = np.diff(top[:, :2], axis=0)
+            reference = np.rad2deg(np.arctan2(delta[:, 0], delta[:, 1]))
+        elif strike_alignment == 'pca':
+            direction = calculate_average_direction(top)
+            forward = top[-1, :2] - top[0, :2]
+            alignment = np.dot(direction, forward)
+            if abs(alignment) <= 1e-12 * max(1.0, np.linalg.norm(forward)):
+                raise ValueError("PCA has no stable directed top axis; use reference_strike")
+            if alignment < 0.0:
+                direction = -direction
+            reference = np.rad2deg(np.arctan2(direction[0], direction[1]))
+        else:
+            reference = reference_strike
+        oriented_strike, oriented_dip, _ = align_fault_angles_to_reference(
+            np.rad2deg(strikes), np.rad2deg(dips), reference,
+        )
+        # Interpolate through 360/0 after resolving the 180-degree dip branch.
+        strike_rad = np.unwrap(np.deg2rad(oriented_strike))
+        midpoints = arc[:-1] + lengths / 2.0
+        distances = project_points_to_trace(xy, top)['trace_distance_km']
+        return (np.interp(distances, midpoints, strike_rad),
+                np.interp(distances, midpoints, np.deg2rad(oriented_dip)))
+
     def _statinTop(self, value=None, lonlat=None, hinterval=2.0, slip='total_top', statkind='curve', 
                    height_scale=1.0, doStat=True, bins=15, method='mean', cutmethod='pdcut', 
                    discretizeInterval=0.2, depth_eps=0.25, xtick_angle_offset=0, KeepOriginCoord=True,
-                   output_2d=True, outdir='.', outfile='stat_top.gmt', norm_ref=None):
+                   output_2d=True, outdir='.', outfile='stat_top.gmt', norm_ref=None, *,
+                   strike_alignment='legacy', reference_strike=None, boundary_frame='auto'):
         """
         Perform statistical analysis along the top edge of the fault.
 
@@ -625,6 +665,20 @@ class StatisticsInFault(csiSourceInv):
         fault = self.source
         side = 'top'
 
+        if strike_alignment not in {'legacy', 'auto', 'pca', 'reference'}:
+            raise ValueError("strike_alignment must be legacy, auto, pca or reference")
+        if boundary_frame not in {'auto', 'bin', 'shared'}:
+            raise ValueError("boundary_frame must be auto, bin or shared")
+        if strike_alignment == 'reference':
+            if reference_strike is None or not np.isfinite(float(reference_strike)):
+                raise ValueError("reference mode requires a finite reference_strike in degrees")
+        elif reference_strike is not None:
+            raise ValueError("reference_strike requires strike_alignment='reference'")
+        if boundary_frame == 'auto':
+            boundary_frame = 'bin' if strike_alignment == 'legacy' else 'shared'
+        if strike_alignment == 'legacy' and boundary_frame != 'bin':
+            raise ValueError("shared boundaries require an oriented strike_alignment")
+
         top_edge_triangles = self.edge_triangles_indices[side]
         top_vert_inds = self.edge_vertex_indices[side]
 
@@ -642,8 +696,9 @@ class StatisticsInFault(csiSourceInv):
         top_edge_centers = centers[top_edge_tri_sort, :]
         strikes = fault.getStrikes()[top_edge_tri_sort]
         dips = fault.getDips()[top_edge_tri_sort]
-        # Rotation axis_angle
-        dips = np.deg2rad(xtick_angle_offset) + dips
+        # Legacy rotation is preserved exactly. Continuous modes align first.
+        if strike_alignment == 'legacy':
+            dips = np.deg2rad(xtick_angle_offset) + dips
 
         if lonlat is None:
             if 'all' in slip:
@@ -738,6 +793,16 @@ class StatisticsInFault(csiSourceInv):
             x_angle = np.repeat(xi[1::3], 3)
             value = np.repeat(val_norm, 3)
         
+        if strike_alignment != 'legacy':
+            frame_xy = np.column_stack((xi, yi))
+            if boundary_frame == 'bin':
+                frame_xy = np.repeat(frame_xy[1::3], 3, axis=0)
+            strikes, dips = self._top_display_angles(
+                top_edge_tri_sort, strikes, dips, frame_xy,
+                strike_alignment, reference_strike,
+            )
+            dips = dips + np.deg2rad(xtick_angle_offset)
+
         if output_2d:
             base, ext = os.path.splitext(outfile)
             outfile_2d = base + '_2d' + ext
@@ -761,12 +826,17 @@ class StatisticsInFault(csiSourceInv):
                         print('{0:.3f} {1:.3f}'.format(x_dist[3*i+1], value[3*i+1]), file=fout)
             
         if statkind == 'curve' or statkind == 'bar':
+            if strike_alignment != 'legacy':
+                strikes, dips = strikes[1::3], dips[1::3]
             x_angle = x_angle[1::3]
             xi = xi[1::3]
             yi = yi[1::3]
             zi = zi[1::3]
             value = value[1::3]
         elif statkind == 'hist':
+            if strike_alignment != 'legacy':
+                strikes = np.column_stack((strikes[0::3], strikes[2::3])).flatten()
+                dips = np.column_stack((dips[0::3], dips[2::3])).flatten()
             x_angle = np.vstack((x_angle[0::3], x_angle[2::3])).T.flatten()
             xi = np.vstack((xi[0::3], xi[2::3])).T.flatten()
             yi = np.vstack((yi[0::3], yi[2::3])).T.flatten()
@@ -774,10 +844,11 @@ class StatisticsInFault(csiSourceInv):
             value = np.vstack((value[0::3], value[2::3])).T.flatten()
         
         # 获得对应走向角和倾角
-        ind_angle = np.searchsorted(top_edge_centers[:, 0], x_angle)
-        ind_angle = np.clip(ind_angle, 0, len(top_edge_centers) - 1)
-        strikes = strikes[ind_angle]
-        dips = dips[ind_angle]
+        if strike_alignment == 'legacy':
+            ind_angle = np.searchsorted(top_edge_centers[:, 0], x_angle)
+            ind_angle = np.clip(ind_angle, 0, len(top_edge_centers) - 1)
+            strikes = strikes[ind_angle]
+            dips = dips[ind_angle]
         
         top_x, top_z = value * np.cos(dips) * height_scale, value * np.sin(dips) * height_scale
         verts = np.vstack((xi, yi, zi)).T
@@ -788,15 +859,23 @@ class StatisticsInFault(csiSourceInv):
 
     def StatinTop(self, value=None, lonlat=None, hinterval=2.0, slip='total_top', bins=15, depth_eps=0.25, doStat=True,
                       zoffset=0.2, height_scale=1.0, xtick_angle_offset=0, method='mean', cutmethod='pdcut', statkind='hist',
-                      outfile='stat_histInTop.gmt', discretizeInterval=0.2, output_2d=True, norm_ref=None):
-        '''
-        statkind :
-            * hist
-            * bar
-            * curve
+                      outfile='stat_histInTop.gmt', discretizeInterval=0.2, output_2d=True, norm_ref=None, *,
+                      strike_alignment='legacy', reference_strike=None, boundary_frame='auto'):
+        """Write fault-top histograms, curves or bars.
 
-        Bug: 如果断层反倾得话，xtick_angle_offset会导致想不同方向偏转
-        '''
+        ``strike_alignment='legacy'`` preserves existing output. ``'auto'``
+        follows the ordered local top tangent; ``'pca'`` or ``'reference'``
+        selects each patch's 180-degree branch using a directed global axis.
+        ``reference_strike`` is geographic azimuth clockwise from North in
+        degrees and is required only for ``'reference'``. Local strikes are
+        retained; dips are unfolded into [0, 180] before display rotation.
+        ``boundary_frame='auto'`` uses bin-center frames for legacy and shared
+        arc-length boundary frames otherwise. ``'bin'`` can reproduce separate
+        column frames in aligned modes; ``'shared'`` prevents adjacent seams.
+        Neither alignment nor frames change binning, normalization or slip.
+        ``zoffset`` is distance along the display direction, not just depth.
+        See docs/reference/fault_edge_statistics.md for migration and units.
+        """
         outdir = self.outdir
         fault = self.source
         side = 'top'
@@ -804,7 +883,9 @@ class StatisticsInFault(csiSourceInv):
         top_x, top_z, verts, trans_verts, strikes, dips = self._statinTop(value=value, lonlat=lonlat, hinterval=hinterval, 
                     slip=slip, statkind=statkind, height_scale=height_scale, bins=bins, method=method, cutmethod=cutmethod, 
                     discretizeInterval=discretizeInterval, depth_eps=depth_eps, xtick_angle_offset=xtick_angle_offset, doStat=doStat, 
-                    output_2d=output_2d, outdir=outdir, outfile=outfile, norm_ref=norm_ref)
+                    output_2d=output_2d, outdir=outdir, outfile=outfile, norm_ref=norm_ref,
+                    strike_alignment=strike_alignment, reference_strike=reference_strike,
+                    boundary_frame=boundary_frame)
 
         # 起始位置偏移项
         step0 = zoffset
@@ -1057,7 +1138,9 @@ class StatisticsInFault(csiSourceInv):
                                                    curvature_outfile='curvature.gmt',
                                                    slip='total_all', bins=15, hinterval=6.0, depth_eps=0.25, 
                                                    xtick_angle_offset=0, zoffset=0.2, height_scale=8.0, 
-                                                   method='mean', cutmethod='pdcut', statkind='curve'):
+                                                   method='mean', cutmethod='pdcut', statkind='curve', *,
+                                                   strike_alignment='legacy', reference_strike=None,
+                                                   boundary_frame='auto'):
         """
         Generate gradient and curvature statistics and plot.
     
@@ -1079,6 +1162,8 @@ class StatisticsInFault(csiSourceInv):
         * method (str): Method for statistics ('mean' or 'sum', default is 'mean').
         * cutmethod (str): Method for cutting ('pdcut' or other, default is 'pdcut').
         * statkind (str): Kind of statistics ('curve' or 'hist', default is 'curve').
+        * strike_alignment, reference_strike, boundary_frame: Same oriented
+          display contract as StatinTop; forwarded to both diagnostics.
         """
         self.getfaultEdgeTriangles_and_EdgeLines()
         
@@ -1109,13 +1194,17 @@ class StatisticsInFault(csiSourceInv):
         if output_gradient:
             self.StatinTop(value=gradients, lonlat=lonlat_gradients, slip=slip, bins=bins, hinterval=hinterval, depth_eps=depth_eps, 
                            xtick_angle_offset=xtick_angle_offset, zoffset=zoffset, height_scale=height_scale, 
-                           outfile=gradient_outfile, method=method, cutmethod=cutmethod, doStat=False, statkind=statkind)
+                           outfile=gradient_outfile, method=method, cutmethod=cutmethod, doStat=False, statkind=statkind,
+                           strike_alignment=strike_alignment, reference_strike=reference_strike,
+                           boundary_frame=boundary_frame)
     
         # Output curvature statistics if requested
         if output_curvature:
             self.StatinTop(value=np.abs(curvatures), lonlat=lonlat_curvatures, slip=slip, bins=bins, hinterval=hinterval, depth_eps=depth_eps, 
                            xtick_angle_offset=xtick_angle_offset, zoffset=zoffset, height_scale=height_scale, 
-                           outfile=curvature_outfile, method=method, cutmethod=cutmethod, doStat=False, statkind=statkind)
+                           outfile=curvature_outfile, method=method, cutmethod=cutmethod, doStat=False, statkind=statkind,
+                           strike_alignment=strike_alignment, reference_strike=reference_strike,
+                           boundary_frame=boundary_frame)
             basename = os.path.splitext(curvature_outfile)[0]
             curvature_value_outfile = basename + '_value.gmt'
             with open(os.path.join(self.outdir, curvature_value_outfile), 'wt') as fout:
@@ -1129,16 +1218,16 @@ if __name__ == '__main__':
     from collections import OrderedDict
 
     # -----------------------------------Proj Information-------------------------------------#
-    # center for local coordinates--M7.1 epicenter 
-    lon0, lat0 = 101.31, 37.80
+    # Set the projection origin to match the input mesh and observations.
+    lon0, lat0 = 0.0, 0.0
 
     # -------------------------Generate Triangular Fault Object-------------------------------#
     # Case 2:
-    source = TriangularPatches('Menyuan_main', lon0=lon0, lat0=lat0)
-    slipfile = r'slip_total_0.gmt'
+    source = TriangularPatches('example_fault', lon0=lon0, lat0=lat0)
+    slipfile = 'slip.gmt'
     source.readPatchesFromFile(slipfile)
     # 设置地表迹线
-    trace = os.path.join('..', 'Fault_Trace_Menyuan_Yanghongfeng_scale.txt')
+    trace = 'fault_trace.txt'
     trace = pd.read_csv(trace, names=['lon', 'lat'], sep=r'\s+', comment='#')
     source.trace(trace.lon.values, trace.lat.values)
 
@@ -1149,7 +1238,7 @@ if __name__ == '__main__':
     # 为了让统计信息沿断层面，xtick_angle_offset通常不要设置，即不旋转倾向角
     statobj.genXaxis(xaxis_ticks=[0.8, 4.2], tick_scale=1.0, horz_angle=120, xtick_angle_offset=0, xaxis_zoffset=0.7)
 
-    data = pd.read_csv(r'd:\2022Menyuan\2022Menyuan\RelocatedAftershocks\FanLiping\Proj2Fault\seis_reloc_proj.gmt', sep=r'\s+')
+    data = pd.read_csv('projected_events.txt', sep=r'\s+')
     statobj.StatInSide(depth=data.dep.values, bins=15, side='right', statkind='hist', cutmethod='hist', outfile='stat_hist.gmt')
 
     statobj.StatInSide(slip='strikeslip', bins=15, side='right', method='mean', statkind='curve', zinterval=1.5,
@@ -1160,7 +1249,7 @@ if __name__ == '__main__':
                       zoffset=0.2, height_scale=4.0, outfile='stat_histInTop.gmt', method='sum', cutmethod='pdcut')
 
     # 现场勘查
-    slp_file = r'c:\Users\kfhe\Desktop\Menyuan_Surface\surfslip_panjiawei.csv'
-    slp_pan = pd.read_csv(slp_file, sep=r'\s+')
-    statobj.StatinTop(slp_pan.slip.values, slp_pan.iloc[:, 2:].values, method='mean', depth_eps=0.25, cutmethod=None, doStat=False,
+    slp_file = 'surface_slip.txt'
+    surface_slip = pd.read_csv(slp_file, sep=r'\s+')
+    statobj.StatinTop(surface_slip.slip.values, surface_slip.iloc[:, 2:].values, method='mean', depth_eps=0.25, cutmethod=None, doStat=False,
                       zoffset=0.2, height_scale=4.0, xtick_angle_offset=0, outfile='bar_statInTop.gmt', statkind='bar')
