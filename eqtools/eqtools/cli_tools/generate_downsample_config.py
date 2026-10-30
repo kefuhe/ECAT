@@ -407,10 +407,11 @@ def data_downsample_config_text():
 
 def trirb_downsample_config_text():
     return """  # Used only when method: trirb; also enable triangular fault_models below.
+  # First trial: minimumsize ~ shallow top_size / 4 is a heuristic; inspect near-field detail.
   trirb_config:
-    minimumsize: 1.25      # smallest triangle/block size in CSI projected units, usually km
+    minimumsize: 1.25      # lower bound for fitted mesh-size targets (km), not sample spacing
     min_valid_fraction: 0.1 # minimum valid-pixel fraction to keep an initial triangle
-    max_samples: 2500      # target maximum number of downsampled observations
+    max_samples: 2500      # stop if cell count exceeds this; allow headroom in first tests
     change_threshold: 10   # stop when sample-count change is below this percent
     smooth_factor: 0.25    # smoothing weight used by the resolution criterion
     slipdirection: "sd"    # fault slip components for Green functions: s, d, t, or combinations

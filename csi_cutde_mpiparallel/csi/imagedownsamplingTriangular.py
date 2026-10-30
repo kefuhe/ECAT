@@ -78,7 +78,8 @@ class imagedownsamplingTriangular(imagedownsampling):
         Generates an initial triangular mesh using Delaunay triangulation and adds perturbations.
 
         Args:
-            * minimumsize      : Minimum size of the blocks in the mesh.
+            * minimumsize      : Size setting in x/y units (km); resolutionBased uses it
+                                 as a lower bound for fitted mesh-size targets.
 
         Kwargs:
             * tolerance         : Between 0 and 1. If 1, all the pixels must have a value so that the box is kept. If 0, no pixels are needed... Default is 0.25
@@ -327,7 +328,11 @@ class imagedownsamplingTriangular(imagedownsampling):
     def resolutionBased(self, max_samples=5000, change_threshold=5, smooth_factor=0.25, slipdirection='s', plot=False, 
                         verboseLevel='minimum', decimorig=10, vertical=False):
         '''
-        Iteratively downsamples the dataset until the number of samples is below max_samples and the relative change in the number of blocks is less than change_threshold.
+        Iteratively remesh until the sample count exceeds max_samples or its
+        relative change falls below change_threshold.
+
+        Each fitted mesh-size target is bounded below by ``self.minsize``.
+        This bounds the target size, not every resulting edge length or sample spacing.
     
         Args:
             * max_samples     : Maximum number of samples. Default is 5000.
@@ -411,9 +416,8 @@ class imagedownsamplingTriangular(imagedownsampling):
             # Compute resolution
             self.computeSmoothwidth(slipdirection, smooth_factor, vertical=vertical)
     
-            # Blocks that have a minimum size, don't check these
-            Bsize = self._is_minimum_size(self.blocks)
-            self.smoothwidths[np.where(Bsize)] = self.minsize
+            # Floor new targets, allowing previously fine cells to coarsen.
+            np.maximum(self.smoothwidths, self.minsize, out=self.smoothwidths)
     
             # Calculate the number of samples and the relative change
             num_samples = len(self.blocks)

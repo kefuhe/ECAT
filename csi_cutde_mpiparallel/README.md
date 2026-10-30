@@ -338,3 +338,23 @@ method requires consistent input `Vertices/Faces/patch` and a non-negative
 integer level. It does not change the existing single-patch `splitPatch()` API.
 Event projection and counts belong to eqtools; see the
 [projection reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/seismic_projection.md).
+
+## Triangular resolution-based downsampling
+
+For `imagedownsamplingTriangular`, `initialstate(minimumsize=...)` sets the lower
+bound for the mesh-size targets fitted by `resolutionBased()`, in projected x/y
+units (km). Every iteration applies `target = max(fitted_width, minimumsize)`
+before the next remeshing stage. A previously fine cell may therefore coarsen
+when its new fitted width is larger than the lower bound.
+
+With `minimumsize=0.5`, a fitted width of `0.3` becomes `0.5`, while `0.8` stays
+`0.8`. This bounds the mesher's target, not every output edge, square root of cell
+area, or sample-center spacing. For example, an equilateral triangle with a
+0.5 km edge has a square-root area of about 0.329 km.
+
+Earlier versions overwrote targets based on the current cell's square-root area.
+The corrected rule can change the mesh for the same configuration; rerun TriRB
+to apply it to existing results. Stored `.rsp` files remain unchanged. Resolution
+calculation, smoothing and stopping criteria retain their existing behavior.
+The ECAT [downsampling reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/downsampling_app.md)
+describes the corresponding `trirb_config` fields.

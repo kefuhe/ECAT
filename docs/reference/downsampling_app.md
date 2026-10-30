@@ -1102,19 +1102,43 @@ box 外的数据；CSI 根据降采样块中心是否位于该区域内，限制
 | `split_metric` | 分裂判据类型：`curvature` 或 `gradient`；传给 CSI `dataBased(quantity=...)` |
 | `split_metric_smoothing` | 可选的分裂判据平滑长度；传给 CSI `dataBased(smooth=...)` |
 
+<a id="trirb-config"></a>
+
 `trirb_config` 的参数对本次参与计算的全部断层模型统一生效：
 
 | 字段 | 作用 |
 | --- | --- |
-| `minimumsize` | 三角初始网格允许的最小尺寸 |
+| `minimumsize` | 每轮分辨率拟合所得目标尺度的下限，单位 km；不保证最终边长或采样间距均达到此值 |
 | `min_valid_fraction` | 三角候选块内最小有效像素比例；传给 CSI `initialstate(..., tolerance=...)` |
-| `max_samples` | 目标最大降采样观测数 |
+| `max_samples` | 当前单元数量超过此值时停止迭代；不是最终数量的硬上限 |
 | `change_threshold` | 相邻迭代样本数变化的停止阈值，单位为百分比 |
 | `smooth_factor` | 分辨率矩阵中断层 Laplacian 平滑项的统一权重 |
 | `slipdirection` | 构建 Green 函数的分量组合：`s`、`d`、`t` 或其组合；对全部活动断层统一生效 |
 | `plot` | 是否显示 CSI 内部迭代图；不同于顶层检查图叠加设置 |
 | `decimorig` | 仅在 `plot: true` 时使用的内部绘图抽稀 |
 | `verboseLevel` | CSI 迭代输出级别 |
+
+每轮先计算分辨率建议尺度，再取 `目标尺度 = max(建议尺度, minimumsize)`，用于下一次
+三角网格生成。当前单元已经很细时，若新建议更大，仍允许重新变粗。例如设置
+`minimumsize: 0.5`，建议为 `0.3` 时采用 `0.5`，建议为 `0.8` 时保留 `0.8`。
+这里约束的是网格生成器的目标尺度，不是最终三角形的 √面积、每条边长或采样中心间距；
+即使等边三角形边长为 `0.5 km`，其 √面积也只有约 `0.329 km`，相邻共边三角形的中心距离约
+`0.289 km`。
+
+已有断层网格时，可从浅部面片尺度的约 `1/4` 选择 `minimumsize` 进行首次测试。
+从迹线生成网格时可参考 `top_size`，已有 GMT 网格时参考实际浅部面片尺度。
+这是需要结合近场形变和采样密度检验的经验起点，不是通用下限或分辨率保证。
+`std` 也可在已有预期反演网格时参考该尺度，但它本身不依赖断层模型。
+
+当前停止条件是单元数量超过 `max_samples`，或相邻轮次的数量变化百分比小于
+`change_threshold`，满足任一项即停止。重新布网可能使数量先增后减；首次试跑可在
+内存允许时适当放宽 `max_samples`，避免因数量暂时偏多而提前退出。放宽上限不保证
+最终数量减少，数量变化较小也不等于各处网格均已稳定。操作顺序见
+[TriRB 首次试跑](../workflows/02_insar_downsampling.md#trirb-first-run)。
+
+早期实现根据当前单元的 √面积决定是否把新建议强制设为 `minimumsize`，既可能压低较大的
+新建议，也可能放过小于下限的新建议。修正后相同 YAML 可能得到不同网格，需要重跑 TriRB
+才能应用新规则；已有 `.rsp` 文件不会自动改变。此修正不改变分辨率计算、平滑权重或停止条件。
 
 `trirb_config.min_valid_fraction` 和 `from_rsp_config.min_valid_fraction` 都是有效像素比例阈值；
 它们保留同一含义，但分别作用于三角初始块和复用 `.rsp` cell。`from_rsp` 读取 `.rsp` 中的
