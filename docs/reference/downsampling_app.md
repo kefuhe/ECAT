@@ -115,7 +115,7 @@ eqtools 在这里承担流程编排：读入、单位/符号转换、过滤、�
 | `processing_region` | SAR 或 optical 的协方差和正式降采样处理区域 | `enabled/coord_type/geometry` |
 | `covar` | 协方差估计设置 | `mask_out/function/frac/every/distmax` |
 | `downsample` | 降采样方法、计算后端和参数 | `compute`, `std`, `data`, `trirb`, `from_rsp` |
-| `fault_traces` | raw/decim 检查图叠加；`--edit-trace` 时 raw-stage 项作为只读参考 | TXT/DAT/GMT 或 GeoJSON 折线 |
+| `fault_traces` | 检查图与编辑参考；高级 TriRB 可按 ID 显式选为距离参考 | TXT/DAT/GMT 或 GeoJSON 折线 |
 | `fault_models` | 可选断层模型，用于 `trirb` 计算或 GMT 网格叠加 | `generated_from_trace`, `csi_gmt` |
 
 `config_version` 用于固定当前 YAML 语义。当前版本为 `1`；已有旧配置未写该字段时会按 `1` 归一化。运行时写出的 `<outputName>_run_metadata.yml` 会记录 `config_version` 和 `compatibility.deprecated_fields`，方便后续判断案例是否仍依赖旧字段。
@@ -1149,13 +1149,148 @@ full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` �
 为空时会使用稳健自动色标，`factor4plot: inherit_raw` 会继承 raw quick-look 的显示比例。optical 可写
 二元列表 `[east, north]` 分别控制双列图中两个分量的色标；命令行 `--vmin/--vmax` 仍会用同一个标量覆盖两个分量。
 
+<a id="trirb-spatial-size"></a>
+
+### 可选高级：TriRB 空间目标尺度控制
+
+`spatial_size` 位于 **`downsample.trirb_config` 内**，仅作用于 `method: trirb`。
+它把用户的空间采样取舍作用于分辨率目标尺度，不改变 Green 函数、位移单位、正方向或
+原始像元提取方式。先完成[基础 TriRB 试跑](../workflows/02_insar_downsampling.md#trirb-first-run)，
+再使用本节；远场放大可能损失有效信号，点数更少不代表反演更准确。
+
+**最少修改贴片。** 在已经能运行的 YAML 中保留原有 `trirb_config` 字段，增加以下子块。
+下面的 `near_max_size: 0.75` 要求原 `minimumsize <= 0.75`；例如 `minimumsize: 0.5`。
+示例值用于理解配置，不是跨案例通用推荐。
+
+```yaml
+downsample:
+  method: trirb
+  trirb_config:
+    # 保留 min_valid_fraction、max_samples、smooth_factor 等原有字段
+    minimumsize: 0.5
+    spatial_size:
+      enabled: true
+      near_distance: 1.0   # km，近场保护区的外边界
+      far_distance: 5.0    # km，过渡结束、完全使用远场规则的位置
+      near_max_size: 0.75  # km，近场目标尺度上限；原来更细的目标仍保留
+      far_scale: 1.5       # 远场目标尺度倍数，>= 1
+```
+
+可在该子块中继续增加：
+
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `max_target_size` | `null` | 可选全域目标尺度上限，km；不小于 `near_max_size` |
+| `max_iterations` | `20` | 仅启用时生效的迭代次数保护；达到上限不表示收敛 |
+| `trace_ids` | `null` | 默认使用全部活动 TriRB 模型的原始迹线；也可显式引用启用的 `fault_traces` ID 列表 |
+
+启用时必须满足 `0 <= near_distance < far_distance`、
+`0 < minimumsize <= near_max_size <= max_target_size`（最后一项仅在配置上限时要求），
+以及 `far_scale >= 1`。不支持的字段会报告错误，避免拼写错误被静默忽略。
+若 `near_max_size == minimumsize`，近场目标会统一为该值；希望近场保留尺度差异时，
+应使 `near_max_size > minimumsize`，再结合目标场和成图检查。
+较小的 `max_target_size` 会细化原本更粗的远场，可能抵消放大倍数带来的减量；不需要时保留 `null`。
+省略或明确关闭该块时，不校验其未启用的距离参数，不读取额外迹线，不改变 Gmsh 设置、
+布网输入、提取统计或原有停止条件。完整模板的其余高级参数可以留作占位。
+
+**距离参考。** 所有距离在与观测一致的投影坐标系中计算，单位 km：
+
+\[
+d(x)=\min_j\operatorname{dist}(x,\Gamma_j).
+\]
+
+这里的 \(\Gamma_j\) 是每条独立的连续原始迹线。多断层取最短距离，交叉处的保护区自然
+形成并集；不同断层不额外连接，稀疏节点之间按线段计算。不是到最近节点、三角形顶点、
+面片中心或三维断层面的距离。近远区之间的带宽为 `far_distance - near_distance`。
+
+从迹线生成的模型保留原始迹线，可直接使用默认距离参考。已有 GMT 网格若没有原始
+迹线，应显式引用 `fault_traces`；缺失时报告问题，不从网格边界暗中推断。例：
+
+```yaml
+fault_traces:
+  - id: distance_reference
+    enabled: true
+    file: fault_trace.gmt
+    segments: all          # 多段保持独立，也可选零起始段编号
+    stages: []             # 不显示；是否显示不影响显式距离引用
+
+# 在已有 downsample.trirb_config.spatial_size 内增加：
+# trace_ids: [distance_reference]
+```
+
+`trace_ids` 中的每个 ID 必须唯一匹配一个启用条目。仅其选中段用于距离计算，未选中的
+绘图迹线不会被该功能读取。它不使这些迹线参与 GF 或 Laplacian，也不代替必须存在的
+`fault_models.use_for: [trirb]`。没有显式引用的绘图条目继续只用于显示。
+
+**公式与执行顺序。** 每轮先按原算法计算分辨率建议 \(h_{\mathrm{RB},i}\)，再施加已有下限：
+
+\[
+h_i=\max(h_{\mathrm{RB},i},h_{\min}),\qquad h_0(x)=I(\{x_i,y_i,h_i\}).
+\]
+
+\(I\) 是现有线性插值，在凸包外使用最近邻回退。随后才在 Gmsh 查询位置施加空间规则：
+
+\[
+t=\operatorname{clip}\left(\frac{d-r_n}{r_f-r_n},0,1\right),\qquad w=3t^2-2t^3,
+\]
+\[
+h_{\mathrm{target}}(x)=\operatorname{clip}\left[
+(1-w)\min(h_0(x),H_n)+wk_fh_0(x),\ h_{\min},H_{\max}\right].
+\]
+
+\(r_n,r_f,H_n,k_f,H_{\max}\) 分别对应 `near_distance`、`far_distance`、`near_max_size`、
+`far_scale`、`max_target_size`；未配置最后一项时无额外上限。近场限制过粗目标，远场放大
+基础目标，过渡带连续连接。每轮从新分辨率建议出发，不在上一轮已放大的目标上反复乘倍数。
+目标尺度仍不等于最终边长、√面积或采样中心间距；也不保证实际尺度严格随距离单调增加。
+平滑的是附加过渡权重，不消除基础插值回退和实际网格的离散变化。
+近场上限不冻结原有近场网格，也不保证单元不跨断层或重建误差不变；需要保留不连续边界时，
+应单独检查数据掩膜和单元覆盖，不在本功能中隐式加入删点或断层约束线。
+
+**运行与诊断。** 生成带注释的完整模板并沿用标准 CLI：
+
+```bash
+ecat-generate-downsample --mode sar --downsample-method trirb --template full -o downsample_trirb.yml
+ecat-downsample -f downsample_trirb.yml -d
+```
+
+报告新增 `spatial_size`，包含实际迹线 ID、生效参数、每轮拟合宽度与目标尺度统计、
+近/过渡/远区单元数量和固定初始采样位置上的最大相对尺度变化。`used_for_remeshing`
+标记该轮目标是否真正用于后续布网；停止前最后计算的一组目标可能尚未使用。
+`stop_reason` 区分 `sample_limit`、`count_change`、`iteration_limit`。前两项保留原判断，
+最后一项仅在该功能启用时增加保护。固定位置变化是诊断，不是新的停止判据；
+`count_change` 不代表网格逐点收敛，也不保证反演精度。未启用时不增加这组报告字段。
+仅收紧 `change_threshold` 也不保证空间尺度稳定，仍应检查固定位置变化及近远场效果。
+
+**Python调用与源码阅读。** 已有标准 CSI 观测 `data` 和活动断层列表 `faults` 时：
+
+```python
+from csi.imagedownsamplingTriangular import imagedownsamplingTriangular
+
+sampler = imagedownsamplingTriangular("sampling", data, faults=faults)
+sampler.initialstate(minimumsize=0.5, tolerance=0.1)
+sampler.resolutionBased(
+    max_samples=6000, smooth_factor=0.25, slipdirection="sd",
+    spatial_size=dict(enabled=True, near_distance=1.0, far_distance=5.0,
+                      near_max_size=0.75, far_scale=1.5),
+)
+print(sampler.spatial_size_report["stop_reason"])
+sampler.writeDownsampled2File("sampled_ifg", rsp=True)
+```
+
+直接API可另传 `distance_traces`：带原始 `xf/yf`、与数据同投影的迹线对象列表；
+不需要另造用于GF的模型。启用该功能需要支持此接口的CSI版本，CLI遇到旧版本会明确报错，
+不自动退化成无空间控制的运行。
+阅读顺序为 `resolutionBased()` → `_mesh_size_field()` → CSI `trirb_spatial.py` 中的
+`spatial_target_sizes()` / `SpatialSizeControl` → `cutblocksbygmsh()`。CSI拥有唯一公式、
+每轮尺度场和本轮Gmsh资源；eqtools只做配置、迹线输入解析和报告序列化。
+
 ## `fault_traces` 与 `fault_models`
 
 断层相关配置分成两个入口，避免把“画图叠加”和“降采样计算”混在一起：
 
 | 字段 | 作用 | 是否参与降采样计算 |
 | --- | --- | --- |
-| `fault_traces` | 读取单段或多段 lon/lat 折线，叠加到 `-s` raw quick-look 或 `-d` decim 检查图 | 否 |
+| `fault_traces` | 读取单段或多段 lon/lat 折线，用于检查图或显式距离参考 | 只有被启用的 `spatial_size.trace_ids` 引用时参与目标尺度控制；不参与GF |
 | `fault_models` | 读取或生成 CSI 断层模型；可用于 `trirb`，也可把 patch edges 叠加到检查图 | 仅当 `use_for` 包含当前方法时 |
 
 `use_for` 是显式的计算角色列表，不由 `enabled` 或 `plot.stages` 推断。生成
@@ -1327,7 +1462,7 @@ downsampler；底层构造 `G_total = [G_1 G_2 ...]`，并以
 - `trirb` 必须至少启用一个 `geometry: triangular` 且 `use_for: [trirb]` 的 `fault_models` 条目。
 - 实际请求降采样时，TriRB 角色检查发生在读取观测数据之前；若已有启用的三角模型但
   `use_for` 为空，错误会列出相应模型 ID，并提示补充 `use_for: [trirb]`。
-- `fault_traces` 只用于绘图，不会自动生成 `trirb` 所需模型；`marker` 只标记所选迹线段的输入节点。
+- `fault_traces` 不会自动生成 `trirb` 所需模型；只有显式 `spatial_size.trace_ids` 引用才另作距离参考。`marker` 只标记所选迹线段的输入节点。
 - `fault_models.plot: true` 表示 raw 和 decim 两类检查图都叠加；若要精确控制，用 `plot.stages`。
 - `fault_traces` 的绘图阶段直接写在 `stages`；`fault_models` 必须写在 `plot.stages`。配置校验会拒绝放错层级的字段。
 - 同一 `fault_traces` 或 `fault_models` 列表中的显式 `id` 必须唯一，便于报告、绘图和排错。

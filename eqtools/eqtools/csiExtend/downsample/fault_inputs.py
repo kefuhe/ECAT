@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -158,6 +159,36 @@ def _fault_model_type(entry):
     if entry.get("file") is not None:
         return "csi_gmt"
     return "generated_from_trace"
+
+
+def resolve_spatial_size_inputs(config, data):
+    """Resolve only explicitly enabled distance references, independently of plotting.
+
+    None/disabled performs no trace I/O. Without trace_ids CSI uses the original
+    traces of its active compute faults; GMT meshes need explicit trace_ids when
+    they do not carry original traces. Selected multipart traces stay separate.
+    """
+    options = (config.get("downsample", {}).get("trirb_config", {}) or {}).get("spatial_size")
+    if not options or not options.get("enabled", False):
+        return None, None
+    options = dict(options)
+    ids = options.pop("trace_ids", None)
+    if ids is None:
+        return options, None
+    selected = []
+    entries = _enabled_entries(config.get("fault_traces"))
+    for trace_id in ids:
+        matches = [e for e in entries if str(e.get("id") or Path(e["file"]).stem) == trace_id]
+        if len(matches) != 1:
+            raise ValueError(f"spatial_size.trace_ids: {trace_id!r} must name one enabled fault_traces entry")
+        selected.append(matches[0])
+    frames = load_fault_traces({"fault_traces": selected}, base_dir=config.get("_config_dir"))
+    traces = []
+    for frame in frames:
+        x, y = data.ll2xy(frame.lon.to_numpy(), frame.lat.to_numpy())
+        traces.append(SimpleNamespace(xf=np.asarray(x), yf=np.asarray(y), utm=getattr(data, "utm", None),
+                                      _eqtools_fault_id=frame.attrs["id"]))
+    return options, traces
 
 
 def _fault_geometry(entry):

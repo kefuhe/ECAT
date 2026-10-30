@@ -31,6 +31,7 @@ from eqtools.csiExtend.downsample.fault_inputs import (
     load_fault_traces,
     load_plot_fault_overlays,
     select_fault_model_entries_for_compute,
+    resolve_spatial_size_inputs,
 )
 from eqtools.csiExtend.downsample.grid_template import (
     apply_rsp_grid_template,
@@ -2411,6 +2412,13 @@ def run_downsampling(data, data_type, config, selected_faults, out_name):
         initialize_downsampler_report_context(downsampler)
         configure_downsampler_extraction(downsampler, downsample_config)
         trirb_config = downsample_config["trirb_config"]
+        spatial_options, distance_traces = resolve_spatial_size_inputs(config, data)
+        spatial_kwargs = {}
+        if spatial_options is not None:
+            params = inspect.signature(downsampler.resolutionBased).parameters
+            if "spatial_size" not in params and not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                raise RuntimeError("Enabled spatial_size requires an updated CSI installation")
+            spatial_kwargs = {"spatial_size": spatial_options, "distance_traces": distance_traces}
         plot = trirb_config.get("plot", False)
         decimorig = trirb_config.get("decimorig", 10)
         downsampler.initialstate(
@@ -2428,6 +2436,7 @@ def run_downsampling(data, data_type, config, selected_faults, out_name):
             verboseLevel=trirb_config.get("verboseLevel", "maximum"),
             decimorig=decimorig,
             vertical=trirb_config.get("vertical", False),
+            **spatial_kwargs,
         )
     elif method == "from_rsp":
         if data_type == "optical" and uses_triangular_sampler:

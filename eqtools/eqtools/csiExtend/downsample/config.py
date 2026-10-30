@@ -1745,8 +1745,8 @@ def _validate_fault_traces(config, errors):
             errors.append(f"{label}.plot is not valid for fault_traces; use {label}.stages.")
         if "use_for" in entry:
             errors.append(
-                f"{label}.use_for is not valid because fault_traces are display-only; "
-                "configure computation under fault_models."
+                f"{label}.use_for is not valid; configure GF computation under fault_models "
+                "and explicit distance references under trirb_config.spatial_size.trace_ids."
             )
         if entry.get("segment") is not None:
             errors.append(
@@ -3092,6 +3092,59 @@ def normalize_downsample_config(config, validate=True):
     return normalized
 
 
+def _validate_trirb_spatial_size(trirb, errors):
+    """Validate enabled controls only; inactive placeholders never require traces."""
+    section = trirb.get("spatial_size")
+    if section is None:
+        return
+    label = "downsample.trirb_config.spatial_size"
+    if not isinstance(section, dict):
+        errors.append(f"{label} must be a mapping.")
+        return
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        errors.append(f"{label}.enabled must be true or false.")
+        return
+    if not enabled:
+        return
+    required = ("near_distance", "far_distance", "near_max_size", "far_scale")
+    allowed = {"enabled", *required, "max_target_size", "max_iterations", "trace_ids"}
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        errors.append(f"{label} has unsupported keys: {', '.join(unknown)}.")
+    _require_keys(section, required, errors, label)
+    numbers = {}
+    for key in (*required, "max_target_size"):
+        value = section.get(key)
+        if key == "max_target_size" and value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+            errors.append(f"{label}.{key} must be a finite number.")
+        else:
+            numbers[key] = value
+    if all(k in numbers for k in required):
+        if not 0 <= numbers["near_distance"] < numbers["far_distance"]:
+            errors.append(f"{label} requires 0 <= near_distance < far_distance.")
+        if numbers["far_scale"] < 1:
+            errors.append(f"{label}.far_scale must be >= 1.")
+        minimum = trirb.get("minimumsize")
+        if isinstance(minimum, (int, float)) and numbers["near_max_size"] < minimum:
+            errors.append(f"{label}.near_max_size must be >= minimumsize.")
+        if numbers["near_max_size"] <= 0:
+            errors.append(f"{label}.near_max_size must be positive.")
+        if "max_target_size" in numbers and numbers["max_target_size"] < numbers["near_max_size"]:
+            errors.append(f"{label}.max_target_size must be >= near_max_size.")
+    iterations = section.get("max_iterations", 20)
+    if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations < 1:
+        errors.append(f"{label}.max_iterations must be a positive integer.")
+    ids = section.get("trace_ids")
+    if ids is not None and (not isinstance(ids, list) or not ids or
+                            any(not isinstance(x, str) or not x.strip() for x in ids)):
+        errors.append(f"{label}.trace_ids must be a non-empty list of strings or null.")
+    elif ids is not None and len(set(ids)) != len(ids):
+        errors.append(f"{label}.trace_ids must not contain duplicates.")
+
+
 def validate_downsample_config(config):
     errors = []
     config_version = config.get("config_version", SUPPORTED_CONFIG_VERSION)
@@ -3400,6 +3453,7 @@ def validate_downsample_config(config):
     if method == "trirb":
         trirb_config = _require_mapping(downsample, "trirb_config", errors, "downsample")
         if trirb_config is not None:
+            _validate_trirb_spatial_size(trirb_config, errors)
             _reject_legacy_downsample_fields(
                 trirb_config,
                 ("tolerance",),

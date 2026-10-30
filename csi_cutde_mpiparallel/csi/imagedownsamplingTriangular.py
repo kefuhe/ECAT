@@ -221,21 +221,8 @@ class imagedownsamplingTriangular(imagedownsampling):
         area = 0.5 * abs(x1*(y2 - y3) + x2*(y3 - y1) + x3*(y1 - y2))
         return area
 
-    def cutblocksbygmsh(self, X, Y, smoothwidths, show_mesh=True, verbose=0):
-        """
-        Generate a mesh using Gmsh and control mesh size based on given smooth widths.
-    
-        Parameters:
-        ----------
-        X, Y : np.ndarray
-            x and y coordinates of the mesh points.
-        smoothwidths : np.ndarray
-            Smooth widths controlling the mesh size.
-        show_mesh : bool, optional
-            Whether to display the generated mesh, default is True.
-        verbose : int, optional
-            Verbosity level for Gmsh printing information, default is 0.
-        """
+    def _mesh_size_field(self, X, Y, smoothwidths):
+        """Build one iteration-local linear field with nearest fallback."""
         mesh_size_points = np.column_stack((X, Y))
 
         # These interpolators belong only to this remeshing stage.  X, Y and
@@ -261,64 +248,84 @@ class imagedownsamplingTriangular(imagedownsampling):
             if np.isnan(size):
                 size = nearest_mesh_size((x, y))
             return float(size)
+        return mesh_size_at
+
+    def cutblocksbygmsh(self, X, Y, smoothwidths, show_mesh=True, verbose=0, *, size_field=None):
+        """
+        Generate a mesh using Gmsh and control mesh size based on given smooth widths.
     
+        Parameters:
+        ----------
+        X, Y : np.ndarray
+            x and y coordinates of the mesh points.
+        smoothwidths : np.ndarray
+            Smooth widths controlling the mesh size.
+        show_mesh : bool, optional
+            Whether to display the generated mesh, default is True.
+        verbose : int, optional
+            Verbosity level for Gmsh printing information, default is 0.
+        size_field : callable, optional
+            Prepared target(x, y) for this remeshing stage only.
+        """
+        mesh_size_at = size_field if size_field is not None else self._mesh_size_field(X, Y, smoothwidths)
+
         # Initialize gmsh
         gmsh.initialize()
-        gmsh.option.setNumber("General.Terminal", 1)
-        gmsh.option.setNumber("General.Verbosity", verbose)
-        gmsh.model.add("smooth_mesh")
-    
-        # Define boundary nodes
-        points = []
-        for inodell in self.boxll:
-            ilon, ilat = inodell
-            ix, iy = self.ll2xy(ilon, ilat)
-            points.append(gmsh.model.geo.addPoint(ix, iy, 0, 0.1))
-    
-        # Create lines and closed curve
-        lines = [
-            gmsh.model.geo.addLine(points[0], points[1]),
-            gmsh.model.geo.addLine(points[1], points[2]),
-            gmsh.model.geo.addLine(points[2], points[3]),
-            gmsh.model.geo.addLine(points[3], points[0])
-        ]
-        loop = gmsh.model.geo.addCurveLoop(lines)
-        surface = gmsh.model.geo.addPlaneSurface([loop])
-    
-        # Set mesh size function
-        def mesh_size_callback(dim, tag, x, y, z, lc):
-            return mesh_size_at(x, y)
-    
-        gmsh.model.mesh.setSizeCallback(mesh_size_callback)
-    
-        # Generate geometry and mesh
-        gmsh.model.geo.synchronize()
-        gmsh.model.mesh.generate(2)
-    
-        # gmsh.fltk.run()
-        # Extract mesh points and elements
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        _, element_tags, node_tags = gmsh.model.mesh.getElements(dim=2)
-        mesh_points = np.array(node_coords).reshape(-1, 3)[:, :2]
-        mesh_elements = np.array(node_tags[0]).reshape(-1, 3) - 1
-    
-        # Store the mesh in the object
-        self.mesh_points = mesh_points
-        self.mesh_elements = mesh_elements
-    
-        # Optionally plot the mesh
-        if show_mesh:
-            import matplotlib.pyplot as plt
-            plt.triplot(mesh_points[:, 0], mesh_points[:, 1], mesh_elements)
-            plt.scatter(X, Y, color='red', marker='o')
-            plt.title('Generated Triangular Mesh with Smooth Widths')
-            plt.xlabel('X')
-            plt.ylabel('Y')
-            plt.show()
-    
-        # Finalize gmsh
-        gmsh.finalize()
-    
+        try:
+            gmsh.option.setNumber("General.Terminal", 1)
+            gmsh.option.setNumber("General.Verbosity", verbose)
+            gmsh.model.add("smooth_mesh")
+
+            # Define boundary nodes
+            points = []
+            for inodell in self.boxll:
+                ilon, ilat = inodell
+                ix, iy = self.ll2xy(ilon, ilat)
+                points.append(gmsh.model.geo.addPoint(ix, iy, 0, 0.1))
+
+            # Create lines and closed curve
+            lines = [
+                gmsh.model.geo.addLine(points[0], points[1]),
+                gmsh.model.geo.addLine(points[1], points[2]),
+                gmsh.model.geo.addLine(points[2], points[3]),
+                gmsh.model.geo.addLine(points[3], points[0])
+            ]
+            loop = gmsh.model.geo.addCurveLoop(lines)
+            surface = gmsh.model.geo.addPlaneSurface([loop])
+
+            # Set mesh size function
+            def mesh_size_callback(dim, tag, x, y, z, lc):
+                return mesh_size_at(x, y)
+
+            gmsh.model.mesh.setSizeCallback(mesh_size_callback)
+
+            # Generate geometry and mesh
+            gmsh.model.geo.synchronize()
+            gmsh.model.mesh.generate(2)
+
+            # gmsh.fltk.run()
+            # Extract mesh points and elements
+            node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
+            _, element_tags, node_tags = gmsh.model.mesh.getElements(dim=2)
+            mesh_points = np.array(node_coords).reshape(-1, 3)[:, :2]
+            mesh_elements = np.array(node_tags[0]).reshape(-1, 3) - 1
+
+            # Store the mesh in the object
+            self.mesh_points = mesh_points
+            self.mesh_elements = mesh_elements
+
+            # Optionally plot the mesh
+            if show_mesh:
+                import matplotlib.pyplot as plt
+                plt.triplot(mesh_points[:, 0], mesh_points[:, 1], mesh_elements)
+                plt.scatter(X, Y, color='red', marker='o')
+                plt.title('Generated Triangular Mesh with Smooth Widths')
+                plt.xlabel('X')
+                plt.ylabel('Y')
+                plt.show()
+        finally:
+            gmsh.finalize()
+
         # Set the triangular blocks
         self.setBlocks(mesh_points, mesh_elements)
     
@@ -326,13 +333,18 @@ class imagedownsamplingTriangular(imagedownsampling):
         return
 
     def resolutionBased(self, max_samples=5000, change_threshold=5, smooth_factor=0.25, slipdirection='s', plot=False, 
-                        verboseLevel='minimum', decimorig=10, vertical=False):
+                        verboseLevel='minimum', decimorig=10, vertical=False, *,
+                        spatial_size=None, distance_traces=None):
         '''
         Iteratively remesh until the sample count exceeds max_samples or its
         relative change falls below change_threshold.
 
         Each fitted mesh-size target is bounded below by ``self.minsize``.
         This bounds the target size, not every resulting edge length or sample spacing.
+        Optional spatial_size applies distance constraints after interpolation.
+        None or enabled=False follows the original numerical path.
+        distance_traces optionally supplies original xf/yf traces in the data CRS.
+        Enabled-run diagnostics are exposed as spatial_size_report.
     
         Args:
             * max_samples     : Maximum number of samples. Default is 5000.
@@ -365,6 +377,18 @@ class imagedownsamplingTriangular(imagedownsampling):
             print(" displacements...")
             vertical = True
     
+        # Disabled controls never prepare geometry or alter meshing/stopping inputs.
+        self.spatial_size_report = None
+        control, next_size_field = None, None
+        if spatial_size is not None:
+            if not isinstance(spatial_size, dict) or not isinstance(spatial_size.get("enabled", False), bool):
+                raise ValueError("spatial_size must be a mapping with a boolean enabled flag")
+            if spatial_size.get("enabled", False):
+                from .trirb_spatial import SpatialSizeControl
+                control = SpatialSizeControl(self.newimage, self.faults, spatial_size,
+                                             self.minsize, distance_traces)
+                self.spatial_size_report = control.report
+
         ns = len(slipdirection)
         # Laplacian smoothing
         smooth = None
@@ -400,7 +424,12 @@ class imagedownsamplingTriangular(imagedownsampling):
         while not done:
             # Cut if asked
             if do_cut:
-                self.cutblocksbygmsh(self.newimage.x, self.newimage.y, self.smoothwidths, show_mesh=False)
+                if control is None:
+                    self.cutblocksbygmsh(self.newimage.x, self.newimage.y, self.smoothwidths, show_mesh=False)
+                else:
+                    self.cutblocksbygmsh(self.newimage.x, self.newimage.y, self.smoothwidths,
+                                        show_mesh=False, size_field=next_size_field)
+                    control.report["iterations"][-1]["used_for_remeshing"] = True
                 # Set the blocks
                 self.setBlocks(self.mesh_points, self.mesh_elements)
                 # Do the downsampling
@@ -416,9 +445,16 @@ class imagedownsamplingTriangular(imagedownsampling):
             # Compute resolution
             self.computeSmoothwidth(slipdirection, smooth_factor, vertical=vertical)
     
+            fitted_widths = self.smoothwidths.copy() if control is not None else None
+
             # Floor new targets, allowing previously fine cells to coarsen.
             np.maximum(self.smoothwidths, self.minsize, out=self.smoothwidths)
     
+            if control is not None:
+                base_field = self._mesh_size_field(self.newimage.x, self.newimage.y, self.smoothwidths)
+                next_size_field = control.bind(base_field)
+                control.observe(self.newimage.x, self.newimage.y, fitted_widths, next_size_field)
+
             # Calculate the number of samples and the relative change
             num_samples = len(self.blocks)
             perc_change = abs(old_num_samples - num_samples) / num_samples * 100
@@ -436,7 +472,14 @@ class imagedownsamplingTriangular(imagedownsampling):
             if num_samples > max_samples or perc_change < change_threshold:
                 print('Stopping criteria met: {} samples and {}% change'.format(num_samples, perc_change))
                 done = True
-    
+            if control is not None:
+                reason = ("sample_limit" if num_samples > max_samples else
+                          "count_change" if perc_change < change_threshold else
+                          "iteration_limit" if it >= control.max_iterations else None)
+                if reason is not None:
+                    control.report["stop_reason"] = reason
+                    done = True
+
             # Update the number of samples
             old_num_samples = num_samples
     

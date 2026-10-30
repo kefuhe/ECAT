@@ -192,6 +192,10 @@ def build_downsample_report(data, data_type, config, downsampler, out_name):
                 "slipdirection",
             )
         }
+        spatial = (downsample.get("trirb_config", {}) or {}).get("spatial_size") or {}
+        if spatial.get("enabled", False):
+            report["trirb_config"]["spatial_size"] = spatial
+            report["spatial_size"] = getattr(downsampler, "spatial_size_report", None)
 
     if (downsample.get("report") or {}).get("quality", True):
         quality = _reconstruction_quality(data, data_type, downsampler)

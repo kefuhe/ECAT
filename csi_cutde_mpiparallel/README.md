@@ -358,3 +358,11 @@ to apply it to existing results. Stored `.rsp` files remain unchanged. Resolutio
 calculation, smoothing and stopping criteria retain their existing behavior.
 The ECAT [downsampling reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/downsampling_app.md)
 describes the corresponding `trirb_config` fields.
+
+Optional `resolutionBased(spatial_size={"enabled": True, ...})` applies a near-field
+target cap and smooth far-field scaling after interpolation. Omitted or disabled
+controls keep the original numerical path and do not prepare distance geometry.
+`distance_traces` may supply original traces for GMT models without them. Each
+enabled run exposes `spatial_size_report` with trace IDs, target-size diagnostics
+and the stop reason; count stability does not certify spatial convergence. See
+the [advanced YAML, formula and Python example](https://github.com/kefuhe/ECAT/blob/main/docs/reference/downsampling_app.md#trirb-spatial-size).

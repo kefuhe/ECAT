@@ -475,6 +475,18 @@ ecat-downsample -f downsample_trirb.yml -d
 字段含义、目标尺度下限与最终几何量的区别，见
 [TriRB 配置参考](../reference/downsampling_app.md#trirb-config)。
 
+#### 可选高级：按距离调整目标尺度
+
+基础 TriRB 已跑通、仍希望保留近场细节并减少远场观测时，才考虑
+`downsample.trirb_config.spatial_size`。省略它或设 `enabled: false` 均沿用原数值路径；
+最小模板不展开这一组参数，完整模板提供默认关闭的示例。
+
+先固定断层模型与 `minimumsize`，以较温和的 `far_scale` 比较原网格和新网格，
+检查近场、过渡区和远场的覆盖、重建误差及实际间距。距离是用户指定的采样先验，
+远离迹线不一定意味着形变或反演信息不重要。初次不要同时调整距离、平滑权重和断层面片。
+具体 YAML 位置、GMT 网格的距离参考、公式与 Python 调用贴片见
+[TriRB 空间目标尺度控制](../reference/downsampling_app.md#trirb-spatial-size)。
+
 ### 6.4 可选：用引导图稳定 quadtree 网格
 
 普通 `std` 因高频噪声、局部闪烁或 offset 粗差而过度细分时，可以启用

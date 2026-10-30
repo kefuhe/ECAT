@@ -405,8 +405,8 @@ def data_downsample_config_text():
 """
 
 
-def trirb_downsample_config_text():
-    return """  # Used only when method: trirb; also enable triangular fault_models below.
+def trirb_downsample_config_text(include_spatial=False):
+    text = """  # Used only when method: trirb; also enable triangular fault_models below.
   # First trial: minimumsize ~ shallow top_size / 4 is a heuristic; inspect near-field detail.
   trirb_config:
     minimumsize: 1.25      # lower bound for fitted mesh-size targets (km), not sample spacing
@@ -419,6 +419,20 @@ def trirb_downsample_config_text():
     decimorig: 10          # plot decimation used only when plot: true
     verboseLevel: "maximum"
 """
+    if include_spatial:
+        text += """    # Advanced; disabled preserves the original numerical path. See trirb-spatial-size in the reference.
+    spatial_size:
+      enabled: false
+      near_distance: 1.0    # km; near-field outer boundary
+      far_distance: 5.0     # km; transition ends here; must exceed near_distance
+      near_max_size: 2.5    # near-field cap (km); > minimumsize allows varying near-field targets
+      far_scale: 1.5        # far-field multiplier, >= 1; sampling prior, not resolution
+      max_target_size: null # optional global target cap (km), >= near_max_size
+      max_iterations: 20   # enabled-run guard; reaching it is not convergence
+      trace_ids: null      # null = original traces of all active TriRB faults;
+                           # otherwise IDs from enabled fault_traces, independent of plot stages
+"""
+    return text
 
 
 def extraction_config_text():
@@ -592,7 +606,7 @@ def processing_config_text(template, downsample_method, data_type="sar"):
     include_from_rsp = template == "full" or downsample_method == "from_rsp"
     std_config = std_downsample_config_text() if include_std else ""
     data_config = data_downsample_config_text() if include_data else ""
-    trirb_config = trirb_downsample_config_text() if include_trirb else ""
+    trirb_config = trirb_downsample_config_text(include_spatial=template == "full") if include_trirb else ""
     from_rsp_config = from_rsp_downsample_config_text() if include_from_rsp else ""
     method_note = {
         "std": "std is fault-free and easiest for first tests; trirb needs fault geometry",
