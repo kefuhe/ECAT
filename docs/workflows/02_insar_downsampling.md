@@ -27,6 +27,15 @@ HyP3、GMTSAR 或 optical reader 时，直接查
 
 ## 1. 选择 reader 和 mode
 
+比较采样设置时，先看形变幅值、梯度与有效覆盖是否保留，再在同一评价位置检查预测和
+研究量是否稳定。不同采样集合上的VR不能直接作为优劣排序，见
+[怎样理解拟合统计](../concepts/fit_diagnostics.md)。标准std或TriRB基线与少量敏感性
+对照通常足以判断；局部控制应对应明确的信息遗漏。
+
+TriRB需复现初始扰动时，可在已有`trirb_config`中填`random_seed: 42`，或填auto后从
+运行meta取出实际整数复用。默认null保持旧行为；设置位置及边界见
+[TriRB种子与运行记录](../reference/downsampling_app.md#trirb-random-seed)。
+
 | 输入 | reader | 常用 mode |
 | --- | --- | --- |
 | GAMMA `.phs/.rsc/.azi/.inc` | `gamma` | 四种 mode 均支持 |

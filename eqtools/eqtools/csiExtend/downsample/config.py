@@ -3019,6 +3019,9 @@ def normalize_downsample_config(config, validate=True):
     downsample = normalized.get("downsample")
     if isinstance(downsample, dict) and downsample.get("method") is not None:
         downsample["method"] = _mode_key(downsample["method"])
+        trirb_config = downsample.get("trirb_config")
+        if isinstance(trirb_config, dict):
+            trirb_config.setdefault("random_seed", None)
         raw_compute = downsample.get("compute", {}) or {}
         if isinstance(raw_compute, dict):
             compute = deepcopy(raw_compute)
@@ -3453,6 +3456,12 @@ def validate_downsample_config(config):
     if method == "trirb":
         trirb_config = _require_mapping(downsample, "trirb_config", errors, "downsample")
         if trirb_config is not None:
+            seed = trirb_config.get("random_seed")
+            valid_seed = seed is None or (isinstance(seed, str) and seed == "auto") or (
+                isinstance(seed, int) and not isinstance(seed, bool) and 0 <= seed <= 2**32 - 1
+            )
+            if not valid_seed:
+                errors.append("downsample.trirb_config.random_seed must be null, 'auto', or an integer in [0, 2**32 - 1].")
             _validate_trirb_spatial_size(trirb_config, errors)
             _reject_legacy_downsample_fields(
                 trirb_config,

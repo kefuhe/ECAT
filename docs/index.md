@@ -26,6 +26,7 @@
 | 需要一个短小可复制片段 | [任务短例](examples/index.md) | 复制最小代码或命令，再回到 workflow |
 | 需要一份完整可编辑的科研脚本 | [可运行脚本模板导航](examples/script_templates.md) | 选择普通 BLSE、平滑、倾角或联合敏感性模板 |
 | 需要确认字段、接口或误区 | [Reference Map](reference/index.md) | 按需查阅，不必从头顺序阅读全部 reference |
+| 需要理解RMS、VR及各数据集的汇总份额 | [怎样理解拟合统计](concepts/fit_diagnostics.md) | 先看通用例子，再查完整公式 |
 
 ### 数据、建模与结果任务
 

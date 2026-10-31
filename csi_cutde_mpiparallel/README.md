@@ -341,6 +341,17 @@ Event projection and counts belong to eqtools; see the
 
 ## Triangular resolution-based downsampling
 
+Optional `initialstate(..., random_seed=42)` isolates the initial perturbations
+using a local NumPy `RandomState`, without reading or advancing global random
+state. Omitted or `None` preserves the legacy draws and global-state consumption
+exactly for the same input and starting global state. The optional seed does not
+change resolution fitting, size targets, extraction or stopping conditions.
+It does not seed covariance estimation or Gmsh. Save `.rsp` to reuse an exact
+grid across environments. ECAT accepts YAML `random_seed: auto` and records the
+generated integer; this string is resolved by ECAT, not accepted by CSI.
+See the [seed and metadata reference](https://github.com/kefuhe/ECAT/blob/main/docs/reference/downsampling_app.md#trirb-random-seed).
+
+
 For `imagedownsamplingTriangular`, `initialstate(minimumsize=...)` sets the lower
 bound for the mesh-size targets fitted by `resolutionBased()`, in projected x/y
 units (km). Every iteration applies `target = max(fitted_width, minimumsize)`

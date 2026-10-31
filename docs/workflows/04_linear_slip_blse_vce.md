@@ -412,6 +412,12 @@ OpenBLAS 还是两者并存，并在代表性案例上比较 1、4、8、16 线�
 
 ## 下一步
 
+解释拟合结果时，先检查逐数据集RMS和共用色标的残差图，再看固定评价观测上的预测、
+矩量与主滑动区，最后用Global行汇总。Global VR的观测平方和份额不等于VCE权重；
+采样集合改变也会改变该份额。快速例子与判断顺序见
+[怎样理解拟合统计](../concepts/fit_diagnostics.md)，完整公式见
+[平方和份额](../reference/fit_statistics.md#global-vr-shares)。
+
 - 要从最短代码开始，转到 [BLSE/VCE 最小脚本骨架](../examples/blse_minimal_run.md)。
 - 要调整约束，查 [ECAT 约束管理器](../reference/constraint_manager.md)。
 - 要计算 Euler/block 震间 loading/backslip/coupling 或导出 GMT，查 [震间加载、Backslip 与 Coupling](../reference/interseismic_kinematics.md)。

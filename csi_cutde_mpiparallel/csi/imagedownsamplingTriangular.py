@@ -8,6 +8,7 @@ import matplotlib as mpl
 import copy
 import sys
 import os
+from numbers import Integral
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 import multiprocessing as mp
 from scipy.spatial import KDTree
@@ -73,7 +74,8 @@ class imagedownsamplingTriangular(imagedownsampling):
             else:
                 raise ValueError(f"Invalid vel_type: {self.vel_type}. Must be 'east', 'north', or 'eastnorth'.")
 
-    def initialstate(self, minimumsize, tolerance=0.25, plot=False, decimorig=10, boundary_tolerance=0.5):
+    def initialstate(self, minimumsize, tolerance=0.25, plot=False, decimorig=10, boundary_tolerance=0.5,
+                     *, random_seed=None):
         '''
         Generates an initial triangular mesh using Delaunay triangulation and adds perturbations.
 
@@ -86,10 +88,21 @@ class imagedownsamplingTriangular(imagedownsampling):
             * plot              : True/False
             * decimorig         : Decimation for plotting purposes only.
             * boundary_tolerance: Tolerance for setting points to boundary values. Default is 0.5.
+            * random_seed       : None keeps the legacy global NumPy stream. An integer
+                                  in [0, 2**32 - 1] isolates this initialization using
+                                  a local RandomState; it does not seed Gmsh or covariance.
 
         Returns:
             * None
         '''
+        if random_seed is not None and (
+            isinstance(random_seed, (bool, np.bool_))
+            or not isinstance(random_seed, Integral)
+            or not 0 <= random_seed <= 2**32 - 1
+        ):
+            raise ValueError("random_seed must be None or an integer in [0, 2**32 - 1]")
+        # Preserve legacy draws and their order unless isolation is explicitly requested.
+        rng = np.random if random_seed is None else np.random.RandomState(int(random_seed))
         self.tolerance = tolerance
         self.minsize = minimumsize
 
@@ -101,8 +114,8 @@ class imagedownsamplingTriangular(imagedownsampling):
         y = y.flatten()
 
         # Add random perturbations
-        x += np.random.randn(x.size)
-        y += np.random.randn(y.size)
+        x += rng.randn(x.size)
+        y += rng.randn(y.size)
 
         # Ensure points are within the boundaries with boundary tolerance
         x = np.where(np.abs(x - self.xmin) < boundary_tolerance, self.xmin, x)

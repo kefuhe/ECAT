@@ -1109,6 +1109,7 @@ box 外的数据；CSI 根据降采样块中心是否位于该区域内，限制
 | 字段 | 作用 |
 | --- | --- |
 | `minimumsize` | 每轮分辨率拟合所得目标尺度的下限，单位 km；不保证最终边长或采样间距均达到此值 |
+| `random_seed` | `null`保留旧全局随机流；0至2³²−1的整数使用局部随机流；`auto`本次生成整数并记录。仅控制TriRB初始点扰动 |
 | `min_valid_fraction` | 三角候选块内最小有效像素比例；传给 CSI `initialstate(..., tolerance=...)` |
 | `max_samples` | 当前单元数量超过此值时停止迭代；不是最终数量的硬上限 |
 | `change_threshold` | 相邻迭代样本数变化的停止阈值，单位为百分比 |
@@ -1148,6 +1149,52 @@ full-corner 矩形保存四个真实角点，8 列是 `trirb` 和三角 `.rsp` �
 降采样检查图由 `check_plots.decim` 控制；`coordrange` 只裁剪显示视野，不控制数据范围。`vmin/vmax`
 为空时会使用稳健自动色标，`factor4plot: inherit_raw` 会继承 raw quick-look 的显示比例。optical 可写
 二元列表 `[east, north]` 分别控制双列图中两个分量的色标；命令行 `--vmin/--vmax` 仍会用同一个标量覆盖两个分量。
+
+<a id="trirb-random-seed"></a>
+
+### TriRB初始网格的可重复运行
+
+默认模板保留`random_seed: null`。在相同输入、环境和初始全局NumPy状态下，省略或null
+保持旧随机调用顺序和默认结果；原本未固定种子的两次运行不因此自动变得相同。
+
+```yaml
+downsample:
+  method: trirb
+  trirb_config:
+    # 在已有配置中增加这一行；其他采样参数保持不变。
+    random_seed: auto  # 也可填42；默认null保留旧行为
+```
+
+整数模式使用本次初始化独有的NumPy `RandomState`，不读取或推进全局随机状态；与旧代码
+在初始化前紧邻执行`np.random.seed(整数)`的扰动序列一致。`auto`仅在确实执行TriRB
+初始化时解析一次，由系统随机源生成32位整数，不消耗NumPy全局随机流。CSI直接API接受
+`initialstate(..., random_seed=42)`或None；字符串auto由eqtools解析，不传给CSI。
+
+每次成功运行的`<outName>_run_metadata.yml`增加以下记录（数值仅为示例）：
+
+```yaml
+randomness:
+  trirb_initial_grid:
+    status: used
+    mode: local_seeded
+    requested_seed: auto
+    effective_seed: 123456
+```
+
+复用时把`effective_seed`整数填回YAML的`random_seed`；再次填auto会生成新值。
+`effective_config`保留原请求值，不用实际整数覆盖用户的auto。默认初始化记录
+`status: used`、`mode: legacy_global`和两个null种子，不能据此重放旧全局流。
+quick-look、std、data及from_rsp没有执行TriRB初始化，记录`status: not_run`、
+`mode: null`、`effective_seed: null`；即使配置写auto也不生成整数。
+
+种子不改变分辨率公式、尺度约束、停止条件或像元提取。它不控制Gmsh或协方差估计；
+后者仍沿用原随机行为，本功能没有增加协方差种子。先估计协方差再运行默认TriRB时，
+旧全局流仍会被前一步消耗。显式TriRB种子可隔离初始化对这些先前随机调用的依赖。
+std四叉树本身没有这种初始随机扰动，也没有新增种子字段。
+
+同环境复现仍需相同输入、顺序和依赖；跨Gmsh/数值后端或软件版本不保证逐位相同。
+精确复用布局优先保存`.rsp`并使用from_rsp。不要尝试多个种子后选择最高VR。
+显式整数/auto遇到旧CSI初始化接口会报清楚的升级错误；null路径不传新关键字。
 
 <a id="trirb-spatial-size"></a>
 

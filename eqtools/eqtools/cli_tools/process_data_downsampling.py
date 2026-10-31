@@ -2,6 +2,7 @@ import argparse
 import inspect
 import os
 import re
+import secrets
 import warnings
 from copy import copy, deepcopy
 from datetime import datetime, timezone
@@ -2278,8 +2279,17 @@ def std_based_kwargs(downsampler, std_config, config_dir=None):
     return compact_kwargs(kwargs)
 
 
+def trirb_initial_grid_metadata(config):
+    """Describe a stage that has not run; never generate a seed while reporting."""
+    requested = (config.get("downsample", {}).get("trirb_config", {}) or {}).get("random_seed")
+    return {"status": "not_run", "mode": None,
+            "requested_seed": requested, "effective_seed": None}
+
+
 def run_downsampling(data, data_type, config, selected_faults, out_name):
     require_processing_dependencies()
+    # A reused config must not publish provenance from a previous sampler run.
+    config.setdefault("_runtime", {}).pop("trirb_initial_grid", None)
     downsample_config = config["downsample"]
     method = downsample_config["method"]
     sampler_cls = imagedownsampling
@@ -2421,12 +2431,28 @@ def run_downsampling(data, data_type, config, selected_faults, out_name):
             spatial_kwargs = {"spatial_size": spatial_options, "distance_traces": distance_traces}
         plot = trirb_config.get("plot", False)
         decimorig = trirb_config.get("decimorig", 10)
+        seed_record = trirb_initial_grid_metadata(config)
+        requested_seed = seed_record["requested_seed"]
+        seed_kwargs = {}
+        if requested_seed is not None:
+            params = inspect.signature(downsampler.initialstate).parameters
+            if "random_seed" not in params and not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                raise RuntimeError("TriRB random_seed requires an updated CSI installation")
+            seed = secrets.randbits(32) if requested_seed == "auto" else requested_seed
+            seed_kwargs["random_seed"] = seed
+            seed_record.update(mode="local_seeded", effective_seed=seed)
+            print(f"TriRB initial-grid random seed: {seed} (requested={requested_seed})")
+        else:
+            seed_record["mode"] = "legacy_global"
         downsampler.initialstate(
             minimumsize=trirb_config["minimumsize"],
             tolerance=trirb_config["min_valid_fraction"],
             plot=plot,
             decimorig=decimorig,
+            **seed_kwargs,
         )
+        seed_record["status"] = "used"
+        config["_runtime"]["trirb_initial_grid"] = seed_record
         downsampler.resolutionBased(
             max_samples=trirb_config["max_samples"],
             change_threshold=trirb_config["change_threshold"],
@@ -3000,6 +3026,9 @@ def write_run_metadata(config, args, out_name, steps, outputs, metadata_file=Non
     metadata_file = metadata_file or f"{out_name}_run_metadata.yml"
     general = config["general"]
     compute_config = config.get("downsample", {}).get("compute", {}) or {}
+    seed_record = trirb_initial_grid_metadata(config)
+    if steps.get("do_downsample") and config.get("downsample", {}).get("method") == "trirb":
+        seed_record = config.get("_runtime", {}).get("trirb_initial_grid", seed_record)
     metadata = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_source": config.get("_config_source", "file"),
@@ -3018,6 +3047,7 @@ def write_run_metadata(config, args, out_name, steps, outputs, metadata_file=Non
             "note": "Used for local x/y coordinates during downsampling.",
         },
         "steps": steps,
+        "randomness": {"trirb_initial_grid": dict(seed_record)},
         "compute": {
             "downsample_cutde": cutde_backend_summary(
                 compute_config.get("cutde_backend")

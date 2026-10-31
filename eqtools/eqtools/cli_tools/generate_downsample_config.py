@@ -409,6 +409,7 @@ def trirb_downsample_config_text(include_spatial=False):
     text = """  # Used only when method: trirb; also enable triangular fault_models below.
   # First trial: minimumsize ~ shallow top_size / 4 is a heuristic; inspect near-field detail.
   trirb_config:
+    random_seed: null     # null: legacy global stream; integer: repeatable; auto: generate and record
     minimumsize: 1.25      # lower bound for fitted mesh-size targets (km), not sample spacing
     min_valid_fraction: 0.1 # minimum valid-pixel fraction to keep an initial triangle
     max_samples: 2500      # stop if cell count exceeds this; allow headroom in first tests

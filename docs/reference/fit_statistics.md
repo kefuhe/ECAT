@@ -1,5 +1,8 @@
 # 拟合统计量
 
+第一次解释RMS、VR或采样敏感性时，可先读
+[怎样理解拟合统计](../concepts/fit_diagnostics.md)，再按本页确认公式、scope和接口。
+
 本页定义 ECAT 在线性 BLSE/VCE、滑动 Bayesian 和几何 Bayesian 结果检查中使用的
 拟合统计量，并说明模型激活、统计采集、控制台显示、绘图和文件导出的责任边界。
 统计接口只检查已经求得的模型，不参与求解，也不会改变 Green's functions、协方差、
@@ -352,7 +355,62 @@ SS_{\mathrm{obs}}=\sum_k d_k^\mathsf Td_k,
 \(\mathrm{wRMS}=\sqrt{Q_w/N}\)。异质 sigma 组没有唯一 `Eff. std`，跨组也不推断
 `Approx. red.Q`，所以 Global 行的这两列保持 `-`。
 
+<a id="global-vr-shares"></a>
+
+### 观测平方和份额与Global VR
+
+令 \(E_k=d_k^\mathsf Td_k\)、\(R_k=r_k^\mathsf Tr_k\)。若每个数据集的\(E_k\)均为正，
+且观测使用统一数值单位：
+
+\[
+a_k=\frac{E_k}{\sum_jE_j},\qquad
+\operatorname{VR}_{\mathrm{Global}}
+=\sum_k a_k\operatorname{VR}_k.
+\]
+
+这是从总平方和公式得到的恒等式，\(a_k\)称为**观测平方和份额**，不是物理能量、信息量或
+协方差/VCE求解权重。\(a_k\operatorname{VR}_k\)是一个带符号的汇总项，不宜称作科学贡献比例。
+在观测集合及其他统计不变时，某数据集VR提高1个百分点，Global提高\(a_k\)个百分点。
+
+由于\(E_k=n_k\operatorname{mean}(d_k^2)\)，点数、LOS投影幅值和参考偏移都能改变份额。
+它也等于\(n_k[\operatorname{Var}(d_k)+\operatorname{mean}(d_k)^2]\)，其中Var按\(n_k\)归一化，
+因此未中心化统计会包含均值项。相比之下，\(R_k/\sum_jR_j\)是**残差平方和份额**，
+回答原始总体失配更多来自哪个数据集。
+二者均未按协方差归一化，不能代替`Qw/wRMS`。
+
+Global RMS则满足：
+
+\[
+\operatorname{RMS}_{\mathrm{Global}}^2
+=\sum_k\frac{n_k}{N}\operatorname{RMS}_k^2.
+\]
+
+因此Global RMS和VR各自有不同的汇总系数，均不是逐数据集标量的简单平均。
+通用两数据集例子见[概念页](../concepts/fit_diagnostics.md#global-vr)。
+
+若某个\(E_k\)为零，该数据集VR为NaN，不能用0 × NaN拼加权平均，也不能直接忽略其残差。
+仍应使用\(\sum_kR_k/\sum_kE_k\)计算Global；若总观测平方和也为零，Global VR未定义。
+总残差平方和为零时，残差份额同样未定义。这些边界不改变现有统计实现。
+
+已激活模型后，可从结构化报告派生查看列，不需要重新正演或另算一套统计：
+
+```python
+import numpy as np
+
+rows = inv.collect_fit_statistics()
+df = inv.fit_statistics_to_dataframe(rows)
+datasets = df.loc[df["scope"].eq("dataset")].copy()
+E = datasets["ss_obs"].sum()
+R = datasets["ss_res"].sum()
+datasets["observation_ss_share"] = datasets["ss_obs"] / E if E > 0 else np.nan
+datasets["residual_ss_share"] = datasets["ss_res"] / R if R > 0 else np.nan
+```
+
+两列是此分析片段派生的列，不是新增的默认报告字段。不要把不同单位的观测直接拼接后
+解释原始Global；不同类型的数据应先统一单位，并逐数据集检查相应物理量和加权诊断。
+
 ## 当前模型合同
+
 
 拟合统计描述的是已经分发到 fault 和 data 对象的当前模型。`model=` 只是输出标签，
 不会自行选择 Bayesian posterior summary：

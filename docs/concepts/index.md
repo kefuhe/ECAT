@@ -6,6 +6,7 @@
 
 | 问题 | 先读 |
 | --- | --- |
+| Global VR怎样受各数据集影响、采样改变后怎样比较 | [怎样理解拟合统计](fit_diagnostics.md) |
 | 为什么推荐先非线性几何、再线性滑动 | [标准两阶段反演逻辑](two_step_inversion.md) |
 | trace、top/bottom、layers、mesh 和 patch 有什么区别 | [断层几何状态](fault_geometry_states.md) |
 | 联合 Bayesian 中参考几何、样本状态和候选 mesh 是什么关系 | [Bayesian 联合反演中的几何参考](bayesian_geometry_reference.md) |
